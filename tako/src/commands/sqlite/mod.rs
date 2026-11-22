@@ -708,7 +708,7 @@ async fn create(
     // Names identify databases in the network.
     if ctx.records()?.iter().any(|record| record.name == name) {
         return Err(format!(
-            "The network already has a database named '{name}'. To use it, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml."
+            "The network already has a database named '{name}'. To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml; for channel replay, set `database = \"{name}\"` under [envs.<env>.channels]."
         )
         .into());
     }
@@ -738,7 +738,7 @@ async fn create(
         }));
     }
     output::hint(&format!(
-        "To use it, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`), then deploy."
+        "To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`). For channel replay, set `database = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
     ));
     Ok(())
 }
