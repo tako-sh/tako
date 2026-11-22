@@ -325,7 +325,7 @@ impl ProxyHttp for TakoProxy {
 
     async fn upstream_request_filter(
         &self,
-        session: &mut Session,
+        _session: &mut Session,
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
@@ -350,8 +350,9 @@ impl ProxyHttp for TakoProxy {
             let _ = upstream_request.remove_header("X-Forwarded-For");
             let _ = upstream_request.remove_header("X-Real-IP");
         }
-        let host = request_host(session.req_header());
-        match hyper::header::HeaderValue::from_str(host) {
+        // The upstream request carries the client's URI and Host header.
+        let host = request_host(upstream_request).to_owned();
+        match hyper::header::HeaderValue::from_str(&host) {
             Ok(host) if !host.is_empty() => {
                 upstream_request
                     .insert_header("X-Forwarded-Host", host)
