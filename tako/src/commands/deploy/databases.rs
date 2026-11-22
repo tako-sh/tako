@@ -13,8 +13,81 @@ use crate::config::{SecretsStore, ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 use crate::output;
 
+mod plan;
+pub(super) use plan::{Plan, plan};
+
+/// Verify each physical database before changing any of them. A stale
+/// directory entry must not grant access to a replacement with the same name.
+pub(super) async fn provision(
+    plan: &Plan,
+    network: &crate::config::LocalNetwork,
+    app: &str,
+    records: &mut Vec<DatabaseRecord>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if plan.sql.is_empty() && plan.replay.is_none() {
+        return Ok(());
+    }
+    // A move can leave the same generation on the old home. Verify the live
+    // directory as well as the database files before preparing a built release.
+    let current = tokio::task::block_in_place(|| crate::network::databases::list(network))?;
+    let mut checked = BTreeSet::new();
+    let mut hosted = HashMap::new();
+    for entry in plan.sql.values().chain(plan.replay.iter()) {
+        if !checked.insert(&entry.database_name) {
+            continue;
+        }
+        if !hosted.contains_key(&entry.home.device_id) {
+            #[derive(serde::Deserialize)]
+            struct Status {
+                databases: Vec<tako_core::DatabaseInfo>,
+            }
+            let status: Status =
+                crate::commands::sqlite::send(&entry.home, Command::DatabaseStatus { name: None })
+                    .await?;
+            hosted.insert(entry.home.device_id.clone(), status.databases);
+        }
+        let name = entry.database_name.as_str();
+        let planned = records.iter().find(|r| r.name == name);
+        if current.iter().find(|r| r.name == name) != planned {
+            return Err(format!(
+                "Placement of database '{name}' changed while building. Retry the deploy."
+            )
+            .into());
+        }
+        let expected = planned.map(|r| r.generation.as_str());
+        let actual = hosted[&entry.home.device_id]
+            .iter()
+            .find(|db| db.name == name)
+            .map(|db| db.generation.as_str());
+        if expected != actual {
+            return Err(format!("The network record for database '{name}' does not match what {} hosts. Repair its placement before deploying.", entry.home.name).into());
+        }
+    }
+    *records = current;
+    for (name, home) in &plan.create {
+        // Membership may have changed while building the release.
+        tokio::task::block_in_place(|| -> crate::network::Result<()> {
+            let profile = crate::network::client::refresh(network)?;
+            let members = crate::network::server_members(&profile)?;
+            if members.len() != 1 || !members.contains_key(&home.device_id.parse()?) {
+                return Err("Network placement changed while building. Retry the deploy to plan database creation.".into());
+            }
+            Ok(())
+        })?;
+        let owner = (plan.implicit_replay
+            && plan
+                .replay
+                .as_ref()
+                .is_some_and(|r| r.database_name == *name))
+        .then_some(app);
+        records.push(crate::commands::sqlite::create_database(network, home, name, owner).await?);
+        output::success(&format!("Created database {name} on {}", home.name));
+    }
+    Ok(())
+}
+
 pub(super) struct Preparation<'a> {
-    pub plan: &'a HashMap<String, PlannedBinding>,
+    pub plan: &'a Plan,
     /// The network's database records.
     pub records: &'a [DatabaseRecord],
     pub config: &'a TakoToml,
@@ -35,10 +108,11 @@ pub(super) struct Granted {
     /// Peer keys the databases' servers issued with grants, by server
     /// device ID.
     pub peer_keys: HashMap<String, String>,
+    pub replay_peer_keys: HashMap<String, String>,
     /// The exact grant each database server should end with. Grants are only
     /// widened before the rollout, since the previous release keeps serving
     /// until it succeeds; [`narrow_grants`] applies these afterwards.
-    narrow: Vec<(Home, Vec<String>)>,
+    narrow: Vec<(String, Home, Vec<String>)>,
 }
 
 /// Prepares the environment's databases.
@@ -56,14 +130,15 @@ pub(super) async fn prepare(prep: Preparation<'_>) -> Result<Granted, Box<dyn st
     }
     Ok(Granted {
         peer_keys: prepared.keys,
+        replay_peer_keys: prepared.replay_keys,
         narrow: prepared.narrow,
     })
 }
 
 /// After a successful rollout, revokes the grants the new release no longer
 /// uses. A server that cannot be reached keeps a stale grant, with a warning.
-pub(super) async fn narrow_grants(app: &str, granted: Granted) {
-    for (home, databases) in granted.narrow {
+pub(super) async fn narrow_grants(granted: Granted) {
+    for (app, home, databases) in granted.narrow {
         let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
             &home,
             Command::GrantDatabases {
@@ -96,23 +171,28 @@ pub(super) fn apply_peer_keys(
 struct Prepared {
     /// Peer keys of the grants, by server device ID.
     keys: HashMap<String, String>,
+    replay_keys: HashMap<String, String>,
     warnings: Vec<String>,
     /// One line per binding that applied migrations.
     migrated: Vec<String>,
-    narrow: Vec<(Home, Vec<String>)>,
+    narrow: Vec<(String, Home, Vec<String>)>,
 }
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
     // Distinct databases bound by this environment.
     let mut bound: BTreeMap<String, &PlannedBinding> = BTreeMap::new();
-    for planned in prep.plan.values() {
+    for planned in prep.plan.sql.values() {
         bound
             .entry(planned.database_name.clone())
             .or_insert(planned);
     }
 
     if prep.administrator {
-        for planned in bound.values() {
+        let mut backed_up = bound.clone();
+        if let Some(replay) = &prep.plan.replay {
+            backed_up.insert(replay.database_name.clone(), replay);
+        }
+        for planned in backed_up.values() {
             // Without a backup storage the server stops snapshotting the
             // database.
             let storage = crate::commands::storage::decrypt_database_backup_storage(
@@ -134,7 +214,16 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         }
     }
     let mut prepared = if prep.administrator {
-        grant(prep, &bound).await?
+        let mut prepared = Prepared::default();
+        prepared.keys = grant(prep, prep.app, bound.values().copied(), &mut prepared).await?;
+        prepared.replay_keys = grant(
+            prep,
+            &tako_core::channel_replay_grant_scope(prep.app),
+            prep.plan.replay.iter(),
+            &mut prepared,
+        )
+        .await?;
+        prepared
     } else {
         Prepared::default()
     };
@@ -169,12 +258,13 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         prep.project_dir,
         prep.config,
         prep.plan
+            .sql
             .iter()
             .map(|(binding, planned)| (binding.as_str(), planned.database_name.as_str())),
     )?;
     for (database, selected) in selected {
         let (binding, migrations) = (&selected.binding, selected.migrations);
-        let planned = &prep.plan[binding];
+        let planned = &prep.plan.sql[binding];
         debug_assert_eq!(planned.database_name, database);
         let report = crate::commands::sqlite::apply_migrations(
             &planned.home,
@@ -208,10 +298,12 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
 /// the rollout succeeds. Returns the peer keys of the grants, and warnings
 /// for servers that could not be reached for a grant this deploy does not
 /// depend on.
-async fn grant(
+async fn grant<'a>(
     prep: &Preparation<'_>,
-    bound: &BTreeMap<String, &PlannedBinding>,
-) -> Result<Prepared, Box<dyn std::error::Error>> {
+    scope: &str,
+    bound: impl Iterator<Item = &'a PlannedBinding>,
+    prepared: &mut Prepared,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let network = crate::commands::sqlite::target::env_network(prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
     for record in prep.records {
@@ -222,7 +314,7 @@ async fn grant(
             .entry(home.device_id.clone())
             .or_insert_with(|| (home, BTreeSet::new()));
     }
-    for planned in bound.values() {
+    for planned in bound {
         let remote = prep
             .targets
             .iter()
@@ -231,7 +323,7 @@ async fn grant(
             names.insert(planned.database_name.clone());
         }
     }
-    let mut prepared = Prepared::default();
+    let mut keys = HashMap::new();
     for (home, names) in homes.into_values() {
         let needed = !names.is_empty();
         let names: Vec<String> = names.into_iter().collect();
@@ -240,17 +332,23 @@ async fn grant(
         let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
             &home,
             Command::GrantDatabases {
-                app: prep.app.to_owned(),
+                app: scope.to_owned(),
                 databases: names.clone(),
                 keep_existing: true,
             },
         )
         .await;
-        prepared.narrow.push((home.clone(), names));
+        prepared
+            .narrow
+            .push((scope.to_owned(), home.clone(), names));
         match result {
             Ok(response) => {
                 if let Some(key) = response["peer_key"].as_str() {
-                    prepared.keys.insert(home.device_id.clone(), key.to_owned());
+                    keys.insert(home.device_id.clone(), key.to_owned());
+                } else if needed {
+                    return Err(
+                        format!("Grant on {} returned no peer key for {scope}", home.name).into(),
+                    );
                 }
             }
             Err(error) if needed => {
@@ -264,7 +362,7 @@ async fn grant(
             )),
         }
     }
-    Ok(prepared)
+    Ok(keys)
 }
 
 async fn send(home: &Home, command: Command) -> Result<(), Box<dyn std::error::Error>> {

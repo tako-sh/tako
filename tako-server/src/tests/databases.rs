@@ -184,6 +184,217 @@ async fn snapshots_restore_the_contents_they_captured() {
 }
 
 #[tokio::test]
+async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("replay-epochs")).await;
+    query(
+        &state,
+        ID,
+        "CREATE TABLE tako_replay_apps(app TEXT PRIMARY KEY, epoch TEXT NOT NULL)",
+    )
+    .await;
+    query(&state, ID, "INSERT INTO tako_replay_apps VALUES ('a', lower(hex(randomblob(16)))), ('b', lower(hex(randomblob(16))))").await;
+    let epochs = "SELECT epoch FROM tako_replay_apps ORDER BY app";
+    let mut seen = std::collections::BTreeSet::new();
+    let mut check = |rows: Value| {
+        assert_eq!(rows.as_array().unwrap().len(), 2);
+        for row in rows.as_array().unwrap() {
+            let epoch = row[0].as_str().unwrap();
+            assert!(tako_core::validate_database_generation(epoch).is_ok());
+            assert!(seen.insert(epoch.to_owned()), "an epoch was reused");
+        }
+    };
+    check(query(&state, ID, epochs).await["rows"].clone());
+    let first = ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    for _ in 0..2 {
+        ok(
+            &state,
+            Command::RestoreDatabase {
+                name: ID.into(),
+                snapshot: Some(first["snapshot"]["id"].as_str().unwrap().into()),
+                backup_key_base64: None,
+            },
+        )
+        .await;
+        check(query(&state, ID, epochs).await["rows"].clone());
+    }
+}
+
+#[tokio::test]
+async fn committed_replay_bindings_survive_restart_without_authorizing_application_sql() {
+    use hyper::StatusCode;
+    use tako_core::{CHANNEL_REPLAY_BINDING, DatabaseBinding, channel_replay_grant_scope};
+    use tako_database::http::{self, Access};
+
+    const APP: &str = "web/production";
+    let temp = TempDir::new().unwrap();
+    let original = state(&temp);
+    create(&original, ID, None).await;
+    let scope = channel_replay_grant_scope(APP);
+    let grant = |scope: &str| Command::GrantDatabases {
+        app: scope.into(),
+        databases: vec![ID.into()],
+        keep_existing: false,
+    };
+    for malformed in [
+        "web#channels",
+        "web/production#release",
+        "web/production#other#channels",
+    ] {
+        assert!(!error(&original, grant(malformed)).await.is_empty());
+    }
+    let key = ok(&original, grant(&scope)).await["peer_key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut config = AppConfig {
+        name: "web".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        stopped: true,
+        ..Default::default()
+    };
+    let release = crate::release::release_app_path(temp.path(), &config);
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(&release, "go", "", &["true"], None, 300);
+    let requested = HashMap::from([(
+        CHANNEL_REPLAY_BINDING.into(),
+        DatabaseBinding {
+            name: ID.into(),
+            server: "edge".into(),
+            peer_key: Some(key.clone()),
+        },
+    )]);
+    config.databases = original
+        .databases
+        .prepare_bindings(&HashMap::new(), requested.clone(), &config)
+        .unwrap();
+    original
+        .state_store
+        .commit_deployment(&config, &[], &HashMap::new(), None, None, None)
+        .unwrap();
+    let connection = original.channel_replay_database(APP).unwrap().unwrap();
+    assert!(
+        original
+            .databases
+            .begin_release(APP, &config, requested)
+            .is_err()
+    );
+    assert!(original.databases.connections(&config.databases).is_empty());
+    let debug = format!("{config:?}");
+    assert!(!debug.contains(&key) && !debug.contains(&connection.auth_token));
+    drop(original);
+
+    let restored = state(&temp);
+    let database = &restored.databases.host;
+    restored.start_databases(None).await.unwrap();
+    // Status/delete must account for bindings even before the app has been restored.
+    let status = ok(
+        &restored,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    assert_eq!(status["databases"][0]["bindings"], json!([scope]));
+    assert_eq!(status["databases"][0]["remote_grants"], json!([scope]));
+    let delete = || Command::DeleteDatabase {
+        name: ID.into(),
+        generation: None,
+        keep_snapshots: false,
+    };
+    assert!(error(&restored, delete()).await.contains(&scope));
+    restored.restore_apps_from_state_store(true).await.unwrap();
+    assert_eq!(
+        restored.channel_replay_database(APP).unwrap().unwrap(),
+        connection
+    );
+    let sql = || hyper::Request::post("/v3/pipeline");
+    let body = || {
+        http_body_util::Full::new(bytes::Bytes::from_static(
+            br#"{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}}]}"#,
+        ))
+    };
+    let peer = "127.0.0.1:12345".parse().unwrap();
+    let probe = || {
+        sql()
+            .header("authorization", format!("Bearer {}", connection.auth_token))
+            .body(body())
+            .unwrap()
+    };
+    assert_eq!(
+        http::handle(database, &Access::Apps, peer, probe())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let access = Access::Peers {
+        allow: Arc::new(|ip| ip.is_loopback()),
+    };
+    for (name, expected) in [(&*scope, StatusCode::OK), (APP, StatusCode::FORBIDDEN)] {
+        let request = sql()
+            .header(http::SCOPE_HEADER, name)
+            .header(http::DATABASE_HEADER, ID)
+            .header(http::KEY_HEADER, &key)
+            .body(body())
+            .unwrap();
+        assert_eq!(
+            http::handle(database, &access, peer, request)
+                .await
+                .status(),
+            expected
+        );
+    }
+    for app in [APP, scope.as_str()] {
+        assert!(matches!(
+            migrate(&restored, vec![], false, Some(app)).await,
+            Response::Error { .. }
+        ));
+        assert!(
+            error(
+                &restored,
+                Command::SnapshotDatabase {
+                    name: ID.into(),
+                    reason: SnapshotReason::Release,
+                    app: Some(app.into()),
+                }
+            )
+            .await
+            .contains("does not use")
+        );
+    }
+    assert_eq!(query(&restored, ID, "SELECT 1").await["rows"], json!([[1]]));
+    ok(&restored, Command::Delete { app: APP.into() }).await;
+    assert!(restored.channel_replay_database(APP).unwrap().is_none());
+    restored.refresh_database_routes();
+    assert_eq!(
+        http::handle(database, &Access::Apps, peer, probe())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // A grant may be all that remains on a remote home. Delete revokes it too.
+    ok(&restored, delete()).await;
+    assert!(
+        restored
+            .state_store
+            .all_database_grants()
+            .unwrap()
+            .is_empty()
+    );
+    restored.stop_databases().await;
+}
+
+#[tokio::test]
 async fn latest_restores_pick_the_newer_of_two_snapshots_in_one_second() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

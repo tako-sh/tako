@@ -121,6 +121,7 @@ pub struct ServerState {
     /// Channel definitions per app build, shared by the proxy and the
     /// server-side publisher.
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
+    pub(crate) direct_channel_stores: Arc<crate::channels::DirectChannelStores>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) manual_backup_states:
@@ -191,13 +192,6 @@ impl ServerState {
 
     pub fn cold_start(&self) -> Arc<crate::scaling::ColdStartManager> {
         self.cold_start.clone()
-    }
-
-    pub(crate) fn runtime_postgres_url(&self, app: &str) -> Result<Option<String>, String> {
-        self.state_store
-            .get_runtime_credentials(app)
-            .map(|credentials| credentials.get("postgres_url").cloned())
-            .map_err(|_| "channel credentials unavailable".to_string())
     }
 
     pub async fn set_acme_client(&self, client: Arc<AcmeClient>) {

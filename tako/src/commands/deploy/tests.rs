@@ -14,7 +14,19 @@ fn release_command_payload_pins_the_secret_snapshot() {
         source_ip: tako_core::SourceIpMode::Auto,
         secrets_digest: Some("digest".to_string()),
         storages: HashMap::new(),
-        databases: HashMap::new(),
+        databases: HashMap::from([(
+            "main".into(),
+            tako_core::DatabaseBinding {
+                name: "orders".into(),
+                server: "s1".into(),
+                peer_key: None,
+            },
+        )]),
+        channel_database: Some(tako_core::DatabaseBinding {
+            name: "replay".into(),
+            server: "s2".into(),
+            peer_key: None,
+        }),
         ssl: tako_core::SslBinding::default(),
         backup: None,
         force: true,
@@ -30,6 +42,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
         path,
         command_line,
         secrets_digest,
+        databases,
         force,
         ..
     }) = cfg.release_command_payload("/opt/tako/apps/my-app/production/releases/v1")
@@ -43,6 +56,15 @@ fn release_command_payload_pins_the_secret_snapshot() {
     assert_eq!(command_line, "bun run migrate");
     assert!(force);
     assert_eq!(secrets_digest.as_deref(), Some("digest"));
+    assert_eq!(
+        databases, cfg.databases,
+        "release commands get only SQL bindings"
+    );
+    let full = cfg.deploy_databases(true).unwrap();
+    assert_eq!(full.len(), 2);
+    let scoped = cfg.deploy_databases(false).unwrap();
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[tako_core::CHANNEL_REPLAY_BINDING].name, "replay");
 }
 
 #[test]
@@ -559,4 +581,31 @@ fn multi_server_js_config() -> TakoToml {
         )]),
         ..Default::default()
     }
+}
+
+#[test]
+fn native_releases_need_channel_replay_only_with_a_tako_sdk() {
+    let temp = TempDir::new().unwrap();
+    let config = TakoToml::parse("name = 'api'\nruntime = 'go'\n").unwrap();
+    let needs = || config::needs_channel_replay(temp.path(), &config, BuildAdapter::Go);
+    fs::write(temp.path().join("go.mod"), "module api\n\ngo 1.22\n").unwrap();
+    assert!(!needs());
+    fs::write(
+        temp.path().join("go.mod"),
+        "module api\n\ngo 1.22\n\nrequire tako.sh v0.4.1\n",
+    )
+    .unwrap();
+    assert!(needs());
+    // A custom-built Rust binary counts before its first build writes Cargo.lock.
+    let rust = TempDir::new().unwrap();
+    fs::write(
+        rust.path().join("Cargo.toml"),
+        "[package]\nname = 'api'\n[dependencies]\ntako = '0.3'\n",
+    )
+    .unwrap();
+    assert!(config::needs_channel_replay(
+        rust.path(),
+        &config,
+        BuildAdapter::Unknown
+    ));
 }

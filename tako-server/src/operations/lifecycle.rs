@@ -357,6 +357,8 @@ impl crate::ServerState {
                 e
             );
         }
+        self.channel_credentials_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if let Err(e) = std::fs::remove_dir_all(&app_root)
             && e.kind() != std::io::ErrorKind::NotFound
         {

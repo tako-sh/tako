@@ -45,8 +45,14 @@ fn secrets() -> SecretsStore {
     secrets
 }
 
-fn homes() -> Option<BTreeMap<String, String>> {
-    Some(BTreeMap::from([("orders".into(), "edge-a".into())]))
+fn record(name: &str, server: &str) -> DatabaseRecord {
+    DatabaseRecord {
+        name: name.into(),
+        server: server.into(),
+        generation: "g1".into(),
+        created_at_unix_secs: 0,
+        channel_owner: None,
+    }
 }
 
 #[test]
@@ -59,7 +65,8 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
         Some(NETWORK.into()),
-        homes(),
+        &[record("orders", "edge-a")],
+        &ServerInventory::default(),
     );
     assert_eq!(env.secrets, Some(2));
     assert_eq!(env.credentials, Some(vec!["postgres_url".to_string()]));
@@ -82,8 +89,10 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
     );
     assert_eq!(
         env.databases,
-        vec![DatabaseBinding {
-            binding: "main".into(),
+        vec![ProjectDatabase {
+            usage: DatabaseUsage::Binding {
+                binding: "main".into()
+            },
             database: "orders".into(),
             server: Some("edge-a".into()),
         }]
@@ -103,7 +112,8 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
         Some(NETWORK.into()),
-        homes(),
+        &[record("orders", "edge-a")],
+        &ServerInventory::default(),
     );
     assert_eq!(env.secrets, None);
     assert_eq!(env.credentials, None);
@@ -120,26 +130,67 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
 }
 
 #[test]
+fn channel_replay_status_names_the_database_without_an_app_binding() {
+    let config = TakoToml::parse(
+        r#"
+name = "shop"
+[envs.production]
+route = "shop.example.com"
+channels.database = "events"
+[envs.staging]
+route = "staging.example.com"
+"#,
+    )
+    .unwrap();
+    let owned = DatabaseRecord {
+        channel_owner: Some("shop/staging".into()),
+        ..record("generated", "edge-b")
+    };
+    let records = [record("events", "edge-a"), owned];
+    for (name, database, server) in [
+        ("production", "events", "edge-a"),
+        ("staging", "generated", "edge-b"),
+    ] {
+        let env = env_resources(
+            name,
+            &config,
+            &SecretsStore::default(),
+            Access::Deploy,
+            Ok(vec![]),
+            Some("main".into()),
+            Some(NETWORK.into()),
+            &records,
+            &ServerInventory::default(),
+        );
+        assert_eq!(
+            serde_json::to_value(env.databases).unwrap(),
+            serde_json::json!([{"database":database, "server":server, "usage":"channel_replay"}]),
+        );
+    }
+    assert_eq!(replay_database(&config, "production", &[]), Some("events"));
+    assert_eq!(replay_database(&config, "staging", &[]), None);
+}
+
+#[test]
 fn databases_on_a_server_name_the_environments_that_bind_them() {
+    let mut config = config();
+    config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
+        database: "orders".into(),
+    });
     let env = env_resources(
         "production",
-        &config(),
+        &config,
         &secrets(),
         Access::Full,
         Ok(vec![]),
         None,
         Some(NETWORK.into()),
-        homes(),
+        &[record("orders", "edge-a")],
+        &ServerInventory::default(),
     );
-    let record = |name: &str, server: &str| DatabaseRecord {
-        name: name.into(),
-        server: server.into(),
-        generation: "g1".into(),
-        created_at_unix_secs: 0,
-    };
     let project = ProjectResources {
         app: "shop".into(),
-        config: config(),
+        config,
         secrets: secrets(),
         envs: vec![env],
         databases: BTreeMap::from([
@@ -162,7 +213,13 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
         project.databases_on("dev-a"),
         vec![
             ("audit".to_string(), vec![]),
-            ("orders".to_string(), vec!["shop/production".to_string()]),
+            (
+                "orders".to_string(),
+                vec![
+                    "shop/production".to_string(),
+                    "shop/production#channels".to_string()
+                ]
+            ),
         ]
     );
     assert_eq!(

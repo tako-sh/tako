@@ -435,13 +435,12 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// The app environment a binding scope belongs to. Temporary bindings, such
-/// as a release command's, use `<app>/<env>#<purpose>`; grants on other
-/// servers are per environment.
-fn environment_scope(scope: &str) -> &str {
-    scope
-        .split_once('#')
-        .map_or(scope, |(environment, _)| environment)
+/// Release commands borrow the app's grant; the channel service has its own.
+fn grant_scope(scope: &str) -> &str {
+    match scope.split_once('#') {
+        Some((_, "channels")) | None => scope,
+        Some((environment, _)) => environment,
+    }
 }
 
 /// The database host. Cheap to clone.
@@ -991,7 +990,7 @@ impl DatabaseHost {
             Home::Remote { upstream, key } => Some(Resolved::Forward {
                 database: binding.database,
                 upstream,
-                scope: environment_scope(&scope).to_owned(),
+                scope: grant_scope(&scope).to_owned(),
                 key,
             }),
             Home::Unavailable { reason } => Some(Resolved::Unavailable(reason)),

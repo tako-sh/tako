@@ -137,6 +137,8 @@ The identity is the new client's keys and network profile in one string, printed
 
 A deploy client needs no local secrets or keys. It sends no secret values: servers apply the environment's values that full clients published. It can make the first deploy of its app/environment and change its routes, SSL provider, and storage and backup settings in `tako.toml`; the servers fill in credentials and keys. Database bindings need a full client, which grants database access. Every server rejects a route that another app or environment already claims, for every client. A deploy client also can't add a route that overlaps another environment's route, such as `shop.example.com` under production's `*.example.com` or `example.com/api/*` under production's `example.com`, since the more specific route would take those requests; routes its environment already has may stay. Split a domain between environments with a full client. The sandbox needs outbound access to the servers' HTTPS endpoints and its usual build dependencies, but no local VPN setup.
 
+Give CI its scoped identity after a full client provisions the app SQL and channel replay bindings on the deployment targets. A directory record alone does not grant access. When a database home or app target changes, deploy with full access to update grants; CI can then deploy normally without receiving a database token or the `postgres_url` credential.
+
 If a join loses its successful response, run the join again on the same machine. After the invitation expires, Tako can recover membership that the server already admitted. The device must still have valid membership. Expired approvals cannot enroll new devices.
 
 ## Keep network identity and app secrets separate
@@ -245,9 +247,9 @@ Public application DNS, certificates, and ingress routes remain separate. A nati
 
 ## Understand replay and maintenance limits
 
-Native servers can replicate bounded channel replay and fan out events over their private transport. Presence uses expiring, server-bound leases. These are live-delivery mechanisms, not permanent application history. When replay is unavailable, the JavaScript SDK handles protocol resets quietly and application code reloads authoritative state. See [Channels](/channels/#deploy-replay-storage) for replay storage and recovery requirements. Durable channel replay, presence, and store notifications can use SQLite across servers without Postgres; a configured Postgres credential is preserved and validated. Ephemeral channels use memory-only delivery without replay.
+With hosted SQLite, all servers running an app read and write its durable channel history at one database home. Brokers send notifications over the network; a lost notification does not create another copy of the database. Native presence uses expiring in-memory leases, and ephemeral messages reach only live subscribers. Selecting the same database for two apps does not share channel names, rooms or membership between them.
 
-Channel replication does not migrate durable workflow executions, databases, or volumes. [Workflow storage](/workflows/) and [Compose volumes](/docker-compose/) retain their own persistence requirements.
+Automatic creation requires exactly one trusted **server in the network**, regardless of the app's `servers` setting. On larger networks deploy reuses an existing placement; for a missing replay database, choose a home with `tako sqlite create <name> --server <server>` and set `[envs.<env>.channels].database`. A database on another server is available through the private network while its home is reachable; it does not fail over to a replica. With no explicit replay setting, an existing `postgres_url` remains in use instead. See [Channels](/channels/#deploy-replay-storage) for cutover and recovery. [Workflow storage](/workflows/) and [Compose volumes](/docker-compose/) remain separate.
 
 ```bash
 tako network server drain edge-a --network production --timeout 120 --json

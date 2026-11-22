@@ -2,6 +2,14 @@ use super::*;
 use crate::native_channel_client::tests::FakeBroker;
 use std::sync::atomic::Ordering;
 
+fn publisher(link: Arc<FakeBroker>) -> BlockingPublisher {
+    BlockingPublisher::with_link(
+        link,
+        Arc::new(|_| Ok(crate::channels::ChannelTarget::Local)),
+    )
+    .unwrap()
+}
+
 fn publication(
     channel: &str,
     params: serde_json::Value,
@@ -13,7 +21,7 @@ fn publication(
 #[tokio::test]
 async fn synchronous_publisher_works_inside_a_runtime_without_nested_block_on() {
     let link = Arc::new(FakeBroker::default());
-    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let publisher = publisher(link.clone());
     let result = publisher
         .publish(
             "chat",
@@ -24,7 +32,6 @@ async fn synchronous_publisher_works_inside_a_runtime_without_nested_block_on() 
                     "type":"update", "data":{"value":1}, "lifecycle":{"ephemeral":true}
                 }),
             ),
-            None,
         )
         .unwrap();
     assert_eq!(result["channel"], "events");
@@ -36,7 +43,7 @@ async fn synchronous_publisher_works_inside_a_runtime_without_nested_block_on() 
 #[test]
 fn parameterized_publications_reach_the_broker_by_stream_key_and_ack_the_public_name() {
     let link = Arc::new(FakeBroker::default());
-    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let publisher = publisher(link.clone());
     let params = serde_json::json!({"room": "a"});
     let result = publisher
         .publish(
@@ -46,7 +53,6 @@ fn parameterized_publications_reach_the_broker_by_stream_key_and_ack_the_public_
                 params.clone(),
                 serde_json::json!({"type":"update", "data":1}),
             ),
-            None,
         )
         .unwrap();
     assert_eq!(result["channel"], "events");
@@ -62,7 +68,7 @@ fn parameterized_publications_reach_the_broker_by_stream_key_and_ack_the_public_
 #[test]
 fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
     let link = Arc::new(FakeBroker::default());
-    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let publisher = publisher(link.clone());
     let params = serde_json::json!({"room": "a"});
     let close = TrustedPublication::close(
         "events",
@@ -70,7 +76,7 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
         Some(serde_json::json!({"replayWindowMs": 1000})),
     )
     .unwrap();
-    let marker = publisher.publish("chat", &close, None).unwrap();
+    let marker = publisher.publish("chat", &close).unwrap();
     assert_eq!(marker["channel"], "events");
     assert_eq!(marker["type"], tako_channels::CLOSE_MESSAGE_TYPE);
     assert_eq!(*link.calls.lock(), vec!["register", "publish"]);
@@ -88,7 +94,6 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
                 params,
                 serde_json::json!({"type":"update", "data":1}),
             ),
-            None,
         )
         .unwrap_err();
     assert_eq!(
@@ -103,7 +108,15 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
 fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
     let link = Arc::new(FakeBroker::default());
     link.reject.store(true, Ordering::SeqCst);
-    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let publisher = BlockingPublisher::with_link(
+        link.clone(),
+        Arc::new(|_| {
+            Ok(crate::channels::ChannelTarget::Postgres {
+                url: zeroize::Zeroizing::new("postgres://secret".into()),
+            })
+        }),
+    )
+    .unwrap();
     let error = publisher
         .publish(
             "chat",
@@ -112,7 +125,6 @@ fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
                 serde_json::Value::Null,
                 serde_json::json!({"type":"update", "data":null}),
             ),
-            Some("postgres://secret".into()),
         )
         .unwrap_err();
     assert!(error.message.contains("registration"));
@@ -123,7 +135,7 @@ fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
 #[test]
 fn oversized_payloads_are_refused_before_queueing() {
     let link = Arc::new(FakeBroker::default());
-    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let publisher = publisher(link.clone());
     assert!(
         publisher
             .publish(
@@ -133,7 +145,6 @@ fn oversized_payloads_are_refused_before_queueing() {
                     serde_json::Value::Null,
                     serde_json::json!({"type":"update", "data":"x".repeat(MAX_PAYLOAD)}),
                 ),
-                None
             )
             .is_err()
     );

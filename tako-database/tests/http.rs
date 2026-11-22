@@ -1540,6 +1540,46 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     .await;
     assert_eq!(status, StatusCode::OK, "{release}");
 
+    // The service's scope and key are independent of both the app and release.
+    let replay_key = generate_token();
+    let replay_scope = "shop/production#channels";
+    home.host
+        .set_remote_grants(replay_scope, BTreeSet::from([home.id.clone()]), &replay_key);
+    for (scope, peer_key, expected) in [
+        (replay_scope, &replay_key, StatusCode::OK),
+        (replay_scope, &key, StatusCode::FORBIDDEN),
+        (
+            "shop/production#release",
+            &replay_key,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "shop/production#release#channels",
+            &replay_key,
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let token = generate_token();
+        edge.set_bindings(
+            scope,
+            vec![Binding {
+                token_hash: hash_token(&token),
+                database: home.id.clone(),
+                home: Home::Remote {
+                    upstream,
+                    key: peer_key.clone(),
+                },
+            }],
+        );
+        let request = Request::post("/v3/pipeline")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Full::new(Bytes::from(
+                json!({"requests":[execute("SELECT 1")]}).to_string(),
+            )))
+            .unwrap();
+        assert_eq!(send(&edge, &Access::Apps, request).await.0, expected);
+    }
+
     // A forwarded request with another key is refused, so a process on a
     // granted server cannot act for the environment without its server.
     let forged = Request::post("/v3/pipeline")

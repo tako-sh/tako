@@ -1,4 +1,5 @@
 use super::{IO_TIMEOUT, broker::Command, error, wire};
+use crate::channels::ChannelTarget;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -18,7 +19,6 @@ use tokio::{
     net::{UnixListener, UnixStream},
     sync::oneshot,
 };
-use zeroize::Zeroizing;
 
 // Intentionally no Debug: Register can contain a database credential.
 #[derive(Serialize, Deserialize)]
@@ -32,7 +32,7 @@ pub(super) enum Request {
     },
     Register {
         app: AppEnv,
-        postgres_url: Option<Zeroizing<String>>,
+        target: ChannelTarget,
     },
     Publish {
         app: AppEnv,
@@ -105,6 +105,8 @@ pub enum Notification {
         channel: String,
     },
     Gap,
+    /// The reader's registration no longer owns this app's writer.
+    BackendChanged,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -170,6 +172,7 @@ pub(super) enum Reply {
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
+    target_resolver: Option<crate::channels::ChannelTargetResolver>,
 }
 impl Client {
     pub(crate) async fn sign_invocation(
@@ -194,7 +197,18 @@ impl Client {
         }
     }
     pub fn new(socket: PathBuf) -> Self {
-        Self { socket }
+        Self {
+            socket,
+            target_resolver: None,
+        }
+    }
+
+    pub(crate) fn with_target_resolver(
+        mut self,
+        resolver: crate::channels::ChannelTargetResolver,
+    ) -> Self {
+        self.target_resolver = Some(resolver);
+        self
     }
     async fn request(&self, request: Request) -> io::Result<(UnixStream, Response)> {
         tokio::time::timeout(IO_TIMEOUT, async {
@@ -219,12 +233,20 @@ impl Client {
         })
         .await?
     }
-    pub async fn register(&self, app: AppEnv, postgres_url: Option<String>) -> io::Result<()> {
-        self.request(Request::Register {
-            app,
-            postgres_url: postgres_url.map(Zeroizing::new),
-        })
-        .await?;
+    pub(crate) async fn register(&self, app: AppEnv, target: ChannelTarget) -> io::Result<()> {
+        // A disconnected proxy may still hold a reader from before a rollout.
+        // Never let its reconnect reinstall the retired writer.
+        if let Some(resolver) = self.target_resolver.clone() {
+            let scope = app.clone();
+            let current = tokio::task::spawn_blocking(move || resolver(scope.as_str()))
+                .await
+                .map_err(|_| error("channel target resolver failed"))?
+                .map_err(|_| error("channel credentials unavailable"))?;
+            if current != target {
+                return Err(error("channel backend configuration changed"));
+            }
+        }
+        self.request(Request::Register { app, target }).await?;
         Ok(())
     }
     pub async fn sync_channel(

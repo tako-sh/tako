@@ -425,9 +425,7 @@ run_channels_workflows_checks() {
   echo "Running channel/workflow SSE checks for route: $route_host on $server_host"
 
   rm -f "$events_file" "$ready_file" "$stderr_file"
-  # A newly deployed peer can legitimately reset replay when it first receives
-  # an origin's later event. Exercise the SDK's reconnect/replay contract rather
-  # than a one-shot curl connection that stops on that control event.
+  # Exercise the packed SDK's SSE reader through the deployed proxy.
   (
     cd "$PROJECT_DIR"
     exec bun - "$server_host" "$route_host" "$events_file" "$ready_file" <<'JS'
@@ -648,35 +646,30 @@ run_store_checks() {
   cleanup_store_sse
 }
 
-# The channels-workflows Store keeps its rows in the `messages` database. It
-# lives on the first server; later servers reach it over the private network.
-create_fixture_database() {
+# Use the full network client to create the fixture's databases once. The
+# second server reaches the same generation over the private network.
+create_fixture_databases() {
   local server_host=$1
-  local log="$TMP_ROOT/sqlite-create.log"
-  local list_json="$TMP_ROOT/sqlite-list.json"
-  if [[ "$FIXTURE_REL" != "e2e/fixtures/javascript/channels-workflows" || -n "${DATABASE_SERVER:-}" ]]; then
-    return 0
+  local database databases
+  local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
+  databases=$(bun -e '
+    const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
+    console.log([...new Set([...Object.values(env.databases ?? {}), env.channels?.database].filter(Boolean))].join("\n"));
+  ' "$PROJECT_DIR/tako.toml")
+  [[ -n "$databases" ]] || return 0
+  while IFS= read -r database; do
+    "${tako[@]}" sqlite create "$database" --server "$server_host"
+  done <<< "$databases"
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
+    "${tako[@]}" --json sqlite list | jq -e --arg home "$server_host" '
+      (.databases | any(.name == "messages" and .in_project)) and
+      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"]))
+    ' >/dev/null
+    "${tako[@]}" --dry-run --json deploy --env production | jq -e --arg home "$server_host" '
+      .dry_run and .create_databases == [] and
+      .channel_database == {name: "channel-replay", server: $home, implicit: false}
+    ' >/dev/null
   fi
-  echo "Creating the messages database on $server_host"
-  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
-    sqlite create messages --server "$server_host" >"$log" 2>&1; then
-    cat "$log" >&2 || true
-    exit 1
-  fi
-  # Bind it in production, as a user does in tako.toml.
-  if ! awk '/^\[/ { section = $0 } section == "[envs.production]" && /^databases = / { found = 1 } END { exit !found }' \
-    "$PROJECT_DIR/tako.toml"; then
-    sed -i '/^\[envs\.production\]$/a databases = { messages = "messages" }' "$PROJECT_DIR/tako.toml"
-  fi
-  # The network records where the database lives; tako.toml only binds it.
-  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --json --config "$PROJECT_DIR/tako.toml" \
-    sqlite list >"$list_json" 2>"$log" || \
-     ! jq -e '.databases | any(.name == "messages" and .in_project)' \
-       "$list_json" >/dev/null; then
-    cat "$log" "$list_json" >&2 || true
-    exit 1
-  fi
-  DATABASE_SERVER=$server_host
 }
 
 run_database_checks() {
@@ -1264,6 +1257,9 @@ cp -R "$FIXTURE_DIR" "$PROJECT_DIR"
 
 if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
+  # Go fixtures use the SDK, which registers channels at runtime, so a
+  # multi-member network needs an explicit replay placement.
+  printf '\n[envs.production.channels]\ndatabase = "channel-replay"\n' >> "$PROJECT_DIR/tako.toml"
   # Copy the Go SDK source (go.mod + *.go + internal/) so the fixture's replace directive resolves.
   mkdir -p "$JS_WORKSPACE_DIR/internal"
   cp "$WORKSPACE/go.mod" "$WORKSPACE/"*.go "$JS_WORKSPACE_DIR/"
@@ -1361,7 +1357,7 @@ if [[ -z "$APP_NAME" ]]; then
 fi
 
 seed_fixture_secrets
-DATABASE_SERVER=""
+DATABASE_SERVER=${SERVERS[0]%%:*}
 
 for entry in "${SERVERS[@]}"; do
   server="${entry%%:*}"
@@ -1370,7 +1366,9 @@ for entry in "${SERVERS[@]}"; do
   echo "=== Testing deploy on $server ($libc) ==="
 
   bind_fixture_target "$PROJECT_DIR/tako.toml" "$server"
-  create_fixture_database "$server"
+  if [[ "$server" == "$DATABASE_SERVER" ]]; then
+    create_fixture_databases "$server"
+  fi
 
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 
@@ -1433,6 +1431,12 @@ for entry in "${SERVERS[@]}"; do
 
   echo "=== $server passed ==="
 done
+
+if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
+  cp "$WORKSPACE/e2e/hosted-channel-replay.ts" "$PROJECT_DIR/check-hosted-replay.ts"
+  (cd "$PROJECT_DIR" && HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
+    bun check-hosted-replay.ts "$TAKO_BIN" "$ROUTE_HOST" "$DATABASE_SERVER" "${SERVERS[1]%%:*}")
+fi
 
 if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/tanstack-start" ]]; then
   run_admin_recovery_checks

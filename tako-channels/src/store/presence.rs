@@ -8,6 +8,10 @@ fn storage_error(error: impl std::fmt::Display) -> ChannelError {
     ChannelError::Storage(error.to_string())
 }
 
+fn hosted_presence_error() -> ChannelError {
+    ChannelError::Storage("presence with hosted channel storage requires the native broker".into())
+}
+
 impl ChannelStore {
     pub fn update_presence(
         &self,
@@ -24,6 +28,7 @@ impl ChannelStore {
         }
         let encoded = serde_json::to_string(member).map_err(storage_error)?;
         match self.backend.as_ref() {
+            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
             ChannelStoreBackend::Sqlite(store) => {
                 store.conn.lock().execute(
                     "INSERT INTO presence (channel, connection_id, member_json, expires_at) VALUES (?1, ?2, ?3, ?4)
@@ -44,6 +49,7 @@ impl ChannelStore {
 
     pub fn presence(&self, channel: &str, now: i64) -> Result<Vec<PresenceMember>, ChannelError> {
         let rows: Vec<String> = match self.backend.as_ref() {
+            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
             ChannelStoreBackend::Sqlite(store) => {
                 let conn = store.conn.lock();
                 let mut stmt = conn.prepare_cached(
@@ -67,6 +73,7 @@ impl ChannelStore {
     pub fn remove_presence(&self, channel: &str, connection_id: &str) -> Result<(), ChannelError> {
         self.ensure_writable()?;
         match self.backend.as_ref() {
+            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
             ChannelStoreBackend::Sqlite(store) => {
                 store
                     .conn

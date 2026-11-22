@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::StorageBinding;
 
+/// Server-owned deploy binding; deliberately not a valid application SQL alias.
+pub const CHANNEL_REPLAY_BINDING: &str = "@channels";
+/// Peer grants for the replay service never authorize application SQL.
+pub fn channel_replay_grant_scope(app: &str) -> String {
+    format!("{app}#channels")
+}
+
 /// Default loopback port of the database endpoint for apps.
 pub const DATABASE_APP_PORT: u16 = 9845;
 /// Default private-network port where home servers accept forwarded requests.
@@ -182,9 +189,9 @@ pub struct DatabaseInfo {
     pub generation: String,
     pub created_at_unix_secs: u64,
     pub size_bytes: u64,
-    /// App environments on this server bound to the database.
+    /// Binding scopes on this server; `#channels` denotes server-owned replay.
     pub bindings: Vec<String>,
-    /// App environments on other servers granted the database.
+    /// Remote application or replay service scopes granted the database.
     pub remote_grants: Vec<String>,
     #[serde(default)]
     pub backup: Option<DatabaseBackupStatus>,
@@ -251,6 +258,7 @@ mod tests {
         assert!(validate_database_name("Main").is_err());
         assert!(validate_database_name("2main").is_err());
         assert!(validate_database_name("").is_err());
+        assert!(validate_database_name(CHANNEL_REPLAY_BINDING).is_err());
     }
 
     #[test]

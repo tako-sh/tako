@@ -29,25 +29,157 @@ impl LocalChannelFile {
     }
 }
 
+/// Without a native broker the proxy and SDK publisher use the very same
+/// handle, including its memory-only notifications.
+#[derive(Default)]
+pub(crate) struct DirectChannelStores(
+    parking_lot::Mutex<std::collections::HashMap<tako_network::AppEnv, DirectStore>>,
+);
+
+struct DirectStore {
+    target: ChannelTarget,
+    store: std::sync::Arc<ChannelStore>,
+    local_file: Option<LocalChannelFile>,
+}
+
+impl DirectChannelStores {
+    pub(crate) fn open(
+        &self,
+        path: PathBuf,
+        app: &tako_network::AppEnv,
+        target: &ChannelTarget,
+    ) -> Result<(std::sync::Arc<ChannelStore>, Option<LocalChannelFile>), ChannelError> {
+        let mut stores = self.0.lock();
+        if let Some(cached) = stores.get(app)
+            && cached.target == *target
+            && cached
+                .local_file
+                .as_ref()
+                .is_none_or(LocalChannelFile::is_current)
+        {
+            return Ok((cached.store.clone(), cached.local_file.clone()));
+        }
+        let local = matches!(target, ChannelTarget::Local);
+        let before = local
+            .then(|| LocalChannelFile::capture(path.clone()).ok())
+            .flatten();
+        let config = target.config(path.clone(), app);
+        let store = std::sync::Arc::new(
+            ChannelStore::open_config(config)
+                .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?,
+        );
+        let local_file = local
+            .then(|| LocalChannelFile::capture(path))
+            .transpose()
+            .map_err(|_| ChannelError::Storage("cannot identify channel storage".into()))?;
+        if before.as_ref().is_some_and(|file| !file.is_current()) {
+            return Err(ChannelError::Storage(
+                "channel data changed while opening storage".into(),
+            ));
+        }
+        if let Some(old) = stores.insert(
+            app.clone(),
+            DirectStore {
+                target: target.clone(),
+                store: store.clone(),
+                local_file: local_file.clone(),
+            },
+        ) {
+            old.store.signal_gap(None);
+        }
+        Ok((store, local_file))
+    }
+}
+
 pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
     let (name, environment) = requested_deployment_identity(app_name);
     let deployment_id = tako_core::deployment_app_id(&name, &environment);
     tako_channels::channels_db_path(&app_runtime_data_paths(data_dir, &deployment_id).tako)
 }
 
-pub(crate) fn app_channel_store_config(data_dir: &Path, app_name: &str) -> ChannelStoreConfig {
-    ChannelStoreConfig::sqlite(app_channels_db_path(data_dir, app_name))
+/// A broker registration never accepts a SQLite path or a hosted HTTP endpoint.
+/// Both processes derive these from server configuration, not the IPC caller.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ChannelTarget {
+    Local,
+    Hosted { token: zeroize::Zeroizing<String> },
+    Postgres { url: zeroize::Zeroizing<String> },
 }
 
-pub(crate) fn app_channel_store_config_with_postgres(
-    data_dir: &Path,
-    app_name: &str,
-    postgres_url: Option<&str>,
-) -> ChannelStoreConfig {
-    if let Some(url) = postgres_url {
-        return ChannelStoreConfig::postgres(url, app_name);
+pub(crate) type ChannelTargetResolver =
+    std::sync::Arc<dyn Fn(&str) -> Result<ChannelTarget, String> + Send + Sync>;
+
+impl ChannelTarget {
+    pub(crate) fn for_app(
+        store: &crate::state_store::SqliteStateStore,
+        app: &str,
+    ) -> Result<Self, String> {
+        let (hosted, postgres) = store
+            .channel_credentials(app)
+            .map_err(|_| "channel credentials unavailable".to_string())?;
+        Self::resolve(hosted, postgres)
     }
-    app_channel_store_config(data_dir, app_name)
+
+    fn hosted_url() -> String {
+        format!("http://127.0.0.1:{}", crate::databases::app_port())
+    }
+
+    pub(crate) fn resolve(
+        hosted: Option<tako_core::DatabaseConnection>,
+        postgres: Option<String>,
+    ) -> Result<Self, String> {
+        let target = match (hosted, postgres) {
+            (Some(connection), _) => {
+                if connection.url != Self::hosted_url() {
+                    return Err("invalid hosted channel replay endpoint".into());
+                }
+                Self::Hosted {
+                    token: zeroize::Zeroizing::new(connection.auth_token),
+                }
+            }
+            (None, Some(url)) => Self::Postgres {
+                url: zeroize::Zeroizing::new(url),
+            },
+            (None, None) => Self::Local,
+        };
+        target.validate()?;
+        Ok(target)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Postgres { url } if url.is_empty() || url.len() > 16 * 1024 => {
+                Err("invalid channel Postgres credential")
+            }
+            Self::Hosted { token }
+                if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            {
+                Err("invalid hosted channel replay credential")
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn config(&self, path: PathBuf, app: &tako_network::AppEnv) -> ChannelStoreConfig {
+        match self {
+            Self::Local => ChannelStoreConfig::sqlite(path),
+            Self::Postgres { url } => ChannelStoreConfig::postgres(url.as_str(), app.as_str()),
+            Self::Hosted { token } => ChannelStoreConfig::Hosted {
+                url: Self::hosted_url(),
+                token: token.to_string(),
+                app_id: app.to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn shared_replay(&self) -> bool {
+        !matches!(self, Self::Local)
+    }
+
+    pub(crate) fn postgres_presence(&self) -> bool {
+        matches!(self, Self::Postgres { .. })
+    }
 }
 
 pub(crate) async fn authorize_channel_request(
@@ -416,8 +548,12 @@ mod tests {
 
     #[test]
     fn channel_store_config_uses_local_sqlite_path() {
+        let scope = crate::native_channel_client::app_scope("my-app/staging").unwrap();
         assert_eq!(
-            app_channel_store_config(Path::new("/opt/tako"), "my-app/staging"),
+            ChannelTarget::resolve(None, None).unwrap().config(
+                app_channels_db_path(Path::new("/opt/tako"), scope.as_str()),
+                &scope
+            ),
             ChannelStoreConfig::Sqlite {
                 path: Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite")
                     .to_path_buf(),
@@ -428,16 +564,66 @@ mod tests {
     #[test]
     fn channel_store_config_uses_postgres_when_url_is_set() {
         assert_eq!(
-            app_channel_store_config_with_postgres(
-                Path::new("/opt/tako"),
-                "my-app/staging",
-                Some("postgres://db")
-            ),
+            ChannelTarget::resolve(None, Some("postgres://db".into()))
+                .unwrap()
+                .config(
+                    PathBuf::new(),
+                    &crate::native_channel_client::app_scope("my-app/staging").unwrap()
+                ),
             ChannelStoreConfig::Postgres {
                 url: "postgres://db".to_string(),
                 schema: POSTGRES_CHANNELS_SCHEMA.to_string(),
                 app_id: "my-app/staging".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn hosted_replay_owns_the_fixed_endpoint_and_precedes_workflow_postgres() {
+        let connection = tako_core::DatabaseConnection {
+            url: ChannelTarget::hosted_url(),
+            auth_token: tako_database::generate_token(),
+        };
+        let target =
+            ChannelTarget::resolve(Some(connection.clone()), Some("postgres://workflow".into()))
+                .unwrap();
+        let scope = crate::native_channel_client::app_scope("chat").unwrap();
+        assert_eq!(
+            target.config("unused".into(), &scope),
+            ChannelStoreConfig::hosted(&connection.url, &connection.auth_token, "chat/production")
+        );
+        let wire = serde_json::to_value(&target).unwrap();
+        assert_eq!(wire["kind"], "hosted");
+        assert!(wire.get("url").is_none());
+        let mut invalid = wire;
+        invalid["url"] = "http://127.0.0.1:1".into();
+        assert!(serde_json::from_value::<ChannelTarget>(invalid).is_err());
+        for url in [
+            "http://example.com",
+            "http://localhost:9845",
+            "file:///home/db",
+            "http://127.0.0.1:9845/other",
+        ] {
+            assert!(
+                ChannelTarget::resolve(
+                    Some(tako_core::DatabaseConnection {
+                        url: url.into(),
+                        ..connection.clone()
+                    }),
+                    None
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            ChannelTarget::resolve(
+                Some(tako_core::DatabaseConnection {
+                    auth_token: String::new(),
+                    ..connection
+                }),
+                None
+            )
+            .is_err()
         );
     }
 }

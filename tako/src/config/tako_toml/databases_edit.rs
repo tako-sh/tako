@@ -27,20 +27,24 @@ fn save(path: &Path, doc: &DocumentMut) -> Result<()> {
 }
 
 impl TakoToml {
-    /// Removes `[databases.<name>]` and every environment binding to it.
-    pub fn remove_database_from_file(path: &Path, name: &str) -> Result<()> {
+    /// Remove bindings in the selected network. A backup override is shared by
+    /// every network and can still apply to an implicit channel database there.
+    pub fn remove_database_from_file(path: &Path, name: &str, network: &str) -> Result<()> {
         let mut doc = load(path)?;
-        if let Some(databases) = doc.get_mut("databases").and_then(Item::as_table_like_mut) {
-            databases.remove(name);
-            if databases.is_empty() {
-                doc.remove("databases");
-            }
-        }
+        let mut other_network = false;
         if let Some(envs) = doc.get_mut("envs").and_then(Item::as_table_like_mut) {
             for (_, env) in envs.iter_mut() {
                 let Some(env) = env.as_table_like_mut() else {
                     continue;
                 };
+                if env
+                    .get("network")
+                    .and_then(Item::as_str)
+                    .is_some_and(|id| id != network)
+                {
+                    other_network = true;
+                    continue;
+                }
                 let empty = match env.get_mut("databases").and_then(Item::as_table_like_mut) {
                     Some(bindings) => {
                         let bound: Vec<String> = bindings
@@ -58,6 +62,14 @@ impl TakoToml {
                 if empty {
                     env.remove("databases");
                 }
+            }
+        }
+        if !other_network
+            && let Some(databases) = doc.get_mut("databases").and_then(Item::as_table_like_mut)
+        {
+            databases.remove(name);
+            if databases.is_empty() {
+                doc.remove("databases");
             }
         }
         save(path, &doc)
@@ -81,7 +93,8 @@ mod tests {
             &dir,
             "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { db = \"main\", other = \"orders\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\ndatabases = { db = \"main\" }\n\n[databases.main]\nbackup = \"private_backups\"\n\n[databases.orders]\nbackup = \"private_backups\"\n\n[storages.private_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
         );
-        TakoToml::remove_database_from_file(&path, "main").unwrap();
+        TakoToml::remove_database_from_file(&path, "main", "0123456789abcdef0123456789abcdef")
+            .unwrap();
         let config = TakoToml::load_from_file(&path).unwrap();
         assert!(!config.databases.contains_key("main"));
         assert!(config.databases.contains_key("orders"));
@@ -92,5 +105,43 @@ mod tests {
                 .unwrap()
                 .contains("[envs.staging]\nroute = \"staging.example.com\"\ndatabases")
         );
+    }
+
+    #[test]
+    fn deleting_in_another_network_preserves_channel_replay_backup_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            r#"
+name = "shop"
+[envs.production]
+route = "shop.example.com"
+network = "0123456789abcdef0123456789abcdef"
+channels.database = "main"
+[envs.staging]
+route = "staging.example.com"
+network = "fedcba9876543210fedcba9876543210"
+databases = { db = "main" }
+[databases.main]
+backup = "backups"
+[storages.backups]
+bucket = "b"
+endpoint = "https://s3.example.test"
+region = "auto"
+"#,
+        );
+        TakoToml::remove_database_from_file(&path, "main", "fedcba9876543210fedcba9876543210")
+            .unwrap();
+        let config = TakoToml::load_from_file(&path).unwrap();
+        assert_eq!(
+            config.envs["production"]
+                .channels
+                .as_ref()
+                .unwrap()
+                .database,
+            "main"
+        );
+        assert_eq!(config.databases["main"].backup.as_deref(), Some("backups"));
+        assert!(config.envs["staging"].databases.is_empty());
     }
 }

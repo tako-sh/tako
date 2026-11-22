@@ -402,10 +402,11 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         cert_manager: Some(cert_manager),
         cold_start: state.cold_start(),
         cloudflare_ips,
-        channel_postgres_url: Some({
-            let state = state.clone();
-            Arc::new(move |app: &str| state.runtime_postgres_url(app))
-        }),
+        channel_target: {
+            let store = state.state_store.clone();
+            Arc::new(move |app: &str| crate::channels::ChannelTarget::for_app(&store, app))
+        },
+        direct_channel_stores: state.direct_channel_stores.clone(),
         channel_credentials_generation: state.channel_credentials_generation.clone(),
         channel_registry: state.channel_registry.clone(),
     })?;

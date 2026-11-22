@@ -209,7 +209,7 @@ func registerChatPresence() {
 
 A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
 
-Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. A network's servers exchange presence leases without Postgres; a configured `postgres_url` credential remains in use. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Native brokers keep presence leases in memory and exchange them across a network's servers without Postgres; Postgres stores them only when it is the selected channel backend. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
 
 ## Stores
 
@@ -264,8 +264,12 @@ Invalidation carries no snapshot data and affects only exact params (nil means
 writers must explicitly invalidate; no SQL dependency tracking is performed.
 Invalidation failure does not undo or retry the committed database write. Use
 an application outbox for durable commit-and-notify. Params are limited to 16 KiB
-and read responses to 1 MiB. Invalidations reach every server of the network
-without `postgres_url`; a configured Postgres backend remains in use.
+and read responses to 1 MiB. Invalidations use the environment's channel replay
+backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
+server of the network. Because `go.mod` depends on `tako.sh`, a deploy with
+neither `[envs.<env>.channels].database` nor `postgres_url` selects a generated
+replay database; on a multi-server network, create one with `tako sqlite create`
+and set `database` first (see https://tako.sh/docs/channels/#deploy-replay-storage).
 See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
 
 ## Internal Protocol
@@ -319,7 +323,7 @@ tako.ListenAndServe(mux)
 
 ## Ephemeral Channels
 
-Register `tako.ChannelDefinition{ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true}}` with `tako.Channels.Register`. Leave `ReplayWindowMs` zero; registration panics if a nonzero replay window is supplied. Authorization grants cannot change the definition's delivery mode. This supports local dev, single-server production, and native server networks without shared Postgres. Ephemeral events never enter replay storage, have `id: ""`, reach only connected subscribers, and use a bounded 64-message buffer that skips evicted events for slow subscribers. Shared Postgres rejects ephemeral publishing/subscribing. Native peers forward live events without per-event database access; disconnected peers miss events, and ordering is per originating broker rather than global. Test two live subscribers, then disconnect one and verify it receives only new events after reconnect. Go supports registration and WebSocket browser publishing; the JavaScript SDK provides the server-side publish and close helpers, and Go has neither. Channel params select separate streams; `Verify` must still check that the caller may use them. `ParamsSchema` properties cannot be named `from` or `last_message_id` (reserved on channel routes); `Register` panics if one is declared, and also when `ParamsSchema` is not one object schema with its params under top-level `properties` (a top-level `$ref`, or an `allOf`, `anyOf`, `oneOf`, `not`, or `if` that declares a property the top-level `properties` lacks; one that only adds constraints, such as `required` or a `const` on a declared property, is allowed). tako-server rejects channel and presence params that `ParamsSchema` does not list under `properties` unless it sets `"additionalProperties": true`; a nil `ParamsSchema` takes no params.
+Register `tako.ChannelDefinition{ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true}}` with `tako.Channels.Register`. Leave `ReplayWindowMs` zero; registration panics if a nonzero replay window is supplied. Authorization grants cannot change the definition's delivery mode. This supports local dev, single-server production, and native server networks, in broker memory. Ephemeral events never enter replay storage, have `id: ""`, reach only connected subscribers, and use a bounded 64-message buffer that skips evicted events for slow subscribers. Postgres as the channel backend rejects ephemeral publishing/subscribing. Native peers forward live events without per-event database access; disconnected peers miss events, and ordering is per originating broker rather than global. Test two live subscribers, then disconnect one and verify it receives only new events after reconnect. Go supports registration and WebSocket browser publishing; the JavaScript SDK provides the server-side publish and close helpers, and Go has neither. Channel params select separate streams; `Verify` must still check that the caller may use them. `ParamsSchema` properties cannot be named `from` or `last_message_id` (reserved on channel routes); `Register` panics if one is declared, and also when `ParamsSchema` is not one object schema with its params under top-level `properties` (a top-level `$ref`, or an `allOf`, `anyOf`, `oneOf`, `not`, or `if` that declares a property the top-level `properties` lacks; one that only adds constraints, such as `required` or a `const` on a declared property, is allowed). tako-server rejects channel and presence params that `ParamsSchema` does not list under `properties` unless it sets `"additionalProperties": true`; a nil `ParamsSchema` takes no params.
 
 ## Network primitive callers
 

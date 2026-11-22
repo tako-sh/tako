@@ -215,7 +215,7 @@ pub(super) fn resolve_deploy_server_targets(
 }
 
 mod runtime_state;
-pub(super) use runtime_state::validate_runtime_state_storage_for_deploy;
+pub(super) use runtime_state::{needs_channel_replay, validate_runtime_state_storage_for_deploy};
 
 pub(super) fn resolve_build_adapter(
     project_dir: &Path,
