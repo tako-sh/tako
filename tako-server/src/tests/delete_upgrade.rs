@@ -297,6 +297,14 @@ async fn server_info_command_reports_runtime_config() {
         data.get("server_identity").and_then(Value::as_str),
         Some("SHA256:testidentity")
     );
+    let disk = data
+        .pointer("/host/disk")
+        .expect("data directory disk stats");
+    assert_eq!(
+        disk.get("path").and_then(Value::as_str),
+        Some(temp.path().to_str().unwrap())
+    );
+    assert!(disk.get("total_bytes").and_then(Value::as_u64).unwrap() > 0);
 }
 
 #[tokio::test]

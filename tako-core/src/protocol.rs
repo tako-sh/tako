@@ -1302,6 +1302,65 @@ pub struct ServerRuntimeInfo {
     pub server_name: Option<String>,
     #[serde(default)]
     pub server_identity: Option<String>,
+    /// What the server's machine has and uses, read when the info is asked
+    /// for. Absent when none of it could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostStats>,
+}
+
+/// Resources of the machine a server runs on. Each part is absent when the
+/// server could not read it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HostStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<CpuStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryStats>,
+    /// The filesystem holding the server's data directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<DiskStats>,
+}
+
+impl HostStats {
+    pub fn is_empty(&self) -> bool {
+        self.uptime_secs.is_none()
+            && self.cpu.is_none()
+            && self.memory.is_none()
+            && self.disk.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CpuStats {
+    /// Online logical CPUs.
+    pub cores: u32,
+    /// Run-queue load averaged over 1, 5 and 15 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_average: Option<[f64; 3]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryStats {
+    pub total_bytes: u64,
+    /// Memory that can be given to new work without swapping, page cache
+    /// included.
+    pub available_bytes: u64,
+    #[serde(default)]
+    pub swap_total_bytes: u64,
+    #[serde(default)]
+    pub swap_free_bytes: u64,
+}
+
+/// Sizes as `df` reports them: `used` excludes blocks reserved for root, so
+/// `used + available` can be less than `total`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiskStats {
+    pub path: String,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
 }
 
 /// Response from the server
