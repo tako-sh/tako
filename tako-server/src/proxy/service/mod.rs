@@ -325,7 +325,7 @@ impl ProxyHttp for TakoProxy {
 
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
@@ -337,12 +337,29 @@ impl ProxyHttp for TakoProxy {
             .insert_header("X-Request-ID", ctx.observation.request_id())
             .unwrap();
 
+        // Forwarding headers describe what this proxy resolved under the
+        // route's source IP policy, never values the client sent.
         if let Some(ip) = ctx.client_ip {
             upstream_request
                 .insert_header("X-Forwarded-For", ip_header_value(ip))
                 .unwrap();
+            upstream_request
+                .insert_header("X-Real-IP", ip_header_value(ip))
+                .unwrap();
         } else {
             let _ = upstream_request.remove_header("X-Forwarded-For");
+            let _ = upstream_request.remove_header("X-Real-IP");
+        }
+        let host = request_host(session.req_header());
+        match hyper::header::HeaderValue::from_str(host) {
+            Ok(host) if !host.is_empty() => {
+                upstream_request
+                    .insert_header("X-Forwarded-Host", host)
+                    .unwrap();
+            }
+            _ => {
+                let _ = upstream_request.remove_header("X-Forwarded-Host");
+            }
         }
 
         let _ = upstream_request.remove_header("Forwarded");

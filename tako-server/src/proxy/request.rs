@@ -265,7 +265,7 @@ pub(super) fn client_ip_from_trusted_headers(
     trusted_proxy
         .client_ip_headers
         .iter()
-        .find_map(|header| client_ip_from_header(request, *header))
+        .find_map(|header| client_ip_from_header(request, *header, trusted_proxy))
 }
 
 pub(super) fn client_ip_from_trusted_proxy_source_headers(
@@ -283,13 +283,13 @@ pub(super) fn client_ip_from_trusted_proxy_source_headers(
             TrustedClientIpHeader::Forwarded,
         ]
         .into_iter()
-        .find_map(|header| client_ip_from_header(request, header));
+        .find_map(|header| client_ip_from_header(request, header, trusted_proxy));
     }
 
     trusted_proxy
         .client_ip_headers
         .iter()
-        .find_map(|header| client_ip_from_header(request, *header))
+        .find_map(|header| client_ip_from_header(request, *header, trusted_proxy))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,29 +338,69 @@ fn client_ip_from_cloudflare_proxy(
         return None;
     }
 
-    client_ip_from_header(request, TrustedClientIpHeader::CfConnectingIp)
-}
-
-fn client_ip_from_header(request: &RequestHeader, header: TrustedClientIpHeader) -> Option<IpAddr> {
     let value = request
         .headers
-        .get(header.as_str())
-        .and_then(|value| value.to_str().ok())?;
+        .get(TrustedClientIpHeader::CfConnectingIp.as_str())?
+        .to_str()
+        .ok()?;
+    parse_header_ip(value)
+}
 
+fn client_ip_from_header(
+    request: &RequestHeader,
+    header: TrustedClientIpHeader,
+    trusted_proxy: &TrustedProxyConfig,
+) -> Option<IpAddr> {
+    let entries = || {
+        request
+            .headers
+            .get_all(header.as_str())
+            .iter()
+            .flat_map(|value| match value.to_str() {
+                Ok(value) => value.split(',').map(Some).collect::<Vec<_>>(),
+                Err(_) => vec![None],
+            })
+    };
     match header {
-        TrustedClientIpHeader::CfConnectingIp => parse_header_ip(value),
-        TrustedClientIpHeader::Forwarded => parse_forwarded_for(value),
-        TrustedClientIpHeader::XForwardedFor => value.split(',').next().and_then(parse_header_ip),
+        TrustedClientIpHeader::CfConnectingIp => {
+            parse_header_ip(request.headers.get(header.as_str())?.to_str().ok()?)
+        }
+        TrustedClientIpHeader::Forwarded => rightmost_untrusted_hop(
+            entries().map(|entry| entry.and_then(parse_forwarded_for)),
+            trusted_proxy,
+        ),
+        TrustedClientIpHeader::XForwardedFor => rightmost_untrusted_hop(
+            entries().map(|entry| entry.and_then(parse_header_ip)),
+            trusted_proxy,
+        ),
     }
+}
+
+/// Proxies append the address they received a request from, so every entry
+/// left of the nearest untrusted hop was supplied by the client. A malformed
+/// hop ends the search: what lies beyond it cannot be attributed.
+fn rightmost_untrusted_hop(
+    entries: impl DoubleEndedIterator<Item = Option<IpAddr>>,
+    trusted_proxy: &TrustedProxyConfig,
+) -> Option<IpAddr> {
+    let mut leftmost_trusted = None;
+    for entry in entries.rev() {
+        let ip = entry?;
+        if !ip.is_loopback() && !trusted_proxy.trusts_proxy_ip(&ip) {
+            return Some(ip);
+        }
+        leftmost_trusted = Some(ip);
+    }
+    leftmost_trusted
 }
 
 fn parse_header_ip(value: &str) -> Option<IpAddr> {
     value.trim().parse().ok()
 }
 
-fn parse_forwarded_for(value: &str) -> Option<IpAddr> {
-    let first_entry = value.split(',').next()?;
-    let raw_for = first_entry.split(';').find_map(|param| {
+/// One `Forwarded` element, such as `for=192.0.2.1;proto=https`.
+fn parse_forwarded_for(element: &str) -> Option<IpAddr> {
+    let raw_for = element.split(';').find_map(|param| {
         let (key, value) = param.split_once('=')?;
         key.trim()
             .eq_ignore_ascii_case("for")
