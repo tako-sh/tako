@@ -26,6 +26,7 @@ fn revocation_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
 pub(super) async fn revoke_server(
     name: Option<&str>,
     network: Option<&str>,
+    assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let servers = crate::commands::helpers::load_management_servers(None).await?;
 
@@ -51,9 +52,10 @@ pub(super) async fn revoke_server(
             return Ok(());
         }
 
-        let confirm = output::confirm(&revocation_prompt(name, servers.get(name).unwrap()), false)?;
-
-        if !confirm {
+        refuse_last_server(name, servers.get(name).unwrap(), &servers, assume_yes)?;
+        if !assume_yes
+            && !output::confirm(&revocation_prompt(name, servers.get(name).unwrap()), false)?
+        {
             output::operation_cancelled();
             return Ok(());
         }
@@ -103,10 +105,21 @@ pub(super) async fn revoke_server(
             }
             // Step 1: Confirm
             1 => {
-                match output::confirm(
-                    &revocation_prompt(&selected_name, servers.get(&selected_name).unwrap()),
-                    false,
-                ) {
+                refuse_last_server(
+                    &selected_name,
+                    servers.get(&selected_name).unwrap(),
+                    &servers,
+                    assume_yes,
+                )?;
+                let confirmed = if assume_yes {
+                    Ok(true)
+                } else {
+                    output::confirm(
+                        &revocation_prompt(&selected_name, servers.get(&selected_name).unwrap()),
+                        false,
+                    )
+                };
+                match confirmed {
                     Ok(true) => {
                         revoke_entry(&selected_name, servers.get(&selected_name).unwrap())?;
                         output::success(&format!("Revoked {}", output::strong(&selected_name)));
@@ -125,6 +138,36 @@ pub(super) async fn revoke_server(
             _ => unreachable!(),
         }
     }
+}
+
+/// Revoking a network's last server leaves nothing to deploy to and no
+/// server to admit or recover clients, so it needs `--yes`, as removal does.
+fn refuse_last_server(
+    name: &str,
+    entry: &crate::config::ServerEntry,
+    servers: &crate::config::ServerInventory,
+    assume_yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(target) = &entry.native else {
+        return Ok(());
+    };
+    // Unlike removal, which deletes data, membership that cannot be refreshed
+    // does not block a revocation: an unreachable server is often why it is
+    // revoked. The inventory or a successful refresh must show no other one.
+    if !super::remove::is_last_server(servers, entry)
+        && !matches!(super::remove::other_server_remains(target), Ok(false))
+    {
+        return Ok(());
+    }
+    let reason = format!("is the last server in network {}", target.network.alias);
+    if !assume_yes {
+        return Err(format!(
+            "{name} {reason}. Revoking it leaves nothing to deploy to and no server to recover client access from. Pass --yes to revoke it anyway."
+        )
+        .into());
+    }
+    output::warning(&format!("{} {reason}", output::strong(name)));
+    Ok(())
 }
 
 fn revoke_entry(

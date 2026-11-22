@@ -9,7 +9,7 @@ use api::*;
 use http::*;
 pub(super) use lifecycle::handle_toggle_tunnel;
 use lifecycle::*;
-pub(crate) use lifecycle::{TunnelLifecycle, TunnelRegistration};
+pub(crate) use lifecycle::{TunnelLifecycle, TunnelRegistration, carry_over_tunnel};
 use session::*;
 use websocket::*;
 

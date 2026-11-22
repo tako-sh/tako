@@ -40,6 +40,7 @@ describe("tako Next.js adapter", () => {
     });
 
     expect(config.output).toBe("standalone");
+    expect(withTako({ compress: true }).compress).toBe(false);
     expect(config.experimental?.typedRoutes).toBe(true);
     expect(path.isAbsolute(config.adapterPath!)).toBe(true);
     expect(config.adapterPath).toEndWith(path.join("src", "nextjs", "index.ts"));
@@ -195,6 +196,60 @@ describe("tako Next.js adapter", () => {
       forwardedProto: "https",
       forwardedPort: "8443",
     });
+  });
+
+  test("fetch handler keeps content codings that fetch passes through encoded", async () => {
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4030,
+        fetchImplementation: async () =>
+          new Response("raw", {
+            headers: { "content-encoding": "x-custom", "content-length": "3" },
+          }),
+      },
+    });
+    const response = await handler(new Request("https://example.com/"), {});
+
+    expect(response.headers.get("content-encoding")).toBe("x-custom");
+    expect(response.headers.get("content-length")).toBe("3");
+  });
+
+  test("fetch handler offers upstream only codings its fetch decodes", async () => {
+    let forwarded: string | null = null;
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4032,
+        fetchImplementation: async (_input, init) => {
+          forwarded = new Headers(init?.headers).get("accept-encoding");
+          return new Response("ok");
+        },
+      },
+    });
+    await handler(
+      new Request("https://example.com/", {
+        headers: { "accept-encoding": "gzip;q=1.0, x-custom, *;q=0.1, zstd" },
+      }),
+      {},
+    );
+    // Bun's fetch decodes zstd, so it stays offered under Bun only.
+    expect(forwarded).toBe("Bun" in globalThis ? "gzip;q=1.0, zstd" : "gzip;q=1.0");
+  });
+
+  test("fetch handler keeps encoding headers on bodyless responses", async () => {
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4031,
+        fetchImplementation: async () =>
+          new Response(null, {
+            status: 304,
+            headers: { "content-encoding": "gzip", "content-length": "42" },
+          }),
+      },
+    });
+    const response = await handler(new Request("https://example.com/", { method: "HEAD" }), {});
+
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("content-length")).toBe("42");
   });
 
   test("fetch handler preserves upstream redirects", async () => {

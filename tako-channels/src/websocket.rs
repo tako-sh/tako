@@ -34,6 +34,14 @@ impl Default for WebSocketFrameReader {
 }
 
 impl WebSocketFrameReader {
+    /// A reader for frames from a dedicated WebSocket client: auth, presence
+    /// updates, control frames and publishes. A publish is held to the 1 MiB
+    /// event limit that server-side publishes and shared-route delivery
+    /// already have, instead of buffering frames of up to 128 MiB.
+    pub fn from_client() -> Self {
+        Self::bounded(crate::shared::MAX_MESSAGE_BYTES as u64, false)
+    }
+
     pub fn bounded(max_payload_bytes: u64, require_mask: bool) -> Self {
         Self {
             buffer: Vec::new(),
@@ -316,6 +324,29 @@ mod tests {
         let frame = reader.next_frame().unwrap().unwrap();
         assert_eq!(frame.opcode, 0x1);
         assert_eq!(frame.payload, b"Hello".to_vec());
+    }
+
+    #[test]
+    fn client_reader_rejects_frames_above_the_event_limit_from_the_header() {
+        let header = |len: u64| {
+            let mut frame = vec![0x81, 0xff];
+            frame.extend_from_slice(&len.to_be_bytes());
+            frame.extend_from_slice(&[0, 0, 0, 0]);
+            frame
+        };
+        let limit = crate::shared::MAX_MESSAGE_BYTES as u64;
+        let mut reader = WebSocketFrameReader::from_client();
+        reader.extend(&header(limit + 1));
+        assert!(
+            reader.next_frame().is_err(),
+            "rejected before its payload arrives"
+        );
+        let mut reader = WebSocketFrameReader::from_client();
+        reader.extend(&header(limit));
+        assert!(
+            matches!(reader.next_frame(), Ok(None)),
+            "waits for the payload"
+        );
     }
 
     #[test]

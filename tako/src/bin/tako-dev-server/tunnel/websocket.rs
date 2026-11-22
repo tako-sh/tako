@@ -72,7 +72,8 @@ pub(super) async fn relay_local_websocket(
     url: &str,
     open: TunnelWebSocketOpenMessage,
     outbound: &mpsc::Sender<Vec<u8>>,
-    mut from_tunnel: mpsc::Receiver<Message>,
+    mut from_tunnel: mpsc::UnboundedReceiver<Message>,
+    queued: &WebSocketQueue,
 ) -> Result<(), String> {
     let id = open.id;
     let mut request = url
@@ -131,6 +132,7 @@ pub(super) async fn relay_local_websocket(
         tokio::select! {
             message = from_tunnel.recv() => {
                 let Some(message) = message else { break; };
+                queued.release(message.len());
                 tokio::time::timeout(Duration::from_secs(10), writer.send(message))
                     .await.map_err(|_| "local websocket write timed out".to_string())?
                     .map_err(|error| error.to_string())?;

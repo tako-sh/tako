@@ -84,12 +84,81 @@ impl AppLogHandle {
 /// cannot balloon server memory.
 const MAX_LINE_BYTES: usize = 64 * 1024;
 
+/// Output kept per stream from an instance's start, for the error reported
+/// when it fails to start. The pipes are read from spawn on, so an app that
+/// logs more than a pipe buffer before it is ready cannot block itself.
+const STARTUP_OUTPUT_BYTES: usize = 8 * 1024;
+
+/// What an instance wrote to stdout and stderr before it became healthy.
+pub struct StartupOutput {
+    captured: parking_lot::Mutex<Option<[Vec<u8>; 2]>>,
+    readers: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl Default for StartupOutput {
+    fn default() -> Self {
+        Self {
+            captured: parking_lot::Mutex::new(Some([Vec::new(), Vec::new()])),
+            readers: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl StartupOutput {
+    pub(crate) fn add_reader(&self, reader: tokio::task::JoinHandle<()>) {
+        self.readers.lock().push(reader);
+    }
+
+    fn record(&self, stream: LogStream, bytes: &[u8]) {
+        let index = match stream {
+            LogStream::Stdout => 0,
+            LogStream::Stderr => 1,
+            LogStream::Server => return,
+        };
+        if let Some(streams) = self.captured.lock().as_mut() {
+            let kept = &mut streams[index];
+            let room = STARTUP_OUTPUT_BYTES.saturating_sub(kept.len());
+            kept.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        }
+    }
+
+    /// Stop keeping output once the instance is healthy.
+    pub(crate) fn finish(&self) {
+        *self.captured.lock() = None;
+    }
+
+    /// Stdout and stderr kept so far, after waiting up to `wait` for the pipes
+    /// to close; a process that left children holding them may never do so.
+    pub(crate) async fn collect(&self, wait: std::time::Duration) -> (Vec<u8>, Vec<u8>) {
+        let deadline = tokio::time::Instant::now() + wait;
+        let readers = std::mem::take(&mut *self.readers.lock());
+        for reader in readers {
+            let _ = tokio::time::timeout_at(deadline, reader).await;
+        }
+        match self.captured.lock().as_ref() {
+            Some([stdout, stderr]) => (stdout.clone(), stderr.clone()),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+}
+
 /// Read lines from a pipe and forward them to the app log writer.
 pub async fn log_pipe<R: tokio::io::AsyncRead + Unpin>(
     pipe: R,
     log_handle: AppLogHandle,
     instance_id: String,
     stream: LogStream,
+) {
+    log_pipe_with_startup(pipe, log_handle, instance_id, stream, None).await
+}
+
+/// [`log_pipe`] that also keeps the first output in `startup`.
+pub(crate) async fn log_pipe_with_startup<R: tokio::io::AsyncRead + Unpin>(
+    pipe: R,
+    log_handle: AppLogHandle,
+    instance_id: String,
+    stream: LogStream,
+    startup: Option<std::sync::Arc<StartupOutput>>,
 ) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let mut reader = BufReader::new(pipe);
@@ -103,6 +172,9 @@ pub async fn log_pipe<R: tokio::io::AsyncRead + Unpin>(
         {
             Ok(0) | Err(_) => break,
             Ok(_) => {
+                if let Some(startup) = &startup {
+                    startup.record(stream, &buf);
+                }
                 let text = String::from_utf8_lossy(&buf);
                 let trimmed = text.trim_end();
                 if !trimmed.is_empty() {

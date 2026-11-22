@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -289,5 +290,21 @@ func TestSleepCompletionCheckpointFailureIsRetried(t *testing.T) {
 				t.Fatal("retry did not persist completion")
 			}
 		})
+	}
+}
+
+// Retries + 1 must not wrap to zero attempts, which skipped the step body and
+// reported success without saving anything.
+func TestMaxRetriesStillRunsTheStep(t *testing.T) {
+	api, server := checkpointAPI(t, map[string]any{}, "")
+	calls := 0
+	var got string
+	err := api.Run("charge", &got, func() (any, error) { calls++; return "receipt", nil },
+		StepRunOpts{Retries: math.MaxUint32})
+	if err != nil || calls != 1 || got != "receipt" {
+		t.Fatalf("run: %q, %d calls, %v", got, calls, err)
+	}
+	if saved := server.find(api.runID).StepState["charge"]; saved != "receipt" {
+		t.Fatalf("saved step: %v", saved)
 	}
 }

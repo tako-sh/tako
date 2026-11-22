@@ -35,7 +35,7 @@ pub const INTERNAL_TOKEN_HEADER: &str = "X-Tako-Internal-Token";
 
 static BOOTSTRAP: OnceLock<Result<Bootstrap, BootstrapError>> = OnceLock::new();
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct Bootstrap {
     #[serde(default)]
     token: Option<String>,
@@ -81,6 +81,26 @@ impl fmt::Debug for Database {
         f.debug_struct("Database")
             .field("url", &self.url)
             .field("auth_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl fmt::Debug for Bootstrap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Storage bindings can carry access keys, so only names are shown.
+        struct Names<'a, V>(&'a HashMap<String, V>);
+        impl<V> fmt::Debug for Names<'_, V> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_map()
+                    .entries(self.0.keys().map(|name| (name, "[REDACTED]")))
+                    .finish()
+            }
+        }
+        f.debug_struct("Bootstrap")
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("secrets", &Names(&self.secrets))
+            .field("storages", &Names(&self.storages))
+            .field("databases", &self.databases)
             .finish()
     }
 }
@@ -573,6 +593,22 @@ mod tests {
 
         assert_eq!(bootstrap.token(), Some("tok"));
         assert_eq!(bootstrap.secret("DATABASE_URL"), Some("postgres://db"));
+    }
+
+    #[test]
+    fn bootstrap_debug_redacts_credentials() {
+        let bootstrap = parse_bootstrap_data(
+            r#"{"token":"tok-value","secrets":{"API_KEY":"secret-value"},"storages":{"media":{"secret_access_key":"storage-value"}},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"db-value"}}}"#,
+        )
+        .unwrap();
+        let debug = format!("{bootstrap:?}");
+
+        for value in ["tok-value", "secret-value", "storage-value", "db-value"] {
+            assert!(!debug.contains(value), "{value} leaked: {debug}");
+        }
+        for name in ["API_KEY", "media", "main"] {
+            assert!(debug.contains(name), "{name} missing: {debug}");
+        }
     }
 
     #[test]

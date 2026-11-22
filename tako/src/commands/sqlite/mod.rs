@@ -1068,12 +1068,15 @@ async fn restore(
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.database(name)?;
-    let target = match server {
-        Some(server) => ctx.home(server)?,
-        None => home.clone(),
-    };
-    let moving = target.device_id != home.device_id;
+    let record = ctx.record(name)?;
+    // A home server removed from the network is gone: recovery restores the
+    // database onto another server from its snapshots.
+    let home = ctx.home(&record.server).ok();
+    let requested = server.map(|server| ctx.home(server)).transpose()?;
+    let (target, moving) = restore_target(name, home.as_ref(), requested)?;
+    let home_name = home
+        .as_ref()
+        .map_or("its removed server", |home| home.name.as_str());
     let which = snapshot.as_deref().unwrap_or("the newest snapshot");
     if moving {
         output::warning(&format!(
@@ -1099,14 +1102,17 @@ async fn restore(
     let mut created = false;
     if moving {
         // Ask the current server where the snapshots are; it may be gone.
-        let source = send::<serde_json::Value>(
-            &home,
-            Command::DatabaseStatus {
-                name: Some(name.to_owned()),
-            },
-        )
-        .await
-        .ok()
+        let source = match &home {
+            Some(home) => send::<serde_json::Value>(
+                home,
+                Command::DatabaseStatus {
+                    name: Some(name.to_owned()),
+                },
+            )
+            .await
+            .ok(),
+            None => None,
+        }
         .and_then(|status| {
             serde_json::from_value::<tako_core::BackupDestination>(
                 status["databases"][0]["backup"]["destination"].clone(),
@@ -1217,11 +1223,18 @@ async fn restore(
         // running the command again finishes the move.
         if let Err(error) = ctx.publish(&moved, None) {
             return Err(format!(
-                "{name} was restored on {}, but the network still names {} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
-                target.name, home.name, target.name, home.name
+                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
+                target.name, target.name, target.name
             )
             .into());
         }
+        let Some(home) = home else {
+            output::hint(&format!(
+                "{name} now lives on {}. Deploy every app that binds it.",
+                target.name
+            ));
+            return finish_restore(&value);
+        };
         // The old copy, when its server is still up, would keep taking
         // snapshots into the same place and pruning the new copy's.
         let stopped = send::<DatabaseInfo>(
@@ -1244,6 +1257,29 @@ async fn restore(
             ));
         }
     }
+    finish_restore(&value)
+}
+
+/// Where a restore runs, and whether it moves the database there. Without a
+/// reachable home, `--server` must name where to recover it.
+fn restore_target(
+    name: &str,
+    home: Option<&Home>,
+    requested: Option<Home>,
+) -> Result<(Home, bool), String> {
+    match (home, requested) {
+        (Some(home), None) => Ok((home.clone(), false)),
+        (home, Some(target)) => {
+            let moving = home.is_none_or(|home| home.device_id != target.device_id);
+            Ok((target, moving))
+        }
+        (None, None) => Err(format!(
+            "The server of database '{name}' is no longer in this network. Restore it onto another server with `tako sqlite restore {name} --server <server>`."
+        )),
+    }
+}
+
+fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
     for warning in value["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {
             output::warning(warning);
@@ -1918,6 +1954,37 @@ fn format_time(unix: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_recovers_onto_another_server_when_the_home_is_gone() {
+        let server = |id: &str| Home {
+            key: id.into(),
+            entry: crate::config::ServerEntry::default(),
+            device_id: id.into(),
+            name: id.into(),
+        };
+        let home = server("old");
+        assert!(
+            matches!(restore_target("shop", Some(&home), None), Ok((target, false)) if target.name == "old")
+        );
+        assert!(matches!(
+            restore_target("shop", Some(&home), Some(server("old"))),
+            Ok((_, false))
+        ));
+        assert!(matches!(
+            restore_target("shop", Some(&home), Some(server("new"))),
+            Ok((target, true)) if target.name == "new"
+        ));
+        // The home server left the network: --server names the recovery target.
+        assert!(matches!(
+            restore_target("shop", None, Some(server("new"))),
+            Ok((target, true)) if target.name == "new"
+        ));
+        let Err(error) = restore_target("shop", None, None) else {
+            panic!("a restore without a home needs --server");
+        };
+        assert!(error.contains("--server"), "{error}");
+    }
 
     fn storage(bucket: &str) -> tako_core::StorageBinding {
         tako_core::StorageBinding {

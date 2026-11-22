@@ -251,6 +251,7 @@ impl ServerState {
             proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
             databases: Arc::new(crate::databases::Databases::new(&runtime.data_dir)),
+            restore_failures: SyncRwLock::new(HashMap::new()),
             runtime,
             workflows,
         })

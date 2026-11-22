@@ -188,7 +188,52 @@ pub(super) struct HttpTask {
 
 pub(super) struct WebSocketTask {
     abort: AbortHandle,
-    sender: mpsc::Sender<Message>,
+    // Unbounded only in message count: `queued` bounds the bytes it may hold.
+    sender: mpsc::UnboundedSender<Message>,
+    queued: Arc<WebSocketQueue>,
+}
+
+// Bytes a local WebSocket may fall behind before it is closed as a slow
+// consumer. Each message counts as at least MIN_CHUNK_CREDIT, so bursts of
+// small messages fit while memory stays below the old eight-message queue.
+pub(super) const WEBSOCKET_QUEUE_BYTES: usize = 4 * MAX_WS_FRAME;
+
+/// Bytes queued for one local WebSocket and not yet taken by its writer.
+#[derive(Default)]
+pub(super) struct WebSocketQueue {
+    bytes: AtomicUsize,
+}
+
+impl WebSocketQueue {
+    fn cost(len: usize) -> usize {
+        len.max(MIN_CHUNK_CREDIT)
+    }
+
+    pub(super) fn try_reserve(&self, len: usize) -> bool {
+        let cost = Self::cost(len);
+        let mut queued = self.bytes.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = queued
+                .checked_add(cost)
+                .filter(|total| *total <= WEBSOCKET_QUEUE_BYTES)
+            else {
+                return false;
+            };
+            match self.bytes.compare_exchange_weak(
+                queued,
+                total,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => queued = current,
+            }
+        }
+    }
+
+    pub(super) fn release(&self, len: usize) {
+        self.bytes.fetch_sub(Self::cost(len), Ordering::Relaxed);
+    }
 }
 
 pub(super) async fn run_tunnel_connection<S>(
@@ -304,7 +349,9 @@ where
                             send_websocket_response(&outbound_tx, id, 503, vec![]).await?;
                             continue;
                         }
-                        let (sender, incoming) = mpsc::channel(8);
+                        let (sender, incoming) = mpsc::unbounded_channel();
+                        let queued = Arc::new(WebSocketQueue::default());
+                        let task_queued = Arc::clone(&queued);
                         let client = client.clone();
                         let snapshot = snapshot.clone();
                         let state = Arc::clone(&state);
@@ -314,21 +361,21 @@ where
                         let abort = tasks.spawn(async move {
                             let result = match current_upstream_port(&state, &config_path).await
                                 .and_then(|_| local_proxy_url(&snapshot.local_host, &snapshot.listen_addr, &open.path)) {
-                                Ok(url) => relay_local_websocket(&client, &url, open, &outbound, incoming).await,
+                                Ok(url) => relay_local_websocket(&client, &url, open, &outbound, incoming, &task_queued).await,
                                 Err(_) => send_websocket_response(&outbound, open.id, 502, vec![]).await,
                             };
                             if let Err(error) = result { tracing::debug!(%error, "local websocket closed"); }
                             let _ = send_client_message(&outbound, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id: task_id.clone() })).await;
                             task_id
                         });
-                        web_sockets.insert(id, WebSocketTask { abort, sender });
+                        web_sockets.insert(id, WebSocketTask { abort, sender, queued });
                     }
                     ServerMessage::WebSocketFrame(frame) => {
                         let id = frame.id.clone();
                         let Some(task) = web_sockets.get(&id) else { continue; };
-                        let delivered = if frame.data.len() <= MAX_WS_FRAME {
-                            tunnel_frame_to_tungstenite_message(frame).ok().is_some_and(|message| task.sender.try_send(message).is_ok())
-                        } else { false };
+                        let delivered = frame.data.len() <= MAX_WS_FRAME
+                            && task.queued.try_reserve(frame.data.len())
+                            && tunnel_frame_to_tungstenite_message(frame).ok().is_some_and(|message| task.sender.send(message).is_ok());
                         if !delivered {
                             if let Some(task) = web_sockets.remove(&id) { task.abort.abort(); }
                             send_client_message(&outbound_tx, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id })).await?;

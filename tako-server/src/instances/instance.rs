@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Child;
 
+use super::logger::{StartupOutput, log_pipe_with_startup};
 use super::{AppLogHandle, LogStream, PreparedInstanceNetwork, log_pipe};
 
 pub(super) fn now_unix_millis() -> u64 {
@@ -95,6 +96,8 @@ pub struct Instance {
 
     /// Log handle for forwarding stdout/stderr to the app log writer.
     log_handle: AppLogHandle,
+    /// Output kept while a native process starts, for its startup error.
+    startup_output: RwLock<Option<Arc<StartupOutput>>>,
 }
 
 #[derive(Clone)]
@@ -152,6 +155,7 @@ impl Instance {
             last_request_ms: AtomicU64::new(now_unix_millis()),
             last_heartbeat_ms: AtomicU64::new(now_unix_millis()),
             log_handle,
+            startup_output: RwLock::new(None),
         }
     }
 
@@ -424,6 +428,51 @@ impl Instance {
                 let id = self.id.clone();
                 tokio::spawn(log_pipe(stderr, lh, id, LogStream::Stderr));
             }
+        }
+    }
+
+    /// Forward output to the app log from spawn on, keeping its start for a
+    /// startup error. Call [`Self::finish_startup_output`] once healthy.
+    pub(crate) fn drain_pipes_keeping_startup_output(&self) {
+        let startup = Arc::new(StartupOutput::default());
+        let mut process = self.process.write();
+        let Some(child) = process.as_mut() else {
+            return;
+        };
+        if let Some(stdout) = child.stdout.take() {
+            startup.add_reader(tokio::spawn(log_pipe_with_startup(
+                stdout,
+                self.log_handle.clone(),
+                self.id.clone(),
+                LogStream::Stdout,
+                Some(startup.clone()),
+            )));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            startup.add_reader(tokio::spawn(log_pipe_with_startup(
+                stderr,
+                self.log_handle.clone(),
+                self.id.clone(),
+                LogStream::Stderr,
+                Some(startup.clone()),
+            )));
+        }
+        *self.startup_output.write() = Some(startup);
+    }
+
+    pub(crate) fn finish_startup_output(&self) {
+        if let Some(startup) = self.startup_output.write().take() {
+            startup.finish();
+        }
+    }
+
+    /// Stdout and stderr kept from the start, waiting up to `wait` for the
+    /// pipes to close. Empty when the output was not kept.
+    pub(crate) async fn startup_output(&self, wait: Duration) -> (Vec<u8>, Vec<u8>) {
+        let startup = self.startup_output.read().clone();
+        match startup {
+            Some(startup) => startup.collect(wait).await,
+            None => (Vec::new(), Vec::new()),
         }
     }
 

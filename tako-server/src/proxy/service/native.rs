@@ -144,6 +144,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_forwarding_headers_replace_client_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let proxy = proxy(temp.path().into());
+        for client_ip in [Some("203.0.113.15".parse().unwrap()), None] {
+            let (mut client, stream) = tokio::io::duplex(8192);
+            client
+                .write_all(
+                    b"GET / HTTP/1.1\r\nHost: app.example.com\r\nX-Real-IP: 198.51.100.66\r\n\
+                      X-Forwarded-Host: attacker.example\r\nX-Forwarded-For: 198.51.100.66\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut session = Session::new_h1(Box::new(stream));
+            session.read_request().await.unwrap();
+            let mut upstream = session.req_header().clone();
+            let mut context = proxy.new_ctx();
+            context.client_ip = client_ip;
+            proxy
+                .upstream_request_filter(&mut session, &mut upstream, &mut context)
+                .await
+                .unwrap();
+            let header = |name: &str| {
+                upstream
+                    .headers
+                    .get(name)
+                    .map(|value| value.to_str().unwrap().to_string())
+            };
+            let expected_ip = client_ip.map(|ip: std::net::IpAddr| ip.to_string());
+            assert_eq!(header("x-real-ip"), expected_ip);
+            assert_eq!(header("x-forwarded-for"), expected_ip);
+            assert_eq!(
+                header("x-forwarded-host").as_deref(),
+                Some("app.example.com")
+            );
+            context.finish_backend_request();
+        }
+    }
+
+    #[tokio::test]
     async fn private_host_and_forwarded_headers_cannot_reach_public_route() {
         let temp = tempfile::tempdir().unwrap();
         let proxy = proxy(temp.path().into());

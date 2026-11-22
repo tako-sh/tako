@@ -274,6 +274,35 @@ describe("channels", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  test("connect refuses a message above the server's 1 MiB frame limit", () => {
+    const send = mock((_data: unknown) => {});
+    const connection = new Channel("chat", "ws").connect({
+      baseUrl: "https://app.example.com",
+      webSocketFactory: () => ({ send, close() {} }),
+    });
+
+    expect(() => connection.send("x".repeat(1024 * 1024 + 1))).toThrow(
+      "Channel message exceeds 1 MiB",
+    );
+    // Multi-byte text counts in UTF-8 bytes.
+    expect(() => connection.send({ text: "é".repeat(512 * 1024) })).toThrow(RangeError);
+    connection.send("x".repeat(1024 * 1024));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test("connect refuses binary messages, which the server does not accept", () => {
+    const send = mock((_data: unknown) => {});
+    const connection = new Channel("chat", "ws").connect({
+      baseUrl: "https://app.example.com",
+      webSocketFactory: () => ({ send, close() {} }),
+    });
+
+    expect(() => connection.send(new ArrayBuffer(4))).toThrow(/binary/i);
+    expect(() => connection.send(new Uint8Array(2 * 1024 * 1024))).toThrow(/binary/i);
+    expect(() => connection.send(new Blob(["x"]))).toThrow(/binary/i);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   test("connect uses configured websocket when no factory is passed", () => {
     class MockWebSocket {
       readonly url: string;

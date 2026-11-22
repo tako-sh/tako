@@ -263,9 +263,21 @@ pub(super) async fn register_app(
             .map(|a| a.upstream_port)
             .unwrap_or(0);
 
-        // The new registration has no process or tunnel yet. Its recovery
-        // snapshot must not replay the previous registration's ready/error state.
-        s.events.forget_app(&config_path);
+        let tunnel = old_app_name.as_deref().and_then(|old_name| {
+            crate::tunnel::carry_over_tunnel(
+                &mut s,
+                &config_path,
+                (old_name, &old_hosts),
+                (&app_name, &hosts),
+            )
+        });
+        // The new registration has no process yet. Its recovery snapshot must
+        // not replay the previous registration's ready/error state.
+        if tunnel.is_some() {
+            s.events.forget_app_status(&config_path);
+        } else {
+            s.events.forget_app(&config_path);
+        }
         let compose_workflows = compose.clone();
         s.apps.insert(
             config_path.clone(),
@@ -287,7 +299,7 @@ pub(super) async fn register_app(
                 log_buffer,
                 pid: None,
                 client_pid,
-                tunnel: None,
+                tunnel,
                 readiness_failure_hint,
                 bootstrap_token: bootstrap_token.clone(),
                 secrets,
