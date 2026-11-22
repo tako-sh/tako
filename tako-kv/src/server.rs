@@ -35,6 +35,12 @@ const BASE_BUFFER: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
 /// Replies buffered before they are written out mid-batch.
 const OUT_FLUSH: usize = 1024 * 1024;
+/// Reply bytes each connection buffers without drawing on the shared reply
+/// budget.
+const REPLY_BASE: usize = 64 * 1024;
+/// Room a connection takes from the reply budget, when it is free, before
+/// running commands, so most replies need no wait.
+const REPLY_CHUNK: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a relayed connection checks that its binding still forwards.
 const FORWARD_CHECK: Duration = Duration::from_secs(5);
@@ -47,6 +53,7 @@ const NOAUTH: &str = "NOAUTH Authentication required.";
 const WRONGPASS: &str = "WRONGPASS invalid username-password pair or user is disabled.";
 const NOT_SERVED: &str = "ERR this server is not serving the store right now; retry";
 const REBOUND: &str = "ERR this connection's binding changed; reconnect";
+const SHORT_OF_REPLY_SPACE: &str = "ERR the server is short of reply buffer space; retry";
 
 /// Who a listener accepts.
 #[derive(Clone)]
@@ -174,6 +181,8 @@ struct Connection {
     /// Budget held for `buf` beyond [`BASE_BUFFER`].
     permit: Option<OwnedSemaphorePermit>,
     out: Vec<u8>,
+    /// Reply budget held for `out` beyond [`REPLY_BASE`], until it is sent.
+    reply_permit: Option<OwnedSemaphorePermit>,
     closings: tokio::sync::watch::Receiver<u64>,
 }
 
@@ -218,6 +227,7 @@ impl Connection {
             buf: BytesMut::with_capacity(16 * 1024),
             permit: None,
             out: Vec::new(),
+            reply_permit: None,
             closings,
         }
     }
@@ -237,10 +247,51 @@ impl Connection {
         let stall = self.config().stall_timeout;
         let written = tokio::time::timeout(stall, self.writer.write_all(&self.out)).await;
         self.out.clear();
-        if self.out.capacity() > OUT_FLUSH * 4 {
-            self.out = Vec::new();
-        }
+        // What it keeps beyond the base is no longer budgeted.
+        self.out.shrink_to(REPLY_BASE);
+        self.reply_permit = None;
         matches!(written, Ok(Ok(())))
+    }
+
+    /// Reply bytes this connection may still buffer.
+    fn reply_room(&self) -> usize {
+        let held = self.reply_permit.as_ref().map_or(0, |p| p.num_permits());
+        (REPLY_BASE + held).saturating_sub(self.out.len())
+    }
+
+    /// Takes up to [`REPLY_CHUNK`] of room from the reply budget if it is
+    /// free now, without waiting.
+    fn take_reply_room(&mut self) {
+        let room = self.reply_room();
+        if room >= REPLY_CHUNK {
+            return;
+        }
+        let budget = self.host.inner.replies.clone();
+        if let Ok(permit) = budget.try_acquire_many_owned((REPLY_CHUNK - room) as u32) {
+            match &mut self.reply_permit {
+                Some(held) => held.merge(permit),
+                None => self.reply_permit = Some(permit),
+            }
+        }
+    }
+
+    /// Waits for room for a reply of `need` bytes, once what is buffered
+    /// has been sent. False when none frees up in time.
+    async fn wait_for_reply_room(&mut self, need: usize) -> bool {
+        debug_assert!(self.out.is_empty());
+        if need <= self.reply_room() {
+            return true;
+        }
+        let budget = self.host.inner.replies.clone();
+        let stall = self.config().stall_timeout;
+        let more = u32::try_from(need - REPLY_BASE).unwrap_or(u32::MAX);
+        match tokio::time::timeout(stall, budget.acquire_many_owned(more)).await {
+            Ok(Ok(permit)) => {
+                self.reply_permit = Some(permit);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Request memory this connection may hold now: the base allowance and
@@ -381,7 +432,11 @@ impl Connection {
                                 resp::encode_request(args, &mut pending);
                             }
                             pending.extend_from_slice(&self.buf);
-                            self.buf.clear();
+                            // Only `pending` holds requests now: the budget
+                            // stays with it until it is sent.
+                            drop(rest);
+                            self.buf = BytesMut::new();
+                            self.out = Vec::new();
                             self.relay(upstream, pending, *target, token).await;
                             return;
                         }
@@ -495,13 +550,26 @@ impl Connection {
                     return false;
                 }
             };
-            match store.run(pending.clone()).await {
-                Ok(replies) => {
-                    let done = replies.len().max(1).min(pending.len());
-                    for reply in replies {
+            self.take_reply_room();
+            match store.run(pending.clone(), self.reply_room()).await {
+                Ok(ran) => {
+                    let done = ran.replies.len().min(pending.len());
+                    for reply in ran.replies {
                         self.reply(reply);
                     }
                     pending.drain(..done);
+                    if let Some(need) = ran.short {
+                        // The next command did not run: make room for its
+                        // reply, or fail it if none frees up.
+                        if !self.flush().await {
+                            return false;
+                        }
+                        if !self.wait_for_reply_room(need).await {
+                            self.reply(Reply::error(SHORT_OF_REPLY_SPACE));
+                            pending.remove(0);
+                        }
+                        continue;
+                    }
                     if !pending.is_empty() && !self.flush().await {
                         return false;
                     }
@@ -817,7 +885,24 @@ impl Connection {
                 Err(Gone::Unavailable(message)) => return Reply::Error(message),
                 Err(Gone::Rebound) => return Reply::error(REBOUND),
             };
-            match store.exec(ops, watched).await {
+            // Room for every reply the transaction could have, reserved
+            // before it runs, since it cannot stop partway.
+            let max_reply = self.config().max_reply_bytes;
+            let bound = ops
+                .iter()
+                .map(|op| match op {
+                    Op::Cmd(cmd) => cmd.reply_bound(limits, max_reply),
+                    Op::Failed(reply) => reply.size(),
+                })
+                .fold(16usize, usize::saturating_add)
+                .min(max_reply);
+            self.take_reply_room();
+            if bound > self.reply_room()
+                && !(self.flush().await && self.wait_for_reply_room(bound).await)
+            {
+                return Reply::error(SHORT_OF_REPLY_SPACE);
+            }
+            match store.exec(ops, watched, self.reply_room()).await {
                 Ok(Reply::Array(replies)) => replies,
                 Ok(other) => return other,
                 Err(error) => return Reply::Error(store_error(&error)),
@@ -1139,6 +1224,7 @@ impl Connection {
         if !pending.is_empty() && upstream.write_all(&pending).await.is_err() {
             return;
         }
+        drop(pending);
         self.permit = None;
         let host = self.host.clone();
         let (mut from_upstream, mut to_upstream) = upstream.split();
@@ -1170,14 +1256,28 @@ fn store_error(error: &StoreError) -> String {
 }
 
 fn command_command(args: &[Bytes]) -> Reply {
+    let every = || Reply::Array(command::all().iter().map(command::Spec::info).collect());
     let Some(sub) = args.get(1) else {
-        return Reply::Array(Vec::new());
+        return every();
     };
     let sub = String::from_utf8_lossy(sub).to_lowercase();
     match sub.as_str() {
         "count" => Reply::Int(command::count() as i64),
         "docs" => Reply::Map(Vec::new()),
-        "info" => Reply::Array(args[2..].iter().map(|_| Reply::Nil).collect()),
+        "info" if args.len() == 2 => every(),
+        // Known commands get their entry; others are nil, as in Redis.
+        "info" => Reply::Array(
+            args[2..]
+                .iter()
+                .map(|name| command::find(name).map_or(Reply::Nil, command::Spec::info))
+                .collect(),
+        ),
+        "list" if args.len() == 2 => Reply::Array(
+            command::all()
+                .iter()
+                .map(|spec| Reply::bulk_str(spec.name))
+                .collect(),
+        ),
         _ => Reply::Error(format!(
             "ERR unknown subcommand '{}'. Try COMMAND HELP.",
             String::from_utf8_lossy(&args[1])

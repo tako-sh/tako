@@ -1527,7 +1527,7 @@ fn kv_json(reply: tako_kv::Reply) -> serde_json::Value {
             Err(_) => serde_json::json!({"base64": BASE64.encode(&bytes)}),
         },
         Reply::Nil | Reply::NilArray => serde_json::Value::Null,
-        Reply::Array(items) => items.into_iter().map(kv_json).collect(),
+        Reply::Array(items) | Reply::Set(items) => items.into_iter().map(kv_json).collect(),
         Reply::Map(pairs) => pairs
             .into_iter()
             .map(|(key, value)| serde_json::json!([kv_json(key), kv_json(value)]))

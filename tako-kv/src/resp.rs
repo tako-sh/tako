@@ -309,6 +309,8 @@ pub enum Reply {
     /// A missing array, such as an aborted transaction: `*-1` in RESP2.
     NilArray,
     Array(Vec<Reply>),
+    /// A set in RESP3, an array in RESP2.
+    Set(Vec<Reply>),
     /// A map in RESP3, a flat array of keys and values in RESP2.
     Map(Vec<(Reply, Reply)>),
 }
@@ -332,7 +334,9 @@ impl Reply {
             Self::Ok | Self::Nil | Self::NilArray | Self::Int(_) => 16,
             Self::Simple(text) | Self::Error(text) => text.len() + 3,
             Self::Bulk(bytes) => bytes.len() + 16,
-            Self::Array(items) => 16 + items.iter().map(Self::size).sum::<usize>(),
+            Self::Array(items) | Self::Set(items) => {
+                16 + items.iter().map(Self::size).sum::<usize>()
+            }
             Self::Map(items) => {
                 16 + items
                     .iter()
@@ -369,8 +373,9 @@ impl Reply {
             Self::Nil => out.extend_from_slice(b"$-1\r\n"),
             Self::NilArray if proto >= 3 => out.extend_from_slice(b"_\r\n"),
             Self::NilArray => out.extend_from_slice(b"*-1\r\n"),
-            Self::Array(items) => {
-                out.push(b'*');
+            Self::Array(items) | Self::Set(items) => {
+                let set = matches!(self, Self::Set(_)) && proto >= 3;
+                out.push(if set { b'~' } else { b'*' });
                 out.extend_from_slice(items.len().to_string().as_bytes());
                 out.extend_from_slice(b"\r\n");
                 for item in items {

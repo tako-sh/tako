@@ -171,16 +171,38 @@ impl Drop for WatchGuard {
 }
 
 enum Work {
-    /// One connection's commands, in order. The writer may run only a
-    /// prefix of them; see [`BATCH_REPLY_BYTES`].
-    Batch(Vec<Cmd>),
+    /// One connection's commands, in order, whose replies have `room`
+    /// bytes. The writer may run only a prefix of them; see [`Ran`].
+    Batch { cmds: Vec<Cmd>, room: usize },
     /// A transaction. Aborted, with a nil reply, when a watched key changed.
-    Exec { ops: Vec<Op>, watched: Vec<Watched> },
+    /// Replies past `room` bytes become errors.
+    Exec {
+        ops: Vec<Op>,
+        watched: Vec<Watched>,
+        room: usize,
+    },
 }
 
 struct Job {
     work: Work,
-    reply: tokio::sync::oneshot::Sender<Result<Vec<Reply>, String>>,
+    reply: tokio::sync::oneshot::Sender<Result<Ran, String>>,
+}
+
+/// What a batch of commands returned: the replies of a prefix of them, all
+/// unless the replies grew large or the next one did not fit.
+#[derive(Debug)]
+pub(crate) struct Ran {
+    pub(crate) replies: Vec<Reply>,
+    /// The batch stopped before a command, without running it, because its
+    /// reply needs this many bytes and fewer were left of the room.
+    pub(crate) short: Option<usize>,
+}
+
+/// One command's outcome in a batch.
+enum Step {
+    Done(Reply),
+    /// Not run: its reply would need this many bytes.
+    Short(usize),
 }
 
 pub struct Store {
@@ -242,7 +264,7 @@ impl Store {
         }
     }
 
-    async fn submit(&self, work: Work) -> Result<Vec<Reply>> {
+    async fn submit(&self, work: Work) -> Result<Ran> {
         let (reply, receive) = tokio::sync::oneshot::channel();
         let mut job = Job { work, reply };
         loop {
@@ -257,30 +279,35 @@ impl Store {
             }
         }
         match receive.await {
-            Ok(Ok(replies)) => Ok(replies),
+            Ok(Ok(ran)) => Ok(ran),
             Ok(Err(error)) => Err(StoreError::Storage(error)),
             Err(_) => Err(StoreError::Closed),
         }
     }
 
-    /// Runs one connection's commands in order and returns the replies of a
-    /// prefix of them: all, unless the replies grew large.
-    pub(crate) async fn run(&self, cmds: Vec<Cmd>) -> Result<Vec<Reply>> {
+    /// Runs one connection's commands in order, while their replies fit in
+    /// `room` bytes, and returns the replies of a prefix of them.
+    pub(crate) async fn run(&self, cmds: Vec<Cmd>, room: usize) -> Result<Ran> {
         if cmds.iter().any(Cmd::writes) {
-            return self.submit(Work::Batch(cmds)).await;
+            return self.submit(Work::Batch { cmds, room }).await;
         }
         let db = self.db()?;
         let config = self.config.clone();
-        tokio::task::spawn_blocking(move || read_batch(&db, &cmds, &config))
+        tokio::task::spawn_blocking(move || read_batch(&db, &cmds, room, &config))
             .await
             .map_err(storage)?
     }
 
-    /// Runs a transaction. The reply is its array, or nil when a watched key
-    /// changed since `watched` was read.
-    pub(crate) async fn exec(&self, ops: Vec<Op>, watched: Vec<Watched>) -> Result<Reply> {
-        let mut replies = self.submit(Work::Exec { ops, watched }).await?;
-        Ok(replies.pop().unwrap_or(Reply::NilArray))
+    /// Runs a transaction whose replies have `room` bytes. The reply is its
+    /// array, or nil when a watched key changed since `watched` was read.
+    pub(crate) async fn exec(
+        &self,
+        ops: Vec<Op>,
+        watched: Vec<Watched>,
+        room: usize,
+    ) -> Result<Reply> {
+        let mut ran = self.submit(Work::Exec { ops, watched, room }).await?;
+        Ok(ran.replies.pop().unwrap_or(Reply::NilArray))
     }
 
     /// Reads `keys` for `WATCH`. The guard keeps the removals their
@@ -953,6 +980,10 @@ fn hash<V: View + ?Sized>(view: &V, key: &[u8], now: u64) -> Result<Result<Optio
     })
 }
 
+/// Bytes of a `SCAN` or `HSCAN` reply besides its items, at most: the
+/// arrays and the cursor.
+const PAGE_FRAMING: usize = 72;
+
 fn too_large(limit: usize) -> Reply {
     Reply::Error(format!(
         "ERR reply would exceed {limit} bytes; use SCAN, HSCAN or smaller requests"
@@ -973,9 +1004,18 @@ macro_rules! tri {
     };
 }
 
-/// Runs a command that only reads.
-fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -> Result<Reply> {
+/// Runs a command that only reads. `SCAN` and `HSCAN` pages end once they
+/// pass `page` bytes.
+fn read<V: View + ?Sized>(
+    view: &V,
+    cmd: &Cmd,
+    now: u64,
+    config: &StoreConfig,
+    page: usize,
+) -> Result<Reply> {
     let limit = config.max_reply_bytes;
+    // What a page's items may take: its framing is the rest.
+    let page = page.min(limit).saturating_sub(PAGE_FRAMING);
     Ok(match cmd {
         Cmd::Get(key) => match tri!(string(view, key, now)) {
             Some(value) => Reply::bulk(value),
@@ -1071,31 +1111,36 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
             let mut budget = glob::Budget::new();
             let mut complex = false;
             view.each_key(*cursor, &mut |slot, key, entry| {
-                // A page ends at COUNT keys, or early once its reply is
-                // large, and ends at the first key of another slot: keys
-                // sharing a slot are returned together, so the next cursor
-                // always moves forward.
-                if (visited >= *count || size > limit) && slot != last {
+                // A page ends at COUNT keys, or before a key its reply has
+                // no room for, and only at the first key of another slot:
+                // keys sharing a slot are returned together, so the next
+                // cursor always moves forward.
+                if visited >= *count && slot != last {
                     next = slot;
                     return false;
                 }
-                visited += 1;
-                last = slot;
-                if !entry.live(now) || kind.is_some_and(|kind| kind != Some(entry.kind)) {
-                    return true;
-                }
-                if let Some(pattern) = pattern {
+                let mut matched =
+                    entry.live(now) && kind.is_none_or(|kind| kind == Some(entry.kind));
+                if matched && let Some(pattern) = pattern {
                     match glob::matches(pattern, key, &mut budget) {
                         None => {
                             complex = true;
                             return false;
                         }
-                        Some(false) => return true,
-                        Some(true) => {}
+                        Some(found) => matched = found,
                     }
                 }
-                size += key.len() + 16;
-                items.push(Reply::bulk(Bytes::copy_from_slice(key)));
+                let cost = if matched { key.len() + 16 } else { 0 };
+                if size + cost > page && visited > 0 && slot != last {
+                    next = slot;
+                    return false;
+                }
+                visited += 1;
+                last = slot;
+                if matched {
+                    size += cost;
+                    items.push(Reply::bulk(Bytes::copy_from_slice(key)));
+                }
                 true
             })?;
             if complex {
@@ -1161,7 +1206,7 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
                         false => 0,
                     };
                     // Large values end a page early instead of failing it.
-                    if size + cost > limit && visited > 0 && slot != last {
+                    if size + cost > page && visited > 0 && slot != last {
                         next = slot;
                         return false;
                     }
@@ -1261,9 +1306,15 @@ fn invalid_expire(name: &str) -> Reply {
 }
 
 /// Runs any command in a write transaction.
-fn write(w: &mut WriteView, cmd: &Cmd, now: u64, config: &StoreConfig) -> Result<Reply> {
+fn write(
+    w: &mut WriteView,
+    cmd: &Cmd,
+    now: u64,
+    config: &StoreConfig,
+    page: usize,
+) -> Result<Reply> {
     if !cmd.writes() {
-        return read(w, cmd, now, config);
+        return read(w, cmd, now, config, page);
     }
     if grows(cmd) && w.stats.bytes >= config.max_bytes {
         return Ok(Reply::error(OOM));
@@ -1583,25 +1634,67 @@ fn write(w: &mut WriteView, cmd: &Cmd, now: u64, config: &StoreConfig) -> Result
     })
 }
 
-/// Runs commands until they are done or their replies reach the batch limit.
-fn run_prefix(cmds: &[Cmd], mut run: impl FnMut(&Cmd) -> Result<Reply>) -> Result<Vec<Reply>> {
+/// Runs commands until they are done, their replies reach the batch limit,
+/// or the next reply does not fit in what is left of `room`. `step` gets
+/// each command with the bytes left.
+fn run_prefix(
+    cmds: &[Cmd],
+    room: usize,
+    mut step: impl FnMut(&Cmd, usize) -> Result<Step>,
+) -> Result<Ran> {
     let mut replies = Vec::with_capacity(cmds.len());
     let mut size = 0;
     for cmd in cmds {
-        let reply = run(cmd)?;
+        let left = room.saturating_sub(size);
+        let reply = match step(cmd, left)? {
+            Step::Done(reply) => reply,
+            Step::Short(need) => {
+                return Ok(Ran {
+                    replies,
+                    short: Some(need),
+                });
+            }
+        };
+        // A read whose reply does not fit is dropped: it changed nothing,
+        // so it runs again once there is room. A write's reply is small,
+        // or was checked before it ran; see [`returned_value`].
+        if !cmd.writes() && reply.size() > left {
+            return Ok(Ran {
+                replies,
+                short: Some(reply.size()),
+            });
+        }
         size += reply.size();
         replies.push(reply);
         if size > BATCH_REPLY_BYTES {
             break;
         }
     }
-    Ok(replies)
+    Ok(Ran {
+        replies,
+        short: None,
+    })
 }
 
-fn read_batch(db: &Database, cmds: &[Cmd], config: &StoreConfig) -> Result<Vec<Reply>> {
+/// The reply size of a write that returns a stored value, so a batch can
+/// stop before running it when the reply would not fit; 0 for others.
+fn returned_value<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64) -> Result<usize> {
+    let key = match cmd {
+        Cmd::GetDel(key) | Cmd::GetEx { key, .. } | Cmd::Set { key, get: true, .. } => key,
+        _ => return Ok(0),
+    };
+    Ok(match live(view, key, now)? {
+        Some(entry) if entry.kind == KeyType::String => Reply::Nil.size() + entry.data.len(),
+        _ => 0,
+    })
+}
+
+fn read_batch(db: &Database, cmds: &[Cmd], room: usize, config: &StoreConfig) -> Result<Ran> {
     let view = ReadView::open(db)?;
     let now = (config.clock)();
-    run_prefix(cmds, |cmd| read(&view, cmd, now, config))
+    run_prefix(cmds, room, |cmd, left| {
+        read(&view, cmd, now, config, left).map(Step::Done)
+    })
 }
 
 fn writer(
@@ -1683,7 +1776,7 @@ fn apply(
     sweep: bool,
     config: &StoreConfig,
     removals: &Mutex<Removals>,
-) -> Result<(Vec<Vec<Reply>>, bool)> {
+) -> Result<(Vec<Ran>, bool)> {
     let txn = db.begin_write().map_err(storage)?;
     let now = (config.clock)();
     let mut outcomes = Vec::with_capacity(works.len());
@@ -1691,8 +1784,14 @@ fn apply(
         let mut w = WriteView::open(&txn)?;
         for work in works {
             outcomes.push(match work {
-                Work::Batch(cmds) => run_prefix(cmds, |cmd| write(&mut w, cmd, now, config))?,
-                Work::Exec { ops, watched } => {
+                Work::Batch { cmds, room } => run_prefix(cmds, *room, |cmd, left| {
+                    let need = returned_value(&w, cmd, now)?;
+                    if need > left {
+                        return Ok(Step::Short(need));
+                    }
+                    write(&mut w, cmd, now, config, left).map(Step::Done)
+                })?,
+                Work::Exec { ops, watched, room } => {
                     let mut changed = false;
                     for watched in watched {
                         let current = live(&w, &watched.key, now)?.map(|e| e.version);
@@ -1707,18 +1806,20 @@ fn apply(
                             break;
                         }
                     }
-                    if changed {
-                        vec![Reply::NilArray]
+                    let replies = if changed {
+                        Reply::NilArray
                     } else {
-                        // Every command runs, but once the replies reach the
-                        // reply limit, large ones are replaced with an error,
-                        // so a transaction cannot buffer without bound.
-                        let limit = config.max_reply_bytes;
+                        // Every command runs, but once the replies fill the
+                        // room the connection reserved, large ones are
+                        // replaced with an error, so a transaction cannot
+                        // buffer without bound.
+                        let limit = (*room).min(config.max_reply_bytes);
                         let mut size = 0;
                         let mut replies = Vec::with_capacity(ops.len());
                         for op in ops {
+                            let left = limit.saturating_sub(size);
                             let mut reply = match op {
-                                Op::Cmd(cmd) => write(&mut w, cmd, now, config)?,
+                                Op::Cmd(cmd) => write(&mut w, cmd, now, config, left)?,
                                 Op::Failed(reply) => reply.clone(),
                             };
                             if size + reply.size() > limit {
@@ -1727,7 +1828,11 @@ fn apply(
                             size += reply.size();
                             replies.push(reply);
                         }
-                        vec![Reply::Array(replies)]
+                        Reply::Array(replies)
+                    };
+                    Ran {
+                        replies: vec![replies],
+                        short: None,
                     }
                 }
             });

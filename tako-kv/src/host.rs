@@ -80,6 +80,9 @@ pub struct HostConfig {
     /// Request bytes buffered across all connections beyond each one's
     /// first 64 KiB.
     pub max_buffered_bytes: usize,
+    /// Reply bytes buffered across all connections beyond each one's first
+    /// 64 KiB, while they wait to be sent.
+    pub max_buffered_reply_bytes: usize,
     /// Open connections per listener.
     pub max_connections: usize,
     /// How long a request waits for buffer space, and a reply for the
@@ -101,6 +104,7 @@ impl Default for HostConfig {
             max_request_bytes: 32 * 1024 * 1024,
             max_reply_bytes: 64 * 1024 * 1024,
             max_buffered_bytes: 256 * 1024 * 1024,
+            max_buffered_reply_bytes: 256 * 1024 * 1024,
             max_connections: 4096,
             stall_timeout: Duration::from_secs(30),
             cache_bytes: 16 * 1024 * 1024,
@@ -209,6 +213,8 @@ pub(crate) struct Inner {
     remote_grants: RwLock<HashMap<String, Grant>>,
     /// Request bytes buffered beyond each connection's base buffer.
     pub(crate) buffered: Arc<Semaphore>,
+    /// Reply bytes buffered beyond each connection's base allowance.
+    pub(crate) replies: Arc<Semaphore>,
     /// Counts `close_all` calls; connections close when it changes.
     pub(crate) closings: tokio::sync::watch::Sender<u64>,
     pub(crate) next_client: AtomicU64,
@@ -238,6 +244,7 @@ fn environment_scope(scope: &str) -> &str {
 impl KvHost {
     pub fn new(config: HostConfig) -> Self {
         let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
+        let replies = Arc::new(Semaphore::new(config.max_buffered_reply_bytes));
         Self {
             inner: Arc::new(Inner {
                 config,
@@ -246,6 +253,7 @@ impl KvHost {
                 by_token: RwLock::new(HashMap::new()),
                 remote_grants: RwLock::new(HashMap::new()),
                 buffered,
+                replies,
                 closings: tokio::sync::watch::Sender::new(0),
                 next_client: AtomicU64::new(1),
                 connected: AtomicUsize::new(0),
@@ -423,8 +431,9 @@ impl KvHost {
             Ok(cmd) => cmd,
             Err(reply) => return Ok(reply),
         };
-        let mut replies = store.run(vec![cmd]).await?;
-        Ok(replies.pop().unwrap_or(Reply::Nil))
+        let max_reply = self.inner.config.max_reply_bytes;
+        let mut ran = store.run(vec![cmd], max_reply).await?;
+        Ok(ran.replies.pop().unwrap_or(Reply::Nil))
     }
 
     /// Creates an empty store file.

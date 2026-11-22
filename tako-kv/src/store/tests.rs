@@ -11,6 +11,9 @@ struct Fixture {
     now: Arc<AtomicU64>,
 }
 
+/// Room for any reply.
+const ANY: usize = usize::MAX;
+
 fn config(now: &Arc<AtomicU64>, max_bytes: u64) -> StoreConfig {
     let now = now.clone();
     StoreConfig {
@@ -57,7 +60,12 @@ fn parse(text: &str) -> Cmd {
 
 impl Fixture {
     async fn run(&self, text: &str) -> Reply {
-        self.store.run(vec![parse(text)]).await.unwrap().remove(0)
+        self.store
+            .run(vec![parse(text)], ANY)
+            .await
+            .unwrap()
+            .replies
+            .remove(0)
     }
 
     fn advance(&self, ms: u64) {
@@ -309,22 +317,31 @@ async fn transactions_abort_when_watched_keys_change() {
     let (watched, _guard) = watch(&f, &["k", "absent"]).await;
     assert!(watched[0].version.is_some() && watched[1].version.is_none());
     assert_eq!(
-        f.store.exec(ops(), watched).await.unwrap(),
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
         Reply::Array(vec![Reply::Int(2), Reply::error("ERR x"), bulk("2")])
     );
     // The transaction itself changed k: a second one with the same watch aborts.
     let (watched, _guard) = watch(&f, &["k"]).await;
     f.run("INCR k").await;
-    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
     // Creating a key that was absent counts.
     let (watched, _guard) = watch(&f, &["absent"]).await;
     f.run("SET absent now").await;
-    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
     // Expiry counts as a change.
     f.run("SET t v PX 10").await;
     let (watched, _guard) = watch(&f, &["t"]).await;
     f.advance(10);
-    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
 }
 
 #[tokio::test]
@@ -334,20 +351,26 @@ async fn absent_watched_keys_notice_being_created_and_removed() {
     let (watched, guard) = watch(&f, &["lock"]).await;
     f.run("SET lock other").await;
     f.run("DEL lock").await;
-    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
     drop(guard);
     // Created and flushed.
     let (watched, guard) = watch(&f, &["lock"]).await;
     f.run("SET lock other").await;
     f.run("FLUSHDB").await;
-    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
     drop(guard);
     // A removal before the WATCH does not count, and untouched keys run.
     f.run("SET lock other").await;
     f.run("DEL lock").await;
     let (watched, guard) = watch(&f, &["lock"]).await;
     assert!(matches!(
-        f.store.exec(ops(), watched).await.unwrap(),
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
         Reply::Array(_)
     ));
     drop(guard);
@@ -362,13 +385,64 @@ async fn absent_watched_keys_notice_being_created_and_removed() {
 }
 
 #[tokio::test]
+async fn batches_stop_before_replies_that_do_not_fit() {
+    let f = fixture(1 << 30);
+    let value = "x".repeat(300 * 1024);
+    f.run(&format!("SET big {value}")).await;
+    f.run("SET small v").await;
+    let need = Some(value.len() + 16);
+    // A read that does not fit stops the batch; the replies before it stay.
+    let ran = f
+        .store
+        .run(
+            vec![parse("GET small"), parse("GET big"), parse("GET small")],
+            100 * 1024,
+        )
+        .await
+        .unwrap();
+    assert_eq!((ran.replies, ran.short), (vec![bulk("v")], need));
+    // A write that returns a value is checked before it runs, so it has no
+    // effect until there is room for its reply.
+    for command in ["GETDEL big", "GETEX big PERSIST", "SET big x GET"] {
+        let ran = f.store.run(vec![parse(command)], 1024).await.unwrap();
+        assert_eq!((ran.replies.len(), ran.short), (0, need), "{command}");
+    }
+    assert_eq!(f.run("STRLEN big").await, Reply::Int(value.len() as i64));
+    let ran = f
+        .store
+        .run(vec![parse("INCR n"), parse("GETDEL big")], 400 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(ran.short, None);
+    assert_eq!(ran.replies, vec![Reply::Int(1), bulk(&value)]);
+    assert_eq!(f.run("EXISTS big").await, Reply::Int(0));
+    // SCAN pages end at the room instead.
+    for i in 0..100 {
+        f.run(&format!("SET key{i:0>500} v")).await;
+    }
+    let ran = f
+        .store
+        .run(vec![parse("SCAN 0 COUNT 1000")], 8 * 1024)
+        .await
+        .unwrap();
+    let Reply::Array(page) = &ran.replies[0] else {
+        panic!()
+    };
+    let [Reply::Bulk(cursor), Reply::Array(keys)] = page.as_slice() else {
+        panic!()
+    };
+    assert_ne!(cursor.as_ref(), b"0");
+    assert!(keys.len() < 20, "{}", keys.len());
+}
+
+#[tokio::test]
 async fn transactions_cap_their_replies() {
     let f = fixture(1 << 30);
     let value = "x".repeat(300 * 1024);
     f.run(&format!("SET big {value}")).await;
     let mut ops: Vec<Op> = (0..8).map(|_| Op::Cmd(parse("GET big"))).collect();
     ops.push(Op::Cmd(parse("INCR n")));
-    let Reply::Array(replies) = f.store.exec(ops, Vec::new()).await.unwrap() else {
+    let Reply::Array(replies) = f.store.exec(ops, Vec::new(), ANY).await.unwrap() else {
         panic!()
     };
     // The 1 MiB reply limit fits three values; later ones become errors,
@@ -450,7 +524,7 @@ async fn concurrent_writers_share_commits_and_lose_nothing() {
         let store = f.store.clone();
         tasks.push(tokio::spawn(async move {
             for _ in 0..20 {
-                store.run(vec![parse("INCR n")]).await.unwrap();
+                store.run(vec![parse("INCR n")], ANY).await.unwrap();
             }
         }));
     }
@@ -466,12 +540,13 @@ async fn data_survives_reopening() {
     f.run("SET k v EX 100").await;
     f.run("HSET h a 1").await;
     f.store.close().await;
-    assert!(f.store.run(vec![parse("GET k")]).await.is_err());
+    assert!(f.store.run(vec![parse("GET k")], ANY).await.is_err());
     let reopened = Store::open(&f.path, config(&f.now, 1 << 30)).unwrap();
     let get = reopened
-        .run(vec![parse("GET k"), parse("HGET h a"), parse("TTL k")])
+        .run(vec![parse("GET k"), parse("HGET h a"), parse("TTL k")], ANY)
         .await
-        .unwrap();
+        .unwrap()
+        .replies;
     assert_eq!(get, vec![bulk("v"), bulk("1"), Reply::Int(100)]);
     assert_eq!(reopened.stats().await.unwrap().keys, 2);
 }

@@ -35,6 +35,8 @@ pub(crate) struct Spec {
     /// when negative.
     pub arity: i32,
     pub class: Class,
+    /// The ACL category of its kind, for `COMMAND INFO`.
+    category: &'static str,
 }
 
 const R: Class = Class::Read;
@@ -42,87 +44,159 @@ const W: Class = Class::Write { grows: false };
 const G: Class = Class::Write { grows: true };
 const C: Class = Class::Connection;
 
+const S: &str = "@string";
+const K: &str = "@keyspace";
+const H: &str = "@hash";
+const X: &str = "@connection";
+const T: &str = "@transaction";
+const A: &str = "@admin";
+const D: &str = "@dangerous";
+const F: &str = "@fast";
+
 const SPECS: &[Spec] = &[
     // Strings
-    spec("get", 2, R),
-    spec("set", -3, G),
-    spec("setnx", 3, G),
-    spec("setex", 4, G),
-    spec("psetex", 4, G),
-    spec("getdel", 2, W),
-    spec("getex", -2, W),
-    spec("getset", 3, G),
-    spec("mget", -2, R),
-    spec("mset", -3, G),
-    spec("msetnx", -3, G),
-    spec("append", 3, G),
-    spec("strlen", 2, R),
-    spec("incr", 2, G),
-    spec("decr", 2, G),
-    spec("incrby", 3, G),
-    spec("decrby", 3, G),
-    spec("incrbyfloat", 3, G),
+    spec("get", 2, R, S),
+    spec("set", -3, G, S),
+    spec("setnx", 3, G, S),
+    spec("setex", 4, G, S),
+    spec("psetex", 4, G, S),
+    spec("getdel", 2, W, S),
+    spec("getex", -2, W, S),
+    spec("getset", 3, G, S),
+    spec("mget", -2, R, S),
+    spec("mset", -3, G, S),
+    spec("msetnx", -3, G, S),
+    spec("append", 3, G, S),
+    spec("strlen", 2, R, S),
+    spec("incr", 2, G, S),
+    spec("decr", 2, G, S),
+    spec("incrby", 3, G, S),
+    spec("decrby", 3, G, S),
+    spec("incrbyfloat", 3, G, S),
     // Keys
-    spec("del", -2, W),
-    spec("unlink", -2, W),
-    spec("exists", -2, R),
-    spec("touch", -2, R),
-    spec("type", 2, R),
-    spec("expire", -3, W),
-    spec("pexpire", -3, W),
-    spec("expireat", -3, W),
-    spec("pexpireat", -3, W),
-    spec("ttl", 2, R),
-    spec("pttl", 2, R),
-    spec("expiretime", 2, R),
-    spec("pexpiretime", 2, R),
-    spec("persist", 2, W),
-    spec("rename", 3, W),
-    spec("renamenx", 3, W),
-    spec("keys", 2, R),
-    spec("scan", -2, R),
-    spec("dbsize", 1, R),
-    spec("flushdb", -1, W),
-    spec("flushall", -1, W),
+    spec("del", -2, W, K),
+    spec("unlink", -2, W, K),
+    spec("exists", -2, R, K),
+    spec("touch", -2, R, K),
+    spec("type", 2, R, K),
+    spec("expire", -3, W, K),
+    spec("pexpire", -3, W, K),
+    spec("expireat", -3, W, K),
+    spec("pexpireat", -3, W, K),
+    spec("ttl", 2, R, K),
+    spec("pttl", 2, R, K),
+    spec("expiretime", 2, R, K),
+    spec("pexpiretime", 2, R, K),
+    spec("persist", 2, W, K),
+    spec("rename", 3, W, K),
+    spec("renamenx", 3, W, K),
+    spec("keys", 2, R, K),
+    spec("scan", -2, R, K),
+    spec("dbsize", 1, R, K),
+    spec("flushdb", -1, W, K),
+    spec("flushall", -1, W, K),
     // Hashes
-    spec("hset", -4, G),
-    spec("hmset", -4, G),
-    spec("hsetnx", 4, G),
-    spec("hget", 3, R),
-    spec("hmget", -3, R),
-    spec("hgetall", 2, R),
-    spec("hkeys", 2, R),
-    spec("hvals", 2, R),
-    spec("hlen", 2, R),
-    spec("hexists", 3, R),
-    spec("hdel", -3, W),
-    spec("hincrby", 4, G),
-    spec("hincrbyfloat", 4, G),
-    spec("hstrlen", 3, R),
-    spec("hscan", -3, R),
+    spec("hset", -4, G, H),
+    spec("hmset", -4, G, H),
+    spec("hsetnx", 4, G, H),
+    spec("hget", 3, R, H),
+    spec("hmget", -3, R, H),
+    spec("hgetall", 2, R, H),
+    spec("hkeys", 2, R, H),
+    spec("hvals", 2, R, H),
+    spec("hlen", 2, R, H),
+    spec("hexists", 3, R, H),
+    spec("hdel", -3, W, H),
+    spec("hincrby", 4, G, H),
+    spec("hincrbyfloat", 4, G, H),
+    spec("hstrlen", 3, R, H),
+    spec("hscan", -3, R, H),
     // Connection and server
-    spec("ping", -1, C),
-    spec("echo", 2, C),
-    spec("select", 2, C),
-    spec("quit", -1, C),
-    spec("reset", 1, C),
-    spec("auth", -2, C),
-    spec("hello", -1, C),
-    spec("client", -2, C),
-    spec("command", -1, C),
-    spec("info", -1, C),
-    spec("config", -2, C),
-    spec("time", 1, C),
-    spec("wait", 3, C),
-    spec("multi", 1, C),
-    spec("exec", 1, C),
-    spec("discard", 1, C),
-    spec("watch", -2, C),
-    spec("unwatch", 1, C),
+    spec("ping", -1, C, X),
+    spec("echo", 2, C, X),
+    spec("select", 2, C, X),
+    spec("quit", -1, C, X),
+    spec("reset", 1, C, X),
+    spec("auth", -2, C, X),
+    spec("hello", -1, C, X),
+    spec("client", -2, C, X),
+    spec("command", -1, C, X),
+    spec("info", -1, C, D),
+    spec("config", -2, C, A),
+    spec("time", 1, C, F),
+    spec("wait", 3, C, X),
+    spec("multi", 1, C, T),
+    spec("exec", 1, C, T),
+    spec("discard", 1, C, T),
+    spec("watch", -2, C, T),
+    spec("unwatch", 1, C, T),
 ];
 
-const fn spec(name: &'static str, arity: i32, class: Class) -> Spec {
-    Spec { name, arity, class }
+const fn spec(name: &'static str, arity: i32, class: Class, category: &'static str) -> Spec {
+    Spec {
+        name,
+        arity,
+        class,
+        category,
+    }
+}
+
+impl Spec {
+    /// The first key, the last (negative counts from the end), and the step
+    /// between keys, as `COMMAND INFO` reports them; zeros for no keys.
+    fn key_positions(&self) -> (i64, i64, i64) {
+        match self.name {
+            _ if self.class == Class::Connection && self.name != "watch" => (0, 0, 0),
+            "keys" | "scan" | "dbsize" | "flushdb" | "flushall" => (0, 0, 0),
+            "mget" | "del" | "unlink" | "exists" | "touch" | "watch" => (1, -1, 1),
+            "mset" | "msetnx" => (1, -1, 2),
+            "rename" | "renamenx" => (1, 2, 1),
+            _ => (1, 1, 1),
+        }
+    }
+
+    /// The command's `COMMAND INFO` entry, shaped like Redis 7's: name,
+    /// arity, flags, key positions, ACL categories, then tips, key
+    /// specifications and subcommands, which are empty here.
+    pub(crate) fn info(&self) -> Reply {
+        let (flags, kind): (&[&str], _) = match self.class {
+            Class::Read => (&["readonly"], Some("@read")),
+            Class::Write { grows: true } => (&["write", "denyoom"], Some("@write")),
+            Class::Write { grows: false } => (&["write"], Some("@write")),
+            Class::Connection => (&[], None),
+        };
+        let simple = |text: &str| Reply::Simple(text.to_owned());
+        let (first, last, step) = self.key_positions();
+        Reply::Array(vec![
+            Reply::bulk_str(self.name),
+            Reply::Int(i64::from(self.arity)),
+            Reply::Set(flags.iter().copied().map(simple).collect()),
+            Reply::Int(first),
+            Reply::Int(last),
+            Reply::Int(step),
+            Reply::Set(
+                kind.into_iter()
+                    .chain([self.category])
+                    .map(simple)
+                    .collect(),
+            ),
+            Reply::Set(Vec::new()),
+            Reply::Set(Vec::new()),
+            Reply::Set(Vec::new()),
+        ])
+    }
+}
+
+/// Every command the server knows, in table order.
+pub(crate) fn all() -> &'static [Spec] {
+    SPECS
+}
+
+/// The command named `name`, in any case.
+pub(crate) fn find(name: &[u8]) -> Option<&'static Spec> {
+    SPECS
+        .iter()
+        .find(|spec| spec.name.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// Number of commands the server knows, for `COMMAND COUNT`.
@@ -134,10 +208,7 @@ pub(crate) fn count() -> usize {
 /// reply Redis gives otherwise.
 pub(crate) fn lookup(args: &[Bytes]) -> Result<&'static Spec, Reply> {
     let name = &args[0];
-    let Some(spec) = SPECS
-        .iter()
-        .find(|spec| spec.name.as_bytes().eq_ignore_ascii_case(name))
-    else {
+    let Some(spec) = find(name) else {
         let mut message = format!(
             "ERR unknown command '{}', with args beginning with: ",
             printable(name, 128)
@@ -374,6 +445,31 @@ pub(crate) enum Cmd {
 }
 
 impl Cmd {
+    /// The largest reply the command can have, at most `max_reply`, so a
+    /// transaction can reserve room for its replies before it runs.
+    pub(crate) fn reply_bound(&self, limits: Limits, max_reply: usize) -> usize {
+        /// Enough for any reply but a stored value: numbers, `OK`, errors.
+        const SMALL: usize = 256;
+        let value = limits.max_value_bytes + 16;
+        match self {
+            Self::Get(_)
+            | Self::GetDel(_)
+            | Self::GetEx { .. }
+            | Self::HGet { .. }
+            | Self::Set { get: true, .. } => value,
+            Self::MGet(keys) => 16 + keys.len().saturating_mul(value),
+            Self::HMGet { fields, .. } => 16 + fields.len().saturating_mul(value),
+            Self::HGetAll(_)
+            | Self::HKeys(_)
+            | Self::HVals(_)
+            | Self::Keys(_)
+            | Self::Scan { .. }
+            | Self::HScan { .. } => max_reply,
+            _ => SMALL,
+        }
+        .min(max_reply)
+    }
+
     pub(crate) fn writes(&self) -> bool {
         !matches!(
             self,

@@ -172,6 +172,10 @@ async fn raw_protocol_matches_redis() {
             "FOO bar\r\n",
             "-ERR unknown command 'FOO', with args beginning with: 'bar' \r\n",
         ),
+        (
+            "COMMAND INFO get nosuch\r\n",
+            "*2\r\n*10\r\n$3\r\nget\r\n:2\r\n*1\r\n+readonly\r\n:1\r\n:1\r\n:1\r\n*2\r\n+@read\r\n+@string\r\n*0\r\n*0\r\n*0\r\n$-1\r\n",
+        ),
         ("HELLO 3\r\n", "%7\r\n"),
     ];
     for (send, expected) in cases {
@@ -305,6 +309,92 @@ async fn large_values_and_pipelines_round_trip() {
     let too_big = vec![0u8; 17 * 1024 * 1024];
     let refused: redis::RedisResult<()> = kv.set("huge", too_big).await;
     assert!(refused.is_err());
+}
+
+#[tokio::test]
+async fn command_info_describes_every_command() {
+    let s = server("secret").await;
+    let mut kv = client(s.addr, "secret", true).await;
+    let count: i64 = redis::cmd("COMMAND")
+        .arg("COUNT")
+        .query_async(&mut kv)
+        .await
+        .unwrap();
+    let all: Vec<redis::Value> = redis::cmd("COMMAND").query_async(&mut kv).await.unwrap();
+    assert_eq!(all.len() as i64, count);
+    let info: Vec<redis::Value> = redis::cmd("COMMAND")
+        .arg("INFO")
+        .arg("MSET")
+        .arg("nosuch")
+        .query_async(&mut kv)
+        .await
+        .unwrap();
+    let redis::Value::Array(mset) = &info[0] else {
+        panic!("{info:?}")
+    };
+    assert_eq!(mset.len(), 10);
+    assert_eq!(mset[1], redis::Value::Int(-3));
+    // Keys start at 1, run to the end, and come every other argument.
+    assert_eq!(
+        mset[3..6],
+        [
+            redis::Value::Int(1),
+            redis::Value::Int(-1),
+            redis::Value::Int(2)
+        ]
+    );
+    assert!(matches!(&mset[2], redis::Value::Set(flags) if flags.len() == 2));
+    assert_eq!(info[1], redis::Value::Nil);
+}
+
+#[tokio::test]
+async fn replies_draw_on_a_shared_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = KvHost::new(HostConfig {
+        max_buffered_reply_bytes: 3 * 1024 * 1024,
+        stall_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    let id = StoreId::parse("main").unwrap();
+    host.register(id.clone(), dir.path().join("main.redb"))
+        .unwrap();
+    host.set_bindings(
+        "app/production",
+        vec![Binding {
+            token_hash: hash_token("secret"),
+            store: id,
+            home: Home::Local,
+        }],
+    );
+    let addr = listen(&host, Access::Apps).await;
+    let mut kv = client(addr, "secret", false).await;
+    let big = vec![1u8; 2 * 1024 * 1024];
+    let _: () = kv.set("big", big.clone()).await.unwrap();
+    // Each large reply takes budget until it is sent, then returns it.
+    for _ in 0..3 {
+        let back: Vec<u8> = kv.get("big").await.unwrap();
+        assert_eq!(back, big);
+    }
+    // Many replies together go out in turns.
+    let value = vec![2u8; 20 * 1024];
+    let _: () = kv.set("medium", value.clone()).await.unwrap();
+    let mut pipe = redis::pipe();
+    for _ in 0..300 {
+        pipe.get("medium");
+    }
+    let all: Vec<Vec<u8>> = pipe.query_async(&mut kv).await.unwrap();
+    assert!(all.len() == 300 && all.iter().all(|v| *v == value));
+    // A reply larger than the whole budget fails, and a write that would
+    // return it changes nothing.
+    let huge = vec![3u8; 4 * 1024 * 1024];
+    let _: () = kv.set("huge", huge).await.unwrap();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let short = "-ERR the server is short of reply buffer space; retry\r\n";
+    let send =
+        "AUTH secret\r\nGET huge\r\nGETDEL huge\r\nMULTI\r\nGET huge\r\nEXEC\r\nEXISTS huge\r\n";
+    let expected = format!("+OK\r\n{short}{short}+OK\r\n+QUEUED\r\n{short}:1\r\n");
+    let got = raw(&mut stream, send.as_bytes(), expected.len()).await;
+    assert_eq!(String::from_utf8_lossy(&got), expected);
 }
 
 /// Two hosts: `home` holds the store; apps on `edge` reach it through
