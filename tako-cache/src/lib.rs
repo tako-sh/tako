@@ -1,89 +1,56 @@
 //! Bounded, disposable redb stores. The host resolves the private app or shared
 //! environment directory; requests never select a filesystem path.
-use redb::{ConcurrencyMode, Database, ReadableDatabase, ReadableTable, TableDefinition};
+mod pool;
+
+use pool::{Access, Pool};
+use redb::{
+    ConcurrencyMode, Database, DatabaseError, ReadOnlyDatabase, ReadableDatabase, ReadableTable,
+    TableDefinition, backends::FileBackend,
+};
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
 use std::fs;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tako_core::{CacheRequest, ErrorCode, SocketError};
 
 pub const FILE_NAME: &str = "cache.redb";
 const CAPACITY: u64 = 64 * 1024 * 1024;
 const MAX_JSON: usize = 256 * 1024;
-const HOT_STORES: usize = 8;
+const WRITERS: usize = 8;
+const READERS: usize = 64;
+const WRITER_CACHE: usize = 512 * 1024;
+const READER_CACHE: usize = 64 * 1024;
+const _: () = assert!(WRITERS * WRITER_CACHE + READERS * READER_CACHE <= 8 * 1024 * 1024);
 const ENTRIES: TableDefinition<&str, (u64, &str)> = TableDefinition::new("entries");
 const EXPIRY: TableDefinition<(u64, &str), ()> = TableDefinition::new("expiry");
 const USAGE: TableDefinition<(), u64> = TableDefinition::new("usage");
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
-type FileId = (u64, u64);
+type Reply = Result<Option<String>, DbError>;
 
-/// Keep only the most recent handles. Restores replace whole directories:
-/// never serve the old inode after the data tree changes.
+/// Readers follow peer commits without paying the allocator/flush cost of a writer open/close.
 #[derive(Default)]
-pub struct Caches(Mutex<VecDeque<(PathBuf, FileId, Arc<Database>)>>);
+pub struct Caches {
+    readers: Pool<ReadOnlyDatabase, READERS>,
+    writers: Pool<Database, WRITERS>,
+}
+
+fn open_writer(backend: FileBackend) -> Result<Database, DatabaseError> {
+    Database::builder()
+        .set_concurrency_mode(ConcurrencyMode::MultiWriter)
+        .set_cache_size(WRITER_CACHE)
+        .create_with_backend(backend)
+}
+
+fn open_reader(backend: FileBackend) -> Result<ReadOnlyDatabase, DatabaseError> {
+    Database::builder()
+        .set_concurrency_mode(ConcurrencyMode::MultiWriter)
+        .set_cache_size(READER_CACHE)
+        .open_read_only_with_backend(backend)
+}
 
 impl Caches {
-    fn database(&self, dir: &Path, create: bool) -> Result<Option<Arc<Database>>, DbError> {
-        let path = dir.join(FILE_NAME);
-        let file_id = || fs::metadata(&path).map(|m| (m.dev(), m.ino()));
-        let mut recent = self.0.lock().map_err(|_| "cache registry poisoned")?;
-        if let Some(i) = recent.iter().position(|(p, _, _)| p == &path)
-            && let Some(entry) = recent.remove(i)
-            && file_id().ok() == Some(entry.1)
-        {
-            let db = Arc::clone(&entry.2);
-            recent.push_front(entry);
-            return Ok(Some(db));
-        }
-        // A miss in a never-written store must not create a file or evict a hot handle.
-        if recent.len() == HOT_STORES {
-            if !create && !path.try_exists()? {
-                return Ok(None);
-            }
-            let idle = recent
-                .iter()
-                .rposition(|(_, _, db)| Arc::strong_count(db) == 1)
-                .ok_or("all cache handles are busy")?;
-            recent.remove(idle);
-        }
-        let file = match fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(create)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
-        {
-            Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            result => result?,
-        };
-        let meta = file.metadata()?;
-        // Rolling upgrades and a concurrent `tako run` may overlap writers.
-        let db = Database::builder()
-            .set_concurrency_mode(ConcurrencyMode::MultiWriter)
-            .set_cache_size(1024 * 1024)
-            .create_with_backend(redb::backends::FileBackend::new(file))?;
-        // Reopening an evicted handle on a read should not fsync a write.
-        match db.begin_read()?.open_table(USAGE) {
-            Ok(_) => {}
-            Err(redb::TableError::TableDoesNotExist(_)) => {
-                let txn = db.begin_write()?;
-                txn.open_table(ENTRIES)?;
-                txn.open_table(EXPIRY)?;
-                txn.open_table(USAGE)?;
-                txn.commit()?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let db = Arc::new(db);
-        recent.push_front((path, (meta.dev(), meta.ino()), Arc::clone(&db)));
-        Ok(Some(db))
-    }
-
     pub fn reply(&self, dir: &Path, request: CacheRequest) -> tako_core::Response {
         self.reply_at(dir, request, false)
     }
@@ -147,10 +114,16 @@ impl Caches {
                     .mode(0o700)
                     .create(dir)?;
             }
-            match self.database(dir, create)? {
-                Some(db) => execute(&db, request, now, CAPACITY),
-                None => Ok(None),
+            let path = dir.join(FILE_NAME);
+            if let CacheRequest::Get { key } = &request {
+                let result = self.readers.with(&path, Access::Read, open_reader, |db| read(db, key, now));
+                // An unclean shutdown needs a writer to repair on first open.
+                if !matches!(&result, Err(e) if matches!(e.downcast_ref(), Some(DatabaseError::RepairAborted))) {
+                    return result;
+                }
             }
+            let access = if create { Access::Create } else { Access::Update };
+            self.writers.with(&path, access, open_writer, |db| execute(db, request, now, CAPACITY))
         })()
         .map_err(|e| SocketError::new(ErrorCode::Unavailable, format!("cache unavailable: {e}")))
     }
@@ -161,6 +134,19 @@ fn weight(key: &str, json: &str) -> u64 {
     (64 + 2 * key.len() + json.len()) as u64
 }
 
+fn read(db: &impl ReadableDatabase, key: &str, now: impl FnOnce() -> u64) -> Reply {
+    // A transaction is a snapshot. Only the handle can be reused across requests.
+    let txn = db.begin_read()?;
+    let entries = match txn.open_table(ENTRIES) {
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        result => result?,
+    };
+    Ok(entries.get(key)?.and_then(|entry| {
+        let (expiry, json) = entry.value();
+        (expiry > now()).then(|| json.to_owned())
+    }))
+}
+
 fn execute(
     db: &Database,
     request: CacheRequest,
@@ -168,14 +154,7 @@ fn execute(
     capacity: u64,
 ) -> Result<Option<String>, DbError> {
     let (key, put) = match &request {
-        CacheRequest::Get { key } => {
-            let txn = db.begin_read()?;
-            let entries = txn.open_table(ENTRIES)?;
-            return Ok(entries.get(key.as_str())?.and_then(|entry| {
-                let (expiry, json) = entry.value();
-                (expiry > now()).then(|| json.to_owned())
-            }));
-        }
+        CacheRequest::Get { key } => return read(db, key, now),
         CacheRequest::Put { key, json, ttl_ms } => (key.as_str(), Some((json.as_str(), *ttl_ms))),
         CacheRequest::Delete { key } => (key.as_str(), None),
     };

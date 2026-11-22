@@ -55,7 +55,7 @@ Without `shared: true`, the same key is private to the app. There is no fallback
 
 Each store has a 64 MiB budget for JSON, keys, and per-entry overhead. Keys are limited to 1 KiB of UTF-8 and values to 256 KiB of serialized JSON. Writes reclaim expired entries even if nobody reads those keys; under pressure the soonest-expiring entries go first. Always handle a miss before the TTL. redb reuses freed pages, so the file can stay at its high-water mark. The byte budget is not an exact filesystem-size limit.
 
-The server keeps up to eight database handles hot, with a 1 MiB page cache each (8 MiB of configured page cache across apps). Other memory, such as requests in flight and filesystem caching, is additional. Less active apps reopen their existing store on demand.
+The server keeps up to eight write handles (512 KiB page cache each) and 64 read handles (64 KiB each), for 8 MiB of configured page cache across apps. Read handles are kept per store, so a round-robin read workload across up to 64 apps does not reopen a database per request; less active stores give up their handle first. Other memory, such as requests in flight and filesystem caching, is additional. A write to a store outside the eight most recent reopens its existing file on demand.
 
 Include the tenant, user, data version, and other authorization-relevant inputs in keys when results differ by reader. Authorize the request before returning private cached data. Do not treat a cache key as an access check.
 
