@@ -322,6 +322,59 @@ async fn spawn_timeout_reports_startup_timeout() {
     assert!(message.contains("Instance startup timeout"), "{message}");
 }
 
+fn shell_app(dir: &std::path::Path, script: &str, startup_timeout: Duration) -> App {
+    let (instance_tx, _instance_rx) = mpsc::channel(4);
+    App::new(
+        AppConfig {
+            name: "test-app".to_string(),
+            path: dir.to_path_buf(),
+            command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
+            startup_timeout,
+            ..Default::default()
+        },
+        instance_tx,
+        noop_log_handle(),
+    )
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn startup_output_larger_than_a_pipe_buffer_does_not_block_readiness() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    // 256 KiB fills any pipe buffer before the app can report readiness.
+    let app = shell_app(
+        dir.path(),
+        "i=0; while [ $i -lt 4096 ]; do echo 'startup log line padded to sixty-four bytes .......'; \
+         echo 'and the same on stderr, also padded to sixty-four bytes ......' >&2; i=$((i+1)); done; \
+         echo 43123 >&4; sleep 30",
+        Duration::from_secs(20),
+    );
+    let spawner = Spawner::new().with_data_dir(dir.path().to_path_buf());
+    let instance = app.allocate_instance();
+    spawner.spawn(&app, instance.clone()).await.unwrap();
+    assert_eq!(instance.port(), Some(43123));
+    let _ = instance.kill().await;
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn failed_starts_still_report_their_output() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let spawner = Spawner::new().with_data_dir(dir.path().to_path_buf());
+    for (script, expected) in [
+        ("echo exit boom >&2; exit 3", "exit code 3): exit boom"),
+        ("echo timeout boom >&2; sleep 5", "readiness: timeout boom"),
+    ] {
+        let app = shell_app(dir.path(), script, Duration::from_millis(1500));
+        let error = spawner
+            .spawn(&app, app.allocate_instance())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn app_children_request_sigterm_when_server_dies() {

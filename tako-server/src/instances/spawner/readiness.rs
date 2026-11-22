@@ -34,10 +34,19 @@ pub(super) async fn wait_for_ready(
                     Ok(())
                 }
                 Ok(None) => {
-                    let detail = if instance.is_alive().await {
-                        "Process closed readiness pipe before reporting a port".to_string()
-                    } else {
+                    // An exiting process closes fd 4 just before it can be
+                    // reaped; wait briefly so its exit status and output are
+                    // reported rather than the closed pipe.
+                    let exited = tokio::time::timeout(
+                        STARTUP_TIMEOUT_OUTPUT_WAIT,
+                        check_process_alive(&instance),
+                    )
+                    .await
+                    .is_ok();
+                    let detail = if exited {
                         startup_exit_detail(instance).await
+                    } else {
+                        "Process closed readiness pipe before reporting a port".to_string()
                     };
                     Err(InstanceError::HealthCheckFailed(detail))
                 }
@@ -72,9 +81,34 @@ async fn startup_exit_detail(instance: Arc<Instance>) -> String {
     };
 
     match child.wait_with_output().await {
-        Ok(output) => format_startup_exit_error(output.status, &output.stdout, &output.stderr),
+        Ok(output) => {
+            let (stdout, stderr) = startup_output(&instance, output.stdout, output.stderr).await;
+            format_startup_exit_error(output.status, &stdout, &stderr)
+        }
         Err(error) => format!("Process exited during startup; failed to read output: {error}"),
     }
+}
+
+/// Output the instance's log readers kept, or what was read from pipes that
+/// were never drained.
+async fn startup_output(
+    instance: &Instance,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+) -> (Vec<u8>, Vec<u8>) {
+    let (kept_stdout, kept_stderr) = instance.startup_output(STARTUP_TIMEOUT_OUTPUT_WAIT).await;
+    (
+        if stdout.is_empty() {
+            kept_stdout
+        } else {
+            stdout
+        },
+        if stderr.is_empty() {
+            kept_stderr
+        } else {
+            stderr
+        },
+    )
 }
 
 pub(super) async fn startup_timeout_detail(instance: Arc<Instance>, timeout: Duration) -> String {
@@ -85,7 +119,10 @@ pub(super) async fn startup_timeout_detail(instance: Arc<Instance>, timeout: Dur
     let _ = child.start_kill();
 
     match tokio::time::timeout(STARTUP_TIMEOUT_OUTPUT_WAIT, child.wait_with_output()).await {
-        Ok(Ok(output)) => format_startup_timeout_error(timeout, &output.stdout, &output.stderr),
+        Ok(Ok(output)) => {
+            let (stdout, stderr) = startup_output(&instance, output.stdout, output.stderr).await;
+            format_startup_timeout_error(timeout, &stdout, &stderr)
+        }
         Ok(Err(error)) => format!(
             "exceeded {timeout:?} while waiting for fd 4 readiness; failed to read output: {error}"
         ),
