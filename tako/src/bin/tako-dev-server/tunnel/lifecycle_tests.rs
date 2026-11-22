@@ -278,3 +278,69 @@ async fn disable_during_registration_cancels_enable() {
     disable_tunnel(&state, config, TunnelCloseReason::User);
     fixture.await.unwrap();
 }
+
+#[tokio::test]
+async fn re_registration_keeps_a_matching_tunnel_and_stops_a_stale_one() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let project = tempfile::TempDir::new().unwrap();
+    let config = project
+        .path()
+        .join("tako.toml")
+        .to_string_lossy()
+        .to_string();
+    let state = super::tests::tunnel_state_with_app(&config, 0, false);
+    let task = tokio::spawn(std::future::pending::<()>());
+    let mut events = {
+        let mut s = state.lock().unwrap();
+        s.apps.get_mut(&config).unwrap().tunnel = Some(TunnelRegistration {
+            generation: 1,
+            url: "https://app-abc123.example.com".into(),
+            expires_at: 0,
+            abort_handle: task.abort_handle(),
+        });
+        s.events.subscribe()
+    };
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn({
+        let state = state.clone();
+        async move { crate::control::handle_client(server, state).await }
+    });
+    let (reader, mut writer) = client.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    for app_name in ["app", "renamed"] {
+        let request = serde_json::json!({
+            "type": "RegisterApp", "environment": "development",
+            "config_path": config, "config_file": config,
+            "app_name": app_name, "app_namespace": app_name,
+            "project_dir": project.path(), "command": ["true"],
+            "hosts": [format!("{app_name}.test")], "env": {}
+        });
+        writer
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let response: Response =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(matches!(response, Response::AppRegistered { .. }));
+        let kept = state.lock().unwrap().apps[&config].tunnel.is_some();
+        assert_eq!(kept, app_name == "app", "{app_name}");
+        if app_name == "app" {
+            assert!(
+                !task.is_finished(),
+                "an unchanged app keeps serving its URL"
+            );
+        }
+    }
+    assert!(task.await.unwrap_err().is_cancelled());
+    let mut reported_off = false;
+    while let Ok(Response::Event { event }) = events.try_recv() {
+        reported_off |= matches!(
+            event,
+            protocol::DevEvent::TunnelModeChanged { enabled: false, .. }
+        );
+    }
+    assert!(reported_off, "a stopped tunnel must be reported off");
+    drop(writer);
+    handler.await.unwrap().unwrap();
+}
