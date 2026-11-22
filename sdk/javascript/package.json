@@ -75,7 +75,7 @@
     "typescript": "^6.0.3"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.11.6",
+    "@happy-dom/global-registrator": "^21.0.0",
     "@testing-library/react": "^16.3.2",
     "@tsconfig/strictest": "catalog:dev",
     "@types/bun": "catalog:dev",
