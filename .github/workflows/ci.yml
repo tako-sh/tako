@@ -275,7 +275,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Setup Bun
         run: bash scripts/install-bun.sh "${{ env.BUN_VERSION }}"
@@ -329,7 +329,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Setup Bun
         run: bash scripts/install-bun.sh "${{ env.BUN_VERSION }}"
@@ -398,7 +398,7 @@ jobs:
         if: steps.changes.outputs.website == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Setup Bun
         if: steps.changes.outputs.website == 'true'
