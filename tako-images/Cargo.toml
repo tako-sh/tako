@@ -21,7 +21,7 @@ libavif-sys = { version = "0.18.0", default-features = false, features = ["codec
 # Statically builds the vendored libwebp; no system libwebp is linked.
 libwebp-sys = "0.14.4"
 # ICC and CICP color conversion to sRGB; the same version image uses.
-moxcms = "0.8.1"
+moxcms = "0.9.0"
 ravif = { version = "0.13.0", default-features = false, features = ["asm"] }
 rgb = "0.8"
 schemars = { version = "1.2", optional = true }

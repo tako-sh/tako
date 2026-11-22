@@ -39,7 +39,7 @@ rmcp = { version = "3.7", default-features = false, features = ["server", "trans
 toml_edit = "0.25"
 jsonc-parser = { version = "0.34", features = ["serde", "cst"] }
 # Pingora 0.9 creates zero-capacity buffers, which Tokio 1.54 rejects on every connection.
-tokio = { version = "=1.53.1", features = ["full"] }
+tokio = { version = "=1.54.1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 ctrlc.workspace = true
@@ -47,7 +47,7 @@ console = "0.16"
 indicatif = "0.18"
 crossterm = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-sysinfo = "0.39"
+sysinfo = "0.40"
 base64 = "0.23"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -61,7 +61,7 @@ unicode-width = "0.2"
 
 # File watching
 notify = "8.2"
-notify-debouncer-mini = "0.7"
+notify-debouncer-mini = "0.8"
 
 # HTTP proxy/server
 openssl.workspace = true
@@ -102,9 +102,9 @@ aes-gcm = "0.11"
 getrandom = "0.4"
 pbkdf2 = { version = "0.13", features = ["sha2"] }
 libc = "0.2"
-nix = { version = "0.31", default-features = false, features = ["net"] }
+nix = { version = "0.32", default-features = false, features = ["net"] }
 boringtun = { version = "0.7.1", default-features = false }
-smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
 zeroize = "1"
 
 # SQLite state store for dev-server
@@ -114,7 +114,7 @@ rusqlite.workspace = true
 tako-database = { path = "../tako-database" }
 
 # QR code generation for LAN mode CA cert URL
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.15", default-features = false }
 
 # macOS: inspect trust settings and evaluate trust via Security.framework
 # so local HTTPS checks match browser trust behavior without shelling out.
@@ -127,10 +127,10 @@ daemonize = "0.5"
 
 
 [dev-dependencies]
-tokio = { version = "=1.53.1", features = ["test-util"] }
+tokio = { version = "=1.54.1", features = ["test-util"] }
 # The tako.toml JSON Schema is generated and checked only by tests.
 tako-core = { path = "../tako-core", features = ["schema"] }
 tako-images = { path = "../tako-images", features = ["schema"] }
 schemars = "1.2"
-jsonschema = { version = "0.60.0", default-features = false }
-rand = { version = "=0.10.3", features = ["thread_rng"] }
+jsonschema = { version = "0.63.0", default-features = false }
+rand = { version = "=0.10.4", features = ["thread_rng"] }
