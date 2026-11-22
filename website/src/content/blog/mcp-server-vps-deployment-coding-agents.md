@@ -69,7 +69,7 @@ During the CLI build, Tako embeds the Markdown from `website/docs/` and its cano
 
 The same content is available as resources such as `tako://docs/tako-toml` and `tako://skills/tako-sdk-js`. The general `tako` skill guides development, debugging, and deployment; the JavaScript, Go, and Rust skills supply language-specific SDK guidance. The live [documentation index](https://tako.sh/llms.txt) remains available when the agent needs an online entry point.
 
-Operational tool schemas come from the CLI's command definitions. Command paths become names such as `tako_deploy` and `tako_releases_rollback`; flags and positionals become named arguments. The translation validates arguments against the CLI parser, including required values and conflicts. That keeps the MCP interface tied to the command implementation.
+Operational tool schemas come from the CLI's command definitions. Command paths become names such as `tako_deploy` and `tako_release_rollback`; flags and positionals become named arguments. The translation validates arguments against the CLI parser, including required values and conflicts. That keeps the MCP interface tied to the command implementation.
 
 Most operational calls launch the installed executable with the selected configuration, project working directory, `--ci`, and `--json`. Arguments are passed as process arguments without shell interpolation. Results include `ok`, `exit_code`, `stdout`, `stderr`, and a `truncated` flag; JSON stdout is parsed when possible. Documentation and local-log snapshots have dedicated handlers.
 
@@ -98,7 +98,7 @@ Suppose a page works on your machine but fails in the preview environment. A use
 
 The agent should first read the project's [`tako.toml`](/docs/tako-toml/) and establish which environment and servers it is investigating. The MCP configuration selects an app configuration; it doesn't remove the need to choose an environment for operations that accept one.
 
-For production or preview failures, `tako_status`, `tako_releases_list`, and `tako_logs` provide deployment evidence. A finite production log request can look like:
+For production or preview failures, `tako_status`, `tako_release_list`, and `tako_logs` provide deployment evidence. A finite production log request can look like:
 
 ```json
 {

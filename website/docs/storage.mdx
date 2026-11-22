@@ -77,7 +77,7 @@ storages = { uploads = "local" }
 Create a binding and enter credentials when prompted:
 
 ```bash
-tako storages add uploads --env production --resource prod_uploads \
+tako storage add uploads --env production --resource prod_uploads \
   --provider s3 --bucket app-uploads \
   --endpoint https://example.r2.cloudflarestorage.com --region auto
 tako generate
@@ -135,7 +135,7 @@ Public storage can also feed [image optimization](/images/). Private object down
 ## Rotate and verify
 
 ```bash
-tako storages credentials prod_uploads --env production
+tako storage credentials prod_uploads --env production
 ```
 
 Deploy after changing production storage metadata or credentials. Regenerate declarations when binding names change. Test the complete flow: authorize a caller, issue a short-lived upload URL, upload a file, obtain a download URL, and check the downloaded bytes. Check expiry and cross-user access rules. Do not log signed URLs or credentials.

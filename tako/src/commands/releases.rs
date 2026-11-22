@@ -205,7 +205,7 @@ async fn list_releases(
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "releases",
+            "command": "release",
             "app": app_name,
             "environment": env,
             "releases": releases,

@@ -345,7 +345,7 @@ fn test_deploy_prints_secret_validation_errors_once() {
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "set", "API_KEY", "--env", "staging"],
+        &["secret", "set", "API_KEY", "--env", "staging"],
         Some("staging-only"),
     );
     let output = run_tako_with_env(

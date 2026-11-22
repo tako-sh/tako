@@ -54,10 +54,10 @@ tako init    # prompts for app name + route, offers wildcard HTTPS setup, writes
 tako network server add my-server
 # Optional: Let’s Encrypt wildcard certificates via Cloudflare DNS-01; traffic can stay DNS-only/direct.
 # Use a user or account API token with Zone Read and DNS Write for the matching Cloudflare zone.
-tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
+tako credential set ssl.cloudflare --env production --expires-on "in 90 days"
 # Optional: Cloudflare Origin CA certificates for Cloudflare-proxied apps.
 # Set ssl = "cloudflare" in tako.toml, then store a token with Zone / SSL and Certificates / Edit:
-tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
+tako credential set ssl.cloudflare --env production --expires-on "in 90 days"
 tako deploy
 # The first deploy records the network in tako.toml; commit it.
 ```

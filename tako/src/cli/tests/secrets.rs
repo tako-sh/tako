@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn secrets_key_export_parses_with_env() {
     let cli =
-        Cli::try_parse_from(["tako", "secrets", "key", "export", "--env", "production"]).unwrap();
+        Cli::try_parse_from(["tako", "secret", "key", "export", "--env", "production"]).unwrap();
 
-    let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Export { env }))) =
+    let Some(Commands::Secret(secret::SecretCommands::Key(SecretKeyCommands::Export { env }))) =
         cli.command
     else {
         panic!("expected Secrets::Key::Export");
@@ -16,9 +16,9 @@ fn secrets_key_export_parses_with_env() {
 
 #[test]
 fn secrets_key_import_parses() {
-    let cli = Cli::try_parse_from(["tako", "secrets", "key", "import"]).unwrap();
+    let cli = Cli::try_parse_from(["tako", "secret", "key", "import"]).unwrap();
 
-    let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
+    let Some(Commands::Secret(secret::SecretCommands::Key(SecretKeyCommands::Import {
         passphrase,
         env,
     }))) = cli.command
@@ -33,9 +33,9 @@ fn secrets_key_import_parses() {
 #[test]
 fn secrets_key_import_parses_with_env() {
     let cli =
-        Cli::try_parse_from(["tako", "secrets", "key", "import", "--env", "production"]).unwrap();
+        Cli::try_parse_from(["tako", "secret", "key", "import", "--env", "production"]).unwrap();
 
-    let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
+    let Some(Commands::Secret(secret::SecretCommands::Key(SecretKeyCommands::Import {
         passphrase,
         env,
     }))) = cli.command
@@ -51,7 +51,7 @@ fn secrets_key_import_parses_with_env() {
 fn secrets_key_import_passphrase_parses_with_env() {
     let cli = Cli::try_parse_from([
         "tako",
-        "secrets",
+        "secret",
         "key",
         "import",
         "--passphrase",
@@ -60,7 +60,7 @@ fn secrets_key_import_passphrase_parses_with_env() {
     ])
     .unwrap();
 
-    let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
+    let Some(Commands::Secret(secret::SecretCommands::Key(SecretKeyCommands::Import {
         passphrase,
         env,
     }))) = cli.command
@@ -76,7 +76,7 @@ fn secrets_key_import_passphrase_parses_with_env() {
 fn secrets_set_parses_expiry() {
     let cli = Cli::try_parse_from([
         "tako",
-        "secrets",
+        "secret",
         "set",
         "API_KEY",
         "--env",
@@ -86,7 +86,7 @@ fn secrets_set_parses_expiry() {
     ])
     .unwrap();
 
-    let Some(Commands::Secrets(secret::SecretCommands::Set {
+    let Some(Commands::Secret(secret::SecretCommands::Set {
         name,
         env,
         expires_on,
@@ -102,15 +102,15 @@ fn secrets_set_parses_expiry() {
 
 #[test]
 fn secrets_remove_aliases_parse() {
-    let cli = Cli::try_parse_from(["tako", "secrets", "remove", "API_KEY"]).unwrap();
-    let Some(Commands::Secrets(secret::SecretCommands::Rm { name, env, .. })) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "secret", "remove", "API_KEY"]).unwrap();
+    let Some(Commands::Secret(secret::SecretCommands::Rm { name, env, .. })) = cli.command else {
         panic!("expected Secrets::Rm");
     };
     assert_eq!(name, "API_KEY");
     assert!(env.is_none());
 
-    let cli = Cli::try_parse_from(["tako", "secrets", "delete", "API_KEY"]).unwrap();
-    let Some(Commands::Secrets(secret::SecretCommands::Rm { name, env, .. })) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "secret", "delete", "API_KEY"]).unwrap();
+    let Some(Commands::Secret(secret::SecretCommands::Rm { name, env, .. })) = cli.command else {
         panic!("expected Secrets::Rm");
     };
     assert_eq!(name, "API_KEY");
@@ -119,8 +119,8 @@ fn secrets_remove_aliases_parse() {
 
 #[test]
 fn secrets_list_parses() {
-    let cli = Cli::try_parse_from(["tako", "secrets", "list"]).unwrap();
-    let Some(Commands::Secrets(secret::SecretCommands::List)) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "secret", "list"]).unwrap();
+    let Some(Commands::Secret(secret::SecretCommands::List)) = cli.command else {
         panic!("expected Secrets::List");
     };
 }

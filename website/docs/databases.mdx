@@ -111,10 +111,10 @@ Tako's test suite applies Drizzle migrations with `migrate` and queries through 
 
 ## Migrations
 
-Put SQL files in `migrations/`, named with an order number, and create new ones with `migrations new`, which prefixes the current UTC time:
+Put SQL files in `migrations/`, named with an order number, and create new ones with `migration new`, which prefixes the current UTC time:
 
 ```bash
-tako sqlite migrations new "add orders"
+tako sqlite migration new "add orders"
 # Created migrations/20261116143000_add_orders.sql
 ```
 
@@ -124,13 +124,13 @@ migrations/
   20261116143000_add_orders.sql
 ```
 
-Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migrations new`; loose files in `migrations/` are then an error, as they are next to a binding's own folder. Two files with one number are rejected, and other file types in the folder are ignored. One binding's migrations are sent to the server in one request, so together they may take at most 960 KiB as JSON; load large data with `tako sqlite import` instead, or replace files every database has applied with one smaller file that is safe to run again (such as `CREATE TABLE IF NOT EXISTS`), numbered after them.
+Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migration new`; loose files in `migrations/` are then an error, as they are next to a binding's own folder. Two files with one number are rejected, and other file types in the folder are ignored. One binding's migrations are sent to the server in one request, so together they may take at most 960 KiB as JSON; load large data with `tako sqlite import` instead, or replace files every database has applied with one smaller file that is safe to run again (such as `CREATE TABLE IF NOT EXISTS`), numbered after them.
 
 Tako applies pending migrations:
 
 - on `tako deploy`, on the database's server, after the snapshot before the release command and before the release command and rollout. A failing migration stops the deploy before any new instance starts. The previous release keeps serving while migrations run, so keep them compatible with it (add a column before code depends on it; drop it in a later deploy).
 - in `tako dev` (before the app starts, on each reload, and whenever a file in `migrations/` is added or saved, without restarting the app) and `tako run`, on the local file.
-- on `tako sqlite migrations apply [<database>]`. `migrations list [<database>]` shows what is pending without applying it. Both act on every database the project binds by default; `--local` acts on the development files.
+- on `tako sqlite migration apply [<database>]`. `migration list [<database>]` shows what is pending without applying it. Both act on every database the project binds by default; `--local` acts on the development files.
 
 Each file runs in one `BEGIN IMMEDIATE` transaction together with its record in the database's `_tako_migrations` table (`app`, `name`, `sha256`, `applied_at`), so a failing file leaves nothing behind and the files before it stay applied. A file that contains `BEGIN`, `COMMIT`, `END`, or `ROLLBACK` is refused before that statement runs, and nothing in it is committed; `SAVEPOINT` and `RELEASE` work inside the file's transaction. Foreign keys are not enforced while a file runs, so it can rebuild a table that others reference ([SQLite's 12 steps](https://sqlite.org/lang_altertable.html#otheralter)), but `PRAGMA foreign_key_check` must pass before it commits. Statements have the same 30-second limit and restrictions as app queries. When backups are configured and something is pending, the server snapshots the database first (reason `migration`). The previous release keeps serving meanwhile, so, as with any snapshot, its writes after the snapshot are not in it.
 
@@ -196,7 +196,7 @@ region = "auto"
 ```
 
 ```bash
-tako storages credentials private_backups --env production
+tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
@@ -291,7 +291,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 ## Verify
 
 1. Run `tako sqlite status <name> --json` and confirm the server, `bindings` or `remote_grants`, and `backup.last_snapshot`.
-2. Run `tako sqlite migrations list` and confirm nothing is pending after a deploy.
+2. Run `tako sqlite migration list` and confirm nothing is pending after a deploy.
 3. Run `tako sqlite shell <name> "SELECT count(*) FROM <table>" --json` to check known rows.
 4. Take a snapshot with `tako sqlite backup <name>` and list it with `tako sqlite backups <name>`.
 5. Before depending on backups, restore a snapshot into a staging database or export one and open it locally.

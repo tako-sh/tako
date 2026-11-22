@@ -87,7 +87,7 @@ Transfer the invitation privately. On the new machine, clone your app repository
 ```bash
 tako network join
 tako network sync production
-tako secrets list --json
+tako secret list --json
 ```
 
 `join` prompts for the invitation; automation can use `--invitation-stdin`. The invitation is single-use and expires after an hour by default. Its issuing server must be reachable to redeem it. The new device generates its own keys: the string grants enrollment, rather than copying an existing client's identity. Secret listing shows metadata without printing values.
@@ -99,18 +99,18 @@ An invitation recovers access to published state. It cannot recover edits somebo
 From the app directory, set a value using the masked prompt:
 
 ```bash
-tako secrets set DATABASE_URL --env production
+tako secret set DATABASE_URL --env production
 ```
 
 This writes encrypted, ignored `.tako/state.local.json` state in the current worktree. It makes no network request. Removing a secret is local too. For automation, pass values on stdin; avoid putting them into shell arguments or history.
 
 Publication happens when you choose it:
 
-| Command                              | Shared-state effect                                          | Running app effect                               |
-| ------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------ |
-| `tako network sync production`       | Refreshes the device cache; leaves drafts unpublished        | None                                             |
-| `tako secrets sync --env production` | Pulls published values and publishes this worktree's changes | None                                             |
-| `tako deploy --env production`       | Syncs the selected environment before building               | Deploys a new release if the deployment succeeds |
+| Command                             | Shared-state effect                                          | Running app effect                               |
+| ----------------------------------- | ------------------------------------------------------------ | ------------------------------------------------ |
+| `tako network sync production`      | Refreshes the device cache; leaves drafts unpublished        | None                                             |
+| `tako secret sync --env production` | Pulls published values and publishes this worktree's changes | None                                             |
+| `tako deploy --env production`      | Syncs the selected environment before building               | Deploys a new release if the deployment succeeds |
 
 Adding or removing a client refreshes membership and the local cache without publishing unrelated drafts. Secret sync alone does not restart apps. Also, because deployment publishes before building, a later build failure does not undo secret publication. See the [deployment flow](/docs/deployment/) when planning a rotation.
 
@@ -123,8 +123,8 @@ Worktrees deserve particular attention. A new worktree can start from the machin
 For an existing tracked secret file, follow the [migration instructions](/docs/secrets/#migrate-a-tracked-secret-file):
 
 ```bash
-tako secrets migrate
-tako secrets sync --env production
+tako secret migrate
+tako secret sync --env production
 ```
 
 Migration requires the original environment keys, retains an ignored recovery copy, and removes the old working file. Review and commit that deletion. Previous Git commits still contain their encrypted blobs. Older native network identities also require fresh enrollment for this protocol update; secret migration does not upgrade those identities.

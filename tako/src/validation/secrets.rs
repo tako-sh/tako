@@ -117,7 +117,7 @@ fn validate_target_secret_expirations(secrets: &SecretsStore, env_name: &str) ->
             Ok(true) => {
                 if let Some(expires_on) = &secret.expires_on {
                     result.error(format!(
-                        "Secret '{secret_name}' in environment '{env_name}' expired on {expires_on}. Run `tako secrets set {secret_name} --env {env_name}` to update it."
+                        "Secret '{secret_name}' in environment '{env_name}' expired on {expires_on}. Run `tako secret set {secret_name} --env {env_name}` to update it."
                     ));
                 }
             }
@@ -125,7 +125,7 @@ fn validate_target_secret_expirations(secrets: &SecretsStore, env_name: &str) ->
                 Ok(true) => {
                     if let Some(expires_on) = &secret.expires_on {
                         result.warn(format!(
-                            "Secret '{secret_name}' in environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako secrets set {secret_name} --env {env_name}` to rotate it."
+                            "Secret '{secret_name}' in environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako secret set {secret_name} --env {env_name}` to rotate it."
                         ));
                     }
                 }

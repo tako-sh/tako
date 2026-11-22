@@ -67,6 +67,17 @@ fn format_server_status_lines(
 
     lines.push(format_server_summary(global));
 
+    let resources = global
+        .resources
+        .as_ref()
+        .map(format_resource_lines)
+        .unwrap_or_default();
+    if !resources.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("{}Resources", output::INDENT));
+        lines.extend(resources);
+    }
+
     if !global.routes.is_empty() {
         lines.push(String::new());
         lines.push(format!("{}Routes", output::INDENT));
@@ -101,19 +112,112 @@ fn format_server_summary(global: &GlobalServerStatusResult) -> String {
         segments.push(display_server_version(ver));
     }
 
-    match (&global.server_uptime, &global.process_uptime) {
-        (Some(host_uptime), Some(process_uptime)) if global.service_status != "upgrading" => {
+    let process_uptime = global
+        .process_uptime
+        .as_ref()
+        .filter(|_| global.service_status != "upgrading");
+    match (&global.server_uptime, process_uptime) {
+        (Some(host_uptime), Some(process_uptime)) => {
             segments.push(format!("host up {host_uptime}"));
             segments.push(format!("server up {process_uptime}"));
         }
-        (Some(uptime), _) => segments.push(format!("up {uptime}")),
-        (None, Some(uptime)) if global.service_status != "upgrading" => {
-            segments.push(format!("up {uptime}"));
-        }
-        (None, _) => {}
+        (Some(host_uptime), None) => segments.push(format!("host up {host_uptime}")),
+        (None, Some(process_uptime)) => segments.push(format!("up {process_uptime}")),
+        (None, None) => {}
     }
 
     format!("{}{}", output::INDENT, segments.join("  "))
+}
+
+/// CPU, memory, swap, and data disk rows, colored as they run out.
+fn format_resource_lines(host: &tako_core::HostStats) -> Vec<String> {
+    let mut rows: Vec<(&str, String)> = Vec::new();
+
+    if let Some(cpu) = &host.cpu {
+        let mut text = format!(
+            "{} {}",
+            cpu.cores,
+            if cpu.cores == 1 { "core" } else { "cores" }
+        );
+        if let Some([one, five, fifteen]) = cpu.load_average {
+            let busy = (one >= f64::from(cpu.cores)).then_some(StatusColor::Warning);
+            text.push_str("  ");
+            text.push_str(&colorize(
+                &format!("load {one:.2} {five:.2} {fifteen:.2}"),
+                busy,
+            ));
+        }
+        rows.push(("CPU", text));
+    }
+
+    if let Some(memory) = &host.memory
+        && memory.total_bytes > 0
+    {
+        let used = memory.total_bytes.saturating_sub(memory.available_bytes);
+        rows.push(("Memory", format_usage(used, memory.total_bytes)));
+        if memory.swap_total_bytes > 0 {
+            let used = memory
+                .swap_total_bytes
+                .saturating_sub(memory.swap_free_bytes);
+            rows.push(("Swap", format_usage(used, memory.swap_total_bytes)));
+        }
+    }
+
+    if let Some(disk) = &host.disk
+        && disk.total_bytes > 0
+    {
+        // Like `df`, measure use against what is usable, not root's reserve.
+        let percent = usage_percent(
+            disk.used_bytes,
+            disk.used_bytes.saturating_add(disk.available_bytes),
+        );
+        rows.push((
+            "Disk",
+            format!(
+                "{} free of {} ({})",
+                output::format_size(disk.available_bytes),
+                output::format_size(disk.total_bytes),
+                colorize(&format!("{percent}% used"), usage_color(percent)),
+            ),
+        ));
+    }
+
+    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    rows.into_iter()
+        .map(|(label, text)| {
+            format!(
+                "{indent}{label:<width$}  {text}",
+                indent = output::INDENT.repeat(2)
+            )
+        })
+        .collect()
+}
+
+fn format_usage(used: u64, total: u64) -> String {
+    let percent = usage_percent(used, total);
+    format!(
+        "{} used of {} ({})",
+        output::format_size(used),
+        output::format_size(total),
+        colorize(&format!("{percent}%"), usage_color(percent)),
+    )
+}
+
+/// Whole percent, rounded up as `df` does.
+fn usage_percent(used: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 0;
+    }
+    let percent = (u128::from(used) * 100).div_ceil(u128::from(total));
+    percent.min(100) as u64
+}
+
+fn usage_color(percent: u64) -> Option<StatusColor> {
+    match percent {
+        90.. => Some(StatusColor::Error),
+        80.. => Some(StatusColor::Warning),
+        _ => None,
+    }
 }
 
 fn format_route_lines(routes: &[(String, String)]) -> Vec<String> {
@@ -433,6 +537,7 @@ mod tests {
             server_version: Some("0.1.0".to_string()),
             server_uptime: None,
             process_uptime: Some("4d 6h".to_string()),
+            resources: None,
             routes: vec![
                 (
                     "web (production)".to_string(),
@@ -552,6 +657,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
+            resources: None,
             routes: Vec::new(),
             apps: vec![super::super::GlobalAppStatusResult {
                 app_name: "web".to_string(),
@@ -608,6 +714,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
+            resources: None,
             routes: Vec::new(),
             apps: Vec::new(),
             error: Some("Remote management failed".to_string()),
@@ -689,6 +796,127 @@ mod tests {
         );
     }
 
+    fn plain(lines: Vec<String>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| console::strip_ansi_codes(&line).to_string())
+            .collect()
+    }
+
+    fn host_stats() -> tako_core::HostStats {
+        const GB: u64 = 1 << 30;
+        tako_core::HostStats {
+            uptime_secs: Some(12 * 86_400 + 3 * 3600),
+            cpu: Some(tako_core::CpuStats {
+                cores: 4,
+                load_average: Some([0.52, 0.58, 0.6]),
+            }),
+            memory: Some(tako_core::MemoryStats {
+                total_bytes: 8 * GB,
+                available_bytes: 6 * GB,
+                swap_total_bytes: 0,
+                swap_free_bytes: 0,
+            }),
+            disk: Some(tako_core::DiskStats {
+                path: "/var/lib/tako".into(),
+                total_bytes: 40 * GB,
+                used_bytes: 26 * GB,
+                available_bytes: 12 * GB,
+            }),
+        }
+    }
+
+    fn active_server(host: Option<tako_core::HostStats>) -> GlobalServerStatusResult {
+        GlobalServerStatusResult {
+            service_status: "active".into(),
+            server_version: Some("0.1.0".into()),
+            server_uptime: host
+                .as_ref()
+                .and_then(|host| host.uptime_secs)
+                .map(format_duration_human),
+            process_uptime: Some("4d 6h".into()),
+            resources: host,
+            routes: vec![],
+            apps: vec![],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn server_lines_show_host_resources_under_the_summary() {
+        let lines = plain(format_server_status_lines(
+            "prod-a",
+            None,
+            &active_server(Some(host_stats())),
+            &[],
+        ));
+        assert_eq!(
+            lines,
+            vec![
+                "Server prod-a",
+                "  active  v0.1.0  host up 12d 3h  server up 4d 6h",
+                "",
+                "  Resources",
+                "    CPU     4 cores  load 0.52 0.58 0.60",
+                "    Memory  2.00 GB used of 8.00 GB (25%)",
+                "    Disk    12.00 GB free of 40.00 GB (69% used)",
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_lines_add_swap_and_leave_out_what_the_server_could_not_read() {
+        let mut host = host_stats();
+        if let Some(memory) = host.memory.as_mut() {
+            memory.swap_total_bytes = 2 << 30;
+            memory.swap_free_bytes = 1 << 30;
+        }
+        host.disk = None;
+        host.cpu.as_mut().unwrap().load_average = None;
+        assert_eq!(
+            plain(format_resource_lines(&host)),
+            vec![
+                "    CPU     4 cores",
+                "    Memory  2.00 GB used of 8.00 GB (25%)",
+                "    Swap    1.00 GB used of 2.00 GB (50%)",
+            ]
+        );
+
+        let only_uptime = tako_core::HostStats {
+            uptime_secs: Some(60),
+            ..Default::default()
+        };
+        assert!(format_resource_lines(&only_uptime).is_empty());
+        let lines =
+            format_server_status_lines("prod-a", None, &active_server(Some(only_uptime)), &[]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+    }
+
+    #[test]
+    fn server_summary_labels_each_uptime() {
+        let mut server = active_server(None);
+        assert_eq!(
+            plain(vec![format_server_summary(&server)]),
+            ["  active  v0.1.0  up 4d 6h"]
+        );
+
+        server.server_uptime = Some("12d 3h".into());
+        server.service_status = "upgrading".into();
+        assert!(plain(vec![format_server_summary(&server)])[0].ends_with("v0.1.0  host up 12d 3h"));
+    }
+
+    #[test]
+    fn usage_percent_rounds_up_and_colors_near_full() {
+        assert_eq!(usage_percent(0, 100), 0);
+        assert_eq!(usage_percent(1, 1000), 1);
+        assert_eq!(usage_percent(799, 1000), 80);
+        assert_eq!(usage_percent(5, 0), 0);
+        assert_eq!(usage_percent(u64::MAX, u64::MAX), 100);
+        assert!(usage_color(79).is_none());
+        assert!(matches!(usage_color(80), Some(StatusColor::Warning)));
+        assert!(matches!(usage_color(90), Some(StatusColor::Error)));
+    }
+
     #[test]
     fn server_lines_list_the_databases_homed_there() {
         let global = GlobalServerStatusResult {
@@ -696,6 +924,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
+            resources: None,
             routes: vec![],
             apps: vec![],
             error: None,

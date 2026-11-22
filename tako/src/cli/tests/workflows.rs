@@ -4,7 +4,7 @@ use super::*;
 fn workflows_list_parses_filters() {
     let cli = Cli::try_parse_from([
         "tako",
-        "workflows",
+        "workflow",
         "ls",
         "--env",
         "staging",
@@ -17,7 +17,7 @@ fn workflows_list_parses_filters() {
     ])
     .unwrap();
 
-    let Some(Commands::Workflows(WorkflowCommands::List {
+    let Some(Commands::Workflow(WorkflowCommands::List {
         env,
         server,
         status,
@@ -36,7 +36,7 @@ fn workflows_list_parses_filters() {
 
 #[test]
 fn workflows_list_rejects_unknown_status_and_out_of_range_limit() {
-    let error = Cli::try_parse_from(["tako", "workflows", "list", "--status", "failed"])
+    let error = Cli::try_parse_from(["tako", "workflow", "list", "--status", "failed"])
         .err()
         .expect("unknown status");
     let message = error.to_string();
@@ -47,7 +47,7 @@ fn workflows_list_rejects_unknown_status_and_out_of_range_limit() {
     );
 
     for limit in ["0", "201"] {
-        let error = Cli::try_parse_from(["tako", "workflows", "list", "--limit", limit])
+        let error = Cli::try_parse_from(["tako", "workflow", "list", "--limit", limit])
             .err()
             .expect("out of range");
         assert!(error.to_string().contains("1..=200"), "{error}");
@@ -57,19 +57,13 @@ fn workflows_list_rejects_unknown_status_and_out_of_range_limit() {
 #[test]
 fn workflows_run_commands_require_a_run_id() {
     for action in ["show", "retry", "cancel"] {
-        assert!(Cli::try_parse_from(["tako", "workflows", action]).is_err());
+        assert!(Cli::try_parse_from(["tako", "workflow", action]).is_err());
     }
     let cli = Cli::try_parse_from([
-        "tako",
-        "workflows",
-        "cancel",
-        "run_1",
-        "--server",
-        "la",
-        "--yes",
+        "tako", "workflow", "cancel", "run_1", "--server", "la", "--yes",
     ])
     .unwrap();
-    let Some(Commands::Workflows(WorkflowCommands::Cancel {
+    let Some(Commands::Workflow(WorkflowCommands::Cancel {
         run_id,
         env,
         server,

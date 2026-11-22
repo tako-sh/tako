@@ -48,7 +48,7 @@ region = "auto"
 ```
 
 ```bash
-tako storages credentials private_backups --env production
+tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
@@ -75,21 +75,21 @@ Manual archives include every file under the app's `data/app/` and `data/tako/`,
 ## Create and inspect
 
 ```bash
-tako backups now --env production --server la
-tako backups list --env production --server la --json
-tako backups status --env production --json
+tako backup now --env production --server la
+tako backup list --env production --server la --json
+tako backup status --env production --json
 ```
 
-Archive status reports the last manual full archive, the last failed attempt, retention, and unfinished restores. Full archives retain 30 days by default; their cleanup runs when an archive is created, not on a timer. `backups list` also shows `databases` archives created by older servers.
+Archive status reports the last manual full archive, the last failed attempt, retention, and unfinished restores. Full archives retain 30 days by default; their cleanup runs when an archive is created, not on a timer. `backup list` also shows `databases` archives created by older servers.
 
 Creating, listing, downloading and restoring backups needs a full client. A deploy client can change an environment's backup settings in `tako.toml`, which apply when it deploys, but cannot run these commands.
 
-Download a manual archive with `tako backups download <backup-id> --env production --server la`. The result is an encrypted zstd-compressed tar archive.
+Download a manual archive with `tako backup download <backup-id> --env production --server la`. The result is an encrypted zstd-compressed tar archive.
 
 ## Restore app data
 
 ```bash
-tako backups restore <backup-id> --env production --server la
+tako backup restore <backup-id> --env production --server la
 ```
 
 Choose the server explicitly when the environment has multiple servers. A restore downloads and verifies the archive, stops the app and its workflow workers, replaces `data/app/` and `data/tako/` together, and restarts the app. This can rewind workflow state. If restart fails, Tako attempts to stop the failed runtime and put the original files back. Archives of type `databases` from older Tako versions remain restorable.
@@ -112,7 +112,7 @@ and a record, `restore.json`, whose `state` says what the live data is:
   stopped: server starts do not start it or its workflows, a running standby
   stops it within seconds, requests do not cold start it, `tako status` shows the
   reason as its error, and deploys, release commands, `tako scale`, secret
-  updates, and `tako backups now` are refused with the same message. A manual backup is refused.
+  updates, and `tako backup now` are refused with the same message. A manual backup is refused.
 
 A directory without `restore.json` means the live data is whole, either the
 original or the restored data; remove it.
@@ -154,7 +154,7 @@ directory. Either way, then remove the leftover directory and start the app with
 1. Enroll the replacement server in the network. Restore access to the app's backup configuration, backup keys, and storage credentials.
 2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server. KV stores cannot be recovered: once the lost server is removed from the network, `tako kv delete <name>` forgets the store, and `tako kv create <name> --server <new-server>` creates an empty one under the same name.
 3. Deploy the app to the replacement server.
-4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backups restore <backup-id> --server <new-server>`.
+4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backup restore <backup-id> --server <new-server>`.
 5. Verify known records and app behavior before sending traffic to the replacement.
 
 A fresh deploy creates no full-directory backup.
@@ -167,7 +167,7 @@ Database snapshots need free space for about three copies of the database plus 2
 
 ## Verify recovery
 
-Inspect `tako sqlite status --json`, `tako backups status --json`, and app logs, request the app, and check known records and files. Test recovery before depending on it. See [backup troubleshooting](/troubleshooting/#backups-fail) for setup and credential failures.
+Inspect `tako sqlite status --json`, `tako backup status --json`, and app logs, request the app, and check known records and files. Test recovery before depending on it. See [backup troubleshooting](/troubleshooting/#backups-fail) for setup and credential failures.
 
 ## Container data
 

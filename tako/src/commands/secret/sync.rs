@@ -12,14 +12,14 @@ pub(super) async fn list_secrets(
         if output::is_json() {
             return output::json_result(serde_json::json!({
                 "ok": true,
-                "command": "secrets",
+                "command": "secret",
                 "secrets": [],
             }));
         }
         output::warning("No secrets configured.");
         output::muted(&format!(
             "Run {} to add a secret.",
-            output::strong("tako secrets set")
+            output::strong("tako secret set")
         ));
         return Ok(());
     }
@@ -63,7 +63,7 @@ pub(super) async fn list_secrets(
             .collect::<Vec<_>>();
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "secrets",
+            "command": "secret",
             "secrets": listed,
         }));
     }
@@ -141,7 +141,7 @@ pub(super) async fn list_secrets(
         ));
         output::muted(&format!(
             "Run {} to sync secrets to servers.",
-            output::strong("tako secrets sync")
+            output::strong("tako secret sync")
         ));
     }
 

@@ -30,7 +30,7 @@ pub fn validate_ssl_for_deployment(
         Ok(true) => {
             if let Some(expires_on) = &credential.expires_on {
                 result.error(format!(
-                    "Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} for environment '{env_name}' expired on {expires_on}. Run `tako credentials set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env_name}` to update it."
+                    "Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} for environment '{env_name}' expired on {expires_on}. Run `tako credential set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env_name}` to update it."
                 ));
             }
         }
@@ -38,7 +38,7 @@ pub fn validate_ssl_for_deployment(
             Ok(true) => {
                 if let Some(expires_on) = &credential.expires_on {
                     result.warn(format!(
-                        "Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} for environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako credentials set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env_name}` to rotate it."
+                        "Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} for environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako credential set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env_name}` to rotate it."
                     ));
                 }
             }
@@ -86,7 +86,7 @@ mod tests {
         assert!(result.has_errors());
         assert!(
             result.errors[0].contains(
-                "Cloudflare SSL requires credential ssl.cloudflare. Run `tako credentials set ssl.cloudflare --env production`."
+                "Cloudflare SSL requires credential ssl.cloudflare. Run `tako credential set ssl.cloudflare --env production`."
             ),
             "{:?}",
             result.errors
@@ -117,7 +117,7 @@ mod tests {
         assert!(result.has_errors());
         assert!(
             result.errors[0].contains(
-                "Let’s Encrypt wildcard routes require credential ssl.cloudflare. Run `tako credentials set ssl.cloudflare --env production`."
+                "Let’s Encrypt wildcard routes require credential ssl.cloudflare. Run `tako credential set ssl.cloudflare --env production`."
             ),
             "{:?}",
             result.errors

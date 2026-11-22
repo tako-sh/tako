@@ -1,4 +1,4 @@
-//! `tako workflows`: inspect and repair an environment's workflow runs.
+//! `tako workflow`: inspect and repair an environment's workflow runs.
 //!
 //! Every mapped server is asked. Per-server SQLite stores answer for their own
 //! runs, which are labelled with the server; a shared Postgres store answers
@@ -50,7 +50,7 @@ pub enum WorkflowCommands {
 
     /// Show a run with its saved steps, waits, and error
     Show {
-        /// Run id from `tako workflows list`
+        /// Run id from `tako workflow list`
         run_id: String,
         /// Environment to query (defaults to production)
         #[arg(long)]
@@ -62,7 +62,7 @@ pub enum WorkflowCommands {
 
     /// Return a dead or cancelled run to pending with a fresh retry budget
     Retry {
-        /// Run id from `tako workflows list`
+        /// Run id from `tako workflow list`
         run_id: String,
         /// Environment of the run (defaults to production)
         #[arg(long)]
@@ -74,7 +74,7 @@ pub enum WorkflowCommands {
 
     /// Cancel a pending or running run
     Cancel {
-        /// Run id from `tako workflows list`
+        /// Run id from `tako workflow list`
         run_id: String,
         /// Environment of the run (defaults to production)
         #[arg(long)]
@@ -326,7 +326,7 @@ async fn cancel_run(
 }
 
 /// Cancel stops work, so it asks first in an interactive terminal, like
-/// `backups restore`. A run that cannot be cancelled goes straight to the
+/// `backup restore`. A run that cannot be cancelled goes straight to the
 /// server, which explains why.
 fn should_confirm_cancel(status: WorkflowRunStatus, assume_yes: bool, interactive: bool) -> bool {
     !assume_yes

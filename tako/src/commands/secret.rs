@@ -250,7 +250,7 @@ async fn run_async(
             crate::network::secrets::migrate(&context.project_dir)?;
             output::success("Migrated secrets to this worktree's local drafts");
             output::hint(
-                "Commit the deletion of .tako/secrets.json. Deploy or run `tako secrets sync` to publish the drafts; Git history is unchanged.",
+                "Commit the deletion of .tako/secrets.json. Deploy or run `tako secret sync` to publish the drafts; Git history is unchanged.",
             );
             Ok(())
         }

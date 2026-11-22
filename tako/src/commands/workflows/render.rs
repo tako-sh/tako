@@ -439,7 +439,7 @@ pub(super) fn errors_json(errors: &[super::merge::ServerError]) -> Value {
 pub(super) fn list_json(app: &str, env: &str, merged: &MergedRuns) -> Value {
     json!({
         "ok": true,
-        "command": "workflows",
+        "command": "workflow",
         "app": app,
         "environment": env,
         "store": merged.store,
@@ -452,7 +452,7 @@ pub(super) fn list_json(app: &str, env: &str, merged: &MergedRuns) -> Value {
 pub(super) fn show_json(app: &str, env: &str, found: &FoundRun) -> Value {
     json!({
         "ok": true,
-        "command": "workflows",
+        "command": "workflow",
         "app": app,
         "environment": env,
         "store": found.store,
@@ -470,7 +470,7 @@ pub(super) fn transition_json(
 ) -> Value {
     json!({
         "ok": true,
-        "command": "workflows",
+        "command": "workflow",
         "app": app,
         "environment": env,
         "store": transition.store,
@@ -834,7 +834,7 @@ mod tests {
             value,
             json!({
                 "ok": true,
-                "command": "workflows",
+                "command": "workflow",
                 "app": "demo",
                 "environment": "production",
                 "store": "sqlite",
@@ -885,7 +885,7 @@ mod tests {
             value,
             json!({
                 "ok": true,
-                "command": "workflows",
+                "command": "workflow",
                 "app": "demo",
                 "environment": "production",
                 "store": "sqlite",

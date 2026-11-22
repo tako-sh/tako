@@ -164,7 +164,7 @@ fn validate_s3_storage_credentials(
 fn update_credentials_hint(env_name: &str, usage: &StorageCredentialUse<'_>) -> String {
     match usage {
         StorageCredentialUse::AppBinding { binding_name } => {
-            format!("Run `tako storages add {binding_name} --env {env_name}` to update them.")
+            format!("Run `tako storage add {binding_name} --env {env_name}` to update them.")
         }
         StorageCredentialUse::Backup => {
             "Update the backup storage credentials before deploying.".to_string()
@@ -175,7 +175,7 @@ fn update_credentials_hint(env_name: &str, usage: &StorageCredentialUse<'_>) -> 
 fn rotate_credentials_hint(env_name: &str, usage: &StorageCredentialUse<'_>) -> String {
     match usage {
         StorageCredentialUse::AppBinding { binding_name } => {
-            format!("Run `tako storages add {binding_name} --env {env_name}` to rotate them.")
+            format!("Run `tako storage add {binding_name} --env {env_name}` to rotate them.")
         }
         StorageCredentialUse::Backup => {
             "Rotate the backup storage credentials before they expire.".to_string()

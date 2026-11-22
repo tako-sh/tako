@@ -103,7 +103,7 @@ fn finish(env: &str, names: &[String], dry_run: bool) -> Result<(), Box<dyn std:
     }
     output::json_result(serde_json::json!({
         "ok": true,
-        "command": "secrets",
+        "command": "secret",
         "environment": env,
         "cleared": names,
         "dry_run": dry_run,

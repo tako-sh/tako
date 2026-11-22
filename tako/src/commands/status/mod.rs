@@ -56,6 +56,7 @@ struct GlobalServerStatusResult {
     server_version: Option<String>,
     server_uptime: Option<String>,
     process_uptime: Option<String>,
+    resources: Option<tako_core::HostStats>,
     routes: Vec<(String, String)>,
     apps: Vec<GlobalAppStatusResult>,
     error: Option<String>,
@@ -196,32 +197,7 @@ fn render_global_status_json(
         .iter()
         .filter_map(|name| {
             let result = server_results.get(name)?;
-            let entry = servers.get(name.as_str());
-            Some(serde_json::json!({
-                "name": name,
-                "host": entry.map(|entry| entry.host.as_str()),
-                "port": entry.map(|entry| entry.port),
-                "description": entry.and_then(|entry| entry.description.as_deref()),
-                "service_status": &result.service_status,
-                "server_version": &result.server_version,
-                "server_uptime": &result.server_uptime,
-                "process_uptime": &result.process_uptime,
-                "routes": result.routes.iter().map(|(app, pattern)| {
-                    serde_json::json!({
-                        "app": app,
-                        "pattern": pattern,
-                    })
-                }).collect::<Vec<_>>(),
-                "apps": &result.apps,
-                "databases": server_databases(servers, name, project)
-                    .into_iter()
-                    .map(|(name, bound_by)| serde_json::json!({
-                        "name": name,
-                        "bound_by": bound_by,
-                    }))
-                    .collect::<Vec<_>>(),
-                "error": &result.error,
-            }))
+            Some(server_status_json(servers, name, result, project))
         })
         .collect::<Vec<_>>();
 
@@ -231,6 +207,41 @@ fn render_global_status_json(
         "servers": servers,
         "project": project.map(json_project),
     }))
+}
+
+fn server_status_json(
+    servers: &ServerInventory,
+    name: &str,
+    result: &GlobalServerStatusResult,
+    project: Option<&super::project_resources::ProjectResources>,
+) -> serde_json::Value {
+    let entry = servers.get(name);
+    serde_json::json!({
+        "name": name,
+        "host": entry.map(|entry| entry.host.as_str()),
+        "port": entry.map(|entry| entry.port),
+        "description": entry.and_then(|entry| entry.description.as_deref()),
+        "service_status": &result.service_status,
+        "server_version": &result.server_version,
+        "server_uptime": &result.server_uptime,
+        "process_uptime": &result.process_uptime,
+        "resources": &result.resources,
+        "routes": result.routes.iter().map(|(app, pattern)| {
+            serde_json::json!({
+                "app": app,
+                "pattern": pattern,
+            })
+        }).collect::<Vec<_>>(),
+        "apps": &result.apps,
+        "databases": server_databases(servers, name, project)
+            .into_iter()
+            .map(|(name, bound_by)| serde_json::json!({
+                "name": name,
+                "bound_by": bound_by,
+            }))
+            .collect::<Vec<_>>(),
+        "error": &result.error,
+    })
 }
 
 /// The project's databases homed on server `name`, with their binders.
@@ -703,6 +714,7 @@ servers = ["second"]
                 server_version: None,
                 server_uptime: None,
                 process_uptime: None,
+                resources: None,
                 routes: Vec::new(),
                 apps: Vec::new(),
                 error: Some(format!("Status task failed: {}", err)),
@@ -719,6 +731,42 @@ servers = ["second"]
                 .unwrap_or_default()
                 .contains("Status task failed")
         );
+    }
+
+    #[test]
+    fn server_status_json_keeps_the_address_beside_the_resources() {
+        let mut servers = ServerInventory::default();
+        servers
+            .add(
+                "prod-a".to_string(),
+                crate::config::ServerEntry {
+                    host: "203.0.113.7".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut result = GlobalServerStatusResult {
+            service_status: "active".to_string(),
+            server_version: None,
+            server_uptime: Some("1d 0h".to_string()),
+            process_uptime: None,
+            resources: Some(tako_core::HostStats {
+                uptime_secs: Some(86_400),
+                ..Default::default()
+            }),
+            routes: Vec::new(),
+            apps: Vec::new(),
+            error: None,
+        };
+
+        let json = server_status_json(&servers, "prod-a", &result, None);
+        assert_eq!(json["host"], "203.0.113.7");
+        assert_eq!(json["resources"]["uptime_secs"], 86_400);
+
+        result.resources = None;
+        let json = server_status_json(&servers, "prod-a", &result, None);
+        assert_eq!(json["host"], "203.0.113.7");
+        assert!(json["resources"].is_null());
     }
 
     #[test]

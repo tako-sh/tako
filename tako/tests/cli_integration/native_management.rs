@@ -223,7 +223,7 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
             &[
                 "--ci",
                 "--dry-run",
-                "backups",
+                "backup",
                 "now",
                 "--env",
                 "production",
@@ -371,7 +371,7 @@ fn selected_environment_ignores_another_environments_inactive_secret_cache() {
     );
 
     let edit = run_tako_with_stdin_and_env(
-        &["--ci", "secrets", "set", "TOKEN", "--env", "production"],
+        &["--ci", "secret", "set", "TOKEN", "--env", "production"],
         healthy.directory.path(),
         "local-value\n",
         &healthy.home,
@@ -384,7 +384,7 @@ fn selected_environment_ignores_another_environments_inactive_secret_cache() {
     assert!(state["environments"].get("production").is_some());
     assert!(state["environments"].get("staging").is_none());
     let rejected = run_tako_with_stdin_and_env(
-        &["--ci", "secrets", "set", "TOKEN", "--env", "staging"],
+        &["--ci", "secret", "set", "TOKEN", "--env", "staging"],
         healthy.directory.path(),
         "must-not-be-written\n",
         &healthy.home,
@@ -467,8 +467,8 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
     for command in [
         vec!["logs"],
         vec!["scale", "2", "--env", "production"],
-        vec!["releases", "list"],
-        vec!["backups", "status"],
+        vec!["release", "list"],
+        vec!["backup", "status"],
         vec!["deploy", "--yes"],
     ] {
         let mut args = vec!["--ci", "--dry-run"];
@@ -503,7 +503,7 @@ fn secret_network_recording_uses_only_the_selected_config() {
             "--network",
             "fleet",
             "--dry-run",
-            "secrets",
+            "secret",
             "sync",
             "--env",
             "production",
@@ -523,7 +523,7 @@ fn secret_network_recording_uses_only_the_selected_config() {
             "release",
             "--network",
             "fleet",
-            "secrets",
+            "secret",
             "set",
             "TOKEN",
             "--env",
@@ -546,7 +546,7 @@ fn secret_network_recording_uses_only_the_selected_config() {
     assert!(!project.join(".tako/project.json").exists());
 
     let list = run_tako_with_env(
-        &["--ci", "--config", "release", "--json", "secrets", "list"],
+        &["--ci", "--config", "release", "--json", "secret", "list"],
         project,
         &fixture.home,
         &fixture.tako_home,
@@ -568,7 +568,7 @@ fn secret_sync_dry_run_preserves_drafts_with_retry_expired() {
     )
     .unwrap();
     let set = run_tako_with_stdin_and_env(
-        &["--ci", "secrets", "set", "TOKEN", "--env", "production"],
+        &["--ci", "secret", "set", "TOKEN", "--env", "production"],
         project,
         "local draft",
         &fixture.home,
@@ -580,7 +580,7 @@ fn secret_sync_dry_run_preserves_drafts_with_retry_expired() {
     let preview = run_tako_with_env(
         &[
             "--ci",
-            "secrets",
+            "secret",
             "sync",
             "--env",
             "production",
@@ -696,7 +696,7 @@ fn project_operations_use_each_apps_placement_on_a_shared_network() {
                 &[
                     "--ci",
                     "--dry-run",
-                    "backups",
+                    "backup",
                     "now",
                     "--env",
                     "production",

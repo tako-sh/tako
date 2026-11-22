@@ -80,7 +80,7 @@ class MockServer {
     return this.tasks.find((t) => t.id === id);
   }
 
-  /** What `tako workflows cancel` does to a running run: end it and fence its owner. */
+  /** What `tako workflow cancel` does to a running run: end it and fence its owner. */
   operatorCancel(id: string): void {
     const task = this.find(id)!;
     task.status = "cancelled";

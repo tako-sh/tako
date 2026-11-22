@@ -205,7 +205,7 @@ fn bind<'a>(
         let current = local::rows(state.values.environments.get(env))?;
         if !entry.pending.is_empty() || !unpublished(entry, &current).is_empty() {
             return Err(format!(
-                "This checkout has unpublished {env} secrets for app {} on network {}. Publish them with `tako secrets sync --env {env} --network {}`, or remove them.",
+                "This checkout has unpublished {env} secrets for app {} on network {}. Publish them with `tako secret sync --env {env} --network {}`, or remove them.",
                 entry.scope, entry.network, entry.network
             )
             .into());
@@ -541,7 +541,7 @@ pub(crate) fn clear_environment(project: &Path, app: &str, env: &str) -> Result<
     })()
     .map_err(|error| {
         format!(
-            "Clearing {env} did not finish: {error}. The deletions are saved in this worktree; run `tako secrets clear --env {env}` again to finish. Syncing or deploying {env} also publishes them."
+            "Clearing {env} did not finish: {error}. The deletions are saved in this worktree; run `tako secret clear --env {env}` again to finish. Syncing or deploying {env} also publishes them."
         )
     })?;
     Ok(cleared.into_iter().collect())
@@ -573,7 +573,7 @@ fn publish_changes(
         };
         let pending = entry.pending[index].clone();
         if pending.mutation.expires_at <= super::now()? {
-            return Err("Secret publication retry expired. Local drafts are preserved. Run `tako secrets sync --retry-expired` to publish the current drafts as new changes".into());
+            return Err("Secret publication retry expired. Local drafts are preserved. Run `tako secret sync --retry-expired` to publish the current drafts as new changes".into());
         }
         let observed = read_cache(alias)?.and_then(|cache| {
             cache

@@ -185,7 +185,7 @@
       "properties": {
         "backup": {
           "$ref": "#/$defs/BackupConfig",
-          "description": "Private storage for manual app-directory archives (`tako backups now`)."
+          "description": "Private storage for manual app-directory archives (`tako backup now`)."
         },
         "databases": {
           "additionalProperties": {

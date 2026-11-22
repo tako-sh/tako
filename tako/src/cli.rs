@@ -181,15 +181,15 @@ pub enum Commands {
 
     /// Secret management commands
     #[command(subcommand)]
-    Secrets(secret::SecretCommands),
+    Secret(secret::SecretCommands),
 
     /// Object storage commands
     #[command(subcommand)]
-    Storages(storage::StorageCommands),
+    Storage(storage::StorageCommands),
 
     /// App data backup commands
     #[command(subcommand)]
-    Backups(backups::BackupCommands),
+    Backup(backups::BackupCommands),
 
     /// Tako-hosted SQLite databases
     #[command(visible_alias = "db")]
@@ -200,18 +200,18 @@ pub enum Commands {
 
     /// Provider credentials used by Tako
     #[command(visible_alias = "creds")]
-    Credentials {
+    Credential {
         #[command(subcommand)]
         command: Option<credentials::CredentialCommands>,
     },
 
     /// Release history and rollback commands
     #[command(subcommand)]
-    Releases(releases::ReleaseCommands),
+    Release(releases::ReleaseCommands),
 
     /// Inspect, retry, and cancel workflow runs of a deployed environment
     #[command(subcommand)]
-    Workflows(workflows::WorkflowCommands),
+    Workflow(workflows::WorkflowCommands),
 
     /// Upgrade the local tako CLI to the latest version
     ///
@@ -395,14 +395,14 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Connect { .. } => "connect",
         Commands::Disconnect { .. } => "disconnect",
         Commands::Ssh { .. } => "ssh",
-        Commands::Secrets(_) => "secrets",
-        Commands::Storages(_) => "storages",
-        Commands::Backups(_) => "backups",
+        Commands::Secret(_) => "secret",
+        Commands::Storage(_) => "storage",
+        Commands::Backup(_) => "backup",
         Commands::Sqlite(_) => "sqlite",
         Commands::Kv(_) => "kv",
-        Commands::Credentials { .. } => "credentials",
-        Commands::Releases(_) => "releases",
-        Commands::Workflows(_) => "workflows",
+        Commands::Credential { .. } => "credential",
+        Commands::Release(_) => "release",
+        Commands::Workflow(_) => "workflow",
         Commands::Upgrade => "upgrade",
         Commands::Completions { .. } => "completions",
         Commands::Uninstall { .. } => "uninstall",
@@ -439,27 +439,27 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "drain" | "resume" | "add" | "revoke" | "remove" | "list"
             ]
             | ["network", "client", "add" | "revoke" | "list"]
-            | ["secrets", "migrate" | "sync" | "clear"]
-            | ["backups", "now" | "download" | "restore"]
+            | ["secret", "migrate" | "sync" | "clear"]
+            | ["backup", "now" | "download" | "restore"]
             | [
                 "sqlite",
                 "create" | "link" | "backup" | "restore" | "import" | "export" | "delete"
             ]
             | ["kv", "create" | "delete"]
-            | ["workflows", "retry" | "cancel"]
+            | ["workflow", "retry" | "cancel"]
     )
 }
 
 pub(crate) fn is_read_only(path: &[&str]) -> bool {
     matches!(
         path,
-        ["version" | "status" | "doctor" | "logs" | "completions" | "credentials"]
+        ["version" | "status" | "doctor" | "logs" | "completions" | "credential"]
             | [
-                "dev" | "secrets" | "credentials" | "releases" | "workflows",
+                "dev" | "secret" | "credential" | "release" | "workflow",
                 "list"
             ]
-            | ["workflows", "show"]
-            | ["backups" | "network", "list" | "status"]
+            | ["workflow", "show"]
+            | ["backup" | "network", "list" | "status"]
             | ["sqlite", "list" | "status" | "backups"]
             | ["kv", "list" | "status"]
             | ["network", "client" | "server", "list"]
@@ -582,7 +582,7 @@ impl Cli {
             Commands::Connect { network } => commands::network::connect(network.as_deref()),
             Commands::Disconnect { network } => commands::network::disconnect(network.as_deref()),
             Commands::Ssh { server, command } => commands::network::ssh(&server, None, &command),
-            Commands::Secrets(cmd) => {
+            Commands::Secret(cmd) => {
                 let emit_generic = json
                     && !matches!(
                         cmd,
@@ -590,16 +590,16 @@ impl Cli {
                     );
                 secret::run(cmd, self.config.as_deref())?;
                 if emit_generic {
-                    json_success(true, "secrets")
+                    json_success(true, "secret")
                 } else {
                     Ok(())
                 }
             }
-            Commands::Storages(cmd) => {
+            Commands::Storage(cmd) => {
                 storage::run(cmd, self.config.as_deref())?;
-                json_success(json, "storages")
+                json_success(json, "storage")
             }
-            Commands::Backups(cmd) => {
+            Commands::Backup(cmd) => {
                 let emit_generic = json
                     && !matches!(
                         cmd,
@@ -608,7 +608,7 @@ impl Cli {
                     );
                 backups::run(cmd, self.config.as_deref())?;
                 if emit_generic {
-                    json_success(true, "backups")
+                    json_success(true, "backup")
                 } else {
                     Ok(())
                 }
@@ -621,26 +621,26 @@ impl Cli {
                 // Each subcommand prints its own JSON result.
                 kv::run(cmd, self.config.as_deref())
             }
-            Commands::Credentials { command } => {
+            Commands::Credential { command } => {
                 let emit_generic =
                     json && !matches!(command, None | Some(credentials::CredentialCommands::List));
                 credentials::run(command, self.config.as_deref())?;
                 if emit_generic {
-                    json_success(true, "credentials")
+                    json_success(true, "credential")
                 } else {
                     Ok(())
                 }
             }
-            Commands::Releases(cmd) => {
+            Commands::Release(cmd) => {
                 let emit_generic = json && !matches!(cmd, releases::ReleaseCommands::List { .. });
                 releases::run(cmd, self.config.as_deref())?;
                 if emit_generic {
-                    json_success(true, "releases")
+                    json_success(true, "release")
                 } else {
                     Ok(())
                 }
             }
-            Commands::Workflows(cmd) => workflows::run(cmd, self.config.as_deref()),
+            Commands::Workflow(cmd) => workflows::run(cmd, self.config.as_deref()),
             Commands::Upgrade => {
                 upgrade::run()?;
                 json_success(json, "upgrade")

@@ -184,7 +184,7 @@ force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in ignored `.tako/state.local.json` and encrypted network state.
+Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storage add` or `tako storage credentials` and stored encrypted in ignored `.tako/state.local.json` and encrypted network state.
 
 `local` is a built-in resource name. Bind to it with `storages = { uploads = "local" }`; do not declare `[storages.local]`. Local storage deploys only to single-server environments. In `development`, undeclared storage resources default to local storage.
 
@@ -240,7 +240,7 @@ endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 ```
 
-`backup` enables manual full app-directory archives (`tako backups now`) for the environment. Its storage also receives snapshots of the hosted databases the environment binds, unless `[databases.<name>].backup` names another. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
+`backup` enables manual full app-directory archives (`tako backup now`) for the environment. Its storage also receives snapshots of the hosted databases the environment binds, unless `[databases.<name>].backup` names another. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
 
 Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
 
@@ -253,7 +253,7 @@ Use `ssl = "cloudflare"` for Cloudflare Origin CA certificates. This also requir
 Set provider credentials with:
 
 ```bash
-tako credentials set ssl.cloudflare --env production
+tako credential set ssl.cloudflare --env production
 ```
 
 Provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in `tako.toml`.

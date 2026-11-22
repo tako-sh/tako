@@ -970,6 +970,25 @@ fn test_server_runtime_info_pid_roundtrip() {
         metrics_port: Some(9898),
         server_name: Some("la".to_string()),
         server_identity: Some("SHA256:testidentity".to_string()),
+        host: Some(HostStats {
+            uptime_secs: Some(86_400),
+            cpu: Some(CpuStats {
+                cores: 4,
+                load_average: Some([0.5, 0.25, 0.125]),
+            }),
+            memory: Some(MemoryStats {
+                total_bytes: 8 << 30,
+                available_bytes: 6 << 30,
+                swap_total_bytes: 0,
+                swap_free_bytes: 0,
+            }),
+            disk: Some(DiskStats {
+                path: "/var/lib/tako".to_string(),
+                total_bytes: 40 << 30,
+                used_bytes: 10 << 30,
+                available_bytes: 28 << 30,
+            }),
+        }),
     };
     let json = serde_json::to_string(&info).unwrap();
     let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
@@ -981,6 +1000,29 @@ fn test_server_runtime_info_pid_roundtrip() {
         parsed.server_identity.as_deref(),
         Some("SHA256:testidentity")
     );
+    assert_eq!(parsed.host, info.host);
+}
+
+#[test]
+fn server_runtime_info_without_host_stats_still_parses() {
+    let parsed: ServerRuntimeInfo = serde_json::from_value(serde_json::json!({
+        "pid": 1,
+        "arch": "aarch64",
+        "libc": "musl",
+        "mode": "normal",
+        "socket": "/var/run/tako/tako.sock",
+        "data_dir": "/var/lib/tako",
+        "http_port": 80,
+        "https_port": 443,
+        "no_acme": false,
+        "acme_staging": false,
+        "renewal_interval_hours": 12,
+        "host": { "uptime_secs": 60 },
+    }))
+    .unwrap();
+    let host = parsed.host.unwrap();
+    assert_eq!(host.uptime_secs, Some(60));
+    assert!(host.cpu.is_none() && host.memory.is_none() && host.disk.is_none());
 }
 
 #[test]

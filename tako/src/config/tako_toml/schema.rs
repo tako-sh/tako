@@ -207,7 +207,7 @@ pub struct EnvConfig {
     #[serde(default)]
     pub kv: HashMap<String, String>,
 
-    /// Private storage for manual app-directory archives (`tako backups now`).
+    /// Private storage for manual app-directory archives (`tako backup now`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupConfig>,
 

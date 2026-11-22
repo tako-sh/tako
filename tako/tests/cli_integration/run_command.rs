@@ -240,7 +240,7 @@ fn run_command_loads_encrypted_secrets_into_bootstrap() {
     fs::write(project_dir.join("tako.toml"), "name = \"demo\"\n").unwrap();
 
     let set = run_tako_with_stdin_and_env(
-        &["secrets", "set", "API_KEY", "--env", "development"],
+        &["secret", "set", "API_KEY", "--env", "development"],
         &project_dir,
         "secret-value\n",
         &home,

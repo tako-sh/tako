@@ -17,7 +17,7 @@ Here's how to use it for ordinary deploys, staging experiments, and choosing a r
 From an existing Tako app, inspect its production releases:
 
 ```bash
-tako releases list --env production
+tako release list --env production
 ```
 
 Run this from the directory containing the app's `tako.toml`, or select its configuration with `-c`. The [operations guide](/docs/operations/) covers the surrounding status and log commands. The environment matters: staging and production have separate deployed app identities, so select the one you mean to inspect.
@@ -51,7 +51,7 @@ This works for native and container releases. Both package the description and s
 For scripts and tooling, request structured history:
 
 ```bash
-tako releases list --env production --json
+tako release list --env production --json
 ```
 
 The response includes the selected app and environment plus a `releases` array. Release entries expose `version`, `description`, `commit_message`, `git_dirty`, `current`, and `deployed_at_unix_secs`. Keep the version when recording a deployment reference; descriptions may be reused, and timestamps alone are an awkward way to choose code.
@@ -121,7 +121,7 @@ Suppose the new dashboard passes startup checks but fails when a user reconnects
 
 ```bash
 tako status --json
-tako releases list --env production --json
+tako release list --env production --json
 tako logs --env production --days 1 --json
 ```
 
@@ -130,7 +130,7 @@ Read the command results, including failures and log truncation. Match the faili
 Once you've identified the actual release ID to restore, use it in the rollback command documented in the [CLI reference](/docs/cli/):
 
 ```bash
-tako releases rollback <release-id> --env production
+tako release rollback <release-id> --env production
 ```
 
 Replace `<release-id>` with the version from your history. Interactive production rollbacks ask for confirmation. After it completes, inspect history and status again, then repeat the application request that originally failed. A successful command needs the same practical follow-up as a successful deploy: check the behavior through the real route.

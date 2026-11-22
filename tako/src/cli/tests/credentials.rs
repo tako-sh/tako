@@ -4,7 +4,7 @@ use super::*;
 fn credentials_set_parses_provider_credential() {
     let cli = Cli::try_parse_from([
         "tako",
-        "credentials",
+        "credential",
         "set",
         "ssl.cloudflare",
         "--env",
@@ -13,7 +13,7 @@ fn credentials_set_parses_provider_credential() {
         "2099-01-01",
     ])
     .unwrap();
-    let Commands::Credentials {
+    let Commands::Credential {
         command:
             Some(CredentialCommands::Set {
                 name,
@@ -31,8 +31,8 @@ fn credentials_set_parses_provider_credential() {
 
 #[test]
 fn credentials_without_subcommand_parses_for_overview() {
-    let cli = Cli::try_parse_from(["tako", "credentials"]).unwrap();
-    let Commands::Credentials { command } = cli.command.expect("command") else {
+    let cli = Cli::try_parse_from(["tako", "credential"]).unwrap();
+    let Commands::Credential { command } = cli.command.expect("command") else {
         panic!("expected Credentials");
     };
     assert!(command.is_none());
@@ -40,8 +40,8 @@ fn credentials_without_subcommand_parses_for_overview() {
 
 #[test]
 fn credentials_set_parses_without_provider_credential_for_selector() {
-    let cli = Cli::try_parse_from(["tako", "credentials", "set", "--env", "staging"]).unwrap();
-    let Commands::Credentials {
+    let cli = Cli::try_parse_from(["tako", "credential", "set", "--env", "staging"]).unwrap();
+    let Commands::Credential {
         command:
             Some(CredentialCommands::Set {
                 name,
@@ -61,7 +61,7 @@ fn credentials_set_parses_without_provider_credential_for_selector() {
 fn creds_alias_parses_credentials_command() {
     let cli =
         Cli::try_parse_from(["tako", "creds", "rm", "ssl.cloudflare", "--env", "staging"]).unwrap();
-    let Commands::Credentials {
+    let Commands::Credential {
         command: Some(CredentialCommands::Rm { name, env }),
     } = cli.command.expect("command")
     else {
