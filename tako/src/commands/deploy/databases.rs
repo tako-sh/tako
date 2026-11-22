@@ -1,7 +1,8 @@
 //! Preparing an environment's databases before its release command and
 //! rollout: backup destinations and grants on the databases' servers (for
 //! administrators), a snapshot before the release command, and the
-//! project's migrations.
+//! project's migrations. KV stores take part in grants only: they have no
+//! snapshots or migrations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -111,8 +112,10 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             .or_insert(planned);
     }
 
+    let sqlite =
+        |planned: &&&PlannedBinding| planned.binding.engine == tako_core::DatabaseEngine::Sqlite;
     if prep.administrator {
-        for planned in bound.values() {
+        for planned in bound.values().filter(sqlite) {
             // Without a backup storage the server stops snapshotting the
             // database.
             let storage = crate::commands::storage::decrypt_database_backup_storage(
@@ -140,7 +143,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
     };
 
     if prep.release {
-        for planned in bound.values() {
+        for planned in bound.values().filter(sqlite) {
             send(
                 &planned.home,
                 Command::SnapshotDatabase {
@@ -170,6 +173,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         prep.config,
         prep.plan
             .iter()
+            .filter(|(_, planned)| planned.binding.engine == tako_core::DatabaseEngine::Sqlite)
             .map(|(binding, planned)| (binding.as_str(), planned.database_name.as_str())),
     )?;
     for (database, selected) in selected {

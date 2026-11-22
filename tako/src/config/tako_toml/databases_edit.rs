@@ -1,5 +1,6 @@
-//! Removes `[databases.*]` entries and database bindings from `tako.toml`,
-//! preserving the rest of the file: comments, ordering, and formatting.
+//! Removes `[databases.*]` entries and database and KV store bindings from
+//! `tako.toml`, preserving the rest of the file: comments, ordering, and
+//! formatting.
 
 use std::fs;
 use std::path::Path;
@@ -26,6 +27,36 @@ fn save(path: &Path, doc: &DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// Removes every environment binding under `key` (`databases` or `kv`) that
+/// names `name`, dropping tables left empty.
+fn remove_env_bindings(doc: &mut DocumentMut, key: &str, name: &str) {
+    let Some(envs) = doc.get_mut("envs").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    for (_, env) in envs.iter_mut() {
+        let Some(env) = env.as_table_like_mut() else {
+            continue;
+        };
+        let empty = match env.get_mut(key).and_then(Item::as_table_like_mut) {
+            Some(bindings) => {
+                let bound: Vec<String> = bindings
+                    .iter()
+                    .filter(|(_, target)| target.as_str() == Some(name))
+                    .map(|(binding, _)| binding.to_owned())
+                    .collect();
+                for binding in bound {
+                    bindings.remove(&binding);
+                }
+                bindings.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            env.remove(key);
+        }
+    }
+}
+
 impl TakoToml {
     /// Removes `[databases.<name>]` and every environment binding to it.
     pub fn remove_database_from_file(path: &Path, name: &str) -> Result<()> {
@@ -36,30 +67,14 @@ impl TakoToml {
                 doc.remove("databases");
             }
         }
-        if let Some(envs) = doc.get_mut("envs").and_then(Item::as_table_like_mut) {
-            for (_, env) in envs.iter_mut() {
-                let Some(env) = env.as_table_like_mut() else {
-                    continue;
-                };
-                let empty = match env.get_mut("databases").and_then(Item::as_table_like_mut) {
-                    Some(bindings) => {
-                        let bound: Vec<String> = bindings
-                            .iter()
-                            .filter(|(_, target)| target.as_str() == Some(name))
-                            .map(|(binding, _)| binding.to_owned())
-                            .collect();
-                        for binding in bound {
-                            bindings.remove(&binding);
-                        }
-                        bindings.is_empty()
-                    }
-                    None => false,
-                };
-                if empty {
-                    env.remove("databases");
-                }
-            }
-        }
+        remove_env_bindings(&mut doc, "databases", name);
+        save(path, &doc)
+    }
+
+    /// Removes every environment binding to KV store `name`.
+    pub fn remove_kv_from_file(path: &Path, name: &str) -> Result<()> {
+        let mut doc = load(path)?;
+        remove_env_bindings(&mut doc, "kv", name);
         save(path, &doc)
     }
 }
@@ -92,5 +107,22 @@ mod tests {
                 .unwrap()
                 .contains("[envs.staging]\nroute = \"staging.example.com\"\ndatabases")
         );
+    }
+
+    #[test]
+    fn removing_a_kv_store_drops_only_its_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n",
+        );
+        TakoToml::remove_kv_from_file(&path, "sessions").unwrap();
+        let config = TakoToml::load_from_file(&path).unwrap();
+        assert_eq!(config.envs["production"].kv.len(), 1);
+        assert_eq!(config.envs["production"].databases.len(), 1);
+        assert!(config.envs["staging"].kv.is_empty());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# Sessions and challenges"));
+        assert!(!text.contains("[envs.staging]\nroute = \"staging.example.com\"\nkv"));
     }
 }

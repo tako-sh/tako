@@ -98,6 +98,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::QueryKv { .. }
         | Command::MigrateDatabase { .. }
         | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }

@@ -301,4 +301,13 @@ fn bootstrap_fixture_parses() {
     assert_eq!(main.url(), expected["url"]);
     assert_eq!(main.auth_token(), expected["authToken"]);
     assert!(!format!("{main:?}").contains(main.auth_token()));
+    let sessions = bootstrap.kv("sessions").unwrap();
+    assert_eq!(
+        sessions.url(),
+        fixture("bootstrap.json")["kv"]["sessions"]["url"]
+    );
+    assert_eq!(
+        format!("{sessions:?}"),
+        r#"Kv { url: "redis://:[REDACTED]@127.0.0.1:9846" }"#
+    );
 }

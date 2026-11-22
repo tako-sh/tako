@@ -537,6 +537,7 @@ async fn spawn_app(
             secrets: &app.secrets,
             storages: &app.storages,
             databases: &app.databases,
+            kv: &app.kv,
         },
     )?;
     #[cfg(unix)]
@@ -808,6 +809,7 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
                 s.routes.remove_app(&format!("reg:{config_path}"));
             }
             crate::databases::release(&config_path).await;
+            crate::kv::release(&config_path).await;
         }
     }
 }

@@ -403,6 +403,17 @@ fn format_project_lines(
                 .collect();
             lines.push(format!("{indent}databases {}", databases.join(", ")));
         }
+        if !env.kv.is_empty() {
+            let stores: Vec<String> = env
+                .kv
+                .iter()
+                .map(|db| match &db.server {
+                    Some(server) => format!("{} → {} on {server}", db.binding, db.database),
+                    None => format!("{} → {} (no network record)", db.binding, db.database),
+                })
+                .collect();
+            lines.push(format!("{indent}kv {}", stores.join(", ")));
+        }
         if let Some(note) = &env.note {
             lines.push(format!("{indent}{}", output::theme_muted(note)));
         }
@@ -646,6 +657,7 @@ mod tests {
                 database: "orders".into(),
                 server: Some("edge-a".into()),
             }],
+            kv: vec![],
             note: (!readable).then(|| DEPLOY_CLIENT_NOTE.into()),
             access,
         }

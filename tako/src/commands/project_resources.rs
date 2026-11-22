@@ -59,6 +59,8 @@ pub(crate) struct EnvResources {
     pub storages: Vec<StorageBinding>,
     pub backup_key: Option<bool>,
     pub databases: Vec<DatabaseBinding>,
+    /// KV store bindings, which share the databases' network records.
+    pub kv: Vec<DatabaseBinding>,
     pub note: Option<String>,
 }
 
@@ -93,7 +95,12 @@ impl ProjectResources {
                     .envs
                     .iter()
                     .filter(|env| env.network_id.as_deref() == Some(network_id.as_str()))
-                    .filter(|env| env.databases.iter().any(|db| db.database == record.name))
+                    .filter(|env| {
+                        env.databases
+                            .iter()
+                            .chain(&env.kv)
+                            .any(|db| db.database == record.name)
+                    })
                     .map(|env| format!("{}/{}", self.app, env.name))
                     .collect();
                 homed.push((record.name.clone(), bound_by));
@@ -252,21 +259,22 @@ pub(crate) fn env_resources(
         .unwrap_or_default();
     storages.sort_by(|a, b| a.binding.cmp(&b.binding));
 
-    let mut databases: Vec<DatabaseBinding> = env
-        .map(|env| {
-            env.databases
-                .iter()
-                .map(|(binding, database)| DatabaseBinding {
-                    binding: binding.clone(),
-                    database: database.clone(),
-                    server: database_servers
-                        .as_ref()
-                        .and_then(|servers| servers.get(database).cloned()),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    databases.sort_by(|a, b| a.binding.cmp(&b.binding));
+    let bindings = |bound: &std::collections::HashMap<String, String>| {
+        let mut bindings: Vec<DatabaseBinding> = bound
+            .iter()
+            .map(|(binding, database)| DatabaseBinding {
+                binding: binding.clone(),
+                database: database.clone(),
+                server: database_servers
+                    .as_ref()
+                    .and_then(|servers| servers.get(database).cloned()),
+            })
+            .collect();
+        bindings.sort_by(|a, b| a.binding.cmp(&b.binding));
+        bindings
+    };
+    let databases = env.map(|env| bindings(&env.databases)).unwrap_or_default();
+    let kv = env.map(|env| bindings(&env.kv)).unwrap_or_default();
 
     let credentials = readable.then(|| {
         let mut names: Vec<String> = secrets
@@ -293,6 +301,7 @@ pub(crate) fn env_resources(
                 .is_some_and(|env| !env.backup_keys.is_empty())
         }),
         databases,
+        kv,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
     }
 }

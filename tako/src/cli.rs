@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, releases, scale, secret, sqlite, storage, upgrade,
+    self, backups, credentials, delete, kv, releases, scale, secret, sqlite, storage, upgrade,
     workflows,
 };
 use clap::CommandFactory;
@@ -194,6 +194,9 @@ pub enum Commands {
     /// Tako-hosted SQLite databases
     #[command(visible_alias = "db")]
     Sqlite(sqlite::SqliteArgs),
+
+    /// Tako-hosted KV stores, for any Redis client
+    Kv(kv::KvArgs),
 
     /// Provider credentials used by Tako
     #[command(visible_alias = "creds")]
@@ -396,6 +399,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Storages(_) => "storages",
         Commands::Backups(_) => "backups",
         Commands::Sqlite(_) => "sqlite",
+        Commands::Kv(_) => "kv",
         Commands::Credentials { .. } => "credentials",
         Commands::Releases(_) => "releases",
         Commands::Workflows(_) => "workflows",
@@ -441,6 +445,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "sqlite",
                 "create" | "link" | "backup" | "restore" | "import" | "export" | "delete"
             ]
+            | ["kv", "create" | "delete"]
             | ["workflows", "retry" | "cancel"]
     )
 }
@@ -456,6 +461,7 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
             | ["workflows", "show"]
             | ["backups" | "network", "list" | "status"]
             | ["sqlite", "list" | "status" | "backups"]
+            | ["kv", "list" | "status"]
             | ["network", "client" | "server", "list"]
     )
 }
@@ -610,6 +616,10 @@ impl Cli {
             Commands::Sqlite(cmd) => {
                 // Each subcommand prints its own JSON result.
                 sqlite::run(cmd, self.config.as_deref())
+            }
+            Commands::Kv(cmd) => {
+                // Each subcommand prints its own JSON result.
+                kv::run(cmd, self.config.as_deref())
             }
             Commands::Credentials { command } => {
                 let emit_generic =

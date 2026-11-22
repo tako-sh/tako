@@ -199,6 +199,14 @@ pub struct EnvConfig {
     #[serde(default)]
     pub databases: HashMap<String, String>,
 
+    /// KV store bindings assigned to this environment.
+    ///
+    /// Key = app binding name exposed as `tako.kv.<key>`.
+    /// Value = name of a KV store created with `tako kv create`. Binding
+    /// names are shared with `databases`: each is used once per environment.
+    #[serde(default)]
+    pub kv: HashMap<String, String>,
+
     /// Private storage for manual app-directory archives (`tako backups now`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupConfig>,

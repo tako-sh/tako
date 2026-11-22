@@ -202,6 +202,14 @@
           "minimum": 1,
           "type": "integer"
         },
+        "kv": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "KV store bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.kv.<key>`.\nValue = name of a KV store created with `tako kv create`. Binding\nnames are shared with `databases`: each is used once per environment.",
+          "type": "object"
+        },
         "network": {
           "description": "Native network's stable 32-character hexadecimal ID. Local aliases\nbelong to this machine and are never stored in project configuration.",
           "pattern": "^[0-9a-f]{32}$",

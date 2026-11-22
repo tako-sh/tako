@@ -427,6 +427,27 @@ databases = { main = "shop", "audit-log" = "audit" }
 }
 
 #[test]
+fn write_tako_declarations_type_kv_bindings() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("tako.toml"),
+        r#"
+[envs.production]
+kv = { sessions = "auth", "rate-limits" = "limits" }
+"#,
+    )
+    .unwrap();
+
+    write_tako_declarations(dir.path()).unwrap();
+
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+    assert!(content.contains("export interface TakoKv {"));
+    assert!(content.contains("readonly sessions: import(\"tako.sh\").TakoKvStore;"));
+    assert!(content.contains("readonly \"rate-limits\": import(\"tako.sh\").TakoKvStore;"));
+    assert!(content.contains("export interface TakoDatabases {}"));
+}
+
+#[test]
 fn write_tako_declarations_with_config_type_the_selected_configs_bindings() {
     let dir = TempDir::new().unwrap();
     fs::write(

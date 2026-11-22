@@ -323,6 +323,7 @@ pub(crate) fn build_container_run_env(
                     secrets,
                     storages,
                     databases: &HashMap::new(),
+                    kv: &HashMap::new(),
                 },
             ),
         );

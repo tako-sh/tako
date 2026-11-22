@@ -34,6 +34,7 @@ pub fn run(
     // Served for as long as the command runs. Only development has local
     // databases; hosted ones are reachable only from deployed apps.
     let bindings = crate::local_databases::development_bindings(&config);
+    let kv = crate::local_databases::development_kv_bindings(&config);
     let mut databases = if env == DEFAULT_RUN_ENV {
         let migrated = crate::local_databases::migrate_development(&context.project_dir, &config)?;
         for warning in &migrated.warnings {
@@ -42,7 +43,7 @@ pub fn run(
         for line in &migrated.applied {
             crate::output::muted(line);
         }
-        crate::local_databases::LocalDatabases::start(&context.project_dir, &bindings)?
+        crate::local_databases::LocalDatabases::start(&context.project_dir, &bindings, &kv)?
     } else {
         if config
             .envs
@@ -53,7 +54,20 @@ pub fn run(
                 "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako sqlite shell <name>` or `tako sqlite export <name> <file>`."
             ));
         }
-        crate::local_databases::LocalDatabases::start(&context.project_dir, &Default::default())?
+        if config
+            .envs
+            .get(env)
+            .is_some_and(|env_config| !env_config.kv.is_empty())
+        {
+            crate::output::warning(&format!(
+                "{env}'s KV stores are not available to `tako run`; they are reachable only from deployed apps. Use `tako kv shell <name>`."
+            ));
+        }
+        crate::local_databases::LocalDatabases::start(
+            &context.project_dir,
+            &Default::default(),
+            &Default::default(),
+        )?
     };
     use tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV;
     child_env.remove(TAKO_INTERNAL_SOCKET_ENV);
@@ -70,6 +84,7 @@ pub fn run(
                 secrets: &secrets,
                 storages: &storages,
                 databases: databases.connections(),
+                kv: databases.kv_connections(),
             },
         ),
     );

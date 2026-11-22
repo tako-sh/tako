@@ -86,6 +86,9 @@ pub struct RegisterAppRequest {
     /// Database bindings: binding name → local SQLite file the daemon serves.
     #[serde(default)]
     pub databases: std::collections::HashMap<String, String>,
+    /// KV store bindings: binding name → local store file the daemon serves.
+    #[serde(default)]
+    pub kv: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub client_pid: Option<u32>,
     #[serde(default)]
@@ -432,6 +435,7 @@ mod tests {
             ]),
             workflow_retention_ms: None,
             databases: Default::default(),
+            kv: Default::default(),
         }));
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);

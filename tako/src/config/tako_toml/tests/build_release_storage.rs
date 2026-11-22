@@ -562,3 +562,32 @@ fn compose_loads_service_routes_and_local_app_defaults() {
             .is_err()
     );
 }
+
+#[test]
+fn kv_bindings_parse_and_share_names_with_databases() {
+    let config = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { auth = \"sessions\" }\n",
+    )
+    .unwrap();
+    assert_eq!(config.envs["production"].kv["auth"], "sessions");
+
+    let shared = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { main = \"sessions\" }\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        shared.contains("binds 'main' in both databases and kv"),
+        "{shared}"
+    );
+
+    let invalid = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = { Auth = \"sessions\" }\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        invalid.contains("must start with a lowercase letter"),
+        "{invalid}"
+    );
+}

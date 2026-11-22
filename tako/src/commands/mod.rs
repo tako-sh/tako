@@ -15,6 +15,7 @@ pub(crate) mod env_network;
 pub mod helpers;
 pub mod implode;
 pub mod init;
+pub mod kv;
 pub mod lifecycle;
 mod log_style;
 pub mod logs;

@@ -1582,6 +1582,7 @@ mod tests {
             secrets: Default::default(),
             storages: Default::default(),
             databases: Default::default(),
+            kv: Default::default(),
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),

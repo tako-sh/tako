@@ -267,10 +267,23 @@ impl TakoToml {
                     )));
                 }
             }
-            for (binding_name, database_name) in &env_config.databases {
+            for (binding_name, database_name) in env_config.databases.iter().chain(&env_config.kv) {
                 tako_core::validate_database_name(binding_name).map_err(ConfigError::Validation)?;
                 tako_core::validate_database_name(database_name)
                     .map_err(ConfigError::Validation)?;
+            }
+            // Both kinds of binding reach apps through one set of names on
+            // the server.
+            let mut shared: Vec<&String> = env_config
+                .kv
+                .keys()
+                .filter(|name| env_config.databases.contains_key(*name))
+                .collect();
+            shared.sort();
+            if let Some(name) = shared.first() {
+                return Err(ConfigError::Validation(format!(
+                    "Environment '{env_name}' binds '{name}' in both databases and kv; give the KV store binding another name"
+                )));
             }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;

@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::bootstrap::{Bindings, envelope_bytes};
-use crate::database::DatabaseConnection;
+use crate::database::{DatabaseConnection, KvConnection};
 use crate::network::NetworkRequest;
 use crate::{
     Command, EnqueueOpts, EnqueueRunResponse, ErrorCode, Response, RunPayload, RunResult,
@@ -565,12 +565,17 @@ fn bootstrap() -> Fixture {
             auth_token: "token-example".into(),
         },
     )]);
+    let kv = HashMap::from([(
+        "sessions".to_string(),
+        KvConnection::new("127.0.0.1:9846", "kv-token-example"),
+    )]);
     let json = serde_json::from_slice(&envelope_bytes(
         "tok-abc",
         Bindings {
             secrets: &secrets,
             storages: &storages,
             databases: &databases,
+            kv: &kv,
         },
     ))
     .unwrap();
@@ -585,12 +590,15 @@ fn bootstrap() -> Fixture {
                 serde_json::from_value(file["storages"].clone()).unwrap();
             let databases: HashMap<String, DatabaseConnection> =
                 serde_json::from_value(file["databases"].clone()).unwrap();
+            let kv: HashMap<String, KvConnection> =
+                serde_json::from_value(file["kv"].clone()).unwrap();
             let rebuilt: Value = serde_json::from_slice(&envelope_bytes(
                 token,
                 Bindings {
                     secrets: &secrets,
                     storages: &storages,
                     databases: &databases,
+                    kv: &kv,
                 },
             ))
             .unwrap();

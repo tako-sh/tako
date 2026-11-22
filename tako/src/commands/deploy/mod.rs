@@ -360,7 +360,7 @@ async fn run_async(
     let binds_databases = tako_config
         .envs
         .get(&env)
-        .is_some_and(|env| !env.databases.is_empty());
+        .is_some_and(|env| !env.databases.is_empty() || !env.kv.is_empty());
     let database_records = if binds_databases || configure_bindings {
         crate::commands::sqlite::target::env_records(&tako_config, &env)?
     } else {

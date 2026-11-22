@@ -226,7 +226,8 @@ impl crate::ServerState {
                 tako_core::bootstrap::Bindings {
                     secrets: &secrets,
                     storages: &HashMap::new(),
-                    databases: &connections,
+                    databases: &connections.0,
+                    kv: &connections.1,
                 },
             ));
         }

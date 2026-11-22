@@ -40,6 +40,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
                 databases: Default::default(),
+                kv: Default::default(),
             },
         );
     }

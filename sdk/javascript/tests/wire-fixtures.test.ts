@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
 import { loadDatabases } from "../src/database";
+import { loadKv } from "../src/kv";
 import { cache } from "../src/cache";
 import { call, channel, setNetworkCaller, workflow } from "../src/network";
 import { defineStore } from "../src/stores/define";
@@ -399,12 +400,13 @@ describe("bootstrap fixture", () => {
     injectBootstrap({ token: null, secrets: {} });
   });
 
-  test("populates the token, secrets, storage, and database bindings", () => {
+  test("populates the token, secrets, storage, database, and KV bindings", () => {
     const text = readFileSync(join(WIRE_DIR, "bootstrap.json"), "utf8");
     initBootstrapFromFd(() => text);
     const envelope = fixture("bootstrap.json") as {
       storages: Record<string, unknown>;
       databases: Record<string, { url: string; authToken: string }>;
+      kv: Record<string, { url: string }>;
     };
     expect(getInternalToken()).toBe("tok-abc");
     const secrets = loadSecrets<Record<string, string>>();
@@ -414,5 +416,10 @@ describe("bootstrap fixture", () => {
     const main = loadDatabases()["main"];
     expect(main?.url).toBe(envelope.databases["main"]!.url);
     expect(main?.authToken).toBe(envelope.databases["main"]!.authToken);
+    const sessions = loadKv()["sessions"];
+    expect(sessions?.url).toBe(envelope.kv["sessions"]!.url);
+    expect(JSON.stringify(sessions)).toBe(
+      JSON.stringify({ url: "redis://:[REDACTED]@127.0.0.1:9846" }),
+    );
   });
 });

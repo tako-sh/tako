@@ -222,6 +222,7 @@ async fn register_updated_app(
         }
     };
     let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg, &ctx.environment);
+    let kv = crate::local_databases::dev_kv_files(&ctx.project_dir, cfg, &ctx.environment);
     if !apply_dev_migrations(ctx, cfg).await {
         return;
     }
@@ -256,6 +257,7 @@ async fn register_updated_app(
             images: &cfg.images,
             storages: &storages,
             databases: &databases,
+            kv: &kv,
             readiness_failure_hint: ctx.readiness_failure_hint.as_deref(),
             worker_command: ctx.worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,

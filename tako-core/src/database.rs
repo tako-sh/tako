@@ -1,10 +1,12 @@
 //! Tako-hosted databases: the wire types shared by the CLI, the server, and
 //! app SDKs.
 //!
-//! A database is a SQLite file owned by the server that hosts it (its home
-//! server). Its name identifies it: names are unique within a network. Apps
-//! reach it through a binding: the server gives each bound app process a URL
-//! and token for the SQL over HTTP protocol.
+//! A database is a file owned by the server that hosts it (its home server):
+//! a SQLite database, or a key-value store that speaks the Redis protocol.
+//! Its name identifies it: names are unique within a network, across both
+//! engines. Apps reach it through a binding: the server gives each bound app
+//! process a URL and token for the SQL over HTTP protocol, or a `redis://`
+//! URL for a key-value store.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +16,11 @@ use crate::storage::StorageBinding;
 pub const DATABASE_APP_PORT: u16 = 9845;
 /// Default private-network port where home servers accept forwarded requests.
 pub const DATABASE_PEER_PORT: u16 = 9847;
+/// Default loopback port of the key-value store endpoint for apps.
+pub const KV_APP_PORT: u16 = 9846;
+/// Default private-network port where home servers accept relayed
+/// key-value connections.
+pub const KV_PEER_PORT: u16 = 9848;
 /// Bytes of a database file moved per import or export request.
 pub const DATABASE_TRANSFER_CHUNK_BYTES: u64 = 512 * 1024;
 /// Rows returned by `QueryDatabase` before the result is truncated.
@@ -54,7 +61,34 @@ pub fn validate_database_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// What a hosted database is.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseEngine {
+    /// SQLite, served over the libSQL HTTP protocol.
+    #[default]
+    Sqlite,
+    /// A key-value store, served over the Redis protocol.
+    Kv,
+}
+
+impl DatabaseEngine {
+    pub fn is_sqlite(&self) -> bool {
+        *self == Self::Sqlite
+    }
+
+    /// How people call a database of this engine in messages.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Sqlite => "database",
+            Self::Kv => "KV store",
+        }
+    }
+}
+
 /// A database bound to an app environment, sent with `Command::Deploy`.
+/// Bindings of both engines share one map, so a binding name is used once
+/// per environment.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseBinding {
@@ -66,13 +100,15 @@ pub struct DatabaseBinding {
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_key: Option<String>,
+    #[serde(default, skip_serializing_if = "DatabaseEngine::is_sqlite")]
+    pub engine: DatabaseEngine,
 }
 
 impl DatabaseBinding {
     /// Whether two bindings name the same database the same way, ignoring
     /// the peer key a server fills in.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.name == other.name && self.server == other.server
+        self.name == other.name && self.server == other.server && self.engine == other.engine
     }
 }
 
@@ -82,6 +118,37 @@ impl std::fmt::Debug for DatabaseBinding {
             .field("name", &self.name)
             .field("server", &self.server)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
+            .field("engine", &self.engine)
+            .finish()
+    }
+}
+
+/// What an app process receives for each key-value store binding: a
+/// `redis://` URL whose password is the binding's token, which Redis
+/// clients accept as is.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KvConnection {
+    pub url: String,
+}
+
+impl KvConnection {
+    /// The URL for the store endpoint at `address`, authorized by `token`.
+    pub fn new(address: &str, token: &str) -> Self {
+        Self {
+            url: format!("redis://:{token}@{address}"),
+        }
+    }
+}
+
+/// The URL carries the token, so it is never printed.
+impl std::fmt::Debug for KvConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = match self.url.split_once('@') {
+            Some((_, address)) => format!("redis://:[REDACTED]@{address}"),
+            None => "[REDACTED]".into(),
+        };
+        f.debug_struct("KvConnection")
+            .field("url", &redacted)
             .finish()
     }
 }
@@ -176,6 +243,8 @@ pub struct DatabaseBackupStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseInfo {
     pub name: String,
+    #[serde(default)]
+    pub engine: DatabaseEngine,
     /// The random ID chosen when the database was created; copies of one
     /// database on different servers share it.
     #[serde(default)]
@@ -199,6 +268,11 @@ pub struct DatabaseQueryResult {
     pub affected_row_count: u64,
     pub truncated: bool,
 }
+
+/// The reply to `QueryKv`, as JSON: strings (or `{"base64": ...}` for
+/// bytes that are not UTF-8), integers, `null`, arrays, `{"error": ...}`,
+/// and maps as arrays of `[key, value]` pairs.
+pub type KvQueryResult = serde_json::Value;
 
 /// The result of starting an export.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -240,6 +314,35 @@ pub fn same_backup_destination(a: &StorageBinding, b: &StorageBinding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kv_connections_redact_their_token() {
+        let connection = KvConnection::new("127.0.0.1:9846", "secret-token");
+        assert_eq!(connection.url, "redis://:secret-token@127.0.0.1:9846");
+        let printed = format!("{connection:?}");
+        assert!(!printed.contains("secret-token"));
+        assert!(printed.contains("127.0.0.1:9846"));
+    }
+
+    #[test]
+    fn sqlite_bindings_serialize_without_an_engine() {
+        let binding = DatabaseBinding {
+            name: "main".into(),
+            server: "s".into(),
+            peer_key: None,
+            engine: DatabaseEngine::Sqlite,
+        };
+        let json = serde_json::to_value(&binding).unwrap();
+        assert_eq!(json, serde_json::json!({"name": "main", "server": "s"}));
+        let kv = DatabaseBinding {
+            engine: DatabaseEngine::Kv,
+            ..binding.clone()
+        };
+        let json = serde_json::to_value(&kv).unwrap();
+        assert_eq!(json["engine"], "kv");
+        assert!(!binding.same_target(&kv));
+        assert_eq!(serde_json::from_value::<DatabaseBinding>(json).unwrap(), kv);
+    }
 
     #[test]
     fn names_and_generations_are_validated() {

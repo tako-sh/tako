@@ -5,6 +5,7 @@ mod databases;
 mod dev_channels;
 mod identity;
 mod image;
+mod kv;
 mod lan;
 mod local_dns;
 mod network;

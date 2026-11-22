@@ -964,7 +964,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -5221,6 +5225,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "redis"
+version = "0.32.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "014cc767fefab6a3e798ca45112bccad9c6e0e218fbd49720042716c73cfef44"
+dependencies = [
+ "bytes",
+ "cfg-if",
+ "combine",
+ "futures-util",
+ "itoa",
+ "num-bigint 0.4.8",
+ "percent-encoding",
+ "pin-project-lite",
+ "ryu",
+ "socket2 0.6.5",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6667,6 +6692,7 @@ dependencies = [
  "tako-core",
  "tako-database",
  "tako-images",
+ "tako-kv",
  "tako-network",
  "tako-runtime",
  "tako-socket",
@@ -6764,6 +6790,23 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "url",
+]
+
+[[package]]
+name = "tako-kv"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.4.3",
+ "hex",
+ "parking_lot 0.13.0",
+ "redb",
+ "redis",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6865,6 +6908,7 @@ dependencies = [
  "tako-core",
  "tako-database",
  "tako-images",
+ "tako-kv",
  "tako-network",
  "tako-runtime",
  "tako-socket",

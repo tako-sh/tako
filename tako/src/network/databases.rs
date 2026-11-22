@@ -1,4 +1,5 @@
-//! Database records in the network state.
+//! Database records in the network state, for SQLite databases and KV
+//! stores alike.
 //!
 //! A database's name identifies it within the network. Each database has two
 //! records under its name: a directory record with its home server, which
@@ -31,6 +32,9 @@ pub(crate) struct DatabaseRecord {
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
+    /// SQLite or a KV store. Both share the network's names.
+    #[serde(default, skip_serializing_if = "tako_core::DatabaseEngine::is_sqlite")]
+    pub engine: tako_core::DatabaseEngine,
 }
 
 fn scope() -> Result<AppEnv> {
@@ -204,11 +208,23 @@ mod tests {
             server: "a".repeat(64),
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
+            engine: tako_core::DatabaseEngine::Sqlite,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert_eq!(
             serde_json::from_str::<DatabaseRecord>(&json).unwrap(),
             record
+        );
+        assert!(!json.contains("engine"), "SQLite records keep their shape");
+        let kv = DatabaseRecord {
+            engine: tako_core::DatabaseEngine::Kv,
+            ..record.clone()
+        };
+        let kv_json = serde_json::to_string(&kv).unwrap();
+        assert!(kv_json.contains(r#""engine":"kv""#));
+        assert_eq!(
+            serde_json::from_str::<DatabaseRecord>(&kv_json).unwrap(),
+            kv
         );
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value["extra"] = true.into();

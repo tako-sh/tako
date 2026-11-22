@@ -45,6 +45,8 @@ pub struct Bootstrap {
     storages: HashMap<String, serde_json::Value>,
     #[serde(default)]
     databases: HashMap<String, Database>,
+    #[serde(default)]
+    kv: HashMap<String, Kv>,
 }
 
 /// A connection to a Tako-hosted database bound to the app in `tako.toml`
@@ -85,6 +87,50 @@ impl fmt::Debug for Database {
     }
 }
 
+/// A connection to a Tako-hosted KV store bound to the app in `tako.toml`
+/// (`[envs.<env>].kv`). Tako serves it over the Redis protocol next to the
+/// app, and [`Kv::url`] carries the binding's token as its password, so
+/// Redis clients connect with the URL as is:
+///
+/// ```no_run
+/// let sessions = tako::kv("sessions").expect("a KV store bound as sessions");
+/// // let client = redis::Client::open(sessions.url())?;
+/// # let _ = sessions;
+/// ```
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+pub struct Kv {
+    url: String,
+}
+
+impl Kv {
+    /// The `redis://` endpoint of the store. Its password is the token that
+    /// authorizes this app's binding, so treat it as a secret.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+impl fmt::Debug for Kv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Kv")
+            .field("url", &redacted_kv_url(&self.url))
+            .finish()
+    }
+}
+
+/// `redis://:<token>@host:port` as `redis://:[REDACTED]@host:port`. Cuts at
+/// the last `@` so a password that contains one never leaks a part of it.
+fn redacted_kv_url(url: &str) -> String {
+    let Some(at) = url.rfind('@') else {
+        return "[REDACTED]".into();
+    };
+    let scheme = match url.find("://") {
+        Some(end) if end < at => &url[..end + 3],
+        _ => "",
+    };
+    format!("{scheme}:[REDACTED]@{}", &url[at + 1..])
+}
+
 impl fmt::Debug for Bootstrap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Storage bindings can carry access keys, so only names are shown.
@@ -101,6 +147,7 @@ impl fmt::Debug for Bootstrap {
             .field("secrets", &Names(&self.secrets))
             .field("storages", &Names(&self.storages))
             .field("databases", &self.databases)
+            .field("kv", &self.kv)
             .finish()
     }
 }
@@ -131,6 +178,16 @@ impl Bootstrap {
     pub fn databases(&self) -> &HashMap<String, Database> {
         &self.databases
     }
+
+    /// The KV store bound as `name`.
+    pub fn kv(&self, name: &str) -> Option<&Kv> {
+        self.kv.get(name)
+    }
+
+    /// Every KV store binding, by name.
+    pub fn kv_stores(&self) -> &HashMap<String, Kv> {
+        &self.kv
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +203,7 @@ impl fmt::Display for BootstrapError {
             Self::InvalidJson(err) => write!(f, "invalid Tako bootstrap JSON: {err}"),
             Self::InvalidEnvelope => write!(
                 f,
-                "Tako bootstrap must be {{token: string, secrets: object, storages?: object, databases?: object}}",
+                "Tako bootstrap must be {{token: string, secrets: object, storages?: object, databases?: object, kv?: object}}",
             ),
             Self::ReadFd(err) => write!(f, "failed to read Tako bootstrap fd: {err}"),
         }
@@ -200,6 +257,13 @@ pub fn database(name: &str) -> Option<Database> {
     bootstrap()
         .ok()
         .and_then(|bootstrap| bootstrap.database(name).cloned())
+}
+
+/// The KV store bound to this app as `name`.
+pub fn kv(name: &str) -> Option<Kv> {
+    bootstrap()
+        .ok()
+        .and_then(|bootstrap| bootstrap.kv(name).cloned())
 }
 
 pub fn internal_token() -> Option<&'static str> {
@@ -260,7 +324,7 @@ fn parse_bootstrap_data(data: &str) -> Result<Bootstrap, BootstrapError> {
         || !value
             .get("secrets")
             .is_some_and(serde_json::Value::is_object)
-        || ["storages", "databases"]
+        || ["storages", "databases", "kv"]
             .iter()
             .any(|key| value.get(key).is_some_and(|field| !field.is_object()))
     {
@@ -598,15 +662,21 @@ mod tests {
     #[test]
     fn bootstrap_debug_redacts_credentials() {
         let bootstrap = parse_bootstrap_data(
-            r#"{"token":"tok-value","secrets":{"API_KEY":"secret-value"},"storages":{"media":{"secret_access_key":"storage-value"}},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"db-value"}}}"#,
+            r#"{"token":"tok-value","secrets":{"API_KEY":"secret-value"},"storages":{"media":{"secret_access_key":"storage-value"}},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"db-value"}},"kv":{"sessions":{"url":"redis://:kv-value@127.0.0.1:9846"}}}"#,
         )
         .unwrap();
         let debug = format!("{bootstrap:?}");
 
-        for value in ["tok-value", "secret-value", "storage-value", "db-value"] {
+        for value in [
+            "tok-value",
+            "secret-value",
+            "storage-value",
+            "db-value",
+            "kv-value",
+        ] {
             assert!(!debug.contains(value), "{value} leaked: {debug}");
         }
-        for name in ["API_KEY", "media", "main"] {
+        for name in ["API_KEY", "media", "main", "sessions"] {
             assert!(debug.contains(name), "{name} missing: {debug}");
         }
     }
@@ -626,6 +696,34 @@ mod tests {
         let err =
             parse_bootstrap_data(r#"{"token":"tok","secrets":{},"databases":[]}"#).unwrap_err();
         assert_eq!(err, BootstrapError::InvalidEnvelope);
+    }
+
+    #[test]
+    fn parses_kv_bindings() {
+        let bootstrap = parse_bootstrap_data(
+            r#"{"token":"tok","secrets":{},"kv":{"sessions":{"url":"redis://:secret@127.0.0.1:9846"}}}"#,
+        )
+        .unwrap();
+        let sessions = bootstrap.kv("sessions").unwrap();
+        assert_eq!(sessions.url(), "redis://:secret@127.0.0.1:9846");
+        assert_eq!(
+            format!("{sessions:?}"),
+            r#"Kv { url: "redis://:[REDACTED]@127.0.0.1:9846" }"#
+        );
+        assert!(bootstrap.kv("other").is_none());
+        assert_eq!(bootstrap.kv_stores().len(), 1);
+
+        let err = parse_bootstrap_data(r#"{"token":"tok","secrets":{},"kv":[]}"#).unwrap_err();
+        assert_eq!(err, BootstrapError::InvalidEnvelope);
+    }
+
+    #[test]
+    fn redacts_unexpected_kv_urls() {
+        assert_eq!(redacted_kv_url("tok-odd"), "[REDACTED]");
+        assert_eq!(
+            redacted_kv_url("redis://:a@b@host:1"),
+            "redis://:[REDACTED]@host:1"
+        );
     }
 
     #[test]

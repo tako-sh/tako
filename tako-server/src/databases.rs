@@ -1,9 +1,11 @@
 //! Databases hosted by this server, and the database bindings of its apps.
 //!
-//! Each database is a SQLite file under `<data_dir>/databases/<id>/`, owned by
-//! the server process. Apps on this server reach it on a loopback port with
-//! their binding token. Apps on other servers of the network reach it through
-//! their own server, which forwards requests to this server's private address.
+//! Each database is a file under `<data_dir>/databases/<id>/`, owned by the
+//! server process: a SQLite database served over the libSQL HTTP protocol, or
+//! a KV store (redb) served over the Redis protocol. Apps on this server reach
+//! it on a loopback port with their binding token. Apps on other servers of
+//! the network reach it through their own server, which forwards requests (or,
+//! for KV stores, relays connections) to this server's private address.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -15,8 +17,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use parking_lot::{Mutex, RwLock};
 use tako_core::{
-    DatabaseBinding, DatabaseConnection, DatabaseInfo, DatabaseQueryResult, Response,
-    StorageBinding, StorageProvider,
+    DatabaseBinding, DatabaseConnection, DatabaseEngine, DatabaseInfo, DatabaseQueryResult,
+    KvConnection, Response, StorageBinding, StorageProvider,
 };
 use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
@@ -32,9 +34,12 @@ const RELEASE_SCOPE_SUFFIX: &str = "#release";
 
 pub(crate) struct Databases {
     pub(crate) host: DatabaseHost,
+    /// KV stores, which share the databases' names, bindings and grants.
+    pub(crate) kv: tako_kv::KvHost,
     root: PathBuf,
     app_port: u16,
     peer_port: u16,
+    kv_peer_port: u16,
     /// This server's device ID on a native network.
     server_id: RwLock<Option<String>>,
     /// Resolves other servers' private addresses, once the network is up.
@@ -109,9 +114,11 @@ impl Databases {
     pub(crate) fn new(data_dir: &Path) -> Self {
         Self {
             host: DatabaseHost::new(HostConfig::default()),
+            kv: tako_kv::KvHost::new(tako_kv::HostConfig::default()),
             root: data_dir.join("databases"),
             app_port: app_port(),
             peer_port: env_port("TAKO_DATABASE_PEER_PORT", tako_core::DATABASE_PEER_PORT),
+            kv_peer_port: env_port("TAKO_KV_PEER_PORT", tako_core::KV_PEER_PORT),
             server_id: RwLock::new(None),
             proxy: RwLock::new(None),
             opened: std::sync::atomic::AtomicBool::new(false),
@@ -177,6 +184,60 @@ impl Databases {
         self.database_dir(id).join("database.sqlite")
     }
 
+    pub(crate) fn kv_path(&self, id: &str) -> PathBuf {
+        self.database_dir(id).join("store.redb")
+    }
+
+    /// Opens a stored database's file and serves it. Blocks.
+    fn register(&self, name: &str, engine: DatabaseEngine) -> Result<(), String> {
+        match engine {
+            DatabaseEngine::Sqlite => {
+                let id = DatabaseId::parse(name)?;
+                self.host
+                    .register(id, self.database_path(name))
+                    .map_err(|e| e.to_string())
+            }
+            DatabaseEngine::Kv => {
+                let id = tako_kv::StoreId::parse(name)?;
+                self.kv
+                    .register(id, self.kv_path(name))
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    fn is_registered(&self, name: &str, engine: DatabaseEngine) -> bool {
+        match engine {
+            DatabaseEngine::Sqlite => {
+                DatabaseId::parse(name).is_ok_and(|id| self.host.is_registered(&id))
+            }
+            DatabaseEngine::Kv => {
+                tako_kv::StoreId::parse(name).is_ok_and(|id| self.kv.is_registered(&id))
+            }
+        }
+    }
+
+    /// Replaces an app environment's grants on both hosts; each serves only
+    /// the names of its own engine.
+    fn set_remote_grants(&self, scope: &str, names: &BTreeSet<String>, key: &str) {
+        self.host.set_remote_grants(
+            scope,
+            names
+                .iter()
+                .filter_map(|id| DatabaseId::parse(id).ok())
+                .collect(),
+            key,
+        );
+        self.kv.set_remote_grants(
+            scope,
+            names
+                .iter()
+                .filter_map(|id| tako_kv::StoreId::parse(id).ok())
+                .collect(),
+            key,
+        );
+    }
+
     pub(crate) fn work_dir(&self, id: &str) -> PathBuf {
         self.database_dir(id).join("work")
     }
@@ -212,6 +273,10 @@ impl Databases {
 
     fn home(&self, binding: &DatabaseBinding) -> Home {
         let server_id = self.server_id();
+        let peer_port = match binding.engine {
+            DatabaseEngine::Sqlite => self.peer_port,
+            DatabaseEngine::Kv => self.kv_peer_port,
+        };
         match server_id {
             Some(own) if own == binding.server => Home::Local,
             Some(_) => match (
@@ -222,7 +287,7 @@ impl Databases {
                 &binding.peer_key,
             ) {
                 (Some(address), Some(key)) => Home::Remote {
-                    upstream: SocketAddr::new(address, self.peer_port),
+                    upstream: SocketAddr::new(address, peer_port),
                     key: key.clone(),
                 },
                 (_, None) => Home::Unavailable {
@@ -264,27 +329,54 @@ impl Databases {
     fn resolve_bindings(&self, scope: &str, sets: &[HashMap<String, AppDatabase>]) {
         let mut seen = BTreeSet::new();
         let mut bindings = Vec::new();
+        let mut kv = Vec::new();
         for set in sets {
             for binding in set.values() {
-                if seen.insert(binding.token.clone()) {
-                    bindings.push(Binding {
-                        token_hash: tako_database::hash_token(&binding.token),
-                        database: match DatabaseId::parse(&binding.binding.name) {
-                            Ok(id) => id,
-                            Err(_) => continue,
-                        },
-                        home: self.home(&binding.binding),
-                    });
+                if !seen.insert(binding.token.clone()) {
+                    continue;
+                }
+                let home = self.home(&binding.binding);
+                match binding.binding.engine {
+                    DatabaseEngine::Sqlite => {
+                        let Ok(database) = DatabaseId::parse(&binding.binding.name) else {
+                            continue;
+                        };
+                        bindings.push(Binding {
+                            token_hash: tako_database::hash_token(&binding.token),
+                            database,
+                            home,
+                        });
+                    }
+                    DatabaseEngine::Kv => {
+                        let Ok(store) = tako_kv::StoreId::parse(&binding.binding.name) else {
+                            continue;
+                        };
+                        kv.push(tako_kv::Binding {
+                            token_hash: tako_kv::hash_token(&binding.token),
+                            store,
+                            home: match home {
+                                Home::Local => tako_kv::Home::Local,
+                                Home::Remote { upstream, key } => {
+                                    tako_kv::Home::Remote { upstream, key }
+                                }
+                                Home::Unavailable { reason } => {
+                                    tako_kv::Home::Unavailable { reason }
+                                }
+                            },
+                        });
+                    }
                 }
             }
         }
         self.host.set_bindings(scope, bindings);
+        self.kv.set_bindings(scope, kv);
     }
 
     pub(crate) fn remove_bindings(&self, scope: &str) {
         let mut applied = self.applied.lock();
         applied.remove(scope);
         self.host.set_bindings(scope, Vec::new());
+        self.kv.set_bindings(scope, Vec::new());
     }
 
     /// Validates requested bindings and assigns tokens. A binding keeps its
@@ -313,14 +405,12 @@ impl Databases {
                 Some(own) => own == &binding.server,
                 None => true,
             };
-            if local {
-                let id = DatabaseId::parse(&binding.name)?;
-                if !self.host.is_registered(&id) {
-                    return Err(format!(
-                        "Database binding `{name}` names database {} that is not hosted on this server.",
-                        binding.name
-                    ));
-                }
+            if local && !self.is_registered(&binding.name, binding.engine) {
+                return Err(format!(
+                    "Database binding `{name}` names {} {} that is not hosted on this server.",
+                    binding.engine.noun(),
+                    binding.name
+                ));
             }
             // A binding keeps its token only while it reaches the same copy:
             // after a database moves to another server, old and new
@@ -347,7 +437,13 @@ impl Databases {
         app: &str,
         config: &AppConfig,
         requested: HashMap<String, DatabaseBinding>,
-    ) -> Result<HashMap<String, DatabaseConnection>, String> {
+    ) -> Result<
+        (
+            HashMap<String, DatabaseConnection>,
+            HashMap<String, KvConnection>,
+        ),
+        String,
+    > {
         // Release commands get their own tokens, and the environment's peer
         // keys, which deployers without administration do not send.
         let mut requested = requested;
@@ -368,7 +464,7 @@ impl Databases {
         let bindings = self.prepare_bindings(&HashMap::new(), requested, config)?;
         self.apply_bindings(&format!("{app}{RELEASE_SCOPE_SUFFIX}"), &[&bindings]);
         self.release_pins.lock().insert(app.to_owned(), pins);
-        Ok(self.connections(&bindings))
+        Ok((self.connections(&bindings), kv_connections(&bindings)))
     }
 
     pub(crate) fn end_release(&self, app: &str) {
@@ -395,12 +491,19 @@ pub(crate) fn app_port() -> u16 {
     *PORT.get_or_init(|| env_port("TAKO_DATABASE_PORT", tako_core::DATABASE_APP_PORT))
 }
 
-/// The connections app processes receive for their bindings.
+/// The loopback port apps reach KV stores on.
+pub(crate) fn kv_app_port() -> u16 {
+    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *PORT.get_or_init(|| env_port("TAKO_KV_PORT", tako_core::KV_APP_PORT))
+}
+
+/// The connections app processes receive for their SQLite bindings.
 pub(crate) fn connections(
     bindings: &HashMap<String, AppDatabase>,
 ) -> HashMap<String, DatabaseConnection> {
     bindings
         .iter()
+        .filter(|(_, binding)| binding.binding.engine == DatabaseEngine::Sqlite)
         .map(|(name, binding)| {
             (
                 name.clone(),
@@ -408,6 +511,22 @@ pub(crate) fn connections(
                     url: format!("http://127.0.0.1:{}", app_port()),
                     auth_token: binding.token.clone(),
                 },
+            )
+        })
+        .collect()
+}
+
+/// The connections app processes receive for their KV store bindings.
+pub(crate) fn kv_connections(
+    bindings: &HashMap<String, AppDatabase>,
+) -> HashMap<String, KvConnection> {
+    bindings
+        .iter()
+        .filter(|(_, binding)| binding.binding.engine == DatabaseEngine::Kv)
+        .map(|(name, binding)| {
+            (
+                name.clone(),
+                KvConnection::new(&format!("127.0.0.1:{}", kv_app_port()), &binding.token),
             )
         })
         .collect()
@@ -452,24 +571,20 @@ impl ServerState {
             }
         };
         for database in stored {
-            let id = match DatabaseId::parse(&database.name) {
-                Ok(id) => id,
-                Err(error) => {
-                    tracing::error!(database = %database.name, %error, "Failed to open database");
-                    continue;
-                }
-            };
-            let path = databases.database_path(&database.name);
-            let host = databases.host.clone();
-            let registered = tokio::task::spawn_blocking(move || host.register(id, path)).await;
+            let state = self.clone();
+            let registered = tokio::task::spawn_blocking(move || {
+                state
+                    .databases
+                    .register(&database.name, database.engine)
+                    .map_err(|error| (database.name, error))
+            })
+            .await;
             match registered {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::error!(database = %database.name, %error, "Failed to open database");
+                Ok(Err((name, error))) => {
+                    tracing::error!(database = %name, %error, "Failed to open database");
                 }
-                Err(error) => {
-                    tracing::error!(database = %database.name, %error, "Failed to open database")
-                }
+                Err(error) => tracing::error!(%error, "Failed to open database"),
             }
         }
         self.spawn_database_app_listener();
@@ -484,22 +599,24 @@ impl ServerState {
         if !databases.opened.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let Ok(id) = DatabaseId::parse(name) else {
+        let Ok(Some(stored)) = self.state_store.get_database(name) else {
             return;
         };
-        if databases.host.is_registered(&id) {
+        if databases.is_registered(name, stored.engine) {
             return;
         }
         let lock = databases.lock(name);
         let _guard = lock.lock().await;
-        if databases.host.is_registered(&id)
-            || !matches!(self.state_store.get_database(name), Ok(Some(_)))
-        {
+        let Ok(Some(stored)) = self.state_store.get_database(name) else {
+            return;
+        };
+        if databases.is_registered(name, stored.engine) {
             return;
         }
-        let path = databases.database_path(name);
-        let host = databases.host.clone();
-        let registered = tokio::task::spawn_blocking(move || host.register(id, path)).await;
+        let state = self.databases.clone();
+        let owned = name.to_owned();
+        let registered =
+            tokio::task::spawn_blocking(move || state.register(&owned, stored.engine)).await;
         match registered {
             Ok(Ok(())) => {
                 tracing::info!(database = %name, "Opened database after an earlier failure");
@@ -535,15 +652,7 @@ impl ServerState {
         match self.state_store.all_database_grants() {
             Ok(grants) => {
                 for (scope, grant) in grants {
-                    databases.host.set_remote_grants(
-                        &scope,
-                        grant
-                            .databases
-                            .iter()
-                            .filter_map(|id| DatabaseId::parse(id).ok())
-                            .collect(),
-                        &grant.key,
-                    );
+                    databases.set_remote_grants(&scope, &grant.databases, &grant.key);
                 }
             }
             Err(error) => tracing::error!(%error, "Failed to read database grants"),
@@ -565,6 +674,7 @@ impl ServerState {
             task.abort();
         }
         self.databases.host.close_all().await;
+        self.databases.kv.close_all().await;
     }
 
     /// Re-resolves where each applied binding's database lives, since other
@@ -598,6 +708,23 @@ impl ServerState {
             }
         });
         self.databases.tasks.lock().push(task.abort_handle());
+        let kv = self.databases.kv.clone();
+        let task = tokio::spawn(async move {
+            let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kv_app_port());
+            loop {
+                match bind_reuseport(address) {
+                    Ok(listener) => {
+                        tracing::info!(%address, "Serving KV stores to apps");
+                        tako_kv::serve(kv.clone(), listener, tako_kv::Access::Apps).await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%address, %error, "KV listener unavailable; retrying");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+        self.databases.tasks.lock().push(task.abort_handle());
     }
 
     fn spawn_database_peer_listener(self: &Arc<Self>) {
@@ -606,6 +733,34 @@ impl ServerState {
         };
         let port = self.databases.peer_port;
         let host = self.databases.host.clone();
+        let kv_port = self.databases.kv_peer_port;
+        let kv = self.databases.kv.clone();
+        let kv_proxy = proxy.clone();
+        let task = tokio::spawn(async move {
+            let address = SocketAddr::new(IpAddr::V6(kv_proxy.address), kv_port);
+            loop {
+                match bind_reuseport(address) {
+                    Ok(listener) => {
+                        tracing::info!(%address, "Serving KV stores to network servers");
+                        let proxy = kv_proxy.clone();
+                        tako_kv::serve(
+                            kv.clone(),
+                            listener,
+                            tako_kv::Access::Peers {
+                                allow: Arc::new(move |peer| proxy.is_server_address(peer)),
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        // The WireGuard interface may not be up yet.
+                        tracing::debug!(%address, %error, "KV peer listener unavailable; retrying");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+        self.databases.tasks.lock().push(task.abort_handle());
         let task = tokio::spawn(async move {
             let address = SocketAddr::new(IpAddr::V6(proxy.address), port);
             loop {
@@ -635,14 +790,40 @@ impl ServerState {
 
     pub(crate) async fn handle_database_command(&self, command: tako_core::Command) -> Response {
         use tako_core::Command;
+        // Snapshots, SQL, migrations and file transfers are SQLite's.
+        let sqlite_only = match &command {
+            Command::ConfigureDatabaseBackup { name, .. }
+            | Command::SnapshotDatabase { name, .. }
+            | Command::ListDatabaseSnapshots { name }
+            | Command::RestoreDatabase { name, .. }
+            | Command::QueryDatabase { name, .. }
+            | Command::MigrateDatabase { name, .. }
+            | Command::ResetDatabase { name, .. }
+            | Command::BeginDatabaseImport { name, .. }
+            | Command::DatabaseImportChunk { name, .. }
+            | Command::FinishDatabaseImport { name, .. }
+            | Command::BeginDatabaseExport { name }
+            | Command::DatabaseExportChunk { name, .. }
+            | Command::FinishDatabaseExport { name, .. } => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = sqlite_only
+            && let Ok(Some(stored)) = self.state_store.get_database(name)
+            && stored.engine == DatabaseEngine::Kv
+        {
+            return Response::error(format!(
+                "{name} is a KV store; this works only on SQLite databases."
+            ));
+        }
         let result = match command {
             Command::CreateDatabase {
                 name,
+                engine,
                 generation,
                 backup_key_base64,
                 backup,
             } => {
-                self.create_database(name, generation, backup_key_base64, backup)
+                self.create_database(name, engine, generation, backup_key_base64, backup)
                     .await
             }
             Command::DeleteDatabase {
@@ -673,6 +854,7 @@ impl ServerState {
                 backup_key_base64,
             } => snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await,
             Command::QueryDatabase { name, sql } => self.query_database(&name, sql).await,
+            Command::QueryKv { name, args } => self.query_kv(&name, args).await,
             Command::MigrateDatabase {
                 name,
                 owner,
@@ -730,6 +912,7 @@ impl ServerState {
     async fn create_database(
         &self,
         id: String,
+        engine: DatabaseEngine,
         generation: String,
         backup_key_base64: String,
         backup: Option<StorageBinding>,
@@ -738,6 +921,9 @@ impl ServerState {
         tako_core::validate_database_generation(&generation)?;
         decode_backup_key(&backup_key_base64)?;
         if let Some(backup) = &backup {
+            if engine == DatabaseEngine::Kv {
+                return Err("KV stores have no snapshots.".into());
+            }
             validate_backup_storage(backup)?;
         }
         // Held until the database is recorded and registered, so a concurrent
@@ -753,8 +939,6 @@ impl ServerState {
         {
             return Err(format!("Database {id} already exists on this server."));
         }
-        let database = DatabaseId::parse(&id)?;
-        let path = self.databases.database_path(&id);
         create_private_dir(&self.databases.root)?;
         create_private_dir(&self.databases.database_dir(&id))?;
         // A create that fails part way leaves nothing behind, so it can be
@@ -765,17 +949,28 @@ impl ServerState {
             }
             let _ = std::fs::remove_dir_all(self.databases.database_dir(&id));
         };
-        let create_path = path.clone();
-        let created = tokio::task::spawn_blocking(move || DatabaseHost::create_file(&create_path))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|created| created.map_err(|e| format!("create database file: {e}")));
+        let create_path = match engine {
+            DatabaseEngine::Sqlite => self.databases.database_path(&id),
+            DatabaseEngine::Kv => self.databases.kv_path(&id),
+        };
+        let created = tokio::task::spawn_blocking(move || match engine {
+            DatabaseEngine::Sqlite => {
+                DatabaseHost::create_file(&create_path).map_err(|e| e.to_string())
+            }
+            DatabaseEngine::Kv => {
+                tako_kv::KvHost::create_file(&create_path).map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|created| created.map_err(|e| format!("create database file: {e}")));
         if let Err(error) = created {
             undo(false);
             return Err(error);
         }
         let stored = StoredDatabase {
             name: id.clone(),
+            engine,
             generation,
             created_at_unix_secs: now_unix_secs(),
             secrets: DatabaseSecrets {
@@ -787,19 +982,22 @@ impl ServerState {
             undo(false);
             return Err(format!("record database: {error}"));
         }
-        let host = self.databases.host.clone();
-        let register_id = database.clone();
-        let registered = tokio::task::spawn_blocking(move || host.register(register_id, path))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|registered| registered.map_err(|e| e.to_string()));
+        let databases = self.databases.clone();
+        let register_id = id.clone();
+        let registered =
+            tokio::task::spawn_blocking(move || databases.register(&register_id, engine))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|registered| registered);
         if let Err(error) = registered {
             undo(true);
             return Err(format!("open database: {error}"));
         }
         // Nothing to snapshot until something is written.
-        self.databases.host.clear_changed(&database);
-        tracing::info!(database = %id, "Created database");
+        if let Ok(database) = DatabaseId::parse(&id) {
+            self.databases.host.clear_changed(&database);
+        }
+        tracing::info!(database = %id, engine = ?engine, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
     }
 
@@ -836,15 +1034,29 @@ impl ServerState {
                 info.bindings.join(", ")
             ));
         }
-        let database = DatabaseId::parse(id)?;
         // Unregistering can time out on a request in flight; the database is
         // then still hosted, so its grants stay until this succeeds.
-        if self.databases.host.is_registered(&database) {
-            self.databases
-                .host
-                .unregister(&database)
-                .await
-                .map_err(|e| e.to_string())?;
+        match stored.engine {
+            DatabaseEngine::Sqlite => {
+                let database = DatabaseId::parse(id)?;
+                if self.databases.host.is_registered(&database) {
+                    self.databases
+                        .host
+                        .unregister(&database)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            DatabaseEngine::Kv => {
+                let store = tako_kv::StoreId::parse(id)?;
+                if self.databases.kv.is_registered(&store) {
+                    self.databases
+                        .kv
+                        .unregister(&store)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
         }
         let grants = self.databases.grants.lock();
         for (scope, grant) in self
@@ -865,12 +1077,9 @@ impl ServerState {
                 .state_store
                 .set_database_grants(&scope, &remaining)
                 .map_err(|e| format!("revoke grants: {e}"))?;
-            self.databases.host.set_remote_grants(
+            self.databases.set_remote_grants(
                 &scope,
-                remaining
-                    .iter()
-                    .filter_map(|other| DatabaseId::parse(other).ok())
-                    .collect(),
+                &remaining,
                 key.as_deref().unwrap_or_default(),
             );
         }
@@ -901,6 +1110,9 @@ impl ServerState {
         // Without the database's records its snapshots cannot be decrypted;
         // they go with it, unless another copy lives on and shares them.
         let mut warnings = Vec::new();
+        if stored.engine == DatabaseEngine::Kv {
+            return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
+        }
         if keep_snapshots {
             // A copy left by an unfinished move may still hold the
             // snapshots, which would keep the database's own copy from
@@ -971,12 +1183,18 @@ impl ServerState {
             .filter(|(_, grant)| grant.databases.contains(&stored.name))
             .map(|(scope, _)| scope)
             .collect();
-        let size_bytes = DatabaseId::parse(&stored.name)
-            .ok()
-            .and_then(|id| self.databases.host.size_bytes(&id))
-            .unwrap_or(0);
+        let size_bytes = match stored.engine {
+            DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
+                .ok()
+                .and_then(|id| self.databases.host.size_bytes(&id)),
+            DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
+                .ok()
+                .and_then(|id| self.databases.kv.size_bytes(&id)),
+        }
+        .unwrap_or(0);
         DatabaseInfo {
             name: stored.name.clone(),
+            engine: stored.engine,
             generation: stored.generation.clone(),
             created_at_unix_secs: stored.created_at_unix_secs,
             size_bytes,
@@ -1060,14 +1278,8 @@ impl ServerState {
             .state_store
             .set_database_grants(app, &granted)
             .map_err(|e| format!("store grants: {e}"))?;
-        self.databases.host.set_remote_grants(
-            app,
-            granted
-                .iter()
-                .filter_map(|id| DatabaseId::parse(id).ok())
-                .collect(),
-            key.as_deref().unwrap_or_default(),
-        );
+        self.databases
+            .set_remote_grants(app, &granted, key.as_deref().unwrap_or_default());
         // The deploying administrator hands the key to the app's servers.
         Ok(serde_json::json!({"app": app, "databases": granted, "peer_key": key}))
     }
@@ -1277,6 +1489,44 @@ impl ServerState {
         })
         .expect("query result serializes"))
     }
+
+    async fn query_kv(&self, id: &str, args: Vec<String>) -> Result<serde_json::Value, String> {
+        let stored = self.hosted_database(id)?;
+        if stored.engine != DatabaseEngine::Kv {
+            return Err(format!(
+                "{id} is a SQLite database; use `tako sqlite shell`."
+            ));
+        }
+        let store = tako_kv::StoreId::parse(id)?;
+        let reply = self
+            .databases
+            .kv
+            .admin(&store, args.into_iter().map(Into::into).collect())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(kv_json(reply))
+    }
+}
+
+/// A reply as JSON for the CLI; see [`tako_core::KvQueryResult`].
+fn kv_json(reply: tako_kv::Reply) -> serde_json::Value {
+    use tako_kv::Reply;
+    match reply {
+        Reply::Ok => "OK".into(),
+        Reply::Simple(text) => text.into(),
+        Reply::Error(message) => serde_json::json!({ "error": message }),
+        Reply::Int(value) => value.into(),
+        Reply::Bulk(bytes) => match String::from_utf8(bytes.to_vec()) {
+            Ok(text) => text.into(),
+            Err(_) => serde_json::json!({"base64": BASE64.encode(&bytes)}),
+        },
+        Reply::Nil | Reply::NilArray => serde_json::Value::Null,
+        Reply::Array(items) => items.into_iter().map(kv_json).collect(),
+        Reply::Map(pairs) => pairs
+            .into_iter()
+            .map(|(key, value)| serde_json::json!([kv_json(key), kv_json(value)]))
+            .collect(),
+    }
 }
 
 fn json_value(value: tako_database::Value) -> serde_json::Value {
@@ -1360,6 +1610,7 @@ mod tests {
             name: "shop".into(),
             server: server.into(),
             peer_key: key.map(str::to_owned),
+            engine: tako_core::DatabaseEngine::Sqlite,
         }
     }
 
@@ -1394,7 +1645,7 @@ mod tests {
             },
         );
         let requested = HashMap::from([("main".to_owned(), binding("other", None))]);
-        let connections = databases
+        let (connections, _) = databases
             .begin_release("demo/production", &config, requested)
             .unwrap();
         assert_ne!(

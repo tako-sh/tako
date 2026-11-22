@@ -5,6 +5,11 @@
       "url": "http://127.0.0.1:9845"
     }
   },
+  "kv": {
+    "sessions": {
+      "url": "redis://:kv-token-example@127.0.0.1:9846"
+    }
+  },
   "secrets": {
     "API_KEY": "key-123",
     "DATABASE_URL": "postgres://db/app"

@@ -70,7 +70,7 @@ pub(crate) fn env_records(
     let binds = config
         .envs
         .get(env)
-        .is_some_and(|env| !env.databases.is_empty());
+        .is_some_and(|env| !env.databases.is_empty() || !env.kv.is_empty());
     let Some(alias) = crate::commands::env_network::resolved(env) else {
         if binds {
             env_network(env)?;
@@ -88,9 +88,9 @@ pub(crate) struct PlannedBinding {
     pub binding: tako_core::DatabaseBinding,
 }
 
-/// Resolves an environment's database bindings for a deploy, using the
-/// network's `records`. Apps on other servers than a database's reach it
-/// over the private network.
+/// Resolves an environment's database and KV store bindings for a deploy,
+/// using the network's `records`. Apps on other servers than a database's
+/// reach it over the private network.
 pub(crate) fn plan_bindings(
     config: &TakoToml,
     servers: &ServerInventory,
@@ -100,22 +100,51 @@ pub(crate) fn plan_bindings(
     let Some(env_config) = config.envs.get(env) else {
         return Ok(HashMap::new());
     };
-    if env_config.databases.is_empty() {
+    if env_config.databases.is_empty() && env_config.kv.is_empty() {
         return Ok(HashMap::new());
     }
     let network = env_network(env)?;
     let mut planned = HashMap::new();
-    for (binding, database_name) in &env_config.databases {
+    let bound = env_config
+        .databases
+        .iter()
+        .map(|binding| (binding, tako_core::DatabaseEngine::Sqlite))
+        .chain(
+            env_config
+                .kv
+                .iter()
+                .map(|binding| (binding, tako_core::DatabaseEngine::Kv)),
+        );
+    for ((binding, database_name), engine) in bound {
+        let noun = engine.noun();
+        let command = crate::commands::sqlite::command_name(engine);
         let record = records
             .iter()
             .find(|record| &record.name == database_name)
             .ok_or_else(|| {
+                let mut chars = noun.chars();
+                let noun = chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default();
                 format!(
-                    "Database '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako sqlite create {database_name}`, or run `tako sqlite list` to see the network's databases."
+                    "{noun} '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako {command} create {database_name}`, or run `tako {command} list` to see the network's {}s.",
+                    engine.noun()
                 )
             })?;
+        if record.engine != engine {
+            return Err(format!(
+                "'{database_name}', bound as '{binding}' under {} in {env}, is a {}. Bind it under {} instead.",
+                match engine {
+                    tako_core::DatabaseEngine::Sqlite => "databases",
+                    tako_core::DatabaseEngine::Kv => "kv",
+                },
+                record.engine.noun(),
+                match record.engine {
+                    tako_core::DatabaseEngine::Sqlite => "databases",
+                    tako_core::DatabaseEngine::Kv => "kv",
+                },
+            ));
+        }
         let home = resolve_home(servers, &network, &record.server, env)
-            .map_err(|error| format!("The server of database '{database_name}': {error}"))?;
+            .map_err(|error| format!("The server of {noun} '{database_name}': {error}"))?;
         planned.insert(
             binding.clone(),
             PlannedBinding {
@@ -125,6 +154,7 @@ pub(crate) fn plan_bindings(
                     server: home.device_id.clone(),
                     // Filled from the home server's grant during the deploy.
                     peer_key: None,
+                    engine,
                 },
                 home,
             },

@@ -198,6 +198,7 @@ pub(super) fn rpc_action(
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::QueryKv { .. }
         | Command::MigrateDatabase { app: None, .. }
         | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }

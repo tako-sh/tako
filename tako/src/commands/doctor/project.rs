@@ -145,7 +145,7 @@ pub(super) fn checks(
             }
         }
 
-        if !env.databases.is_empty() {
+        if !env.databases.is_empty() || !env.kv.is_empty() {
             match env
                 .network_id
                 .as_ref()
@@ -160,7 +160,13 @@ pub(super) fn checks(
                 Some(Ok(_)) => {
                     for binding in env.databases.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
-                            "{}: {} binds {}, which has no network record; create it with `tako db create {}`",
+                            "{}: {} binds {}, which has no network record; create it with `tako sqlite create {}`",
+                            env.name, binding.binding, binding.database, binding.database
+                        ));
+                    }
+                    for binding in env.kv.iter().filter(|db| db.server.is_none()) {
+                        databases.warnings.push(format!(
+                            "{}: {} binds KV store {}, which has no network record; create it with `tako kv create {}`",
                             env.name, binding.binding, binding.database, binding.database
                         ));
                     }
@@ -260,6 +266,7 @@ mod tests {
                 database: "orders".into(),
                 server: database_server.map(str::to_owned),
             }],
+            kv: vec![],
             note: None,
         }
     }
@@ -308,7 +315,7 @@ mod tests {
         assert_eq!(expiring.message, "production: OLD expired");
         let databases = by_id(&checks, "database_records");
         assert_eq!(databases.status, CheckStatus::Warning);
-        assert!(databases.message.contains("tako db create orders"));
+        assert!(databases.message.contains("tako sqlite create orders"));
         let grants = by_id(&checks, "key_grants");
         assert_eq!(grants.status, CheckStatus::Warning);
         assert!(

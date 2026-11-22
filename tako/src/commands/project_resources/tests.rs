@@ -136,6 +136,7 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
         server: server.into(),
         generation: "g1".into(),
         created_at_unix_secs: 0,
+        engine: tako_core::DatabaseEngine::Sqlite,
     };
     let project = ProjectResources {
         app: "shop".into(),

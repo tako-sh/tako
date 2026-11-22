@@ -259,6 +259,8 @@ pub enum Command {
     /// Create a database hosted on this server.
     CreateDatabase {
         name: String,
+        #[serde(default)]
+        engine: crate::database::DatabaseEngine,
         /// Tells this database apart from earlier ones with the same name.
         generation: String,
         /// 32-byte key, base64, that encrypts the database's snapshots.
@@ -330,6 +332,10 @@ pub enum Command {
 
     /// Run one SQL statement as an administrator, for `tako sqlite shell`.
     QueryDatabase { name: String, sql: String },
+
+    /// Run one Redis command on a key-value store as an administrator, for
+    /// `tako kv shell`. Replies with a `KvQueryResult`.
+    QueryKv { name: String, args: Vec<String> },
 
     /// Apply an app's SQL migrations: each pending file in order, once,
     /// after a snapshot when any are pending. Replies with a

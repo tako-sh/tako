@@ -111,6 +111,17 @@ fn migrate_schema_on(
     if !has_deadline {
         tx.execute_batch("ALTER TABLE server_drain ADD COLUMN deadline_unix_ms INTEGER NOT NULL DEFAULT 0 CHECK(deadline_unix_ms >= 0);")?;
     }
+    // Hosted databases created before KV stores existed are SQLite.
+    let has_engine: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('databases') WHERE name = 'engine')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_engine {
+        tx.execute_batch(
+            "ALTER TABLE databases ADD COLUMN engine TEXT NOT NULL DEFAULT 'sqlite';",
+        )?;
+    }
     ensure_default_rows(tx)?;
     tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))?;
     Ok(())
@@ -212,7 +223,8 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             name TEXT NOT NULL PRIMARY KEY,
             generation TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            encrypted_data BLOB NOT NULL
+            encrypted_data BLOB NOT NULL,
+            engine TEXT NOT NULL DEFAULT 'sqlite'
         );
 
         CREATE TABLE IF NOT EXISTS app_databases (
