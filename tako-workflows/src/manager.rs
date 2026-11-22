@@ -608,9 +608,42 @@ impl WorkflowManager {
 
     /// Stop the worker but keep the DB around (app is paused).
     pub async fn stop(&self, app: &str, drain_timeout: Duration) {
-        let entry = self.apps.write().remove(app);
-        if let Some(entry) = entry {
-            entry.shutdown(drain_timeout).await;
+        let Some(entry) = self.begin_draining(app) else {
+            return;
+        };
+        let supervisor = entry.supervisor.clone();
+        entry.shutdown(drain_timeout).await;
+        self.finish_draining(app, &supervisor);
+    }
+
+    /// Take `app`'s runtime out of service but leave its handlers registered,
+    /// as `retire` does, so draining workers can still record finished steps
+    /// and runs instead of failing with "unknown app".
+    fn begin_draining(&self, app: &str) -> Option<AppWorkflow> {
+        let mut active = self.apps.write();
+        let entry = active.remove(app)?;
+        entry.accepting_new_work.store(false, Ordering::SeqCst);
+        active.insert(
+            app.to_string(),
+            AppWorkflow {
+                handlers: entry.handlers.clone(),
+                supervisor: entry.supervisor.clone(),
+                dispatcher: None,
+                cron: None,
+                accepting_new_work: entry.accepting_new_work.clone(),
+            },
+        );
+        Some(entry)
+    }
+
+    /// Unregister a drained runtime unless a newer one replaced it meanwhile.
+    fn finish_draining(&self, app: &str, supervisor: &Arc<WorkerSupervisor>) {
+        let mut active = self.apps.write();
+        if active
+            .get(app)
+            .is_some_and(|current| Arc::ptr_eq(&current.supervisor, supervisor))
+        {
+            active.remove(app);
         }
     }
 
@@ -910,12 +943,15 @@ impl WorkflowManager {
 
     /// Shut down every app, then the socket. Called on server shutdown.
     pub async fn shutdown_all(&self, drain_timeout: Duration) {
-        let apps: Vec<(String, AppWorkflow)> = {
-            let mut guard = self.apps.write();
-            guard.drain().collect()
-        };
-        for (_, entry) in apps {
+        let names: Vec<String> = self.apps.read().keys().cloned().collect();
+        let apps: Vec<(String, AppWorkflow)> = names
+            .into_iter()
+            .filter_map(|app| Some((app.clone(), self.begin_draining(&app)?)))
+            .collect();
+        for (app, entry) in apps {
+            let supervisor = entry.supervisor.clone();
             entry.shutdown(drain_timeout).await;
+            self.finish_draining(&app, &supervisor);
         }
         let socket = self.socket.lock().take();
         if let Some(handle) = socket {
@@ -1245,6 +1281,46 @@ mod tests {
                 .load(Ordering::SeqCst)
         );
         m.begin_server_drain();
+    }
+
+    /// Stopping (for a server restart or app pause) must let workers that are
+    /// finishing runs record their results, as a deploy's retire does.
+    #[tokio::test]
+    async fn stop_keeps_handlers_registered_until_workers_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = Arc::new(WorkflowManager::new(tmp.path()));
+        m.ensure("a", None, |db| {
+            let mut spec = dummy_spec(tmp.path().into(), db);
+            spec.command = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "trap 'sleep 0.5; exit 0' TERM; touch ready; while :; do sleep 0.05; done".into(),
+            ];
+            spec
+        })
+        .await
+        .unwrap();
+        m.supervisor_for("a").unwrap().wake().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !tmp.path().join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let stopping = tokio::spawn({
+            let m = m.clone();
+            async move { m.stop("a", Duration::from_secs(5)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!stopping.is_finished(), "the worker is still finishing");
+        let draining = m.apps.read().get("a").map(|entry| entry.handlers());
+        assert!(
+            draining.is_some_and(|handlers| !handlers.accepting_new_work.load(Ordering::SeqCst)),
+            "a draining worker can still write, but no new work is claimed"
+        );
+        stopping.await.unwrap();
+        assert!(!m.has("a"));
     }
 
     #[tokio::test]
