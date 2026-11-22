@@ -199,3 +199,21 @@ test("step names starting with __ are reserved for Tako and fail the run", async
   expect(message).toContain('starts with "__", which is reserved for Tako');
   expect(ran).toBe(false);
 });
+
+test("a sleep with an invalid duration fails the run instead of parking it", async () => {
+  for (const durationMs of [NaN, Infinity, -Infinity, 1e300]) {
+    const fixture = checkpointFixture({}, 0);
+    const signal = await fixture.api.sleep("nap", durationMs).catch((error: unknown) => error);
+    expect(signal).toBeInstanceOf(FailSignal);
+    expect((signal as FailSignal).error.message).toBe(
+      `Sleep "nap" needs a finite duration in milliseconds that ends at a valid date, got ${durationMs}.`,
+    );
+    expect(fixture.saves()).toBe(0);
+  }
+});
+
+test("a negative sleep still completes immediately", async () => {
+  const fixture = checkpointFixture({}, 0);
+  await fixture.api.sleep("nap", -1);
+  expect(fixture.saves()).toBeGreaterThan(0);
+});

@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootstrapEnvData } from "../tako/secrets";
 import { createGracefulShutdown } from "../tako/shutdown";
 
 import type { FetchHandler, ReadyableFetchHandler } from "../types";
@@ -10,6 +11,9 @@ import type { ManagedNextjsServer, ManagedNextjsStartup, NextjsFetchHandlerOptio
 
 const DEFAULT_HOSTNAME = "127.0.0.1";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+// fetch() decodes these content codings but keeps the Content-Encoding and
+// Content-Length headers, which then no longer describe the body.
+const FETCH_DECODED_CODINGS = new Set(["gzip", "x-gzip", "deflate", "br", "zstd"]);
 
 const managedServers = new Map<string, ManagedNextjsServer>();
 let cleanupHandlersRegistered = false;
@@ -63,7 +67,7 @@ export function createNextjsFetchHandler(
       init.duplex = "half";
     }
 
-    return await fetchImplementation(upstreamUrl, init);
+    return withoutDecodedEncoding(await fetchImplementation(upstreamUrl, init));
   };
 
   handler.ready = async () => {
@@ -168,12 +172,16 @@ async function startManagedNextjsServer(
     signal.throwIfAborted();
     const port = await reservePort(managed.hostname);
     signal.throwIfAborted();
+    // This process consumed the bootstrap envelope; Next's server code runs
+    // in the child and reads it from there.
+    const bootstrap = bootstrapEnvData();
     const child = spawn(process.execPath, [serverPath, ...managed.argv], {
       cwd: managed.cwd,
       env: {
         ...process.env,
         HOST: managed.hostname,
         PORT: String(port),
+        ...(bootstrap !== null && { TAKO_BOOTSTRAP_DATA: bootstrap }),
       },
       stdio: "inherit",
     });
@@ -332,6 +340,22 @@ function managedNextjsServerKey(serverPath: string, options: NextjsFetchHandlerO
     serverPath,
     argv: options.argv ?? [],
     cwd: options.cwd ? normalizeFileReference(options.cwd) : path.dirname(serverPath),
+  });
+}
+
+function withoutDecodedEncoding(response: Response): Response {
+  const encoding = response.headers.get("content-encoding");
+  const decoded = encoding
+    ?.split(",")
+    .every((coding) => FETCH_DECODED_CODINGS.has(coding.trim().toLowerCase()));
+  if (!decoded) return response;
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 

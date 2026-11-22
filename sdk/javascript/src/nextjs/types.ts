@@ -8,6 +8,8 @@ export type NextConfigShape = Record<string, unknown> & {
   allowedDevOrigins?: string[];
   /** Next image config. */
   images?: Record<string, unknown>;
+  /** Whether Next compresses responses. */
+  compress?: boolean;
   /** Next output mode. */
   output?: string;
 };

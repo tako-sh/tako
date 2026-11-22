@@ -40,6 +40,7 @@ describe("tako Next.js adapter", () => {
     });
 
     expect(config.output).toBe("standalone");
+    expect(withTako({ compress: true }).compress).toBe(false);
     expect(config.experimental?.typedRoutes).toBe(true);
     expect(path.isAbsolute(config.adapterPath!)).toBe(true);
     expect(config.adapterPath).toEndWith(path.join("src", "nextjs", "index.ts"));
@@ -195,6 +196,22 @@ describe("tako Next.js adapter", () => {
       forwardedProto: "https",
       forwardedPort: "8443",
     });
+  });
+
+  test("fetch handler keeps content codings that fetch passes through encoded", async () => {
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4030,
+        fetchImplementation: async () =>
+          new Response("raw", {
+            headers: { "content-encoding": "x-custom", "content-length": "3" },
+          }),
+      },
+    });
+    const response = await handler(new Request("https://example.com/"), {});
+
+    expect(response.headers.get("content-encoding")).toBe("x-custom");
+    expect(response.headers.get("content-length")).toBe("3");
   });
 
   test("fetch handler preserves upstream redirects", async () => {

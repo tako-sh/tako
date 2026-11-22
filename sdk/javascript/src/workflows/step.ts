@@ -299,6 +299,20 @@ export function createStepAPI(
 
     async sleep(name: string, durationMs: number): Promise<void> {
       ensureOwned();
+      // NaN, Infinity, or a wake time past the Date range would defer the
+      // run without a wake time, which parks it indefinitely. A negative
+      // duration has always meant "wake now".
+      if (
+        !Number.isFinite(durationMs) ||
+        Number.isNaN(new Date(Date.now() + durationMs).getTime())
+      ) {
+        throw new FailSignal(
+          new Error(
+            `Sleep ${JSON.stringify(name)} needs a finite duration in milliseconds ` +
+              `that ends at a valid date, got ${durationMs}.`,
+          ),
+        );
+      }
       const key = `__sleep:${name}`;
       const stored = stepState[key] as { wakeAt: number } | undefined;
       if (stored) {

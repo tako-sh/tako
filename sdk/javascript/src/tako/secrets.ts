@@ -132,6 +132,16 @@ export function composeSdkHint(): string | null {
   );
 }
 
+/**
+ * The bootstrap envelope as `TAKO_BOOTSTRAP_DATA` for a child process that
+ * runs app code without a Tako entrypoint, or `null` when running outside
+ * Tako. The child's SDK consumes it from its environment on first access.
+ */
+export function bootstrapEnvData(): string | null {
+  const state = current();
+  return state.token === null ? null : JSON.stringify(state);
+}
+
 /** Returns the internal auth token, or `null` when running outside Tako. */
 export function getInternalToken(): string | null {
   return current().token;

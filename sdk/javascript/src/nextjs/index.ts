@@ -27,7 +27,8 @@ export type {
 /**
  * Wrap a Next.js config so it plays well with Tako.
  *
- * Forces `output: "standalone"` (required for Tako's deploy/runtime), sets
+ * Forces `output: "standalone"` (required for Tako's deploy/runtime) and
+ * `compress: false` (Tako's proxy compresses responses), sets
  * `adapterPath` to this module so Next uses the Tako adapter, and appends
  * `*.test` / `*.tako.test` to `allowedDevOrigins` so the dev proxy can hit
  * the Next dev server. It also configures `next/image` to use Tako's public
@@ -51,6 +52,7 @@ export function withTako<T extends NextConfigShape>(config: T): T & NextConfigSh
   return {
     ...config,
     output: "standalone",
+    compress: false,
     adapterPath: fileURLToPath(import.meta.url),
     allowedDevOrigins: [...(config.allowedDevOrigins ?? []), "*.test", "*.tako.test"],
     images: {
