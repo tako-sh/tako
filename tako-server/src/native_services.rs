@@ -337,6 +337,16 @@ impl ServiceDirectory {
         Some(key.clone())
     }
 
+    /// Every effective server's private address, by device ID.
+    pub(crate) fn server_addresses(&self, now: u64) -> Vec<(String, IpAddr)> {
+        self.current(now).map_or_else(Vec::new, |view| {
+            view.servers
+                .iter()
+                .map(|(id, (address, _))| (id.to_string(), *address))
+                .collect()
+        })
+    }
+
     /// The private address of an effective server of the network, by device ID.
     pub(crate) fn server_address_by_id(&self, server: &str, now: u64) -> Option<IpAddr> {
         let view = self.current(now)?;
