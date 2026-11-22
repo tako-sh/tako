@@ -143,20 +143,18 @@ fn refuse_last_server(
     servers: &crate::config::ServerInventory,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reason = if super::remove::is_last_server(servers, entry) {
-        entry
-            .native
-            .as_ref()
-            .map(|target| format!("is the last server in network {}", target.network.alias))
-    } else {
-        entry
-            .native
-            .as_ref()
-            .and_then(super::remove::last_server_now)
-    };
-    let Some(reason) = reason else {
+    let Some(target) = &entry.native else {
         return Ok(());
     };
+    // Unlike removal, which deletes data, membership that cannot be refreshed
+    // does not block a revocation: an unreachable server is often why it is
+    // revoked. The inventory or a successful refresh must show no other one.
+    if !super::remove::is_last_server(servers, entry)
+        && !matches!(super::remove::other_server_remains(target), Ok(false))
+    {
+        return Ok(());
+    }
+    let reason = format!("is the last server in network {}", target.network.alias);
     if !assume_yes {
         return Err(format!(
             "{name} {reason}. Revoking it leaves nothing to deploy to and no server to recover client access from. Pass --yes to revoke it anyway."

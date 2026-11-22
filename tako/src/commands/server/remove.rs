@@ -237,29 +237,34 @@ pub(super) fn is_last_server(servers: &ServerInventory, server: &ServerEntry) ->
 /// Why `target` is, or may be, its network's last server according to freshly
 /// refreshed membership, or `None` when another effective server remains.
 pub(super) fn last_server_now(target: &crate::management_http::NativeTarget) -> Option<String> {
+    match other_server_remains(target) {
+        Ok(true) => None,
+        Ok(false) => Some(format!(
+            "is the last server in network {}",
+            target.network.alias
+        )),
+        Err(error) => Some(format!(
+            "may be the last server in network {}: membership could not be refreshed ({error})",
+            target.network.alias
+        )),
+    }
+}
+
+/// Whether freshly refreshed membership has an effective server besides `target`.
+pub(super) fn other_server_remains(
+    target: &crate::management_http::NativeTarget,
+) -> Result<bool, Box<dyn std::error::Error>> {
     tokio::task::block_in_place(|| {
-        let remaining = crate::network::client::refresh(&target.network).and_then(|profile| {
-            let now = crate::network::now()?;
-            Ok(profile
-                .snapshot()
-                .effective_members(now)?
-                .values()
-                .any(|member| {
-                    matches!(member.kind, tako_network::MemberKind::Server(_))
-                        && member.device_id != target.server_id
-                }))
-        });
-        match remaining {
-            Ok(true) => None,
-            Ok(false) => Some(format!(
-                "is the last server in network {}",
-                target.network.alias
-            )),
-            Err(error) => Some(format!(
-                "may be the last server in network {}: membership could not be refreshed ({error})",
-                target.network.alias
-            )),
-        }
+        let profile = crate::network::client::refresh(&target.network)?;
+        let now = crate::network::now()?;
+        Ok(profile
+            .snapshot()
+            .effective_members(now)?
+            .values()
+            .any(|member| {
+                matches!(member.kind, tako_network::MemberKind::Server(_))
+                    && member.device_id != target.server_id
+            }))
     })
 }
 
