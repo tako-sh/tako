@@ -40,8 +40,9 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
 
 
 # The disposable host runs its own engine; never mount the executor's socket.
+# Docker 29 dind ships no containerd binary; dockerd starts its embedded one.
 COPY --from=docker /usr/local/bin/docker /usr/bin/docker
-COPY --from=docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
+COPY --from=docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
 
 # Pre-install tako-server (with dummy binary, installer creates user/service)
