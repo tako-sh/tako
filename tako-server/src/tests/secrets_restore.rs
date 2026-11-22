@@ -307,6 +307,81 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
 }
 
 #[tokio::test]
+async fn restore_does_not_start_an_app_whose_secrets_cannot_be_read() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "my-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state_a = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager.clone(),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release_dir = temp.path().join("apps/my-app/production/releases/v1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    write_release_manifest(
+        &release_dir,
+        "node",
+        "index.js",
+        &["/bin/sh", "-lc", "sleep 600"],
+        Some("true"),
+        300,
+    );
+    state_a
+        .state_store
+        .set_secrets(
+            app_id,
+            &HashMap::from([("DATABASE_URL".to_string(), "postgres://db".to_string())]),
+        )
+        .unwrap();
+    let app = state_a.app_manager.register_app(AppConfig {
+        name: "my-app".to_string(),
+        environment: "production".to_string(),
+        version: "v1".to_string(),
+        path: release_dir,
+        command: vec!["/bin/sh".into(), "-lc".into(), "sleep 600".into()],
+        min_instances: 1,
+        max_instances: 4,
+        ..Default::default()
+    });
+    state_a.load_balancer.register_app(app);
+    state_a.persist_app_state(app_id).await;
+    let db = state_a.state_store.path().to_path_buf();
+    drop(state_a);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE app_secrets SET encrypted_data = x'00'", [])
+        .unwrap();
+
+    let state_b = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    state_b.restore_from_state_store().await.unwrap();
+
+    let restored = state_b.app_manager.get_app(app_id).expect("app registered");
+    assert_eq!(restored.state(), crate::socket::AppState::Error);
+    assert!(
+        restored
+            .last_error()
+            .is_some_and(|error| error.starts_with("Restore failed")),
+        "{:?}",
+        restored.last_error()
+    );
+    assert!(
+        restored.get_instances().is_empty(),
+        "an app must not start without its secrets"
+    );
+}
+
+#[tokio::test]
 async fn restore_uses_the_pinned_runtime_for_http_instances() {
     let temp = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {

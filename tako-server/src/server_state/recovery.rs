@@ -60,6 +60,7 @@ impl ServerState {
             let mut config = persisted.config.clone();
             let app_name = config.deployment_id();
             let routes = persisted.routes.clone();
+            let errors_before = errors.len();
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
@@ -195,6 +196,16 @@ impl ServerState {
             }
             if strict && !errors.is_empty() {
                 break;
+            }
+            // Without strict mode the other apps still restore, but this one
+            // must not start without the state it failed to read.
+            if errors.len() > errors_before {
+                app.set_state(AppState::Error);
+                app.set_last_error(format!(
+                    "Restore failed: {}",
+                    errors[errors_before..].join("; ")
+                ));
+                continue;
             }
 
             if should_start {

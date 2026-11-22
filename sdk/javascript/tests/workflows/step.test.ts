@@ -212,6 +212,13 @@ test("a sleep with an invalid duration fails the run instead of parking it", asy
   }
 });
 
+test("a replayed sleep keeps its stored wake time even if its duration is now invalid", async () => {
+  const wakeAt = Date.now() - 1;
+  const fixture = checkpointFixture({ "__sleep:nap": { wakeAt } }, 0);
+  await fixture.api.sleep("nap", NaN);
+  expect(fixture.persisted["nap"]).toBe(true);
+});
+
 test("a negative sleep still completes immediately", async () => {
   const fixture = checkpointFixture({}, 0);
   await fixture.api.sleep("nap", -1);
