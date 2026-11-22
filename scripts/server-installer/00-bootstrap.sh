@@ -145,9 +145,9 @@ download_file() {
       auth_header="$(github_auth_header "$src")"
       if need_cmd curl; then
         if [ -n "$auth_header" ]; then
-          curl -fsSL -H "$auth_header" "$src" -o "$dest"
+          curl -fsSL --retry 3 --retry-all-errors --retry-max-time 90 -H "$auth_header" "$src" -o "$dest"
         else
-          curl -fsSL "$src" -o "$dest"
+          curl -fsSL --retry 3 --retry-all-errors --retry-max-time 90 "$src" -o "$dest"
         fi
       else
         if [ -n "$auth_header" ]; then
