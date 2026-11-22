@@ -3,6 +3,42 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+test("tako run launches the child when its cache socket cannot be bound", async () => {
+  const cli = process.env["TAKO_BIN"] ?? resolve(import.meta.dir, "../../../target/debug/tako");
+  const project = await mkdtemp(join(tmpdir(), "cache-offline-"));
+  try {
+    await writeFile(join(project, "tako.toml"), 'name = "cache-offline"\nruntime = "bun"\n');
+    // A valid temp directory, but too long for a Unix socket address on Linux and macOS.
+    const longTmp = join(project, "t".repeat(120));
+    await mkdir(longTmp);
+    const child = Bun.spawn(
+      [cli, "run", "--", "/bin/sh", "-c", 'test -z "$TAKO_INTERNAL_SOCKET" && echo child-ran'],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          TMPDIR: longTmp,
+          TAKO_HOME: join(project, ".home"),
+          TAKO_INTERNAL_SOCKET: "/inherited.sock",
+          TAKO_TELEMETRY: "0",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, out, err] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(code).toBe(0);
+    expect(out.trim()).toBe("child-ran");
+    expect(err).toContain("Local cache unavailable");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("tako run serves the cache across processes and isolates local environments", async () => {
   const root = resolve(import.meta.dir, "../../..");
   const cli = process.env["TAKO_BIN"] ?? join(root, "target/debug/tako");

@@ -55,7 +55,13 @@ pub fn run(
         }
         crate::local_databases::LocalDatabases::start(&context.project_dir, &Default::default())?
     };
-    databases.serve_run_cache(&context.project_dir, env, &mut child_env)?;
+    use tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV;
+    child_env.remove(TAKO_INTERNAL_SOCKET_ENV);
+    if let Err(error) = databases.serve_run_cache(&context.project_dir, env, &mut child_env) {
+        let message = format!("Local cache unavailable; continuing without it: {error}");
+        crate::output::warning(&message);
+        tracing::warn!("{message}");
+    }
     child_env.insert(
         tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
         tako_core::bootstrap::envelope_string(
@@ -88,6 +94,8 @@ pub fn run(
     let status = Command::new(program)
         .args(args)
         .current_dir(&context.project_dir)
+        // A nested `tako run` must not fall back to the parent's socket.
+        .env_remove(TAKO_INTERNAL_SOCKET_ENV)
         .envs(child_env)
         .status()?;
 
