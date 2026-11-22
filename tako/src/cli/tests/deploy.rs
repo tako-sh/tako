@@ -98,8 +98,8 @@ fn deploy_parses_force_flag_separately_from_yes() {
 
 #[test]
 fn releases_list_parses() {
-    let cli = Cli::try_parse_from(["tako", "releases", "list"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "release", "list"]).unwrap();
+    let Some(Commands::Release(releases::ReleaseCommands::List { env })) = cli.command else {
         panic!("expected Releases::List");
     };
     assert!(env.is_none());
@@ -107,8 +107,8 @@ fn releases_list_parses() {
 
 #[test]
 fn releases_list_parses_with_env() {
-    let cli = Cli::try_parse_from(["tako", "releases", "list", "--env", "staging"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "release", "list", "--env", "staging"]).unwrap();
+    let Some(Commands::Release(releases::ReleaseCommands::List { env })) = cli.command else {
         panic!("expected Releases::List");
     };
     assert_eq!(env.as_deref(), Some("staging"));
@@ -116,8 +116,8 @@ fn releases_list_parses_with_env() {
 
 #[test]
 fn releases_ls_alias_parses() {
-    let cli = Cli::try_parse_from(["tako", "releases", "ls"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+    let cli = Cli::try_parse_from(["tako", "release", "ls"]).unwrap();
+    let Some(Commands::Release(releases::ReleaseCommands::List { env })) = cli.command else {
         panic!("expected Releases::List");
     };
     assert!(env.is_none());
@@ -125,8 +125,8 @@ fn releases_ls_alias_parses() {
 
 #[test]
 fn releases_rollback_parses_release_id_and_yes_flag() {
-    let cli = Cli::try_parse_from(["tako", "releases", "rollback", "abc1234", "--yes"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::Rollback { release, env, yes })) =
+    let cli = Cli::try_parse_from(["tako", "release", "rollback", "abc1234", "--yes"]).unwrap();
+    let Some(Commands::Release(releases::ReleaseCommands::Rollback { release, env, yes })) =
         cli.command
     else {
         panic!("expected Releases::Rollback");

@@ -273,7 +273,7 @@ With `tako dev --env <env>`, a custom environment binds only
 Set development secrets:
 
 ```bash
-tako secrets set DATABASE_URL --env development
+tako secret set DATABASE_URL --env development
 ```
 
 Use the matching JavaScript, Go, or Rust [Secrets example](/secrets/#read-from-application-code) to read the value through your backend SDK.

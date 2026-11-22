@@ -87,8 +87,8 @@ Deploy performs validation before build work starts. Check for:
 Use:
 
 ```bash
-tako credentials list
-tako secrets list
+tako credential list
+tako secret list
 tako network server list
 ```
 
@@ -125,14 +125,14 @@ web  healthy 0/0  production  abc123
 
 Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff. The `Restarts` row clears once the app has stayed healthy, or idle, for about a minute.
 
-A deploy or release command that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. `tako secrets sync` publishes network state without restarting the app and does not take this app lock.
+A deploy or release command that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. `tako secret sync` publishes network state without restarting the app and does not take this app lock.
 
 ## TLS Or Certificate Problems
 
 Let's Encrypt exact routes use HTTP-01 by default, so public port 80 must reach the server's HTTP listener. If you use wildcard routes, or if exact routes should use DNS-01, set:
 
 ```bash
-tako credentials set ssl.cloudflare --env production
+tako credential set ssl.cloudflare --env production
 ```
 
 For `ssl = "cloudflare"`, use a Cloudflare token with Origin CA certificate edit permission. Cloudflare Origin CA certificates are intended for Cloudflare-proxied traffic; direct browser connections to the origin will not trust them.
@@ -161,11 +161,11 @@ Remote fetch failures are command failures, not empty log results.
 Logs show each attempt's output. To see where a run stopped, read its stored state:
 
 ```bash
-tako workflows list --env production --status dead
-tako workflows show <run-id> --env production
+tako workflow list --env production --status dead
+tako workflow show <run-id> --env production
 ```
 
-`show` lists the saved steps and the stored error. The run failed after its last saved step. Fix the cause, then `tako workflows retry <run-id> --env production` resumes it with a fresh retry budget. A `pending` run with no due time is waiting for a signal; check its waits. A `running` run whose worker was lost is reclaimed 60 seconds after its last heartbeat.
+`show` lists the saved steps and the stored error. The run failed after its last saved step. Fix the cause, then `tako workflow retry <run-id> --env production` resumes it with a fresh retry budget. A `pending` run with no due time is waiting for a signal; check its waits. A `running` run whose worker was lost is reclaimed 60 seconds after its last heartbeat.
 
 These commands work against deployed environments only. When servers keep separate workflow state, a server that cannot be reached is reported as a warning and its runs are missing from the list. See [Inspect and repair runs](/workflows/#inspect-and-repair-runs).
 
@@ -181,9 +181,9 @@ backup = { storage = "private_backups" }
 Set or rotate credentials with:
 
 ```bash
-tako storages credentials private_backups --env production
-tako backups status --env production
-tako backups now --env production
+tako storage credentials private_backups --env production
+tako backup status --env production
+tako backup now --env production
 ```
 
 Backup storage must not use `public_base_url`, and `local` cannot be used as a backup target.
@@ -201,12 +201,12 @@ For values in the network state, check `tako network status --json`, device perm
 For a legacy tracked secret file or local encrypted draft with a missing environment key, recover the original key:
 
 ```bash
-tako secrets key import --env production
+tako secret key import --env production
 ```
 
-Use `--passphrase --env production` if the original key came from a passphrase. Import validates existing ciphertext before installing the key and does not need to decrypt the shared cache first. Keep the legacy file or local drafts while recovering; generating a replacement key does not decrypt them. Once the original key is available, migrate a tracked file with `tako secrets migrate`, then publish with `tako secrets sync --env production`.
+Use `--passphrase --env production` if the original key came from a passphrase. Import validates existing ciphertext before installing the key and does not need to decrypt the shared cache first. Keep the legacy file or local drafts while recovering; generating a replacement key does not decrypt them. Once the original key is available, migrate a tracked file with `tako secret migrate`, then publish with `tako secret sync --env production`.
 
-If Tako reports unpublished secrets for another network or app, this checkout has drafts for the environment's previous network or for another app. Confirm the selected `--config` file and its `[envs.<env>].network`. Publish the drafts with `tako secrets sync --env <env> --network <old>`, or remove them; published drafts follow the environment on their own. Files in the same directory share `.tako/` state. See [Move an environment to another network](/secrets/#move-an-environment-to-another-network) and [alternate configurations](/secrets/#use-an-alternate-configuration).
+If Tako reports unpublished secrets for another network or app, this checkout has drafts for the environment's previous network or for another app. Confirm the selected `--config` file and its `[envs.<env>].network`. Publish the drafts with `tako secret sync --env <env> --network <old>`, or remove them; published drafts follow the environment on their own. Files in the same directory share `.tako/` state. See [Move an environment to another network](/secrets/#move-an-environment-to-another-network) and [alternate configurations](/secrets/#use-an-alternate-configuration).
 
 On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychain entitlement is unavailable, reinstall Tako with the official installer.
 

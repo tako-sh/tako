@@ -4,7 +4,7 @@ use super::*;
 fn backups_now_parses_env_and_server() {
     let cli = Cli::try_parse_from([
         "tako",
-        "backups",
+        "backup",
         "now",
         "--env",
         "production",
@@ -13,7 +13,7 @@ fn backups_now_parses_env_and_server() {
     ])
     .unwrap();
 
-    let Some(Commands::Backups(BackupCommands::Now { env, server })) = cli.command else {
+    let Some(Commands::Backup(BackupCommands::Now { env, server })) = cli.command else {
         panic!("expected Backups::Now");
     };
     assert_eq!(env.as_deref(), Some("production"));
@@ -22,9 +22,9 @@ fn backups_now_parses_env_and_server() {
 
 #[test]
 fn backups_list_alias_parses() {
-    let cli = Cli::try_parse_from(["tako", "backups", "ls", "--env", "staging"]).unwrap();
+    let cli = Cli::try_parse_from(["tako", "backup", "ls", "--env", "staging"]).unwrap();
 
-    let Some(Commands::Backups(BackupCommands::List { env, server, .. })) = cli.command else {
+    let Some(Commands::Backup(BackupCommands::List { env, server, .. })) = cli.command else {
         panic!("expected Backups::List");
     };
     assert_eq!(env.as_deref(), Some("staging"));
@@ -35,7 +35,7 @@ fn backups_list_alias_parses() {
 fn backups_download_parses_output() {
     let cli = Cli::try_parse_from([
         "tako",
-        "backups",
+        "backup",
         "download",
         "b123",
         "--env",
@@ -47,7 +47,7 @@ fn backups_download_parses_output() {
     ])
     .unwrap();
 
-    let Some(Commands::Backups(BackupCommands::Download {
+    let Some(Commands::Backup(BackupCommands::Download {
         backup_id,
         env,
         server,
@@ -68,11 +68,11 @@ fn backups_download_parses_output() {
 #[test]
 fn backups_restore_parses_yes() {
     let cli = Cli::try_parse_from([
-        "tako", "backups", "restore", "b123", "--server", "la", "--yes",
+        "tako", "backup", "restore", "b123", "--server", "la", "--yes",
     ])
     .unwrap();
 
-    let Some(Commands::Backups(BackupCommands::Restore {
+    let Some(Commands::Backup(BackupCommands::Restore {
         backup_id,
         env,
         server,
@@ -92,6 +92,6 @@ fn backups_restore_parses_yes() {
 fn backups_restore_no_longer_takes_database_flags() {
     use clap::Parser;
     for flag in ["--database", "--shared", "--latest", "--txid"] {
-        assert!(Cli::try_parse_from(["tako", "backups", "restore", "b123", flag]).is_err());
+        assert!(Cli::try_parse_from(["tako", "backup", "restore", "b123", flag]).is_err());
     }
 }

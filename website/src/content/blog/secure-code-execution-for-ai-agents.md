@@ -90,8 +90,8 @@ The SDK wraps secrets in a Proxy that redacts on bulk logging and `toJSON()`. In
 | **Encryption at rest** | Tako secrets | Plaintext on disk, accidental commits                        |
 | **Redacting proxy**    | Tako SDK     | Accidental secret logging                                    |
 
-Set your secrets with [`tako secrets set`](/docs/cli/), deploy with `tako deploy`, and pass your Vercel AI SDK tool — or LangChain tool, or any other framework — the secureexec-backed executor. No managed sandbox service. No external vault. No Docker.
+Set your secrets with [`tako secret set`](/docs/cli/), deploy with `tako deploy`, and pass your Vercel AI SDK tool — or LangChain tool, or any other framework — the secureexec-backed executor. No managed sandbox service. No external vault. No Docker.
 
-Check the [deployment guide](/docs/deployment/) for how rolling updates work with agent processes, and the [development docs](/docs/development/) for how secrets flow locally with `tako dev`. The [CLI reference](/docs/cli/) has the full `tako secrets` command set.
+Check the [deployment guide](/docs/deployment/) for how rolling updates work with agent processes, and the [development docs](/docs/development/) for how secrets flow locally with `tako dev`. The [CLI reference](/docs/cli/) has the full `tako secret` command set.
 
 Two layers, two packages, one server.

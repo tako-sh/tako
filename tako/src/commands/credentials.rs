@@ -163,7 +163,7 @@ fn resolve_credential_name(requested: Option<&str>) -> Result<String, Box<dyn st
 
     if !output::is_interactive() {
         return Err(
-            "Missing required credential name. Run `tako credentials set <name>` or run interactively to choose one."
+            "Missing required credential name. Run `tako credential set <name>` or run interactively to choose one."
                 .into(),
         );
     }
@@ -302,7 +302,7 @@ fn list_credentials(
             .collect::<Vec<_>>();
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "credentials",
+            "command": "credential",
             "credentials": listed,
         }));
     }
@@ -471,12 +471,12 @@ pub(crate) fn missing_ssl_cloudflare_credential_message(
     match provider {
         tako_core::SslProvider::Cloudflare => {
             format!(
-                "Cloudflare SSL requires credential {SSL_CLOUDFLARE_CREDENTIAL_NAME}. Run `tako credentials set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env}`."
+                "Cloudflare SSL requires credential {SSL_CLOUDFLARE_CREDENTIAL_NAME}. Run `tako credential set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env}`."
             )
         }
         tako_core::SslProvider::LetsEncrypt => {
             format!(
-                "Let’s Encrypt wildcard routes require credential {SSL_CLOUDFLARE_CREDENTIAL_NAME}. Run `tako credentials set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env}`."
+                "Let’s Encrypt wildcard routes require credential {SSL_CLOUDFLARE_CREDENTIAL_NAME}. Run `tako credential set {SSL_CLOUDFLARE_CREDENTIAL_NAME} --env {env}`."
             )
         }
     }
@@ -665,7 +665,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "Missing required credential name. Run `tako credentials set <name>` or run interactively to choose one."
+            "Missing required credential name. Run `tako credential set <name>` or run interactively to choose one."
         );
     }
 }

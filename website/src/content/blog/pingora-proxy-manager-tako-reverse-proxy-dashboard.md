@@ -113,7 +113,7 @@ For a normal proxy, `upstream_peer` means "pick one of the configured backends."
 
 TLS is another place where "proxy config" and "app lifecycle" overlap.
 
-When a route is deployed, Tako knows which hostnames belong to the app. That route set drives certificate management. Exact hostnames can use Let's Encrypt HTTP-01. Wildcard hostnames use Cloudflare DNS-01 credentials set up with `tako credentials set ssl.cloudflare --env <env>`. Private and local hostnames get self-signed certificates.
+When a route is deployed, Tako knows which hostnames belong to the app. That route set drives certificate management. Exact hostnames can use Let's Encrypt HTTP-01. Wildcard hostnames use Cloudflare DNS-01 credentials set up with `tako credential set ssl.cloudflare --env <env>`. Private and local hostnames get self-signed certificates.
 
 At request time, the TLS handshake happens before app routing. The browser sends SNI, and `tako-server` chooses the certificate by exact hostname first, wildcard fallback second, then a default self-signed certificate if no match exists yet.
 

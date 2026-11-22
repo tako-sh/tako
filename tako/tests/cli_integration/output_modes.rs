@@ -6,9 +6,9 @@ fn dry_run_rejects_unsupported_mutations_before_dispatch() {
     let project = temp.path();
     for command in [
         &["uninstall"][..],
-        &["releases", "rollback", "v1"],
+        &["release", "rollback", "v1"],
         &["network", "server", "reload", "edge"],
-        &["secrets", "set", "TOKEN"],
+        &["secret", "set", "TOKEN"],
         &["generate"],
     ] {
         let mut args = vec!["--json", "--dry-run"];
@@ -258,12 +258,12 @@ main = "index.ts"
     )
     .unwrap();
 
-    let output = run_tako(&["--json", "secrets", "list"], project_dir);
+    let output = run_tako(&["--json", "secret", "list"], project_dir);
 
     assert!(output.status.success(), "{}", stderr_str(&output));
     let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
     assert_eq!(value["ok"], true);
-    assert_eq!(value["command"], "secrets");
+    assert_eq!(value["command"], "secret");
     assert_eq!(value["secrets"].as_array().unwrap().len(), 0);
 }
 
@@ -281,12 +281,12 @@ main = "index.ts"
     )
     .unwrap();
 
-    let output = run_tako(&["--json", "credentials", "list"], project_dir);
+    let output = run_tako(&["--json", "credential", "list"], project_dir);
 
     assert!(output.status.success(), "{}", stderr_str(&output));
     let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
     assert_eq!(value["ok"], true);
-    assert_eq!(value["command"], "credentials");
+    assert_eq!(value["command"], "credential");
     assert!(value["credentials"].as_array().is_some());
 }
 

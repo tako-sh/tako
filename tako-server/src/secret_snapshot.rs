@@ -77,9 +77,9 @@ impl Resolved {
                 && expires_on.as_str() <= today.as_str()
             {
                 let command = if value.kind == RecordKind::App {
-                    "secrets set"
+                    "secret set"
                 } else {
-                    "credentials set"
+                    "credential set"
                 };
                 expired.push((None, format!(
                     "Secret '{}' in environment '{env}' expired on {expires_on}. Run `tako {command} {} --env {env}` to update it.",
@@ -107,7 +107,7 @@ impl Resolved {
                         .min()
                     {
                         expired.push((Some(value.name.clone()), format!(
-                            "Storage credentials for '{}' in environment '{env}' expired on {expires_on}. Run `tako storages credentials {} --env {env}` to update them.",
+                            "Storage credentials for '{}' in environment '{env}' expired on {expires_on}. Run `tako storage credentials {} --env {env}` to update them.",
                             value.name, value.name
                         )));
                     }
@@ -199,7 +199,7 @@ impl Resolved {
         let (access_key_id, secret_access_key) =
             self.storages.get(resource).ok_or_else(|| {
                 format!(
-                    "Missing storage credentials for resource '{resource}' in environment '{}'. Run `tako storages credentials {resource} --env {}`.",
+                    "Missing storage credentials for resource '{resource}' in environment '{}'. Run `tako storage credentials {resource} --env {}`.",
                     self.env, self.env
                 )
             })?;
@@ -223,7 +223,7 @@ impl Resolved {
         self.fill_storage("backup", &mut backup.storage)?;
         if self.backup_keys.is_empty() {
             return Err(format!(
-                "Backup encryption key is missing for environment '{}'. Deploy from a full client or run `tako backups now` to create it.",
+                "Backup encryption key is missing for environment '{}'. Deploy from a full client or run `tako backup now` to create it.",
                 self.env
             ));
         }
@@ -487,7 +487,7 @@ mod tests {
             resolved
                 .fill_storages(&mut missing)
                 .unwrap_err()
-                .contains("tako storages credentials other --env production")
+                .contains("tako storage credentials other --env production")
         );
 
         // The active key, the last one written, goes last.
@@ -535,7 +535,7 @@ mod tests {
             .unwrap_err();
         assert!(
             error.contains("expired on 2000-01-01")
-                && error.contains("tako secrets set OLD_KEY --env production"),
+                && error.contains("tako secret set OLD_KEY --env production"),
             "{error}"
         );
 
@@ -567,7 +567,7 @@ mod tests {
             assert!(
                 error.contains("Storage credentials for 'r2'")
                     && error.contains("expired on 2000-01-01")
-                    && error.contains("tako storages credentials r2 --env production"),
+                    && error.contains("tako storage credentials r2 --env production"),
                 "{error}"
             );
         }

@@ -179,7 +179,7 @@ by the helper and allowed by the app's image configuration.
 Attach S3-compatible storage with the CLI, then use `tako.storages.<name>` from server-side app code:
 
 ```bash
-tako storages add uploads \
+tako storage add uploads \
   --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
@@ -234,8 +234,8 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 - `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako sqlite list` shows them. Apps on every server of the network can bind it. Snapshots go to the environment's `backup.storage`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
 - `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
-- Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako sqlite migrations new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
-- `tako sqlite reset <name> --local` empties the local database and re-applies migrations; without `--local` it resets the hosted one after a snapshot (a database the production environment binds also needs `--force`). `tako sqlite migrations list` shows what is pending.
+- Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako sqlite migration new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
+- `tako sqlite reset <name> --local` empties the local database and re-applies migrations; without `--local` it resets the hosted one after a snapshot (a database the production environment binds also needs `--force`). `tako sqlite migration list` shows what is pending.
 - Drizzle: `drizzle(createClient(tako.databases.main))` from `drizzle-orm/libsql`. Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`.
 - Use a write transaction (`db.transaction("write")`) for read-modify-write logic. Idle transactions roll back after 10 seconds; statements stop after 30 seconds.
 - `ATTACH`, `VACUUM INTO`, `load_extension`, and `PRAGMA` writes other than connection settings, `user_version`, `application_id`, and `auto_vacuum` are refused. Tako manages WAL and `synchronous`; `foreign_keys` is on.
@@ -901,4 +901,4 @@ const dbUrl = tako.secrets.DATABASE_URL;
 
 ### SQLite files in the data directory
 
-`tako.dataDir` / `TAKO_DATA_DIR` is private app data. `tako.sharedDataDir` / `TAKO_SHARED_DATA_DIR` is local shared data for apps on one server (or projects using the same local `TAKO_HOME`). Both are plain file directories: Tako does not capture or snapshot SQLite files in them, and `backup = { databases = [...] }` is rejected. Use a hosted database through `tako.databases` instead. To move an existing file, create a database, then `tako sqlite import <name> <file>` during a write freeze. Full-directory archives (`tako backups now`) still include files under the app data directory; deploys and schedules do not create archives.
+`tako.dataDir` / `TAKO_DATA_DIR` is private app data. `tako.sharedDataDir` / `TAKO_SHARED_DATA_DIR` is local shared data for apps on one server (or projects using the same local `TAKO_HOME`). Both are plain file directories: Tako does not capture or snapshot SQLite files in them, and `backup = { databases = [...] }` is rejected. Use a hosted database through `tako.databases` instead. To move an existing file, create a database, then `tako sqlite import <name> <file>` during a write freeze. Full-directory archives (`tako backup now`) still include files under the app data directory; deploys and schedules do not create archives.
