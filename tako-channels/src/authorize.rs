@@ -288,17 +288,26 @@ pub fn auth_scheme_requires_header(scheme: &ChannelAuthScheme) -> bool {
     )
 }
 
+/// Header fields by lowercase name. Repeated fields are combined as RFC 9110
+/// allows; HTTP/2 clients may send each cookie in its own `cookie` field,
+/// which RFC 9113 joins with `; `.
 pub fn request_headers_to_map(request: &RequestHeader) -> HashMap<String, String> {
-    request
-        .headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
-        })
-        .collect()
+    let mut headers: HashMap<String, String> = HashMap::new();
+    for (name, value) in request.headers.iter() {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        let name = name.as_str().to_ascii_lowercase();
+        let separator = if name == "cookie" { "; " } else { ", " };
+        headers
+            .entry(name)
+            .and_modify(|combined| {
+                combined.push_str(separator);
+                combined.push_str(value);
+            })
+            .or_insert_with(|| value.to_string());
+    }
+    headers
 }
 
 pub fn extract_credentials(
@@ -327,4 +336,29 @@ pub fn extract_credentials(
     });
 
     (header, cookie)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_cookie_fields_still_carry_the_session_cookie() {
+        let mut request = RequestHeader::build("GET", b"/channels/room", None).unwrap();
+        request.append_header("cookie", "theme=dark").unwrap();
+        request.append_header("cookie", "session=abc").unwrap();
+        request.append_header("accept", "text/html").unwrap();
+        request.append_header("accept", "*/*").unwrap();
+        let headers = request_headers_to_map(&request);
+        assert_eq!(headers["cookie"], "theme=dark; session=abc");
+        assert_eq!(headers["accept"], "text/html, */*");
+        let scheme = ChannelAuthScheme::Required {
+            header_name: None,
+            cookie_name: Some("session".into()),
+        };
+        assert_eq!(
+            extract_credentials(&headers, &scheme).1.as_deref(),
+            Some("abc")
+        );
+    }
 }
