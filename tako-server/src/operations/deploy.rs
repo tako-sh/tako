@@ -124,7 +124,11 @@ impl crate::ServerState {
                 }
             }
         };
-        let storages = if let Some(new_storages) = storages {
+        let storages = if let Some(mut new_storages) = storages {
+            match self.state_store.get_storages(app_name) {
+                Ok(previous) => keep_local_signing_keys(&mut new_storages, &previous),
+                Err(error) => return Response::error(format!("Failed to read storages: {error}")),
+            }
             new_storages
         } else {
             match self.state_store.get_storages(app_name) {
@@ -429,5 +433,65 @@ impl crate::ServerState {
             response["warm_instance"] = true.into();
         }
         Response::ok(response)
+    }
+}
+
+/// Signed local-storage URLs must outlive a deploy, but every deploy brings a
+/// fresh key. Keep the key a local binding already has while it serves the
+/// same path; a new path starts with the new key.
+fn keep_local_signing_keys(
+    storages: &mut HashMap<String, tako_core::StorageBinding>,
+    previous: &HashMap<String, tako_core::StorageBinding>,
+) {
+    for (name, binding) in storages.iter_mut() {
+        let Some(old) = previous.get(name) else {
+            continue;
+        };
+        if binding.provider == tako_core::StorageProvider::Local
+            && old.provider == tako_core::StorageProvider::Local
+            && binding.path == old.path
+            && let Some(key) = old.signing_key.as_ref().filter(|key| !key.is_empty())
+        {
+            binding.signing_key = Some(key.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod signing_key_tests {
+    use super::*;
+
+    fn local(path: &str, key: &str) -> tako_core::StorageBinding {
+        tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::Local,
+            resource: None,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+            public_base_url: None,
+            path: Some(path.into()),
+            signing_key: Some(key.into()),
+        }
+    }
+
+    #[test]
+    fn deploys_keep_a_local_bindings_signing_key_while_its_path_is_unchanged() {
+        let previous = HashMap::from([
+            ("files".to_string(), local("storage/files", "old")),
+            ("moved".to_string(), local("storage/before", "old")),
+        ]);
+        let mut next = HashMap::from([
+            ("files".to_string(), local("storage/files", "new")),
+            ("moved".to_string(), local("storage/after", "new")),
+            ("added".to_string(), local("storage/added", "new")),
+        ]);
+        keep_local_signing_keys(&mut next, &previous);
+        let key = |name: &str| next[name].signing_key.as_deref().unwrap();
+        assert_eq!(key("files"), "old", "issued URLs keep verifying");
+        assert_eq!(key("moved"), "new");
+        assert_eq!(key("added"), "new");
     }
 }
