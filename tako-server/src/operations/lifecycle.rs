@@ -340,6 +340,9 @@ impl crate::ServerState {
         }
         self.app_manager.remove_app(app_name);
         self.databases.remove_bindings(app_name);
+        if let Ok(scope) = crate::native_channel_client::app_scope(app_name) {
+            self.direct_channel_stores.remove(&scope);
+        }
 
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);

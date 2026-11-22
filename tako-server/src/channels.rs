@@ -89,6 +89,14 @@ impl DirectChannelStores {
         }
         Ok((store, local_file))
     }
+
+    /// Forgets a deleted app's store. Its maintenance worker stops once the
+    /// last request still holding the store finishes.
+    pub(crate) fn remove(&self, app: &tako_network::AppEnv) {
+        if let Some(old) = self.0.lock().remove(app) {
+            old.store.signal_gap(None);
+        }
+    }
 }
 
 pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
@@ -544,6 +552,24 @@ mod tests {
             app_channels_db_path(Path::new("/opt/tako"), "my-app"),
             Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite")
         );
+    }
+
+    #[test]
+    fn deleted_apps_release_their_direct_channel_store() {
+        let data = tempfile::tempdir().unwrap();
+        let stores = DirectChannelStores::default();
+        let app = crate::native_channel_client::app_scope("chat/production").unwrap();
+        let path = app_channels_db_path(data.path(), app.as_str());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (store, _) = stores.open(path, &app, &ChannelTarget::Local).unwrap();
+        let mut gap = store.resets("room");
+        assert_eq!(std::sync::Arc::strong_count(&store), 2);
+        stores.remove(&app);
+        // Only this caller still holds the store, and its subscribers reload.
+        assert_eq!(std::sync::Arc::strong_count(&store), 1);
+        assert!(stores.0.lock().is_empty());
+        assert!(gap.has_changed().unwrap());
+        gap.borrow_and_update();
     }
 
     #[test]
