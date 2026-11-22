@@ -4,7 +4,7 @@ use super::*;
 fn storages_add_parses_required_binding_options() {
     let cli = Cli::try_parse_from([
         "tako",
-        "storages",
+        "storage",
         "add",
         "uploads",
         "--env",
@@ -31,7 +31,7 @@ fn storages_add_parses_required_binding_options() {
     ])
     .unwrap();
 
-    let Some(Commands::Storages(StorageCommands::Add {
+    let Some(Commands::Storage(StorageCommands::Add {
         name,
         env,
         resource,
@@ -70,7 +70,7 @@ fn storages_add_parses_required_binding_options() {
 fn storages_credentials_parses_resource_options() {
     let cli = Cli::try_parse_from([
         "tako",
-        "storages",
+        "storage",
         "credentials",
         "backup_r2",
         "--env",
@@ -84,7 +84,7 @@ fn storages_credentials_parses_resource_options() {
     ])
     .unwrap();
 
-    let Some(Commands::Storages(StorageCommands::Credentials {
+    let Some(Commands::Storage(StorageCommands::Credentials {
         resource,
         env,
         access_key_id,

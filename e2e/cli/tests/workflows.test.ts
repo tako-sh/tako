@@ -24,9 +24,9 @@ afterEach(async () => {
   await rm(project, { recursive: true, force: true });
 });
 
-describe("tako workflows", () => {
+describe("tako workflow", () => {
   test("help lists the run commands", async () => {
-    const { screen, exitCode } = await run(["workflows", "--help"], { cols: 200 });
+    const { screen, exitCode } = await run(["workflow", "--help"], { cols: 200 });
     expect(exitCode).toBe(0);
     expect(screen).toContain("Inspect, retry, and cancel workflow runs of a deployed environment");
     for (const command of ["list", "show", "retry", "cancel"]) {
@@ -35,7 +35,7 @@ describe("tako workflows", () => {
   });
 
   test("list help documents filters", async () => {
-    const { screen, exitCode } = await run(["workflows", "list", "--help"], { cols: 200 });
+    const { screen, exitCode } = await run(["workflow", "list", "--help"], { cols: 200 });
     expect(exitCode).toBe(0);
     expect(screen).toContain("--status <STATUS>");
     expect(screen).toContain("pending, running, succeeded, cancelled, dead");
@@ -45,31 +45,31 @@ describe("tako workflows", () => {
   });
 
   test("cancel help offers --yes", async () => {
-    const { screen, exitCode } = await run(["workflows", "cancel", "--help"], { cols: 200 });
+    const { screen, exitCode } = await run(["workflow", "cancel", "--help"], { cols: 200 });
     expect(exitCode).toBe(0);
     expect(screen).toContain("<RUN_ID>");
     expect(screen).toContain("--yes");
   });
 
   test("rejects an unknown status and an out-of-range limit", async () => {
-    const status = await run(["workflows", "list", "--status", "failed"], { cols: 200 });
+    const status = await run(["workflow", "list", "--status", "failed"], { cols: 200 });
     expect(status.exitCode).toBe(2);
     expect(status.screen).toContain("invalid value 'failed'");
     expect(status.screen).toContain("pending, running, succeeded, cancelled, dead");
 
-    const limit = await run(["workflows", "list", "--limit", "500"], { cols: 200 });
+    const limit = await run(["workflow", "list", "--limit", "500"], { cols: 200 });
     expect(limit.exitCode).toBe(2);
     expect(limit.screen).toContain("1..=200");
   });
 
   test("run commands require a run id", async () => {
-    const { screen, exitCode } = await run(["workflows", "retry"], { cols: 200 });
+    const { screen, exitCode } = await run(["workflow", "retry"], { cols: 200 });
     expect(exitCode).toBe(2);
     expect(screen).toContain("<RUN_ID>");
   });
 
   test("JSON failure without a network is a structured error", async () => {
-    const { screen, exitCode } = await run(["--json", "workflows", "list", "--env", "production"], {
+    const { screen, exitCode } = await run(["--json", "workflow", "list", "--env", "production"], {
       cwd: project,
       env,
       cols: 400,
@@ -81,7 +81,7 @@ describe("tako workflows", () => {
 
   test("refuses the development environment", async () => {
     const { screen, exitCode } = await run(
-      ["--json", "workflows", "cancel", "run_1", "--env", "development"],
+      ["--json", "workflow", "cancel", "run_1", "--env", "development"],
       { cwd: project, env, cols: 400 },
     );
     expect(exitCode).toBe(1);

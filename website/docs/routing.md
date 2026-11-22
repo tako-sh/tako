@@ -27,7 +27,7 @@ Point public DNS or your external proxy at the selected servers. Declaring a rou
 | `ssl = "cloudflare"`                       | Cloudflare Origin CA                 | `ssl.cloudflare` and Cloudflare-proxied traffic. |
 
 ```bash
-tako credentials set ssl.cloudflare --env production
+tako credential set ssl.cloudflare --env production
 ```
 
 The credential is encrypted and managed by Tako; do not put it in `tako.toml` or expose it to app code. See [Secrets](/secrets/#provider-and-storage-credentials) for the distinction between app and provider credentials.

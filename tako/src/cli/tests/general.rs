@@ -76,10 +76,10 @@ fn telemetry_command_uses_top_level_name() {
         (&["tako", "dev", "stop"][..], "dev stop"),
         (&["tako", "deploy", "--yes"][..], "deploy"),
         (&["tako", "network", "server", "list"][..], "network"),
-        (&["tako", "secrets", "list"][..], "secrets"),
+        (&["tako", "secret", "list"][..], "secret"),
         (&["tako", "version"][..], "version"),
         (&["tako", "scale", "2"][..], "scale"),
-        (&["tako", "workflows", "list"][..], "workflows"),
+        (&["tako", "workflow", "list"][..], "workflow"),
     ];
     for (args, expected) in cases {
         let cli = Cli::try_parse_from(args).unwrap();

@@ -25,7 +25,7 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
     let postgres_credential = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME);
     if requires_postgres && postgres_credential.is_none() {
         result.error(format!(
-            "Workflows in environment '{env}' target {server_count} servers. Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
+            "Workflows in environment '{env}' target {server_count} servers. Mark every workflow with `local: true` for per-server local storage, or run `tako credential set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
         ));
         return result;
     }
@@ -38,7 +38,7 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
         Ok(true) => {
             if let Some(expires_on) = &credential.expires_on {
                 result.error(format!(
-                    "Credential {POSTGRES_CREDENTIAL_NAME} for environment '{env}' expired on {expires_on}. Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` to update it."
+                    "Credential {POSTGRES_CREDENTIAL_NAME} for environment '{env}' expired on {expires_on}. Run `tako credential set {POSTGRES_CREDENTIAL_NAME} --env {env}` to update it."
                 ));
             }
         }
@@ -46,7 +46,7 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
             Ok(true) => {
                 if let Some(expires_on) = &credential.expires_on {
                     result.warn(format!(
-                        "Credential {POSTGRES_CREDENTIAL_NAME} for environment '{env}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` to rotate it."
+                        "Credential {POSTGRES_CREDENTIAL_NAME} for environment '{env}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako credential set {POSTGRES_CREDENTIAL_NAME} --env {env}` to rotate it."
                     ));
                 }
             }

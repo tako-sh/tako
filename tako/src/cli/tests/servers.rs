@@ -346,7 +346,7 @@ fn every_command_accepts_a_network() {
         vec!["network", "client", "add", "ci", "--network", "staging"],
         vec!["--network", "staging", "deploy", "--env", "production"],
         vec![
-            "secrets",
+            "secret",
             "set",
             "KEY",
             "--env",

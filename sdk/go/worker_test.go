@@ -446,7 +446,7 @@ func TestStepRunMemoizesAcrossRetries(t *testing.T) {
 	}
 }
 
-// operatorCancel does what `tako workflows cancel` does to a running run:
+// operatorCancel does what `tako workflow cancel` does to a running run:
 // it ends the run and fences the claim owner.
 func (s *mockServer) operatorCancel(id string) {
 	s.mu.Lock()

@@ -213,7 +213,7 @@ check.
   (`.agents/internal/cli-output.md`, Modes). Today the list only shows effective
   members (`tako/src/commands/network/client.rs`, `List`), so revoked clients
   vanish.
-- History shows the client name across generations. `secrets list` already looks
+- History shows the client name across generations. `secret list` already looks
   authors up across all members, revoked ones included
   (`tako/src/network/secrets.rs:258`); switch it from `request.name` to the client
   name. Release attribution, when added, does the same.
@@ -255,7 +255,7 @@ check.
   identity stores it like a joined device.
 - Naming: `TAKO_CLIENT_IDENTITY` because the value is the client's whole
   identity, and Tako already says "identity" for device keys. `KEY` would collide
-  with the per-environment encryption key (`tako secrets key export`). The flag is
+  with the per-environment encryption key (`tako secret key export`). The flag is
   `--identity`: `--ci` is a global output flag and `--export` is already
   `tako network export`.
 

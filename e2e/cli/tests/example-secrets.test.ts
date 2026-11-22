@@ -51,7 +51,7 @@ describe("Go example secrets", () => {
       for (const envName of ["development", "production"]) {
         for (const secret of SECRET_NAMES) {
           const result = runTako(
-            ["--config", join(projectDir, "tako.toml"), "secrets", "set", secret, "--env", envName],
+            ["--config", join(projectDir, "tako.toml"), "secret", "set", secret, "--env", envName],
             projectDir,
             "example-value",
           );
@@ -60,7 +60,7 @@ describe("Go example secrets", () => {
       }
 
       const list = runTako(
-        ["--config", join(projectDir, "tako.toml"), "secrets", "list"],
+        ["--config", join(projectDir, "tako.toml"), "secret", "list"],
         projectDir,
       );
       expect(list.exitCode, `${name}: ${list.stdout}${list.stderr}`).toBe(0);

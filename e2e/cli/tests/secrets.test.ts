@@ -23,7 +23,7 @@ afterEach(async () => {
 describe("secret expiry prompt", () => {
   test("accepts blank input as no expiration", async () => {
     const term = TakoTerminal.spawn({
-      args: ["secrets", "set", "API_KEY", "--env", "production"],
+      args: ["secret", "set", "API_KEY", "--env", "production"],
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });

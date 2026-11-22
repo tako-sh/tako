@@ -108,13 +108,13 @@ With a backup storage (`[envs.<env>].backup.storage` or `[databases.<name>].back
 
 ### App data archives
 
-Full app-directory archives are manual (`tako backups now`) and opt-in with `[envs.<env>].backup`. They include local workflow state; channel replay and SDK cache are excluded because they are transient. Shared-directory files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
+Full app-directory archives are manual (`tako backup now`) and opt-in with `[envs.<env>].backup`. They include local workflow state; channel replay and SDK cache are excluded because they are transient. Shared-directory files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
 
 ## Remote Management
 
 Normal app operations use signed, pinned HTTPS authenticated by the enrolled device's identity and network permissions. SSH is used for bootstrap, recovery, and server maintenance. WireGuard carries private network traffic; deploys do not require a workstation WireGuard interface.
 
-Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped commands such as deploy, status, logs, scale, releases, backups, delete, and secrets sync do not use SSH for the normal path.
+Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped commands such as deploy, status, logs, scale, release, backup, delete, and secret sync do not use SSH for the normal path.
 
 ## Observability
 

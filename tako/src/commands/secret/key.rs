@@ -274,7 +274,7 @@ pub(super) fn validate_passphrase_key_for_env(
 
 pub(super) fn missing_secret_key_message(env: &str) -> String {
     format!(
-        "Unable to decrypt {env} secrets. Run `tako secrets key import` to import an exported key or passphrase."
+        "Unable to decrypt {env} secrets. Run `tako secret key import` to import an exported key or passphrase."
     )
 }
 

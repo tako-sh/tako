@@ -52,7 +52,7 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
         // Retrying a run only adds work and renaming a network only changes
         // this machine's alias; every other write may stop or remove work.
         let destructive =
-            !read_only && !matches!(names[..], ["workflows", "retry"] | ["network", "rename"]);
+            !read_only && !matches!(names[..], ["workflow", "retry"] | ["network", "rename"]);
         let description = format!(
             "{}\nUses the configured Tako project and CLI credentials. {}{}",
             command

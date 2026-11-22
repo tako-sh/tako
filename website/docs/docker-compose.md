@@ -67,7 +67,7 @@ The target server needs Docker Engine and the Docker Compose plugin **2.24.4 or 
 Explicit service `platform` selection requires Docker Engine 28 or newer.
 
 ```bash
-tako secrets set DATABASE_PASSWORD --env production
+tako secret set DATABASE_PASSWORD --env production
 tako deploy --env production
 tako status --json
 tako logs --env production --days 1 --json
@@ -169,7 +169,7 @@ Publish and close channels from any SDK service. Subscribers connect through the
 
 Workflow workers are always-on Compose services running the SDK worker entrypoint: the JavaScript Bun or Node worker, or a Go program that calls `RunWorker`. Tako never spawns workers for a Compose group, so `[workflows]` `run`, `workers`, `concurrency` and worker groups are rejected; `[workflows].retention` is still honored. Scale workers with `deploy.replicas` or `tako scale --service worker`, and set `TAKO_WORKFLOW_WORKER` and `TAKO_WORKER_CONCURRENCY` in their Compose `environment`. Any SDK service can enqueue, even before a worker runs; the queue is durable.
 
-Tako installs the new release's workflow runtime before it starts the release's SDK containers, and stops old workers before their replacements start. The first worker of the current build registers the group's schedules; registrations from other builds are ignored. After a server restart, stored schedules stay current. A group's workflows come from one codebase: with two different codebases, the first registration wins. `tako workflows` commands work against the group.
+Tako installs the new release's workflow runtime before it starts the release's SDK containers, and stops old workers before their replacements start. The first worker of the current build registers the group's schedules; registrations from other builds are ignored. After a server restart, stored schedules stay current. A group's workflows come from one codebase: with two different codebases, the first registration wins. `tako workflow` commands work against the group.
 
 ### Limits
 

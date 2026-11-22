@@ -416,7 +416,7 @@ Every deploy targets a network, so durable channel replay, presence, and store n
 To select shared Postgres explicitly:
 
 ```bash
-tako credentials set postgres_url --env production
+tako credential set postgres_url --env production
 ```
 
 This is an encrypted provider credential, not a `tako.toml` field or an app secret. Set it for the selected environment, then deploy to apply the backend. Existing installations using the removed external-VPN enrollment flow need [re-enrollment](/servers/#choose-the-vpn-provider).

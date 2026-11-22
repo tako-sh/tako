@@ -62,7 +62,7 @@ pub enum SqliteCommands {
 
     /// Create, list, and apply SQL migrations
     #[command(subcommand)]
-    Migrations(MigrationCommands),
+    Migration(MigrationCommands),
 
     /// Take a snapshot now
     Backup {
@@ -540,7 +540,7 @@ async fn run_async(
             let (_, home) = ctx.database(&name)?;
             shell::run(&home, &name, sql).await
         }
-        SqliteCommands::Migrations(command) => match command {
+        SqliteCommands::Migration(command) => match command {
             MigrationCommands::New { name, binding } => {
                 new_migration(config_path, &name, binding.as_deref())
             }

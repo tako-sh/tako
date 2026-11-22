@@ -97,7 +97,7 @@ source_ip = "direct"
 Then set the provider credential once for that environment:
 
 ```bash
-tako credentials set ssl.cloudflare --env production
+tako credential set ssl.cloudflare --env production
 ```
 
 Tako stores that token as an encrypted provider credential, not as an app secret. It is not exposed to your process and is not part of generated secret types. During deploy, Tako validates that the credential exists, has not expired when expiry metadata is known, and can read the matching Cloudflare zone. The server then uses the token to create short-lived DNS-01 TXT records for issuance and renewal.
@@ -121,7 +121,7 @@ source_ip = "cloudflare-proxy"
 And use the same credential name:
 
 ```bash
-tako credentials set ssl.cloudflare --env production
+tako credential set ssl.cloudflare --env production
 ```
 
 This time the token is used for Cloudflare Origin CA, not DNS-01. Tako asks Cloudflare for an origin certificate, stores it on the server, and renews it like other managed certificates. `source_ip = "cloudflare-proxy"` tells Tako to require requests from Cloudflare IP ranges and use `CF-Connecting-IP` as the client IP. That matters for logs, rate limits, and any app behavior that depends on the real visitor address.
@@ -144,7 +144,7 @@ That last row is the safe default. Let’s Encrypt certificates are public DV ce
 The credential story is also deliberately small. There is one provider credential name today, `ssl.cloudflare`, stored per environment with:
 
 ```bash
-tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
+tako credential set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
 Deploy fails before build work starts if a required certificate credential is missing, expired, disabled, or invalid for the selected flow. If the credential expires within 30 days, deploy warns before you get surprised by a renewal later. The [CLI reference](/docs/cli/) covers credential commands, and [troubleshooting](/docs/troubleshooting/) is the place to start when certificate issuance fails.

@@ -247,10 +247,10 @@ describe("migrations", () => {
       join(dir, "migrations", "0002_more.sql"),
       "INSERT INTO items VALUES ('more');\n",
     );
-    const pending = await tako("sqlite", "migrations", "list", "--local");
+    const pending = await tako("sqlite", "migration", "list", "--local");
     expect(pending.code).toBe(0);
     expect(pending.err).toContain("0002_more.sql");
-    const migrated = await tako("sqlite", "migrations", "apply", "--local");
+    const migrated = await tako("sqlite", "migration", "apply", "--local");
     expect(migrated.code).toBe(0);
     expect(migrated.err).toContain("0002_more.sql");
     expect(rows()).toEqual(["more", "seed"]);

@@ -233,10 +233,10 @@ describe("servers add --dry-run", () => {
   });
 });
 
-describe("backups --dry-run", () => {
+describe("backup --dry-run", () => {
   test("download names no file until the server reports the backup kind", async () => {
     await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-    const { screen, exitCode } = await run(["--dry-run", "backups", "download", "d1-abc"], {
+    const { screen, exitCode } = await run(["--dry-run", "backup", "download", "d1-abc"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
@@ -249,7 +249,7 @@ describe("backups --dry-run", () => {
   test("download keeps an explicit output path", async () => {
     await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
     const { screen, exitCode } = await run(
-      ["--dry-run", "backups", "download", "d1-abc", "--output", "snap.enc"],
+      ["--dry-run", "backup", "download", "d1-abc", "--output", "snap.enc"],
       { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } },
     );
 
@@ -259,7 +259,7 @@ describe("backups --dry-run", () => {
 
   test("restore skips without contacting the server", async () => {
     await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-    const { screen, exitCode } = await run(["--dry-run", "backups", "restore", "d1-abc", "--yes"], {
+    const { screen, exitCode } = await run(["--dry-run", "backup", "restore", "d1-abc", "--yes"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });

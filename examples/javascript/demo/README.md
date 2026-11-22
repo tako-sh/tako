@@ -39,7 +39,7 @@ Instances on every server of the network can use it. Deploys apply
 `backup.storage`.
 
 Secret values are not stored in Git. Set development values using
-`tako secrets set NAME --env development`. To access published production values,
+`tako secret set NAME --env development`. To access published production values,
 enroll this machine with a network invitation and run `tako network sync`.
 
 ## Build
