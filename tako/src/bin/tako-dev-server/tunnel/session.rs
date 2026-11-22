@@ -211,13 +211,24 @@ impl WebSocketQueue {
 
     pub(super) fn try_reserve(&self, len: usize) -> bool {
         let cost = Self::cost(len);
-        self.bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
-                queued
-                    .checked_add(cost)
-                    .filter(|total| *total <= WEBSOCKET_QUEUE_BYTES)
-            })
-            .is_ok()
+        let mut queued = self.bytes.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = queued
+                .checked_add(cost)
+                .filter(|total| *total <= WEBSOCKET_QUEUE_BYTES)
+            else {
+                return false;
+            };
+            match self.bytes.compare_exchange_weak(
+                queued,
+                total,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => queued = current,
+            }
+        }
     }
 
     pub(super) fn release(&self, len: usize) {
