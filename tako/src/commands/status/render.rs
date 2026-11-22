@@ -68,7 +68,7 @@ fn format_server_status_lines(
     lines.push(format_server_summary(global));
 
     let resources = global
-        .host
+        .resources
         .as_ref()
         .map(format_resource_lines)
         .unwrap_or_default();
@@ -526,7 +526,7 @@ mod tests {
             server_version: Some("0.1.0".to_string()),
             server_uptime: None,
             process_uptime: Some("4d 6h".to_string()),
-            host: None,
+            resources: None,
             routes: vec![
                 (
                     "web (production)".to_string(),
@@ -646,7 +646,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
-            host: None,
+            resources: None,
             routes: Vec::new(),
             apps: vec![super::super::GlobalAppStatusResult {
                 app_name: "web".to_string(),
@@ -703,7 +703,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
-            host: None,
+            resources: None,
             routes: Vec::new(),
             apps: Vec::new(),
             error: Some("Remote management failed".to_string()),
@@ -823,7 +823,7 @@ mod tests {
                 .and_then(|host| host.uptime_secs)
                 .map(format_duration_human),
             process_uptime: Some("4d 6h".into()),
-            host,
+            resources: host,
             routes: vec![],
             apps: vec![],
             error: None,
@@ -912,7 +912,7 @@ mod tests {
             server_version: None,
             server_uptime: None,
             process_uptime: None,
-            host: None,
+            resources: None,
             routes: vec![],
             apps: vec![],
             error: None,
