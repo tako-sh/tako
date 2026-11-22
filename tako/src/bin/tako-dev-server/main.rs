@@ -192,18 +192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    let internal_socket_path = match workflows.start_socket() {
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to start internal socket; workflow enqueue / channel publish will not work");
-            None
-        }
-        Ok(()) => {
-            let path = workflows.socket_path();
-            tracing::info!(socket = %path.display(), "internal socket listening");
-            Some(path)
-        }
-    };
-
     let events_for_relay = events.clone();
     let mut st = State::new(
         shutdown_tx,
@@ -215,7 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listen_addr,
         args.dns_ip,
     );
-    st.internal_socket = internal_socket_path;
     st.workflows = Some(workflows.clone());
 
     // Open the SQLite state store (persistent registrations only; runtime state is in-memory).
@@ -238,7 +225,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = Arc::new(Mutex::new(st));
+    {
+        let registry = Arc::downgrade(&state);
+        let caches = tako_cache::Caches::default();
+        workflows.set_cache(Arc::new(move |name, shared, request| {
+            let scope = registry.upgrade().and_then(|state| {
+                let state = state.lock().ok()?;
+                let app = state.apps.values().find(|app| app.name == name)?;
+                let data = std::path::Path::new(app.env.get("TAKO_DATA_DIR")?);
+                Some((data.parent()?.join("tako"), app.environment.clone()))
+            });
+            match scope {
+                Some((_, environment)) if shared => {
+                    caches.reply_shared(&data_dir, &environment, request)
+                }
+                Some((dir, _)) => caches.reply(&dir, request),
+                None => tako_core::Response::error("unknown development cache"),
+            }
+        }));
+    }
     network::install(&state, &workflows);
+    start_internal_socket(&state, &workflows);
 
     // Events relay: broadcast to subscribers + trigger wake-on-request.
     {
@@ -286,6 +293,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+        }
+    }
+}
+
+fn start_internal_socket(state: &Mutex<State>, workflows: &tako_workflows::WorkflowManager) {
+    match workflows.start_socket() {
+        Ok(()) => state.lock().unwrap().internal_socket = Some(workflows.socket_path()),
+        Err(error) => {
+            tracing::warn!(%error, "internal socket unavailable; continuing without SDK socket services")
         }
     }
 }

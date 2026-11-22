@@ -12,7 +12,6 @@
  *   TAKO_BUILD           — build sent with channel publishes and closes, when set
  */
 
-import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../channels";
 import type { ChannelLifecycleConfig } from "../channels/meta";
@@ -50,6 +49,9 @@ interface PendingRpc {
 }
 
 const internalSocketPools = new Map<string, InternalSocketPool>();
+// The isomorphic `tako.sh` entrypoint only needs Node's transport on its first server RPC.
+const netModule: string = "node:net";
+let createConnection: typeof import("node:net").createConnection;
 
 /**
  * Log the raw failure and return a sanitized `TakoError`. Callers throw the
@@ -169,6 +171,7 @@ export function installChannelSocketPublisherFromEnv(): boolean {
 
 /** Send a single JSONL command and resolve to `data` (or throw on error). */
 export async function callInternal(socketPath: string, cmd: unknown): Promise<unknown> {
+  createConnection ??= (await import(/* @vite-ignore */ netModule)).createConnection;
   const network =
     typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command === "network_call";
   const resp = await internalSocketPool(socketPath, network).call(cmd);
@@ -325,6 +328,7 @@ class RpcConnection {
       throw wrapSocketError("TAKO_PROTOCOL", new Error("socket lane is busy"));
     }
 
+    this.socket.ref();
     await this.connected.catch((err) => {
       this.markClosed();
       throw wrapSocketError("TAKO_UNAVAILABLE", err);
@@ -382,6 +386,8 @@ class RpcConnection {
   }
 
   private takeCurrent(): PendingRpc | null {
+    // An idle pooled lane must not keep one-shot scripts (`tako run`) alive.
+    this.socket.unref();
     const current = this.current;
     this.current = null;
     if (this.timeout) {

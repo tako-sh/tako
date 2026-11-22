@@ -1,0 +1,89 @@
+import { expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+test("tako run launches the child when its cache socket cannot be bound", async () => {
+  const cli = process.env["TAKO_BIN"] ?? resolve(import.meta.dir, "../../../target/debug/tako");
+  const project = await mkdtemp(join(tmpdir(), "cache-offline-"));
+  try {
+    await writeFile(join(project, "tako.toml"), 'name = "cache-offline"\nruntime = "bun"\n');
+    // A valid temp directory, but too long for a Unix socket address on Linux and macOS.
+    const longTmp = join(project, "t".repeat(120));
+    await mkdir(longTmp);
+    const child = Bun.spawn(
+      [cli, "run", "--", "/bin/sh", "-c", 'test -z "$TAKO_INTERNAL_SOCKET" && echo child-ran'],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          TMPDIR: longTmp,
+          TAKO_HOME: join(project, ".home"),
+          TAKO_INTERNAL_SOCKET: "/inherited.sock",
+          TAKO_TELEMETRY: "0",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, out, err] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(code).toBe(0);
+    expect(out.trim()).toBe("child-ran");
+    expect(err).toContain("Local cache unavailable");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("tako run serves the cache across processes and isolates local environments", async () => {
+  const root = resolve(import.meta.dir, "../../..");
+  const cli = process.env["TAKO_BIN"] ?? join(root, "target/debug/tako");
+  const project = await mkdtemp(join(tmpdir(), "cache-run-"));
+  try {
+    await writeFile(join(project, "tako.toml"), 'name = "cache-run"\nruntime = "bun"\n');
+    const worker = join(project, "worker");
+    await mkdir(worker);
+    await writeFile(join(worker, "tako.toml"), 'name = "cache-worker"\nruntime = "bun"\n');
+    const run = async (env: string, source: string, cwd = project) => {
+      const script = `import {cache} from ${JSON.stringify(join(root, "sdk/javascript/src/cache.ts"))}; ${source}`;
+      const child = Bun.spawn([cli, "run", "--env", env, "--", process.execPath, "-e", script], {
+        cwd,
+        env: { ...process.env, TAKO_HOME: join(project, ".home"), TAKO_TELEMETRY: "0" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, output, error] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      if (code !== 0) throw Error(error || output);
+      return output.trim();
+    };
+    await run("development", 'await cache.put("key", {v: 1}, {ttl: 120000})');
+    expect(await run("development", 'console.log(JSON.stringify(await cache.get("key")))')).toBe(
+      '{"v":1}',
+    );
+    expect(await run("staging", 'console.log(await cache.get("key"))')).toBe("undefined");
+    await run("development", 'await cache.put("key", "catalog", {ttl: 120000, shared: true})');
+    const sharedRead = 'console.log(await cache.get("key", {shared: true}))';
+    expect(await run("development", sharedRead, worker)).toBe("catalog");
+    expect(await run("development", 'console.log(await cache.get("key"))', worker)).toBe(
+      "undefined",
+    );
+    expect(await run("staging", sharedRead, worker)).toBe("undefined");
+    await run("development", 'await cache.delete("key", {shared: true})', worker);
+    expect(await run("development", sharedRead)).toBe("undefined");
+    expect(
+      await run("development", 'console.log((await cache.get("key", {shared: false})).v)'),
+    ).toBe("1");
+    await run("development", 'await cache.delete("key")');
+    expect(await run("development", 'console.log(await cache.get("key"))')).toBe("undefined");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
