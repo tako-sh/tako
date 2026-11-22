@@ -15,7 +15,7 @@ use tako_core::{Command, DatabaseInfo, DatabaseSnapshot, Response, SnapshotReaso
 
 use crate::commands::project_context;
 use crate::commands::project_resources::database_user_label;
-use crate::config::{ServerInventory, TakoToml};
+use crate::config::{SecretsStore, ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::network::databases::DatabaseRecord;
 use crate::output;
@@ -273,6 +273,7 @@ fn database_users<'a>(
     config: &'a TakoToml,
     network: &str,
     records: &[DatabaseRecord],
+    secrets: &SecretsStore,
 ) -> BTreeMap<String, DatabaseUsers<'a>> {
     let mut users = BTreeMap::<String, DatabaseUsers>::new();
     for (env, spec) in &config.envs {
@@ -286,7 +287,8 @@ fn database_users<'a>(
                 .environments
                 .insert(env);
         }
-        if let Some(name) = super::project_resources::replay_database(config, env, records) {
+        if let Some(name) = super::project_resources::replay_database(config, env, records, secrets)
+        {
             let database = users.entry(name.to_owned()).or_default();
             database.environments.insert(env);
             database.channel_replay.insert(env);
@@ -302,6 +304,9 @@ struct Context {
     config: TakoToml,
     network: String,
     servers: ServerInventory,
+    /// Tells a retired generated replay database (the environment now uses
+    /// Postgres) from an active one. Unreadable secrets count as none.
+    secrets: SecretsStore,
 }
 
 impl Context {
@@ -314,12 +319,14 @@ impl Context {
         let network = project_network(&config, network)?;
         let servers =
             crate::commands::helpers::load_management_servers(Some(vec![network.clone()])).await?;
+        let secrets = SecretsStore::load_from_dir(&project.project_dir).unwrap_or_default();
         Ok(Self {
             project_dir: project.project_dir,
             config_path: project.config_path,
             config,
             network: network.id,
             servers,
+            secrets,
         })
     }
 
@@ -414,9 +421,14 @@ impl Context {
     ) -> Result<Vec<(String, tako_core::StorageBinding)>, Box<dyn std::error::Error>> {
         let mut storages = Vec::new();
         let name = record.name.as_str();
-        let users = database_users(&self.config, &self.network, std::slice::from_ref(record))
-            .remove(name)
-            .unwrap_or_default();
+        let users = database_users(
+            &self.config,
+            &self.network,
+            std::slice::from_ref(record),
+            &self.secrets,
+        )
+        .remove(name)
+        .unwrap_or_default();
         for env in users.environments {
             if crate::commands::storage::database_backup_setting(&self.config, env, name).is_none()
             {
@@ -845,7 +857,7 @@ pub(crate) async fn create_database(
 
 fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
     let records = ctx.records()?;
-    let users = database_users(&ctx.config, &ctx.network, &records);
+    let users = database_users(&ctx.config, &ctx.network, &records, &ctx.secrets);
     let server_name = |id: &str| {
         ctx.servers
             .servers
@@ -903,7 +915,7 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
         tako_core::validate_database_name(name)?;
     }
     let records = ctx.records()?;
-    let project = database_users(&ctx.config, &ctx.network, &records);
+    let project = database_users(&ctx.config, &ctx.network, &records, &ctx.secrets);
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_owned()],
         None => project.keys().cloned().collect(),
@@ -1301,7 +1313,7 @@ fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::E
 async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let (record, home) = ctx.database(name)?;
-    check_replay_delete(&ctx.config, &ctx.network, &record)?;
+    check_replay_delete(&ctx.config, &ctx.network, &record, &ctx.secrets)?;
     let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
     // A delete whose network record could not be removed leaves the record
     // behind; deleting again finishes it.
@@ -1382,8 +1394,9 @@ fn check_replay_delete(
     config: &TakoToml,
     network: &str,
     record: &DatabaseRecord,
+    secrets: &SecretsStore,
 ) -> Result<(), String> {
-    let users = database_users(config, network, std::slice::from_ref(record));
+    let users = database_users(config, network, std::slice::from_ref(record), secrets);
     if let Some(db) = users.get(&record.name)
         && !db.channel_replay.is_empty()
     {
@@ -1874,9 +1887,14 @@ async fn reset(
     ctx.require_admin()?;
     let (record, home) = ctx.database(name)?;
     if !force
-        && database_users(&ctx.config, &ctx.network, std::slice::from_ref(&record))
-            .get(name)
-            .is_some_and(|db| db.environments.contains("production"))
+        && database_users(
+            &ctx.config,
+            &ctx.network,
+            std::slice::from_ref(&record),
+            &ctx.secrets,
+        )
+        .get(name)
+        .is_some_and(|db| db.environments.contains("production"))
     {
         return Err(format!(
             "{name} is used by the production environment. Pass --force to reset it anyway."
@@ -2166,7 +2184,8 @@ channels.database = "local"
             record("generated", Some("shop/staging")),
             record("retired", Some("shop/production")),
         ];
-        let users = database_users(&config, network, &records);
+        let none = SecretsStore::default();
+        let users = database_users(&config, network, &records, &none);
         assert_eq!(users.len(), 2);
         for (db, env) in [("events", "production"), ("generated", "staging")] {
             assert_eq!(users[db].environments, BTreeSet::from([env]));
@@ -2174,15 +2193,31 @@ channels.database = "local"
         }
         assert!(project_bindings(&config).is_empty());
         assert!(
-            check_replay_delete(&config, network, &records[0])
+            check_replay_delete(&config, network, &records[0], &none)
                 .unwrap_err()
                 .contains("production")
         );
         assert!(
-            check_replay_delete(&config, network, &records[1])
+            check_replay_delete(&config, network, &records[1], &none)
                 .unwrap_err()
                 .contains("staging")
         );
-        assert!(check_replay_delete(&config, network, &records[2]).is_ok());
+        assert!(check_replay_delete(&config, network, &records[2], &none).is_ok());
+        // Once staging uses Postgres, its generated database can be deleted.
+        let mut postgres = SecretsStore::default();
+        postgres.ensure_env_key_id("staging").unwrap();
+        postgres
+            .set_credential(
+                "staging",
+                crate::config::POSTGRES_CREDENTIAL_NAME,
+                crate::config::EncryptedSecretValue::new("encrypted".into(), None),
+            )
+            .unwrap();
+        assert!(check_replay_delete(&config, network, &records[1], &postgres).is_ok());
+        assert!(
+            database_users(&config, network, &records, &postgres)
+                .get("generated")
+                .is_none()
+        );
     }
 }

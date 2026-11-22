@@ -167,8 +167,36 @@ route = "staging.example.com"
             serde_json::json!([{"database":database, "server":server, "usage":"channel_replay"}]),
         );
     }
-    assert_eq!(replay_database(&config, "production", &[]), Some("events"));
-    assert_eq!(replay_database(&config, "staging", &[]), None);
+    let none = SecretsStore::default();
+    assert_eq!(
+        replay_database(&config, "production", &[], &none),
+        Some("events")
+    );
+    assert_eq!(replay_database(&config, "staging", &[], &none), None);
+    // Postgres replaces a generated database, but never an explicit one.
+    let mut postgres = SecretsStore::default();
+    for env in ["production", "staging"] {
+        postgres.ensure_env_key_id(env).unwrap();
+        postgres
+            .set_credential(
+                env,
+                crate::config::POSTGRES_CREDENTIAL_NAME,
+                crate::config::EncryptedSecretValue::new("encrypted".into(), None),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        replay_database(&config, "staging", &records, &none),
+        Some("generated")
+    );
+    assert_eq!(
+        replay_database(&config, "staging", &records, &postgres),
+        None
+    );
+    assert_eq!(
+        replay_database(&config, "production", &records, &postgres),
+        Some("events")
+    );
 }
 
 #[test]

@@ -296,7 +296,7 @@ pub(crate) fn env_resources(
         })
         .unwrap_or_default();
     databases.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
-    if let Some(database) = replay_database(config, name, records) {
+    if let Some(database) = replay_database(config, name, records, secrets) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::ChannelReplay,
             server: database_servers.get(database).cloned(),
@@ -333,17 +333,26 @@ pub(crate) fn env_resources(
     }
 }
 
-/// Hosted replay uses a database without creating an app SQL binding.
+/// Hosted replay uses a database without creating an app SQL binding. Like
+/// deploy planning, a configured `postgres_url` takes precedence over the
+/// generated database, which then stays in the directory unused.
 pub(crate) fn replay_database<'a>(
     config: &'a TakoToml,
     env: &str,
     records: &'a [DatabaseRecord],
+    secrets: &SecretsStore,
 ) -> Option<&'a str> {
     if env == "development" {
         return None;
     }
     if let Some(channels) = &config.envs.get(env)?.channels {
         return Some(&channels.database);
+    }
+    if secrets
+        .get_credential(env, crate::config::POSTGRES_CREDENTIAL_NAME)
+        .is_some()
+    {
+        return None;
     }
     let owner = tako_core::deployment_app_id(config.name.as_deref()?, env);
     records.iter().find_map(|record| {
