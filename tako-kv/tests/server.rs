@@ -270,6 +270,136 @@ async fn transactions_are_limited_in_size() {
     );
 }
 
+/// A host serving `stores`, each to an app holding the token of the same
+/// name.
+async fn host_with(config: HostConfig, stores: &[&str]) -> (tempfile::TempDir, SocketAddr) {
+    let dir = tempfile::tempdir().unwrap();
+    let host = KvHost::new(config);
+    for name in stores {
+        let id = StoreId::parse(name).unwrap();
+        host.register(id.clone(), dir.path().join(format!("{name}.redb")))
+            .unwrap();
+        host.set_bindings(
+            &format!("{name}/production"),
+            vec![Binding {
+                token_hash: hash_token(name),
+                store: id,
+                home: Home::Local,
+            }],
+        );
+    }
+    (dir, listen(&host, Access::Apps).await)
+}
+
+#[tokio::test]
+async fn transactions_and_watches_share_the_request_budget() {
+    let config = HostConfig {
+        max_buffered_bytes: 256 * 1024,
+        ..HostConfig::default()
+    };
+    let (_dir, addr) = host_with(config, &["main"]).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    assert_eq!(raw(&mut stream, b"AUTH main\r\n", 5).await, b"+OK\r\n");
+    let short = "-ERR the server is short of request buffer space; retry\r\n";
+    // Queued commands beyond 64 KiB draw on the shared budget; once it is
+    // used up, queuing fails and EXEC aborts.
+    let set = |i: usize| {
+        let mut out = Vec::new();
+        tako_kv::encode_request(
+            &[
+                b"SET".as_slice(),
+                format!("k{i}").as_bytes(),
+                &[b'v'; 100_000],
+            ],
+            &mut out,
+        );
+        out
+    };
+    raw(&mut stream, b"MULTI\r\n", 5).await;
+    let mut replies = String::new();
+    for i in 0..5 {
+        let got = raw(&mut stream, &set(i), 9).await;
+        replies.push_str(&String::from_utf8_lossy(&got));
+    }
+    assert!(
+        replies.starts_with("+QUEUED\r\n") && replies.ends_with(short),
+        "{replies}"
+    );
+    let got = raw(&mut stream, b"EXEC\r\n", 10).await;
+    assert!(String::from_utf8_lossy(&got).starts_with("-EXECABORT"));
+    // The budget came back: a smaller transaction runs.
+    raw(&mut stream, b"MULTI\r\n", 5).await;
+    raw(&mut stream, &set(0), 9).await;
+    raw(&mut stream, &set(1), 9).await;
+    let got = raw(&mut stream, b"EXEC\r\n", 15).await;
+    assert_eq!(String::from_utf8_lossy(&got), "*2\r\n+OK\r\n+OK\r\n");
+    // Watched keys are charged the same way, three copies each: the
+    // request fits the budget, what watching its keys keeps does not.
+    let keys: Vec<String> = (0..1000).map(|i| format!("{i:0>100}")).collect();
+    let mut watch = vec!["WATCH".to_owned()];
+    watch.extend(keys);
+    let mut request = Vec::new();
+    tako_kv::encode_request(&watch, &mut request);
+    let got = raw(&mut stream, &request, short.len()).await;
+    assert_eq!(String::from_utf8_lossy(&got), short);
+    assert_eq!(raw(&mut stream, b"WATCH k0 k0 k1\r\n", 5).await, b"+OK\r\n");
+}
+
+#[tokio::test]
+async fn watching_a_key_again_keeps_its_first_version() {
+    let (_dir, addr) = host_with(HostConfig::default(), &["main"]).await;
+    let mut a = client(addr, "main", false).await;
+    let mut b = client(addr, "main", false).await;
+    let _: () = redis::cmd("WATCH")
+        .arg("k")
+        .query_async(&mut a)
+        .await
+        .unwrap();
+    let _: () = b.set("k", 2).await.unwrap();
+    let _: () = redis::cmd("WATCH")
+        .arg("k")
+        .query_async(&mut a)
+        .await
+        .unwrap();
+    // The change after the first WATCH aborts the transaction.
+    let result: redis::Value = redis::pipe()
+        .atomic()
+        .set("k", 3)
+        .query_async(&mut a)
+        .await
+        .unwrap();
+    assert_eq!(result, redis::Value::Nil);
+    let value: i64 = b.get("k").await.unwrap();
+    assert_eq!(value, 2);
+}
+
+#[tokio::test]
+async fn client_list_shows_only_connections_to_the_same_store() {
+    let (_dir, addr) = host_with(HostConfig::default(), &["main", "other"]).await;
+    let mut one = client(addr, "main", false).await;
+    let _two = client(addr, "main", false).await;
+    let _elsewhere = client(addr, "other", false).await;
+    let list: String = redis::cmd("CLIENT")
+        .arg("LIST")
+        .query_async(&mut one)
+        .await
+        .unwrap();
+    assert_eq!(list.lines().count(), 2, "{list}");
+    let id: i64 = redis::cmd("CLIENT")
+        .arg("ID")
+        .query_async(&mut one)
+        .await
+        .unwrap();
+    let mine: String = redis::cmd("CLIENT")
+        .arg("LIST")
+        .arg("ID")
+        .arg(id)
+        .query_async(&mut one)
+        .await
+        .unwrap();
+    assert!(mine.starts_with(&format!("id={id} ")) && mine.lines().count() == 1);
+}
+
 #[tokio::test]
 async fn watch_aborts_transactions_on_change() {
     let s = server("secret").await;

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
@@ -215,6 +215,8 @@ pub(crate) struct Inner {
     pub(crate) buffered: Arc<Semaphore>,
     /// Reply bytes buffered beyond each connection's base allowance.
     pub(crate) replies: Arc<Semaphore>,
+    /// Open connections, for `CLIENT LIST`.
+    pub(crate) clients: Mutex<HashMap<u64, Arc<crate::server::ClientEntry>>>,
     /// Counts `close_all` calls; connections close when it changes.
     pub(crate) closings: tokio::sync::watch::Sender<u64>,
     pub(crate) next_client: AtomicU64,
@@ -254,6 +256,7 @@ impl KvHost {
                 remote_grants: RwLock::new(HashMap::new()),
                 buffered,
                 replies,
+                clients: Mutex::new(HashMap::new()),
                 closings: tokio::sync::watch::Sender::new(0),
                 next_client: AtomicU64::new(1),
                 connected: AtomicUsize::new(0),

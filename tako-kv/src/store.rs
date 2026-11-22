@@ -128,13 +128,34 @@ struct Removals {
     /// The `seq` of each active `WATCH`, with how many share it. Removals no
     /// older than the oldest are kept.
     watching: BTreeMap<u64, usize>,
-    /// The `seq` of each key's latest removal.
+    /// The keys some `WATCH` holds, with how many hold each. Only their
+    /// removals are kept, so what is kept is bounded by what is watched.
+    keys: HashMap<Vec<u8>, usize>,
+    /// The `seq` of each watched key's latest removal.
     removed: HashMap<Vec<u8>, u64>,
     /// The `seq` of the latest `FLUSHDB`, which removes every key.
     flushed: u64,
 }
 
 impl Removals {
+    fn hold(&mut self, keys: &[Bytes]) {
+        for key in keys {
+            *self.keys.entry(key.to_vec()).or_insert(0) += 1;
+        }
+    }
+
+    fn release(&mut self, keys: &[Bytes]) {
+        for key in keys {
+            if let Some(count) = self.keys.get_mut(key.as_ref()) {
+                *count -= 1;
+                if *count == 0 {
+                    self.keys.remove(key.as_ref());
+                    self.removed.remove(key.as_ref());
+                }
+            }
+        }
+    }
+
     /// When `key` was last removed, if after anything still watched.
     fn removed_at(&self, key: &[u8]) -> u64 {
         self.removed
@@ -158,15 +179,20 @@ impl Removals {
     }
 }
 
-/// Keeps the removals a `WATCH` may need until dropped.
+/// Keeps the removals a connection's watched keys may need until dropped.
+/// One guard covers every key the connection watches, from its first
+/// `WATCH` on.
 pub(crate) struct WatchGuard {
     removals: Arc<Mutex<Removals>>,
     seq: u64,
+    keys: Vec<Bytes>,
 }
 
 impl Drop for WatchGuard {
     fn drop(&mut self) {
-        self.removals.lock().unwatch(self.seq);
+        let mut removals = self.removals.lock();
+        removals.release(&self.keys);
+        removals.unwatch(self.seq);
     }
 }
 
@@ -310,23 +336,41 @@ impl Store {
         Ok(ran.replies.pop().unwrap_or(Reply::NilArray))
     }
 
-    /// Reads `keys` for `WATCH`. The guard keeps the removals their
+    /// Reads `keys` for `WATCH`, which `guard` then covers: the
+    /// connection's guard, or a new one. It keeps the removals their
     /// transaction needs until it is dropped.
-    pub(crate) async fn watch(&self, keys: Vec<Bytes>) -> Result<(Vec<Watched>, WatchGuard)> {
+    pub(crate) async fn watch(
+        &self,
+        keys: Vec<Bytes>,
+        guard: &mut Option<WatchGuard>,
+    ) -> Result<Vec<Watched>> {
         let db = self.db()?;
         let clock = self.config.clock.clone();
+        if guard
+            .as_ref()
+            .is_some_and(|held| !Arc::ptr_eq(&held.removals, &self.removals))
+        {
+            // Another store's guard covers nothing here.
+            *guard = None;
+        }
         // Registered before the read, so a removal committed after the
-        // snapshot is kept; re-registered at the snapshot's counter below.
-        self.removals
-            .lock()
-            .watching
-            .entry(0)
-            .and_modify(|n| *n += 1)
-            .or_insert(1);
-        let mut guard = WatchGuard {
+        // snapshot is kept. A new guard starts at 0 and moves to the
+        // snapshot's counter below; an existing one is older than it.
+        let fresh = guard.is_none();
+        {
+            let mut removals = self.removals.lock();
+            removals.hold(&keys);
+            if fresh {
+                *removals.watching.entry(0).or_insert(0) += 1;
+            }
+        }
+        let held = guard.get_or_insert_with(|| WatchGuard {
             removals: self.removals.clone(),
             seq: 0,
-        };
+            keys: Vec::new(),
+        });
+        let start = held.keys.len();
+        held.keys.extend(keys.iter().cloned());
         let read = tokio::task::spawn_blocking(move || {
             let view = ReadView::open(&db)?;
             let now = clock();
@@ -339,14 +383,28 @@ impl Store {
                 .collect::<Result<Vec<_>>>()
         })
         .await
-        .map_err(storage)??;
-        if let Some(seq) = read.first().map(|watched| watched.seq) {
+        .map_err(storage)
+        .and_then(|read| read);
+        let read = match read {
+            Ok(read) => read,
+            Err(error) => {
+                if fresh {
+                    *guard = None;
+                } else if let Some(held) = guard {
+                    let added = held.keys.split_off(start);
+                    held.removals.lock().release(&added);
+                }
+                return Err(error);
+            }
+        };
+        if let (true, Some(held), Some(seq)) = (fresh, guard.as_mut(), read.first().map(|w| w.seq))
+        {
             let mut removals = self.removals.lock();
             *removals.watching.entry(seq).or_insert(0) += 1;
             removals.unwatch(0);
-            guard.seq = seq;
+            held.seq = seq;
         }
-        Ok((read, guard))
+        Ok(read)
     }
 
     pub async fn stats(&self) -> Result<Stats> {
@@ -1058,7 +1116,8 @@ fn read<V: View + ?Sized>(
                 match query {
                     TtlQuery::Seconds => ((remaining + 500) / 1000) as i64,
                     TtlQuery::Millis => remaining as i64,
-                    TtlQuery::UnixSeconds => (entry.expires / 1000) as i64,
+                    // Rounded, as Redis rounds `TTL` and `EXPIRETIME`.
+                    TtlQuery::UnixSeconds => ((entry.expires + 500) / 1000) as i64,
                     TtlQuery::UnixMillis => entry.expires as i64,
                 }
             }
@@ -1857,7 +1916,11 @@ fn apply(
     // [`Store::watch`].
     let mut removals = removals.lock();
     if dirty && !removals.watching.is_empty() {
-        removals.removed.extend(removed);
+        for (key, seq) in removed {
+            if removals.keys.contains_key(&key) {
+                removals.removed.insert(key, seq);
+            }
+        }
         if let Some(flushed) = flushed {
             removals.flushed = flushed;
         }

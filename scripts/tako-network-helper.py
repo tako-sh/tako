@@ -115,7 +115,7 @@ def validate(data, ident):
             result['listen_port'] != 8787, 'listen_port must be 443 or 1024..65535 except reserved gossip port 8787')
     result['ssh_port'] = data.get('ssh_port', 22)
     require(type(result['ssh_port']) is int and 1 <= result['ssh_port'] <= 65535 and
-            result['ssh_port'] not in (53, 80, 443, 9844, 9847, 9848, 9850), 'invalid or reserved SSH port')
+            result['ssh_port'] not in (53, 80, 443, 9844, 9845, 9846, 9847, 9848, 9850), 'invalid or reserved SSH port')
     require(isinstance(data['peers'], list) and len(data['peers']) <= 256, 'too many peers')
     prefix = ipaddress.IPv6Network(result['address'].split('/')[0] + '/48', strict=False)
     ids, addresses, keys = {result['device_id']}, {result['address']}, set()

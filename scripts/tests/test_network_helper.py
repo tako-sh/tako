@@ -49,6 +49,7 @@ class ValidationTests(unittest.TestCase):
             ('private_key', base64.b64encode(bytes(32)).decode()),
             ('listen_port', 80), ('listen_port', 1023), ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
             ('ssh_port', True), ('ssh_port', 0), ('ssh_port', 65536), ('ssh_port', 80),
+            ('ssh_port', 9845), ('ssh_port', 9846),
             ('listen_port', '51820\n'), ('PostUp', 'reboot'), ('routes', ['::/0']),
             ('peers', {}), ('peers', [desired()['peers'][0]] * 257),
         ]

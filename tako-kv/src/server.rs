@@ -6,6 +6,7 @@
 //! that server's peer port, identify the app environment with the grant's
 //! key, and relay the rest of the connection unchanged.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -125,6 +126,13 @@ struct Multi {
 
 /// What each queued command is charged beyond its arguments.
 const QUEUED_OVERHEAD: usize = 64;
+/// What each watched key is charged beyond three copies of it: the
+/// connection's, and the store's record of watched and removed keys.
+const WATCHED_OVERHEAD: usize = 160;
+/// Bytes of queued commands and watched keys each connection keeps without
+/// drawing on the shared request budget.
+const TRANSACTION_BASE: usize = 64 * 1024;
+const SHORT_OF_REQUEST_SPACE: &str = "ERR the server is short of request buffer space; retry";
 
 /// What a connection does after a command.
 enum Flow {
@@ -167,7 +175,6 @@ struct Connection {
     host: KvHost,
     reader: OwnedReadHalf,
     writer: OwnedWriteHalf,
-    peer: SocketAddr,
     from_peer: bool,
     id: u64,
     proto: u8,
@@ -175,8 +182,16 @@ struct Connection {
     auth: Auth,
     multi: Option<Multi>,
     watched: Vec<Watched>,
-    /// Keep the removals the watched keys need; see [`Store::watch`].
-    watch_guards: Vec<WatchGuard>,
+    watched_keys: HashSet<Bytes>,
+    /// Charged for the watched keys, with [`WATCHED_OVERHEAD`] each.
+    watched_bytes: usize,
+    /// Keeps the removals the watched keys need; see [`Store::watch`].
+    watch_guard: Option<WatchGuard>,
+    /// What `CLIENT LIST` shows of this connection.
+    entry: Arc<ClientEntry>,
+    /// Request budget held for queued commands and watched keys beyond
+    /// [`TRANSACTION_BASE`].
+    transaction_permit: Option<OwnedSemaphorePermit>,
     buf: BytesMut,
     /// Budget held for `buf` beyond [`BASE_BUFFER`].
     permit: Option<OwnedSemaphorePermit>,
@@ -186,11 +201,49 @@ struct Connection {
     closings: tokio::sync::watch::Receiver<u64>,
 }
 
-struct Connected(KvHost);
+struct Connected {
+    host: KvHost,
+    id: u64,
+}
 
 impl Drop for Connected {
     fn drop(&mut self) {
-        self.0.inner.connected.fetch_sub(1, Ordering::Relaxed);
+        self.host.inner.connected.fetch_sub(1, Ordering::Relaxed);
+        self.host.inner.clients.lock().remove(&self.id);
+    }
+}
+
+/// What `CLIENT LIST` shows of a connection, as of its last batch.
+pub(crate) struct ClientEntry {
+    addr: SocketAddr,
+    state: parking_lot::Mutex<ClientState>,
+}
+
+#[derive(Clone, Default)]
+struct ClientState {
+    /// The store it is authenticated to; others' `CLIENT LIST` show only
+    /// connections to their own store.
+    store: Option<StoreId>,
+    name: Option<Bytes>,
+    proto: u8,
+    /// Commands queued in `MULTI`, or -1 outside it.
+    multi: i64,
+}
+
+impl ClientEntry {
+    fn line(&self, id: u64) -> String {
+        let state = self.state.lock();
+        format!(
+            "id={id} addr={} laddr= fd=0 name={} db=0 multi={} resp={} lib-name= lib-ver=",
+            self.addr,
+            state
+                .name
+                .as_ref()
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default(),
+            state.multi,
+            state.proto
+        )
     }
 }
 
@@ -215,7 +268,6 @@ impl Connection {
             host,
             reader,
             writer,
-            peer,
             from_peer,
             id,
             proto: 2,
@@ -223,7 +275,14 @@ impl Connection {
             auth: Auth::None,
             multi: None,
             watched: Vec::new(),
-            watch_guards: Vec::new(),
+            watched_keys: HashSet::new(),
+            watched_bytes: 0,
+            watch_guard: None,
+            entry: Arc::new(ClientEntry {
+                addr: peer,
+                state: parking_lot::Mutex::new(ClientState::default()),
+            }),
+            transaction_permit: None,
             buf: BytesMut::with_capacity(16 * 1024),
             permit: None,
             out: Vec::new(),
@@ -358,7 +417,15 @@ impl Connection {
 
     async fn run(mut self) {
         self.host.inner.connected.fetch_add(1, Ordering::Relaxed);
-        let _connected = Connected(self.host.clone());
+        self.host
+            .inner
+            .clients
+            .lock()
+            .insert(self.id, self.entry.clone());
+        let _connected = Connected {
+            host: self.host.clone(),
+            id: self.id,
+        };
         if self.from_peer && !self.handshake().await {
             return;
         }
@@ -406,6 +473,7 @@ impl Connection {
             }
             if !frames.is_empty() {
                 let mut flow = self.process(frames).await;
+                self.publish();
                 while let Flow::Forward {
                     target,
                     token,
@@ -613,22 +681,8 @@ impl Connection {
                 self.reply(Reply::error(NOAUTH));
                 continue;
             }
-            if let Some(multi) = &mut self.multi
-                && !IMMEDIATE_IN_MULTI.contains(&spec.name)
-            {
-                let bytes = QUEUED_OVERHEAD + args.iter().map(Bytes::len).sum::<usize>();
-                let max = self.host.inner.config.max_request_bytes;
-                let reply = if matches!(spec.name, "auth" | "hello") {
-                    multi.failed = true;
-                    Reply::error("ERR Command not allowed inside a transaction")
-                } else if multi.bytes + bytes > max {
-                    multi.failed = true;
-                    Reply::Error(format!("ERR transactions are limited to {max} bytes"))
-                } else {
-                    multi.bytes += bytes;
-                    multi.queued.push((args, spec));
-                    Reply::Simple("QUEUED".into())
-                };
+            if self.multi.is_some() && !IMMEDIATE_IN_MULTI.contains(&spec.name) {
+                let reply = self.queue(args, spec);
                 self.reply(reply);
                 continue;
             }
@@ -679,6 +733,73 @@ impl Connection {
         Flow::Continue
     }
 
+    /// Queues a command inside `MULTI`. Queued commands are copied out of
+    /// the request buffer and charged to the transaction's budget.
+    fn queue(&mut self, args: Vec<Bytes>, spec: &'static Spec) -> Reply {
+        let bytes = QUEUED_OVERHEAD + args.iter().map(Bytes::len).sum::<usize>();
+        let charged = if matches!(spec.name, "auth" | "hello") {
+            Err(Reply::error("ERR Command not allowed inside a transaction"))
+        } else {
+            self.charge_transaction(bytes)
+        };
+        let Some(multi) = &mut self.multi else {
+            return Reply::error("ERR EXEC without MULTI");
+        };
+        match charged {
+            Ok(()) => {
+                multi.bytes += bytes;
+                let args = args.iter().map(|arg| Bytes::copy_from_slice(arg)).collect();
+                multi.queued.push((args, spec));
+                Reply::Simple("QUEUED".into())
+            }
+            Err(reply) => {
+                multi.failed = true;
+                reply
+            }
+        }
+    }
+
+    /// Bytes held for queued commands and watched keys.
+    fn transaction_bytes(&self) -> usize {
+        self.watched_bytes + self.multi.as_ref().map_or(0, |multi| multi.bytes)
+    }
+
+    /// Makes room for `extra` more bytes of queued commands or watched keys:
+    /// at most the request limit per connection, and beyond
+    /// [`TRANSACTION_BASE`] only what the shared request budget has free.
+    fn charge_transaction(&mut self, extra: usize) -> Result<(), Reply> {
+        let total = self.transaction_bytes() + extra;
+        let max = self.config().max_request_bytes;
+        if total > max {
+            return Err(Reply::Error(format!(
+                "ERR transactions are limited to {max} bytes"
+            )));
+        }
+        let held = self
+            .transaction_permit
+            .as_ref()
+            .map_or(0, |p| p.num_permits());
+        if total > TRANSACTION_BASE + held {
+            let more = (total - TRANSACTION_BASE - held) as u32;
+            let budget = self.host.inner.buffered.clone();
+            let Ok(permit) = budget.try_acquire_many_owned(more) else {
+                return Err(Reply::error(SHORT_OF_REQUEST_SPACE));
+            };
+            match &mut self.transaction_permit {
+                Some(held) => held.merge(permit),
+                None => self.transaction_permit = Some(permit),
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the budget once no transaction state is left.
+    fn settle_transaction(&mut self) {
+        if self.transaction_bytes() == 0 {
+            self.transaction_permit = None;
+        }
+    }
+
     /// Checks a token. Peer connections are authenticated by their
     /// handshake, which `AUTH` cannot change.
     fn authenticate(&mut self, password: &[u8], reply: Reply) -> Local {
@@ -691,6 +812,10 @@ impl Connection {
         let token = hash_token(token);
         match self.host.resolve_token(&token) {
             Some(Resolved::Serve(store)) => {
+                // Keys watched in another store say nothing about this one.
+                if !matches!(&self.auth, Auth::Local { store: current, .. } if *current == store) {
+                    self.unwatch();
+                }
                 self.auth = Auth::Local { token, store };
                 Local::Reply(reply)
             }
@@ -722,6 +847,7 @@ impl Connection {
             "hello" => return self.hello(&args),
             "reset" => {
                 self.multi = None;
+                // Settles the transaction's budget too.
                 self.unwatch();
                 self.proto = 2;
                 self.name = None;
@@ -745,6 +871,7 @@ impl Connection {
             "exec" => self.exec().await,
             "discard" => {
                 if self.multi.take().is_some() {
+                    // Settles the transaction's budget too.
                     self.unwatch();
                     Reply::Ok
                 } else {
@@ -842,28 +969,59 @@ impl Connection {
             Err(Gone::Unavailable(message)) => return Reply::Error(message),
             Err(Gone::Rebound) => return Reply::error(REBOUND),
         };
-        match store.watch(keys).await {
-            Ok((watched, guard)) => {
+        // Watching a key again changes nothing, as in Redis: the first
+        // version read is the one `EXEC` compares.
+        let mut fresh = Vec::new();
+        let mut seen = HashSet::new();
+        for key in keys {
+            if !self.watched_keys.contains(&key) && seen.insert(key.clone()) {
+                fresh.push(Bytes::copy_from_slice(&key));
+            }
+        }
+        if fresh.is_empty() {
+            return Reply::Ok;
+        }
+        let bytes = fresh
+            .iter()
+            .map(|key| 3 * key.len() + WATCHED_OVERHEAD)
+            .sum();
+        if let Err(reply) = self.charge_transaction(bytes) {
+            return reply;
+        }
+        self.watched_bytes += bytes;
+        match store.watch(fresh, &mut self.watch_guard).await {
+            Ok(watched) => {
+                self.watched_keys
+                    .extend(watched.iter().map(|watched| watched.key.clone()));
                 self.watched.extend(watched);
-                self.watch_guards.push(guard);
                 Reply::Ok
             }
-            Err(error) => Reply::Error(store_error(&error)),
+            Err(error) => {
+                self.watched_bytes -= bytes;
+                self.settle_transaction();
+                Reply::Error(store_error(&error))
+            }
         }
     }
 
     fn unwatch(&mut self) {
         self.watched.clear();
-        self.watch_guards.clear();
+        self.watched_keys.clear();
+        self.watched_bytes = 0;
+        self.watch_guard = None;
+        self.settle_transaction();
     }
 
     async fn exec(&mut self) -> Reply {
         let Some(multi) = self.multi.take() else {
             return Reply::error("ERR EXEC without MULTI");
         };
-        let watched = std::mem::take(&mut self.watched);
         // Held until the transaction has run.
-        let _guards = std::mem::take(&mut self.watch_guards);
+        let _budget = self.transaction_permit.take();
+        let _guard = self.watch_guard.take();
+        let watched = std::mem::take(&mut self.watched);
+        self.watched_keys.clear();
+        self.watched_bytes = 0;
         if multi.failed {
             return Reply::error("EXECABORT Transaction discarded because of previous errors.");
         }
@@ -1030,18 +1188,83 @@ impl Connection {
         }
     }
 
+    fn auth_store(&self) -> Option<StoreId> {
+        match &self.auth {
+            Auth::Local { store, .. } | Auth::Remote { store, .. } => Some(store.clone()),
+            Auth::None => None,
+        }
+    }
+
+    /// Updates what `CLIENT LIST` shows of this connection.
+    fn publish(&self) {
+        *self.entry.state.lock() = ClientState {
+            store: self.auth_store(),
+            name: self.name.clone(),
+            proto: self.proto,
+            multi: self.multi.as_ref().map_or(-1, |m| m.queued.len() as i64),
+        };
+    }
+
     fn client_info(&self) -> String {
-        format!(
-            "id={} addr={} laddr= fd=0 name={} db=0 multi={} resp={} lib-name= lib-ver=",
-            self.id,
-            self.peer,
-            self.name
-                .as_ref()
-                .map(|n| String::from_utf8_lossy(n).into_owned())
-                .unwrap_or_default(),
-            self.multi.as_ref().map_or(-1, |m| m.queued.len() as i64),
-            self.proto
-        )
+        self.publish();
+        self.entry.line(self.id)
+    }
+
+    /// `CLIENT LIST [TYPE <type>] [ID <id> ...]`, over the connections to
+    /// this connection's store: other apps' connections are not shown.
+    fn client_list(&self, args: &[Bytes]) -> Reply {
+        let mut ids: Option<Vec<u64>> = None;
+        let mut none = false;
+        let mut i = 2;
+        while i < args.len() {
+            if is(&args[i], "type") && i + 1 < args.len() {
+                let kind = String::from_utf8_lossy(&args[i + 1]).to_lowercase();
+                match kind.as_str() {
+                    "normal" => {}
+                    "master" | "replica" | "slave" | "pubsub" => none = true,
+                    _ => {
+                        return Reply::Error(format!(
+                            "ERR Unknown client type '{}'",
+                            String::from_utf8_lossy(&args[i + 1])
+                        ));
+                    }
+                }
+                i += 2;
+            } else if is(&args[i], "id") && i + 1 < args.len() {
+                let mut list = Vec::new();
+                for arg in &args[i + 1..] {
+                    match std::str::from_utf8(arg).ok().and_then(|id| id.parse().ok()) {
+                        Some(id) if id > 0 => list.push(id),
+                        _ => return Reply::error("ERR Invalid client ID"),
+                    }
+                }
+                ids = Some(list);
+                i = args.len();
+            } else {
+                return Reply::error(command::SYNTAX);
+            }
+        }
+        self.publish();
+        let store = self.auth_store();
+        let mut entries: Vec<(u64, Arc<ClientEntry>)> = self
+            .host
+            .inner
+            .clients
+            .lock()
+            .iter()
+            .map(|(id, entry)| (*id, entry.clone()))
+            .collect();
+        entries.sort_by_key(|(id, _)| *id);
+        let mut text = String::new();
+        for (id, entry) in entries {
+            let visible = id == self.id || (store.is_some() && entry.state.lock().store == store);
+            let wanted = ids.as_ref().is_none_or(|ids| ids.contains(&id));
+            if visible && wanted && !none {
+                text.push_str(&entry.line(id));
+                text.push('\n');
+            }
+        }
+        Reply::bulk(text)
     }
 
     fn client(&mut self, args: &[Bytes]) -> Reply {
@@ -1085,7 +1308,7 @@ impl Connection {
                 }
             }
             "info" => arity(2).unwrap_or_else(|| Reply::bulk(format!("{}\n", self.client_info()))),
-            "list" => Reply::bulk(format!("{}\n", self.client_info())),
+            "list" => self.client_list(args),
             "no-evict" | "no-touch" => {
                 if let Some(error) = arity(3) {
                     return error;

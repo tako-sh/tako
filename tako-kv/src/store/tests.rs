@@ -292,14 +292,18 @@ async fn full_stores_refuse_growth_but_allow_removal() {
 
 /// Reads `keys` for a transaction, as `WATCH` does.
 async fn watch(f: &Fixture, keys: &[&str]) -> (Vec<Watched>, WatchGuard) {
-    f.store
-        .watch(
-            keys.iter()
-                .map(|k| Bytes::copy_from_slice(k.as_bytes()))
-                .collect(),
-        )
-        .await
-        .unwrap()
+    let mut guard = None;
+    let watched = watch_more(f, keys, &mut guard).await;
+    (watched, guard.unwrap())
+}
+
+/// Watches more keys under `guard`, as a connection's later `WATCH` does.
+async fn watch_more(f: &Fixture, keys: &[&str], guard: &mut Option<WatchGuard>) -> Vec<Watched> {
+    let keys = keys
+        .iter()
+        .map(|k| Bytes::copy_from_slice(k.as_bytes()))
+        .collect();
+    f.store.watch(keys, guard).await.unwrap()
 }
 
 fn ops() -> Vec<Op> {
@@ -374,14 +378,32 @@ async fn absent_watched_keys_notice_being_created_and_removed() {
         Reply::Array(_)
     ));
     drop(guard);
-    // Nothing is kept once no connection watches.
-    let (watched, guard) = watch(&f, &["a"]).await;
+    // A later WATCH on the same connection is covered by its guard.
+    let (mut watched, guard) = watch(&f, &["a"]).await;
+    let mut guard = Some(guard);
+    watched.extend(watch_more(&f, &["late"], &mut guard).await);
+    f.run("SET late 1").await;
+    f.run("DEL late").await;
+    assert_eq!(
+        f.store.exec(ops(), watched, ANY).await.unwrap(),
+        Reply::NilArray
+    );
+    // Only watched keys' removals are kept, and nothing once no
+    // connection watches.
     f.run("SET b 1").await;
     f.run("DEL b").await;
-    assert!(!f.store.removals.lock().removed.is_empty());
-    drop((watched, guard));
+    f.run("SET a 1").await;
+    f.run("DEL a").await;
+    {
+        let removals = f.store.removals.lock();
+        assert!(removals.removed.contains_key(b"a".as_slice()));
+        assert!(!removals.removed.contains_key(b"b".as_slice()));
+    }
+    drop(guard);
     let removals = f.store.removals.lock();
-    assert!(removals.removed.is_empty() && removals.watching.is_empty());
+    assert!(
+        removals.removed.is_empty() && removals.watching.is_empty() && removals.keys.is_empty()
+    );
 }
 
 #[tokio::test]
