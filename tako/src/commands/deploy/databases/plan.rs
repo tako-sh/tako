@@ -29,9 +29,9 @@ fn implicit_name(app: &str) -> String {
 pub(in crate::commands::deploy) struct Plan {
     pub sql: HashMap<String, PlannedBinding>,
     pub replay: Option<PlannedBinding>,
-    /// A deploy-only client found no generated replay database and cannot
-    /// create one or read the Postgres credential: the servers keep the
-    /// environment's current channel storage.
+    /// A deploy-only client found no generated replay database it could be
+    /// using. It cannot create one, so the servers keep the environment's
+    /// current channel storage.
     pub unprovisioned_replay: bool,
     pub implicit_replay: bool,
     /// One creation per database, even if several bindings point at it.
@@ -87,10 +87,6 @@ pub(in crate::commands::deploy) fn plan(
                 ));
             }
             home
-        } else if !administrator && for_replay && implicit {
-            // Neither bind nor create anything: the environment may use
-            // Postgres, which only the servers can read.
-            return Ok(None);
         } else if let [key] = members.as_slice()
             && administrator
         {
@@ -129,9 +125,18 @@ pub(in crate::commands::deploy) fn plan(
             resolve(name, false)?.expect("SQL placement"),
         );
     }
-    if let Some(name) = replay {
-        plan.replay = resolve(name, true)?;
-        plan.unprovisioned_replay = plan.replay.is_none();
+    match replay {
+        // A deploy-only client cannot read the Postgres credential, so it cannot
+        // tell whether a full deploy moved channels to Postgres after creating
+        // the generated database. It asserts nothing; the servers keep the
+        // committed backend.
+        Some(name) if implicit && !administrator => {
+            plan.unprovisioned_replay = !records
+                .iter()
+                .any(|r| r.name == name && r.channel_owner.as_deref() == Some(app));
+        }
+        Some(name) => plan.replay = resolve(name, true)?,
+        None => {}
     }
     Ok(plan)
 }
@@ -286,10 +291,18 @@ mod tests {
                 false,
             )
         };
+        // Even with the generated record, the environment may have moved to
+        // Postgres since; only an explicit database is asserted.
         let found = scoped(&project(""), &[record(&name, Some(APP))]).unwrap();
-        assert!(found.create.is_empty());
-        assert!(found.replay.unwrap().binding.peer_key.is_none());
+        assert!(found.create.is_empty() && found.replay.is_none());
+        assert!(!found.unprovisioned_replay);
         assert!(scoped(&project(""), &[]).unwrap().unprovisioned_replay);
+        let explicit = scoped(
+            &project(&format!("[envs.production.channels]\ndatabase='{name}'")),
+            &[record(&name, None)],
+        )
+        .unwrap();
+        assert!(explicit.replay.unwrap().binding.peer_key.is_none());
         for settings in [
             "databases={main='orders'}",
             "[envs.production.channels]\ndatabase='orders'",
