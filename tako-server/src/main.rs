@@ -14,6 +14,7 @@ mod container_runtime;
 mod databases;
 mod defaults;
 mod drain_observer;
+mod host_stats;
 mod identity;
 mod image_worker;
 mod instances;

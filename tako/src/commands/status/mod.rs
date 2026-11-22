@@ -56,6 +56,7 @@ struct GlobalServerStatusResult {
     server_version: Option<String>,
     server_uptime: Option<String>,
     process_uptime: Option<String>,
+    host: Option<tako_core::HostStats>,
     routes: Vec<(String, String)>,
     apps: Vec<GlobalAppStatusResult>,
     error: Option<String>,
@@ -206,6 +207,7 @@ fn render_global_status_json(
                 "server_version": &result.server_version,
                 "server_uptime": &result.server_uptime,
                 "process_uptime": &result.process_uptime,
+                "host": &result.host,
                 "routes": result.routes.iter().map(|(app, pattern)| {
                     serde_json::json!({
                         "app": app,
@@ -703,6 +705,7 @@ servers = ["second"]
                 server_version: None,
                 server_uptime: None,
                 process_uptime: None,
+                host: None,
                 routes: Vec::new(),
                 apps: Vec::new(),
                 error: Some(format!("Status task failed: {}", err)),

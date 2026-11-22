@@ -55,6 +55,11 @@ pub(super) async fn query_global_server_status(
     let process_uptime = info
         .process_started_at_unix_secs
         .and_then(process_uptime_since);
+    let server_uptime = info
+        .host
+        .as_ref()
+        .and_then(|host| host.uptime_secs)
+        .map(format_duration_human);
     let scoped_apps = client.scoped_apps();
     let routes = if scoped_apps.is_some() {
         Vec::new()
@@ -127,8 +132,9 @@ pub(super) async fn query_global_server_status(
     GlobalServerStatusResult {
         service_status: effective_service_status,
         server_version,
-        server_uptime: None,
+        server_uptime,
         process_uptime,
+        host: info.host,
         routes,
         apps,
         error,
@@ -141,6 +147,7 @@ fn status_error(message: String) -> GlobalServerStatusResult {
         server_version: None,
         server_uptime: None,
         process_uptime: None,
+        host: None,
         routes: Vec::new(),
         apps: Vec::new(),
         error: Some(message),
