@@ -351,12 +351,16 @@ fn client_ip_from_header(
     header: TrustedClientIpHeader,
     trusted_proxy: &TrustedProxyConfig,
 ) -> Option<IpAddr> {
+    // `Forwarded` values may quote a comma (`by="edge, zone"`); X-Forwarded-For
+    // has no quoting.
+    let quoted = header == TrustedClientIpHeader::Forwarded;
     let entries = || {
         request
             .headers
             .get_all(header.as_str())
             .iter()
-            .flat_map(|value| match value.to_str() {
+            .flat_map(move |value| match value.to_str() {
+                Ok(value) if quoted => split_unquoted(value, ',').map(Some).collect::<Vec<_>>(),
                 Ok(value) => value.split(',').map(Some).collect::<Vec<_>>(),
                 Err(_) => vec![None],
             })
@@ -398,9 +402,32 @@ fn parse_header_ip(value: &str) -> Option<IpAddr> {
     value.trim().parse().ok()
 }
 
+/// Splits `value` at each `separator` outside an RFC 7230 quoted string.
+fn split_unquoted(value: &str, separator: char) -> impl Iterator<Item = &str> {
+    let mut rest = Some(value);
+    std::iter::from_fn(move || {
+        let current = rest?;
+        let (mut quoted, mut escaped) = (false, false);
+        for (index, c) in current.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                c if c == separator && !quoted => {
+                    rest = Some(&current[index + c.len_utf8()..]);
+                    return Some(&current[..index]);
+                }
+                _ => {}
+            }
+        }
+        rest = None;
+        Some(current)
+    })
+}
+
 /// One `Forwarded` element, such as `for=192.0.2.1;proto=https`.
 fn parse_forwarded_for(element: &str) -> Option<IpAddr> {
-    let raw_for = element.split(';').find_map(|param| {
+    let raw_for = split_unquoted(element, ';').find_map(|param| {
         let (key, value) = param.split_once('=')?;
         key.trim()
             .eq_ignore_ascii_case("for")

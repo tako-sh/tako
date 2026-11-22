@@ -97,6 +97,14 @@ fn forwarded_chains_ignore_entries_the_client_supplied() {
         ),
         client
     );
+    // A quoted comma or semicolon does not end an element or parameter.
+    assert_eq!(
+        resolve(
+            "Forwarded",
+            &[r#"for=203.0.113.15;by="edge, zone", for=10.1.1.1;by="a;for=10.2.2.2""#]
+        ),
+        client
+    );
     // A malformed hop cannot be skipped to reach a client-supplied address.
     assert_eq!(
         resolve("X-Forwarded-For", &["198.51.100.66, garbage"]),

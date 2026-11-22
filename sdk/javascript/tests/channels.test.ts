@@ -290,6 +290,19 @@ describe("channels", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  test("connect refuses binary messages, which the server does not accept", () => {
+    const send = mock((_data: unknown) => {});
+    const connection = new Channel("chat", "ws").connect({
+      baseUrl: "https://app.example.com",
+      webSocketFactory: () => ({ send, close() {} }),
+    });
+
+    expect(() => connection.send(new ArrayBuffer(4))).toThrow(/binary/i);
+    expect(() => connection.send(new Uint8Array(2 * 1024 * 1024))).toThrow(/binary/i);
+    expect(() => connection.send(new Blob(["x"]))).toThrow(/binary/i);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   test("connect uses configured websocket when no factory is passed", () => {
     class MockWebSocket {
       readonly url: string;
