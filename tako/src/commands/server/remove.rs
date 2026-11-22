@@ -223,7 +223,7 @@ pub(super) async fn remove_server(
 }
 
 /// Whether `server` is the only server of its network.
-fn is_last_server(servers: &ServerInventory, server: &ServerEntry) -> bool {
+pub(super) fn is_last_server(servers: &ServerInventory, server: &ServerEntry) -> bool {
     let Some(target) = &server.native else {
         return false;
     };
@@ -236,7 +236,7 @@ fn is_last_server(servers: &ServerInventory, server: &ServerEntry) -> bool {
 
 /// Why `target` is, or may be, its network's last server according to freshly
 /// refreshed membership, or `None` when another effective server remains.
-fn last_server_now(target: &crate::management_http::NativeTarget) -> Option<String> {
+pub(super) fn last_server_now(target: &crate::management_http::NativeTarget) -> Option<String> {
     tokio::task::block_in_place(|| {
         let remaining = crate::network::client::refresh(&target.network).and_then(|profile| {
             let now = crate::network::now()?;

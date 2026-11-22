@@ -53,6 +53,10 @@ pub enum ServerCommands {
     Revoke {
         /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
+
+        /// Skip the confirmation prompt. Required to revoke a network's last server
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Remove a server from its network and delete every app and its data there
@@ -140,8 +144,8 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             .await?;
             Ok(())
         }
-        ServerCommands::Revoke { name } => {
-            crud::revoke_server(name.as_deref(), crate::network::network_flag()).await
+        ServerCommands::Revoke { name, yes } => {
+            crud::revoke_server(name.as_deref(), crate::network::network_flag(), yes).await
         }
         ServerCommands::Remove {
             name,
