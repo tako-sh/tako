@@ -214,6 +214,27 @@ describe("tako Next.js adapter", () => {
     expect(response.headers.get("content-length")).toBe("3");
   });
 
+  test("fetch handler offers upstream only codings its fetch decodes", async () => {
+    let forwarded: string | null = null;
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4032,
+        fetchImplementation: async (_input, init) => {
+          forwarded = new Headers(init?.headers).get("accept-encoding");
+          return new Response("ok");
+        },
+      },
+    });
+    await handler(
+      new Request("https://example.com/", {
+        headers: { "accept-encoding": "gzip;q=1.0, x-custom, *;q=0.1, zstd" },
+      }),
+      {},
+    );
+    // Bun's fetch decodes zstd, so it stays offered under Bun only.
+    expect(forwarded).toBe("Bun" in globalThis ? "gzip;q=1.0, zstd" : "gzip;q=1.0");
+  });
+
   test("fetch handler keeps encoding headers on bodyless responses", async () => {
     const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
       unstable_testing: {

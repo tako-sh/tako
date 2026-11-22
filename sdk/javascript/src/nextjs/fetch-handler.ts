@@ -12,8 +12,15 @@ import type { ManagedNextjsServer, ManagedNextjsStartup, NextjsFetchHandlerOptio
 const DEFAULT_HOSTNAME = "127.0.0.1";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 // fetch() decodes these content codings but keeps the Content-Encoding and
-// Content-Length headers, which then no longer describe the body.
-const FETCH_DECODED_CODINGS = new Set(["gzip", "x-gzip", "deflate", "br", "zstd"]);
+// Content-Length headers, which then no longer describe the body. Bun's fetch
+// also decodes zstd; Node's (22 at least) does not.
+const FETCH_DECODED_CODINGS = new Set([
+  "gzip",
+  "x-gzip",
+  "deflate",
+  "br",
+  ...("Bun" in globalThis ? ["zstd"] : []),
+]);
 
 const managedServers = new Map<string, ManagedNextjsServer>();
 let cleanupHandlersRegistered = false;
@@ -50,6 +57,10 @@ export function createNextjsFetchHandler(
     upstreamUrl.port = String(server.port);
 
     const headers = new Headers(request.headers);
+    // Offer only codings this runtime's fetch decodes, so the response body
+    // and its headers can be made to agree.
+    const acceptEncoding = decodableAcceptEncoding(headers.get("accept-encoding"));
+    if (acceptEncoding !== null) headers.set("accept-encoding", acceptEncoding);
     headers.set("host", originalHost);
     headers.set("x-forwarded-host", originalHost);
     headers.set("x-forwarded-proto", new URL(request.url).protocol.replace(/:$/, ""));
@@ -341,6 +352,15 @@ function managedNextjsServerKey(serverPath: string, options: NextjsFetchHandlerO
     argv: options.argv ?? [],
     cwd: options.cwd ? normalizeFileReference(options.cwd) : path.dirname(serverPath),
   });
+}
+
+function decodableAcceptEncoding(value: string | null): string | null {
+  if (value === null) return null;
+  const offered = value.split(",").filter((entry) => {
+    const coding = entry.split(";")[0]?.trim().toLowerCase() ?? "";
+    return coding === "identity" || FETCH_DECODED_CODINGS.has(coding);
+  });
+  return offered.length > 0 ? offered.map((entry) => entry.trim()).join(", ") : "identity";
 }
 
 function withoutDecodedEncoding(response: Response): Response {
