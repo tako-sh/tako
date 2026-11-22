@@ -277,59 +277,164 @@ async fn full_stores_refuse_growth_but_allow_removal() {
     assert_eq!(f.run(&format!("SET k0 {value}")).await, Reply::Ok);
 }
 
+/// Reads `keys` for a transaction, as `WATCH` does.
+async fn watch(f: &Fixture, keys: &[&str]) -> (Vec<Watched>, WatchGuard) {
+    f.store
+        .watch(
+            keys.iter()
+                .map(|k| Bytes::copy_from_slice(k.as_bytes()))
+                .collect(),
+        )
+        .await
+        .unwrap()
+}
+
+fn ops() -> Vec<Op> {
+    vec![
+        Op::Cmd(parse("INCR k")),
+        Op::Failed(Reply::error("ERR x")),
+        Op::Cmd(parse("GET k")),
+    ]
+}
+
 #[tokio::test]
 async fn transactions_abort_when_watched_keys_change() {
     let f = fixture(1 << 30);
     f.run("SET k 1").await;
-    let watched = f
-        .store
-        .versions(vec!["k".into(), "absent".into()])
-        .await
-        .unwrap();
-    assert!(watched[0].is_some() && watched[1].is_none());
-    let watch = vec![
-        (Bytes::from("k"), watched[0]),
-        (Bytes::from("absent"), watched[1]),
-    ];
-    let ops = || {
-        vec![
-            Op::Cmd(parse("INCR k")),
-            Op::Failed(Reply::error("ERR x")),
-            Op::Cmd(parse("GET k")),
-        ]
-    };
+    let (watched, _guard) = watch(&f, &["k", "absent"]).await;
+    assert!(watched[0].version.is_some() && watched[1].version.is_none());
     assert_eq!(
-        f.store.exec(ops(), watch.clone()).await.unwrap(),
+        f.store.exec(ops(), watched).await.unwrap(),
         Reply::Array(vec![Reply::Int(2), Reply::error("ERR x"), bulk("2")])
     );
     // The transaction itself changed k: a second one with the same watch aborts.
-    assert_eq!(
-        f.store.exec(ops(), watch.clone()).await.unwrap(),
-        Reply::NilArray
-    );
-    let fresh = f.store.versions(vec!["k".into()]).await.unwrap();
+    let (watched, _guard) = watch(&f, &["k"]).await;
+    f.run("INCR k").await;
+    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    // Creating a key that was absent counts.
+    let (watched, _guard) = watch(&f, &["absent"]).await;
     f.run("SET absent now").await;
-    assert_eq!(
-        f.store
-            .exec(
-                ops(),
-                vec![(Bytes::from("k"), fresh[0]), (Bytes::from("absent"), None)]
-            )
-            .await
-            .unwrap(),
-        Reply::NilArray
-    );
+    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
     // Expiry counts as a change.
     f.run("SET t v PX 10").await;
-    let t = f.store.versions(vec!["t".into()]).await.unwrap();
+    let (watched, _guard) = watch(&f, &["t"]).await;
     f.advance(10);
+    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+}
+
+#[tokio::test]
+async fn absent_watched_keys_notice_being_created_and_removed() {
+    let f = fixture(1 << 30);
+    // Created and deleted again: absent at WATCH and at EXEC, but modified.
+    let (watched, guard) = watch(&f, &["lock"]).await;
+    f.run("SET lock other").await;
+    f.run("DEL lock").await;
+    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    drop(guard);
+    // Created and flushed.
+    let (watched, guard) = watch(&f, &["lock"]).await;
+    f.run("SET lock other").await;
+    f.run("FLUSHDB").await;
+    assert_eq!(f.store.exec(ops(), watched).await.unwrap(), Reply::NilArray);
+    drop(guard);
+    // A removal before the WATCH does not count, and untouched keys run.
+    f.run("SET lock other").await;
+    f.run("DEL lock").await;
+    let (watched, guard) = watch(&f, &["lock"]).await;
+    assert!(matches!(
+        f.store.exec(ops(), watched).await.unwrap(),
+        Reply::Array(_)
+    ));
+    drop(guard);
+    // Nothing is kept once no connection watches.
+    let (watched, guard) = watch(&f, &["a"]).await;
+    f.run("SET b 1").await;
+    f.run("DEL b").await;
+    assert!(!f.store.removals.lock().removed.is_empty());
+    drop((watched, guard));
+    let removals = f.store.removals.lock();
+    assert!(removals.removed.is_empty() && removals.watching.is_empty());
+}
+
+#[tokio::test]
+async fn transactions_cap_their_replies() {
+    let f = fixture(1 << 30);
+    let value = "x".repeat(300 * 1024);
+    f.run(&format!("SET big {value}")).await;
+    let mut ops: Vec<Op> = (0..8).map(|_| Op::Cmd(parse("GET big"))).collect();
+    ops.push(Op::Cmd(parse("INCR n")));
+    let Reply::Array(replies) = f.store.exec(ops, Vec::new()).await.unwrap() else {
+        panic!()
+    };
+    // The 1 MiB reply limit fits three values; later ones become errors,
+    // and the writes after them still run.
     assert_eq!(
-        f.store
-            .exec(ops(), vec![(Bytes::from("t"), t[0])])
-            .await
-            .unwrap(),
-        Reply::NilArray
+        replies
+            .iter()
+            .filter(|r| matches!(r, Reply::Bulk(_)))
+            .count(),
+        3
     );
+    assert!(matches!(&replies[7], Reply::Error(m) if m.contains("exceed")));
+    assert_eq!(replies[8], Reply::Int(1));
+    assert_eq!(f.run("GET n").await, bulk("1"));
+}
+
+#[tokio::test]
+async fn scan_pages_stop_at_the_reply_limit() {
+    let f = fixture(1 << 30);
+    let long = "k".repeat(1000);
+    for chunk in 0..30 {
+        let pairs: Vec<String> = (0..100)
+            .map(|i| format!("{long}{} v", chunk * 100 + i))
+            .collect();
+        f.run(&format!("MSET {}", pairs.join(" "))).await;
+    }
+    let Reply::Array(page) = f.run("SCAN 0 COUNT 100000").await else {
+        panic!()
+    };
+    let [Reply::Bulk(cursor), Reply::Array(keys)] = page.as_slice() else {
+        panic!()
+    };
+    assert_ne!(cursor.as_ref(), b"0", "the page ended before every key");
+    assert!(keys.len() < 3000 && keys.len() * 1000 <= 1024 * 1024 + 2000);
+    // Following the cursor still visits every key.
+    let mut seen = keys.len();
+    let mut cursor = String::from_utf8(cursor.to_vec()).unwrap();
+    while cursor != "0" {
+        let Reply::Array(page) = f.run(&format!("SCAN {cursor} COUNT 100000")).await else {
+            panic!()
+        };
+        let [Reply::Bulk(next), Reply::Array(keys)] = page.as_slice() else {
+            panic!()
+        };
+        seen += keys.len();
+        cursor = String::from_utf8(next.to_vec()).unwrap();
+    }
+    assert_eq!(seen, 3000);
+}
+
+#[tokio::test]
+async fn expensive_patterns_fail_instead_of_stalling() {
+    let f = fixture(1 << 30);
+    let key = "a".repeat(1000);
+    for i in 0..200 {
+        f.run(&format!("SET {key}{i} v")).await;
+    }
+    let pattern = format!("*{}b", "a".repeat(999));
+    for command in [
+        format!("KEYS {pattern}"),
+        format!("SCAN 0 MATCH {pattern} COUNT 1000"),
+    ] {
+        assert_eq!(
+            f.run(&command).await,
+            Reply::error(glob::TOO_COMPLEX),
+            "{}",
+            &command[..10]
+        );
+    }
+    // Cheap patterns over the same keys still work: keys ending in 1.
+    assert!(matches!(f.run("KEYS a*1").await, Reply::Array(keys) if keys.len() == 20));
 }
 
 #[tokio::test]

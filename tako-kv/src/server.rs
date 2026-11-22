@@ -21,7 +21,7 @@ use crate::command::{self, Class, Cmd, Spec, wrong_arguments};
 use crate::glob;
 use crate::host::{Forward, HostConfig, KvHost, Resolved, StoreId, TokenHash, hash_token};
 use crate::resp::{self, Frame, Parsed, Reply};
-use crate::store::{Op, Store, StoreError};
+use crate::store::{Op, Store, StoreError, WatchGuard, Watched};
 
 /// The first command on a peer connection: `TAKO-FORWARD <scope> <store>
 /// <key> <protocol>`.
@@ -110,9 +110,14 @@ enum Auth {
 
 struct Multi {
     queued: Vec<(Vec<Bytes>, &'static Spec)>,
+    /// Bytes the queue holds, charged with [`QUEUED_OVERHEAD`] per command.
+    bytes: usize,
     /// A command failed to queue: `EXEC` aborts.
     failed: bool,
 }
+
+/// What each queued command is charged beyond its arguments.
+const QUEUED_OVERHEAD: usize = 64;
 
 /// What a connection does after a command.
 enum Flow {
@@ -121,7 +126,7 @@ enum Flow {
     /// Relay the connection to another server, replying `reply` to the
     /// command that authenticated once that server accepts it.
     Forward {
-        target: Forward,
+        target: Box<Forward>,
         token: TokenHash,
         reply: Reply,
         rest: Vec<Vec<Bytes>>,
@@ -135,7 +140,7 @@ enum Local {
     Reply(Reply),
     Close(Reply),
     Forward {
-        target: Forward,
+        target: Box<Forward>,
         token: TokenHash,
         reply: Reply,
         proto: u8,
@@ -162,7 +167,9 @@ struct Connection {
     name: Option<Bytes>,
     auth: Auth,
     multi: Option<Multi>,
-    watched: Vec<(Bytes, Option<u64>)>,
+    watched: Vec<Watched>,
+    /// Keep the removals the watched keys need; see [`Store::watch`].
+    watch_guards: Vec<WatchGuard>,
     buf: BytesMut,
     /// Budget held for `buf` beyond [`BASE_BUFFER`].
     permit: Option<OwnedSemaphorePermit>,
@@ -207,6 +214,7 @@ impl Connection {
             auth: Auth::None,
             multi: None,
             watched: Vec::new(),
+            watch_guards: Vec::new(),
             buf: BytesMut::with_capacity(16 * 1024),
             permit: None,
             out: Vec::new(),
@@ -349,7 +357,7 @@ impl Connection {
                             }
                             pending.extend_from_slice(&self.buf);
                             self.buf.clear();
-                            self.relay(upstream, pending, target, token).await;
+                            self.relay(upstream, pending, *target, token).await;
                             return;
                         }
                         Err(error) => {
@@ -515,10 +523,16 @@ impl Connection {
             if let Some(multi) = &mut self.multi
                 && !IMMEDIATE_IN_MULTI.contains(&spec.name)
             {
+                let bytes = QUEUED_OVERHEAD + args.iter().map(Bytes::len).sum::<usize>();
+                let max = self.host.inner.config.max_request_bytes;
                 let reply = if matches!(spec.name, "auth" | "hello") {
                     multi.failed = true;
                     Reply::error("ERR Command not allowed inside a transaction")
+                } else if multi.bytes + bytes > max {
+                    multi.failed = true;
+                    Reply::Error(format!("ERR transactions are limited to {max} bytes"))
                 } else {
+                    multi.bytes += bytes;
                     multi.queued.push((args, spec));
                     Reply::Simple("QUEUED".into())
                 };
@@ -588,7 +602,7 @@ impl Connection {
                 Local::Reply(reply)
             }
             Some(Resolved::Forward(target)) => Local::Forward {
-                target,
+                target: Box::new(target),
                 token,
                 reply,
                 proto: self.proto,
@@ -615,7 +629,7 @@ impl Connection {
             "hello" => return self.hello(&args),
             "reset" => {
                 self.multi = None;
-                self.watched.clear();
+                self.unwatch();
                 self.proto = 2;
                 self.name = None;
                 if !self.from_peer {
@@ -629,6 +643,7 @@ impl Connection {
                 } else {
                     self.multi = Some(Multi {
                         queued: Vec::new(),
+                        bytes: 0,
                         failed: false,
                     });
                     Reply::Ok
@@ -637,7 +652,7 @@ impl Connection {
             "exec" => self.exec().await,
             "discard" => {
                 if self.multi.take().is_some() {
-                    self.watched.clear();
+                    self.unwatch();
                     Reply::Ok
                 } else {
                     Reply::error("ERR DISCARD without MULTI")
@@ -734,13 +749,19 @@ impl Connection {
             Err(Gone::Unavailable(message)) => return Reply::Error(message),
             Err(Gone::Rebound) => return Reply::error(REBOUND),
         };
-        match store.versions(keys.clone()).await {
-            Ok(versions) => {
-                self.watched.extend(keys.into_iter().zip(versions));
+        match store.watch(keys).await {
+            Ok((watched, guard)) => {
+                self.watched.extend(watched);
+                self.watch_guards.push(guard);
                 Reply::Ok
             }
             Err(error) => Reply::Error(store_error(&error)),
         }
+    }
+
+    fn unwatch(&mut self) {
+        self.watched.clear();
+        self.watch_guards.clear();
     }
 
     async fn exec(&mut self) -> Reply {
@@ -748,6 +769,8 @@ impl Connection {
             return Reply::error("ERR EXEC without MULTI");
         };
         let watched = std::mem::take(&mut self.watched);
+        // Held until the transaction has run.
+        let _guards = std::mem::take(&mut self.watch_guards);
         if multi.failed {
             return Reply::error("EXECABORT Transaction discarded because of previous errors.");
         }
@@ -887,7 +910,7 @@ impl Connection {
                 _ => Reply::error(command::NOT_INTEGER),
             },
             "unwatch" => {
-                self.watched.clear();
+                self.unwatch();
                 Reply::Ok
             }
             "client" => self.client(args),
@@ -1002,10 +1025,13 @@ impl Connection {
                 ];
                 let mut pairs = Vec::new();
                 for (name, value) in known {
-                    if args[2..]
-                        .iter()
-                        .any(|p| glob::matches(&p.to_ascii_lowercase(), name.as_bytes()))
-                    {
+                    if args[2..].iter().any(|p| {
+                        glob::matches(
+                            &p.to_ascii_lowercase(),
+                            name.as_bytes(),
+                            &mut glob::Budget::new(),
+                        ) == Some(true)
+                    }) {
                         pairs.push((Reply::bulk_str(name), Reply::bulk_str(value)));
                     }
                 }

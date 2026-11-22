@@ -1,14 +1,46 @@
 //! Glob patterns for `KEYS`, `SCAN MATCH` and `HSCAN MATCH`, as Redis
 //! matches them: `*`, `?`, `[...]` (with `^` and ranges) and `\` escapes.
 
-/// Whether `text` matches `pattern`. Linear backtracking over the last `*`,
-/// so no pattern takes more than `pattern.len() * text.len()` steps.
-pub(crate) fn matches(pattern: &[u8], text: &[u8]) -> bool {
+/// Matching steps one command may spend, across every key it matches.
+/// Backtracking over the last `*` makes one match cost up to
+/// `pattern.len() * text.len()` steps, which long patterns and keys turn
+/// into seconds of work; past this budget the command fails instead.
+const BUDGET: u64 = 20_000_000;
+
+pub(crate) struct Budget(u64);
+
+impl Budget {
+    pub(crate) fn new() -> Self {
+        Self(BUDGET)
+    }
+
+    fn spend(&mut self, steps: usize) -> bool {
+        match self.0.checked_sub(steps as u64) {
+            Some(left) => {
+                self.0 = left;
+                true
+            }
+            None => {
+                self.0 = 0;
+                false
+            }
+        }
+    }
+}
+
+/// The error a command replies with once its budget runs out.
+pub(crate) const TOO_COMPLEX: &str = "ERR pattern is too complex to match; use a simpler pattern";
+
+/// Whether `text` matches `pattern`, or `None` once `budget` runs out.
+pub(crate) fn matches(pattern: &[u8], text: &[u8], budget: &mut Budget) -> Option<bool> {
     let (mut p, mut t) = (0, 0);
     // Where to resume after the most recent `*`: pattern after it, and the
     // text position it currently stands for.
     let mut star: Option<(usize, usize)> = None;
     while t < text.len() {
+        if !budget.spend(1) {
+            return None;
+        }
         if p < pattern.len() {
             match pattern[p] {
                 b'*' => {
@@ -16,7 +48,7 @@ pub(crate) fn matches(pattern: &[u8], text: &[u8]) -> bool {
                         p += 1;
                     }
                     if p == pattern.len() {
-                        return true;
+                        return Some(true);
                     }
                     star = Some((p, t));
                     continue;
@@ -27,9 +59,13 @@ pub(crate) fn matches(pattern: &[u8], text: &[u8]) -> bool {
                     continue;
                 }
                 b'[' => {
-                    if let Some((hit, next)) = class(pattern, p, text[t])
-                        && hit
-                    {
+                    let class = class(pattern, p, text[t]);
+                    // A class costs the bytes it spans.
+                    let span = class.map_or(pattern.len() - p, |(_, next)| next - p);
+                    if !budget.spend(span) {
+                        return None;
+                    }
+                    if let Some((true, next)) = class {
                         p = next;
                         t += 1;
                         continue;
@@ -58,10 +94,10 @@ pub(crate) fn matches(pattern: &[u8], text: &[u8]) -> bool {
                 p = after;
                 t = at + 1;
             }
-            None => return false,
+            None => return Some(false),
         }
     }
-    pattern[p..].iter().all(|c| *c == b'*')
+    Some(pattern[p..].iter().all(|c| *c == b'*'))
 }
 
 /// Matches one byte against the class starting at `pattern[open] == '['`.
@@ -98,7 +134,7 @@ fn class(pattern: &[u8], open: usize, byte: u8) -> Option<(bool, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::matches;
+    use super::{Budget, matches};
 
     #[test]
     fn matches_like_redis() {
@@ -127,17 +163,31 @@ mod tests {
         ];
         for (pattern, text, expected) in cases {
             assert_eq!(
-                matches(pattern.as_bytes(), text.as_bytes()),
-                *expected,
+                matches(pattern.as_bytes(), text.as_bytes(), &mut Budget::new()),
+                Some(*expected),
                 "{pattern} ~ {text}"
             );
         }
     }
 
     #[test]
-    fn pathological_patterns_stay_linear() {
+    fn expensive_patterns_run_out_of_budget() {
         let pattern = "*a".repeat(64) + "b";
         let text = "a".repeat(10_000);
-        assert!(!matches(pattern.as_bytes(), text.as_bytes()));
+        assert_eq!(
+            matches(pattern.as_bytes(), text.as_bytes(), &mut Budget::new()),
+            Some(false)
+        );
+        // `*` then a run that matches for 32 KiB at every position before
+        // failing: about 32 Ki x 32 Ki steps for one key.
+        let pattern = format!("*{}b", "a".repeat(32 * 1024));
+        let text = "a".repeat(64 * 1024);
+        assert_eq!(
+            matches(pattern.as_bytes(), text.as_bytes(), &mut Budget::new()),
+            None
+        );
+        // A class is charged for its length.
+        let pattern = format!("[{}]", "a".repeat(30_000_000));
+        assert_eq!(matches(pattern.as_bytes(), b"b", &mut Budget::new()), None);
     }
 }

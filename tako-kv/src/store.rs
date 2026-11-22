@@ -9,6 +9,7 @@
 //! The file is opened in redb's multi-writer mode, so the process taking
 //! over during a server reload can open it while the old one drains.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
@@ -110,15 +111,71 @@ pub(crate) enum Op {
     Failed(Reply),
 }
 
+/// A key a connection watches: its version when `WATCH` read it (`None`
+/// while absent), and the store's change counter then.
+pub(crate) struct Watched {
+    pub key: Bytes,
+    pub version: Option<u64>,
+    pub seq: u64,
+}
+
+/// Keys removed while some connection watches keys. A key that was absent
+/// when watched has no version to compare, so without this a transaction
+/// would miss it being created and removed again before `EXEC`; Redis
+/// aborts then.
+#[derive(Default)]
+struct Removals {
+    /// The `seq` of each active `WATCH`, with how many share it. Removals no
+    /// older than the oldest are kept.
+    watching: BTreeMap<u64, usize>,
+    /// The `seq` of each key's latest removal.
+    removed: HashMap<Vec<u8>, u64>,
+    /// The `seq` of the latest `FLUSHDB`, which removes every key.
+    flushed: u64,
+}
+
+impl Removals {
+    /// When `key` was last removed, if after anything still watched.
+    fn removed_at(&self, key: &[u8]) -> u64 {
+        self.removed
+            .get(key)
+            .copied()
+            .unwrap_or(0)
+            .max(self.flushed)
+    }
+
+    fn unwatch(&mut self, seq: u64) {
+        if let Some(count) = self.watching.get_mut(&seq) {
+            *count -= 1;
+            if *count == 0 {
+                self.watching.remove(&seq);
+            }
+        }
+        match self.watching.keys().next() {
+            None => *self = Self::default(),
+            Some(&oldest) => self.removed.retain(|_, at| *at > oldest),
+        }
+    }
+}
+
+/// Keeps the removals a `WATCH` may need until dropped.
+pub(crate) struct WatchGuard {
+    removals: Arc<Mutex<Removals>>,
+    seq: u64,
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        self.removals.lock().unwatch(self.seq);
+    }
+}
+
 enum Work {
     /// One connection's commands, in order. The writer may run only a
     /// prefix of them; see [`BATCH_REPLY_BYTES`].
     Batch(Vec<Cmd>),
     /// A transaction. Aborted, with a nil reply, when a watched key changed.
-    Exec {
-        ops: Vec<Op>,
-        watched: Vec<(Bytes, Option<u64>)>,
-    },
+    Exec { ops: Vec<Op>, watched: Vec<Watched> },
 }
 
 struct Job {
@@ -132,6 +189,7 @@ pub struct Store {
     writer: Mutex<Option<SyncSender<Job>>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     config: Arc<StoreConfig>,
+    removals: Arc<Mutex<Removals>>,
 }
 
 impl Store {
@@ -141,12 +199,14 @@ impl Store {
         let db = Arc::new(db);
         let config = Arc::new(config);
         let (sender, receiver) = std::sync::mpsc::sync_channel(QUEUE);
+        let removals = Arc::new(Mutex::new(Removals::default()));
         let thread = {
             let db = db.clone();
             let config = config.clone();
+            let removals = removals.clone();
             std::thread::Builder::new()
                 .name("tako-kv-writer".into())
-                .spawn(move || writer(db, receiver, config))
+                .spawn(move || writer(db, receiver, config, removals))
                 .map_err(storage)?
         };
         Ok(Self {
@@ -155,6 +215,7 @@ impl Store {
             writer: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
             config,
+            removals,
         })
     }
 
@@ -217,28 +278,48 @@ impl Store {
 
     /// Runs a transaction. The reply is its array, or nil when a watched key
     /// changed since `watched` was read.
-    pub(crate) async fn exec(
-        &self,
-        ops: Vec<Op>,
-        watched: Vec<(Bytes, Option<u64>)>,
-    ) -> Result<Reply> {
+    pub(crate) async fn exec(&self, ops: Vec<Op>, watched: Vec<Watched>) -> Result<Reply> {
         let mut replies = self.submit(Work::Exec { ops, watched }).await?;
         Ok(replies.pop().unwrap_or(Reply::NilArray))
     }
 
-    /// The current versions of `keys`, for `WATCH`.
-    pub(crate) async fn versions(&self, keys: Vec<Bytes>) -> Result<Vec<Option<u64>>> {
+    /// Reads `keys` for `WATCH`. The guard keeps the removals their
+    /// transaction needs until it is dropped.
+    pub(crate) async fn watch(&self, keys: Vec<Bytes>) -> Result<(Vec<Watched>, WatchGuard)> {
         let db = self.db()?;
         let clock = self.config.clock.clone();
-        tokio::task::spawn_blocking(move || {
+        // Registered before the read, so a removal committed after the
+        // snapshot is kept; re-registered at the snapshot's counter below.
+        self.removals
+            .lock()
+            .watching
+            .entry(0)
+            .and_modify(|n| *n += 1)
+            .or_insert(1);
+        let mut guard = WatchGuard {
+            removals: self.removals.clone(),
+            seq: 0,
+        };
+        let read = tokio::task::spawn_blocking(move || {
             let view = ReadView::open(&db)?;
             let now = clock();
-            keys.iter()
-                .map(|key| Ok(live(&view, key, now)?.map(|entry| entry.version)))
-                .collect()
+            let seq = view.stats.seq;
+            keys.into_iter()
+                .map(|key| {
+                    let version = live(&view, &key, now)?.map(|entry| entry.version);
+                    Ok(Watched { key, version, seq })
+                })
+                .collect::<Result<Vec<_>>>()
         })
         .await
-        .map_err(storage)?
+        .map_err(storage)??;
+        if let Some(seq) = read.first().map(|watched| watched.seq) {
+            let mut removals = self.removals.lock();
+            *removals.watching.entry(seq).or_insert(0) += 1;
+            removals.unwatch(0);
+            guard.seq = seq;
+        }
+        Ok((read, guard))
     }
 
     pub async fn stats(&self) -> Result<Stats> {
@@ -564,6 +645,10 @@ struct WriteView<'t> {
     meta: Table<'t, &'static str, u64>,
     stats: Stats,
     dirty: bool,
+    /// Keys this transaction removed, with the counter then, for
+    /// [`Removals`] once it commits.
+    removed: Vec<(Vec<u8>, u64)>,
+    flushed: Option<u64>,
 }
 
 impl View for WriteView<'_> {
@@ -595,7 +680,19 @@ impl<'t> WriteView<'t> {
             meta,
             stats,
             dirty: false,
+            removed: Vec::new(),
+            flushed: None,
         })
+    }
+
+    /// When this transaction last removed `key`, or 0.
+    fn removed_at(&self, key: &[u8]) -> u64 {
+        self.removed
+            .iter()
+            .rev()
+            .find(|(removed, _)| removed == key)
+            .map_or(0, |(_, at)| *at)
+            .max(self.flushed.unwrap_or(0))
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -625,6 +722,8 @@ impl<'t> WriteView<'t> {
 
     fn remove(&mut self, key: &[u8], entry: &Entry) -> Result<()> {
         self.dirty = true;
+        self.stats.seq += 1;
+        self.removed.push((key.to_vec(), self.stats.seq));
         self.keys.remove(key_id(key).as_slice()).map_err(storage)?;
         if entry.expires != 0 {
             self.expiry
@@ -744,9 +843,10 @@ impl<'t> WriteView<'t> {
         self.fields.retain(|_, _| false).map_err(storage)?;
         self.expiry.retain(|_, _| false).map_err(storage)?;
         self.stats = Stats {
-            seq: self.stats.seq,
+            seq: self.stats.seq + 1,
             ..Stats::default()
         };
+        self.flushed = Some(self.stats.seq);
         Ok(())
     }
 
@@ -910,17 +1010,31 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
             let mut items = Vec::new();
             let mut size = 0;
             let mut over = false;
+            let mut budget = glob::Budget::new();
+            let mut complex = false;
             view.each_key(0, &mut |_, key, entry| {
-                if entry.live(now) && glob::matches(pattern, key) {
-                    size += key.len() + 16;
-                    if size > limit {
-                        over = true;
+                if !entry.live(now) {
+                    return true;
+                }
+                match glob::matches(pattern, key, &mut budget) {
+                    None => {
+                        complex = true;
                         return false;
                     }
-                    items.push(Reply::bulk(Bytes::copy_from_slice(key)));
+                    Some(false) => return true,
+                    Some(true) => {}
                 }
+                size += key.len() + 16;
+                if size > limit {
+                    over = true;
+                    return false;
+                }
+                items.push(Reply::bulk(Bytes::copy_from_slice(key)));
                 true
             })?;
+            if complex {
+                return Ok(Reply::error(glob::TOO_COMPLEX));
+            }
             if over {
                 return Ok(too_large(limit));
             }
@@ -934,25 +1048,42 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
         } => {
             let mut items = Vec::new();
             let mut visited = 0;
+            let mut size = 0;
             let mut last = 0;
             let mut next = 0;
+            let mut budget = glob::Budget::new();
+            let mut complex = false;
             view.each_key(*cursor, &mut |slot, key, entry| {
-                // Keys sharing a slot are returned together, so the next
-                // cursor always moves forward.
-                if visited >= *count && slot != last {
+                // A page ends at COUNT keys, or early once its reply is
+                // large, and ends at the first key of another slot: keys
+                // sharing a slot are returned together, so the next cursor
+                // always moves forward.
+                if (visited >= *count || size > limit) && slot != last {
                     next = slot;
                     return false;
                 }
                 visited += 1;
                 last = slot;
-                let wanted = entry.live(now)
-                    && kind.is_none_or(|kind| kind == Some(entry.kind))
-                    && pattern.as_ref().is_none_or(|p| glob::matches(p, key));
-                if wanted {
-                    items.push(Reply::bulk(Bytes::copy_from_slice(key)));
+                if !entry.live(now) || kind.is_some_and(|kind| kind != Some(entry.kind)) {
+                    return true;
                 }
+                if let Some(pattern) = pattern {
+                    match glob::matches(pattern, key, &mut budget) {
+                        None => {
+                            complex = true;
+                            return false;
+                        }
+                        Some(false) => return true,
+                        Some(true) => {}
+                    }
+                }
+                size += key.len() + 16;
+                items.push(Reply::bulk(Bytes::copy_from_slice(key)));
                 true
             })?;
+            if complex {
+                return Ok(Reply::error(glob::TOO_COMPLEX));
+            }
             Reply::Array(vec![Reply::bulk(next.to_string()), Reply::Array(items)])
         }
         Cmd::DbSize => Reply::Int(view.stats().keys as i64),
@@ -990,9 +1121,18 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
                 };
                 let mut size = 0;
                 let mut over = false;
+                let mut budget = glob::Budget::new();
+                let mut complex = false;
                 view.each_field(key, &mut |field, value| {
-                    if pattern.is_some_and(|p| !glob::matches(p, field)) {
-                        return true;
+                    if let Some(pattern) = pattern {
+                        match glob::matches(pattern, field, &mut budget) {
+                            None => {
+                                complex = true;
+                                return false;
+                            }
+                            Some(false) => return true,
+                            Some(true) => {}
+                        }
                     }
                     size += 32
                         + if keys { field.len() } else { 0 }
@@ -1007,6 +1147,9 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
                     ));
                     true
                 })?;
+                if complex {
+                    return Ok(Reply::error(glob::TOO_COMPLEX));
+                }
                 if over {
                     return Ok(too_large(limit));
                 }
@@ -1416,7 +1559,12 @@ fn read_batch(db: &Database, cmds: &[Cmd], config: &StoreConfig) -> Result<Vec<R
     run_prefix(cmds, |cmd| read(&view, cmd, now, config))
 }
 
-fn writer(db: Arc<Database>, jobs: Receiver<Job>, config: Arc<StoreConfig>) {
+fn writer(
+    db: Arc<Database>,
+    jobs: Receiver<Job>,
+    config: Arc<StoreConfig>,
+    removals: Arc<Mutex<Removals>>,
+) {
     let mut next_sweep = Instant::now() + SWEEP_INTERVAL;
     loop {
         let wait = next_sweep.saturating_duration_since(Instant::now());
@@ -1442,7 +1590,7 @@ fn writer(db: Arc<Database>, jobs: Receiver<Job>, config: Arc<StoreConfig>) {
         let (works, replies): (Vec<_>, Vec<_>) =
             batch.into_iter().map(|job| (job.work, job.reply)).unzip();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply(&db, &works, sweep, &config)
+            apply(&db, &works, sweep, &config, &removals)
         }))
         .unwrap_or_else(|_| Err(StoreError::Storage("internal error".into())));
         match result {
@@ -1489,19 +1637,27 @@ fn apply(
     works: &[Work],
     sweep: bool,
     config: &StoreConfig,
+    removals: &Mutex<Removals>,
 ) -> Result<(Vec<Vec<Reply>>, bool)> {
     let txn = db.begin_write().map_err(storage)?;
     let now = (config.clock)();
     let mut outcomes = Vec::with_capacity(works.len());
-    let (dirty, more) = {
+    let (dirty, more, removed, flushed) = {
         let mut w = WriteView::open(&txn)?;
         for work in works {
             outcomes.push(match work {
                 Work::Batch(cmds) => run_prefix(cmds, |cmd| write(&mut w, cmd, now, config))?,
                 Work::Exec { ops, watched } => {
                     let mut changed = false;
-                    for (key, version) in watched {
-                        if live(&w, key, now)?.map(|e| e.version) != *version {
+                    for watched in watched {
+                        let current = live(&w, &watched.key, now)?.map(|e| e.version);
+                        // Absent then and now: changed if it was removed
+                        // since, having been created meanwhile.
+                        let removed = current.is_none()
+                            && w.removed_at(&watched.key)
+                                .max(removals.lock().removed_at(&watched.key))
+                                > watched.seq;
+                        if current != watched.version || removed {
                             changed = true;
                             break;
                         }
@@ -1509,12 +1665,22 @@ fn apply(
                     if changed {
                         vec![Reply::NilArray]
                     } else {
+                        // Every command runs, but once the replies reach the
+                        // reply limit, large ones are replaced with an error,
+                        // so a transaction cannot buffer without bound.
+                        let limit = config.max_reply_bytes;
+                        let mut size = 0;
                         let mut replies = Vec::with_capacity(ops.len());
                         for op in ops {
-                            replies.push(match op {
+                            let mut reply = match op {
                                 Op::Cmd(cmd) => write(&mut w, cmd, now, config)?,
                                 Op::Failed(reply) => reply.clone(),
-                            });
+                            };
+                            if size + reply.size() > limit {
+                                reply = too_large(limit);
+                            }
+                            size += reply.size();
+                            replies.push(reply);
                         }
                         vec![Reply::Array(replies)]
                     }
@@ -1530,12 +1696,21 @@ fn apply(
             },
         )? && sweep;
         w.flush()?;
-        (w.dirty, more)
+        (w.dirty, more, std::mem::take(&mut w.removed), w.flushed)
     };
     if dirty {
         txn.commit().map_err(storage)?;
     } else {
         txn.abort().map_err(storage)?;
+    }
+    // Only a `WATCH` registered now can need these removals; see
+    // [`Store::watch`].
+    let mut removals = removals.lock();
+    if dirty && !removals.watching.is_empty() {
+        removals.removed.extend(removed);
+        if let Some(flushed) = flushed {
+            removals.flushed = flushed;
+        }
     }
     Ok((outcomes, more))
 }

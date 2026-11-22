@@ -201,6 +201,41 @@ async fn raw_protocol_matches_redis() {
 }
 
 #[tokio::test]
+async fn transactions_are_limited_in_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = KvHost::new(HostConfig {
+        max_request_bytes: 4096,
+        ..HostConfig::default()
+    });
+    let id = StoreId::parse("main").unwrap();
+    host.register(id.clone(), dir.path().join("main.redb"))
+        .unwrap();
+    host.set_bindings(
+        "app/production",
+        vec![Binding {
+            token_hash: hash_token("secret"),
+            store: id,
+            home: Home::Local,
+        }],
+    );
+    let addr = listen(&host, Access::Apps).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    // Each SET is charged about 1,069 bytes: three fit.
+    let value = "x".repeat(1000);
+    let mut send = String::from("AUTH secret\r\nMULTI\r\n");
+    for _ in 0..5 {
+        send.push_str(&format!("SET k {value}\r\n"));
+    }
+    send.push_str("EXEC\r\nEXISTS k\r\n");
+    let got = String::from_utf8(raw(&mut stream, send.as_bytes(), 200).await).unwrap();
+    assert!(got.starts_with("+OK\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n-ERR transactions are limited to 4096 bytes\r\n"), "{got}");
+    assert!(
+        got.ends_with("-EXECABORT Transaction discarded because of previous errors.\r\n:0\r\n"),
+        "{got}"
+    );
+}
+
+#[tokio::test]
 async fn watch_aborts_transactions_on_change() {
     let s = server("secret").await;
     let mut a = TcpStream::connect(s.addr).await.unwrap();
@@ -211,6 +246,12 @@ async fn watch_aborts_transactions_on_change() {
     assert_eq!(got, b"+OK\r\n+QUEUED\r\n*-1\r\n$1\r\n2\r\n");
     let got = raw(&mut a, b"WATCH n\r\nMULTI\r\nINCR n\r\nEXEC\r\n", 27).await;
     assert_eq!(got, b"+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n:3\r\n");
+    // A key absent at WATCH that another client creates and deletes again.
+    raw(&mut a, b"WATCH lock\r\n", 5).await;
+    let _: () = b.set("lock", "b").await.unwrap();
+    let _: () = b.del("lock").await.unwrap();
+    let got = raw(&mut a, b"MULTI\r\nSET lock a\r\nEXEC\r\n", 22).await;
+    assert_eq!(got, b"+OK\r\n+QUEUED\r\n*-1\r\n");
 }
 
 #[tokio::test]

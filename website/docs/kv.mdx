@@ -137,8 +137,8 @@ Replies and errors match Redis 7, including error messages that client libraries
 ## Durability and limits
 
 - Every write is on disk before it is acknowledged, so an acknowledged write survives a crash or power loss. Writes arriving together share one flush to disk.
-- A store holds up to 1 GiB of keys, values, and per-entry overhead. At the limit, commands that add data fail with Redis's `OOM` error; nothing is evicted. Deletes, expiry, and overwrites with smaller values still work.
-- Keys and hash fields are limited to 64 KiB, values to 16 MiB, one command to 32 MiB, and one reply to 64 MiB; use `SCAN` or `HSCAN` rather than `KEYS` or `HGETALL` for large results. A server accepts at most 4,096 connections on each KV port.
+- A store holds up to 1 GiB of keys, values, and per-entry overhead. Once it is full, commands that can add data, such as `SET`, `INCR`, and `HSET`, fail with Redis's `OOM` error, even when they would replace a value with a smaller one, as with Redis's `noeviction` policy; nothing is evicted. Deletes and expiry still work and make room again.
+- Keys and hash fields are limited to 64 KiB, values to 16 MiB, one command to 32 MiB, and one reply to 64 MiB; use `SCAN` or `HSCAN` rather than `KEYS` or `HGETALL` for large results. A `SCAN` page ends early, with a cursor to continue from, once its reply nears the limit. A transaction's queued commands are limited to 32 MiB together; once its `EXEC` reply reaches 64 MiB, the remaining large replies become errors, though every command still runs. A pattern so long that matching it against the keys would take seconds makes `KEYS`, `SCAN`, or `HSCAN` fail instead. A server accepts at most 4,096 connections on each KV port.
 - **KV stores have no snapshots or backups.** A store lives on its server's disk and is lost with that server. Keep canonical records in a [hosted database](/databases/) and use KV stores for data an app can rebuild or users can redo, such as a challenge or a session.
 - KV bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
 
