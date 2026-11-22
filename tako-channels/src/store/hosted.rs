@@ -8,7 +8,7 @@ mod schema;
 mod tests;
 
 use super::hosted_sql::{Client, Statement};
-use super::{HOSTED_HEAD_BATCH, IDLE_STREAM_GRACE_MS, MAX_STREAMS, SqliteReplayLimits};
+use super::{HOSTED_HEAD_BATCH, IDLE_STREAM_GRACE_MS, MAX_STREAMS};
 use crate::{
     CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
     ChannelPublishPayload, ReplayCursor,
@@ -18,7 +18,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 const NOW: &str = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-const MAINTENANCE_ROWS: i64 = 256;
+// Appends delete their own stream's expired rows; maintenance only catches up
+// on streams that went quiet, so it can take larger steps.
+const MAINTENANCE_ROWS: i64 = 4096;
 // Keep a page of legal 1 MiB events, including JSON-in-JSON escaping, under
 // the transport response limit. A short logical page must mean end-of-history.
 const WIRE_PAGE: u32 = 8;
@@ -126,20 +128,11 @@ impl HostedChannelStore {
 
     /// Idempotent: creates missing tables and this app's row with a fresh epoch.
     fn init(&self) -> Result<(), ChannelError> {
-        let limits = SqliteReplayLimits::default();
         let mut init = schema::init();
         init.push(Statement::new(
-            "INSERT INTO tako_replay_apps(app, epoch, max_stream_messages, max_stream_bytes,
-                max_messages, max_bytes, max_age_ms)
-             VALUES(?, lower(hex(randomblob(16))), ?, ?, ?, ?, ?) ON CONFLICT(app) DO NOTHING",
-            vec![
-                self.app.as_str().into(),
-                limits.max_messages_per_stream.into(),
-                limits.max_bytes_per_stream.into(),
-                limits.max_messages.into(),
-                limits.max_bytes.into(),
-                limits.max_age_ms.into(),
-            ],
+            "INSERT INTO tako_replay_apps(app, epoch) VALUES(?, lower(hex(randomblob(16))))
+             ON CONFLICT(app) DO NOTHING",
+            vec![self.app.as_str().into()],
         ));
         self.client.batch(&init).map(drop)
     }
@@ -206,14 +199,14 @@ impl HostedChannelStore {
         vec![self.app.as_str().into(), channel.into()]
     }
 
-    // For publish, admit and touch only if the message can be appended. For
-    // subscribe, touch even a closed stream. Freeze any expired prefix before
-    // a longer window or renewed activity could make it visible again.
+    // For publish, admit and touch only an open stream. For subscribe, touch
+    // even a closed stream. Freeze any expired prefix before a longer window
+    // or renewed activity could make it visible again.
     fn touch(
         &self,
         channel: &str,
         lifecycle: Option<&ChannelAuthResponse>,
-        bytes: Option<i64>,
+        publishing: bool,
     ) -> Statement {
         let defaults = ChannelLifecycle::default().auth();
         let settings = lifecycle.unwrap_or(&defaults);
@@ -223,7 +216,7 @@ impl HostedChannelStore {
             settings.inactivity_ttl_ms.into(),
             settings.max_connection_lifetime_ms.into(),
             i64::from(lifecycle.is_some()).into(),
-            bytes.into(),
+            i64::from(publishing).into(),
             i64::from(crate::stream::counts_toward_stream_limit(channel)).into(),
         ]);
         Statement::new(&format!(
@@ -231,7 +224,7 @@ impl HostedChannelStore {
                     window_ms, inactivity_ms, lifetime_ms)
              SELECT a.app, ?2, a.seq, a.seq, {NOW}, ?3, ?4, ?5
              FROM tako_replay_apps a LEFT JOIN tako_replay_streams s ON s.app = a.app AND s.channel = ?2
-             WHERE a.app = ?1 AND (?7 IS NULL OR (s.marker IS NULL AND ?7 <= MIN(a.max_bytes, a.max_stream_bytes)))
+             WHERE a.app = ?1 AND (?7 = 0 OR s.marker IS NULL)
                  AND (?8 = 0 OR a.stream_count < {MAX_STREAMS} OR s.app IS NOT NULL)
              ON CONFLICT(app, channel) DO UPDATE SET
                  floor = (SELECT floor FROM tako_replay_bounds WHERE app = ?1 AND channel = ?2),
@@ -264,12 +257,12 @@ impl HostedChannelStore {
         let bytes = (channel.len() + payload.r#type.len() + data.len()) as i64;
         let mut args = self.key(channel);
         args.extend([payload.r#type.as_str().into(), data.into(), bytes.into()]);
-        let mut status_args = self.key(channel);
-        status_args.push(bytes.into());
+        let status_args = self.key(channel);
         let [_, inserted, status]: [Rows; 3] = self.client.batch(&[
-            self.touch(channel, lifecycle.map(ChannelLifecycle::auth).as_ref(), Some(bytes)),
+            self.touch(channel, lifecycle.map(ChannelLifecycle::auth).as_ref(), true),
             // changes() is the preceding conditional upsert's count. Triggers
-            // advance the sequence and evict history inside this transaction.
+            // advance the sequence and delete this stream's expired history
+            // inside this transaction.
             Statement::new(&format!(
                 "INSERT INTO tako_replay_messages(app, channel, id, type, data_json, bytes, created_ms)
                  SELECT app, ?2, seq + 1, ?3, ?4, ?5,
@@ -278,13 +271,12 @@ impl HostedChannelStore {
                  FROM tako_replay_apps WHERE app = ?1 AND changes() = 1 RETURNING id"
             ), args),
             Statement::new(
-                "SELECT a.epoch, ?3 <= MIN(a.max_bytes, a.max_stream_bytes), s.marker, m.data_json
+                "SELECT a.epoch, s.marker, m.data_json
                  FROM tako_replay_apps a LEFT JOIN tako_replay_streams s ON a.app = s.app AND s.channel = ?2
                  LEFT JOIN tako_replay_messages m ON m.app = a.app AND m.id = s.marker
                  WHERE a.app = ?1", status_args)
         ])?.try_into().map_err(|_| invalid_result())?;
-        let (hex, fits, marker, marker_data): (String, i64, Option<i64>, Option<String>) =
-            one(status)?;
+        let (hex, marker, marker_data): (String, Option<i64>, Option<String>) = one(status)?;
         let epoch = epoch(&hex)?;
         if !inserted.is_empty() {
             let (id,): (i64,) = one(inserted)?;
@@ -314,11 +306,6 @@ impl HostedChannelStore {
                 false,
             ));
         }
-        if fits == 0 {
-            return Err(ChannelError::BadRequest(
-                "message exceeds hosted SQLite replay byte budget".into(),
-            ));
-        }
         Err(super::stream_limit_error(channel))
     }
 
@@ -334,7 +321,7 @@ impl HostedChannelStore {
         self.recovering(|| {
             let mut results = self
                 .client
-                .batch(&[self.touch(channel, Some(auth), None)])?;
+                .batch(&[self.touch(channel, Some(auth), false)])?;
             if results.pop().ok_or_else(invalid_result)?.is_empty() {
                 return Err(super::stream_limit_error(channel));
             }

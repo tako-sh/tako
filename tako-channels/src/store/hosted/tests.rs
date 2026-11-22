@@ -57,59 +57,56 @@ fn event(data: &str) -> ChannelPublishPayload {
 }
 
 #[tokio::test]
-async fn retained_prefixes_and_utf8_budgets_are_tenant_scoped() {
+async fn appends_delete_their_own_expired_history_and_leave_other_streams_and_apps() {
     with_database(|db| {
         let app = db.open("one", false);
         let other = db.open("two", false);
         let sql = db.sql();
-        // One UTF-8 event occupies 1 channel + 5 type + 2 quotes + 4 data bytes.
-        sql.execute_batch(
-            "UPDATE tako_replay_apps SET max_stream_messages = 2, max_stream_bytes = 24,
-            max_messages = 3, max_bytes = 36 WHERE app = 'one'",
-        )
-        .unwrap();
-        let other_marker = other.publish("a", &close_payload(), None).unwrap().0;
-        let first = app.publish("a", &event("🦀"), None).unwrap().0;
-        let seen = first.id.parse::<ReplayCursor>().unwrap();
-        let second = app.publish("a", &event("🦀"), None).unwrap().0;
-        app.publish("b", &event("🦀"), None).unwrap();
-        let third = app.publish("a", &event("🦀"), None).unwrap().0;
-        assert_eq!(
-            app.read_after("a", Some(seen), 10).unwrap(),
-            [second, third.clone()]
-        );
-        app.publish("b", &event("🦀"), None).unwrap();
-        assert!(matches!(
-            app.read_after("a", Some(seen), 10),
-            Err(ChannelError::StaleCursor)
-        ));
-        // The 23-byte row must evict two 12-byte rows (its own stream first).
-        let large = app.publish("a", &event("123456789012345"), None).unwrap().0;
-        assert_eq!(
-            app.read_after("a", third.id.parse().ok(), 10).unwrap(),
-            [large]
-        );
+        let rows = |app: &str, channel: &str| -> i64 {
+            sql.query_row(
+                "SELECT COUNT(*) FROM tako_replay_messages WHERE app = ?1 AND channel = ?2",
+                [app, channel],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        for _ in 0..3 {
+            app.publish("a", &event("old"), None).unwrap();
+        }
+        app.publish("b", &event("quiet"), None).unwrap();
+        let other_event = other.publish("a", &event("kept"), None).unwrap().0;
+        // Without size caps, nothing is evicted while it is inside its window.
+        assert_eq!((rows("one", "a"), rows("one", "b")), (3, 1));
+        // Everything app one stored so far falls outside its 10-minute window.
+        sql.execute_batch("UPDATE tako_replay_messages SET created_ms = 0 WHERE app = 'one'")
+            .unwrap();
+        let fresh = app.publish("a", &event("fresh"), None).unwrap().0;
+        // The append deleted its own stream's expired rows in its transaction.
+        assert_eq!(rows("one", "a"), 1);
+        assert_eq!(app.read_after("a", None, 10).unwrap(), [fresh]);
+        // A quiet stream's expired row is already invisible; maintenance deletes it.
+        assert_eq!(rows("one", "b"), 1);
+        assert!(app.read_after("b", None, 10).unwrap().is_empty());
+        app.prune(0).unwrap();
+        assert_eq!(rows("one", "b"), 0);
+        // Another app's identical stream keeps its own history.
+        assert_eq!(other.read_after("a", None, 10).unwrap(), [other_event]);
         let totals: (i64, i64) = sql
             .query_row(
-                "SELECT message_count, message_bytes FROM tako_replay_apps WHERE app='one'",
+                "SELECT message_count, message_bytes FROM tako_replay_apps WHERE app = 'one'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(totals, (2, 35));
-        assert_eq!(other.close_marker("a").unwrap(), Some(other_marker));
-        assert!(matches!(
-            app.publish("x", &event("12345678901234567"), None),
-            Err(ChannelError::BadRequest(_))
-        ));
+        assert_eq!(totals.0, 1);
         assert_eq!(
+            totals.1,
             sql.query_row(
-                "SELECT COUNT(*) FROM tako_replay_streams WHERE app='one' AND channel='x'",
+                "SELECT bytes FROM tako_replay_messages WHERE app = 'one'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
-            .unwrap(),
-            0
+            .unwrap()
         );
     })
     .await;

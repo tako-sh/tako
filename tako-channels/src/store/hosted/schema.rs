@@ -8,12 +8,7 @@ const TABLES: &[&str] = &[
         seq INTEGER NOT NULL DEFAULT 0,
         stream_count INTEGER NOT NULL DEFAULT 0,
         message_count INTEGER NOT NULL DEFAULT 0,
-        message_bytes INTEGER NOT NULL DEFAULT 0,
-        max_stream_messages INTEGER NOT NULL CHECK(max_stream_messages > 0),
-        max_stream_bytes INTEGER NOT NULL CHECK(max_stream_bytes > 0),
-        max_messages INTEGER NOT NULL CHECK(max_messages > 0),
-        max_bytes INTEGER NOT NULL CHECK(max_bytes > 0),
-        max_age_ms INTEGER NOT NULL CHECK(max_age_ms >= 0)
+        message_bytes INTEGER NOT NULL DEFAULT 0
     ) STRICT, WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS tako_replay_streams (
         app TEXT NOT NULL REFERENCES tako_replay_apps(app),
@@ -66,22 +61,23 @@ pub(super) fn init() -> Vec<Statement> {
         .iter()
         .map(|sql| Statement::new(sql, vec![]))
         .collect();
-    // Creation times are nondecreasing within a stream. The age index can seek
-    // its last expired row, regardless of the number of expired/retained rows.
+    // Each channel's replay window is its only retention. Creation times are
+    // nondecreasing within a stream, so the age index seeks the last expired
+    // row however many rows are expired or retained.
     statements.push(Statement::new(&format!(
         "CREATE VIEW IF NOT EXISTS tako_replay_bounds AS
          SELECT s.app, s.channel, s.head, s.marker,
              MAX(s.floor, CASE WHEN s.inactivity_ms > 0 AND s.activity_ms < {NOW} - s.inactivity_ms
                  THEN s.head ELSE COALESCE((
                      SELECT id FROM tako_replay_messages m WHERE m.app = s.app AND m.channel = s.channel
-                         AND created_ms < {NOW} - NULLIF(CASE
-                             WHEN a.max_age_ms = 0 THEN s.window_ms
-                             WHEN s.window_ms = 0 THEN a.max_age_ms
-                             ELSE MIN(a.max_age_ms, s.window_ms) END, 0)
+                         AND created_ms < {NOW} - NULLIF(s.window_ms, 0)
                      ORDER BY created_ms DESC, id DESC LIMIT 1
                  ), 0) END) AS floor
-         FROM tako_replay_streams s JOIN tako_replay_apps a ON a.app = s.app"
+         FROM tako_replay_streams s"
     ), vec![]));
+    // An append also deletes its own stream's expired history, so storage
+    // follows publish rate times window however fast an app publishes.
+    // Maintenance catches up on streams that stop receiving appends.
     statements.push(Statement::new(&format!(
         "CREATE TRIGGER IF NOT EXISTS tako_replay_message_added AFTER INSERT ON tako_replay_messages BEGIN
             UPDATE tako_replay_apps SET seq = NEW.id, message_count = message_count + 1,
@@ -90,41 +86,10 @@ pub(super) fn init() -> Vec<Statement> {
                 message_bytes = message_bytes + NEW.bytes,
                 marker = CASE WHEN NEW.type = '{CLOSE_MESSAGE_TYPE}' THEN NEW.id END
                 WHERE app = NEW.app AND channel = NEW.channel;
-            {};
-            {};
-         END", evict(true), evict(false)
+            DELETE FROM tako_replay_messages WHERE app = NEW.app AND channel = NEW.channel
+                AND id < NEW.id AND id <= (SELECT floor FROM tako_replay_bounds
+                    WHERE app = NEW.app AND channel = NEW.channel);
+         END"
     ), vec![]));
     statements
-}
-
-// Only enter the ordered window scan when the counters exceed a budget.
-// Stop at the first prefix that frees BOTH enough rows and enough bytes.
-// Stream eviction precedes app eviction so other streams do not pay twice.
-fn evict(stream: bool) -> String {
-    let (filter, counters, count, bytes) = if stream {
-        (
-            " AND channel = NEW.channel",
-            "JOIN tako_replay_streams s ON s.app = a.app AND s.channel = NEW.channel",
-            "s.message_count - a.max_stream_messages",
-            "s.message_bytes - a.max_stream_bytes",
-        )
-    } else {
-        (
-            "",
-            "",
-            "a.message_count - a.max_messages",
-            "a.message_bytes - a.max_bytes",
-        )
-    };
-    format!(
-        "DELETE FROM tako_replay_messages WHERE app = NEW.app {filter} AND id <= (
-            SELECT (SELECT id FROM (
-                SELECT id, row_number() OVER w AS n, SUM(bytes) OVER w AS b
-                FROM tako_replay_messages WHERE app = NEW.app {filter}
-                WINDOW w AS (ORDER BY id ROWS UNBOUNDED PRECEDING)
-            ) WHERE n >= {count} AND b >= {bytes} LIMIT 1)
-            FROM tako_replay_apps a {counters}
-            WHERE a.app = NEW.app AND ({count} > 0 OR {bytes} > 0)
-        )"
-    )
 }
