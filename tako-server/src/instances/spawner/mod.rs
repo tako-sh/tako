@@ -103,6 +103,9 @@ impl Spawner {
         .map_err(InstanceError::SpawnError)?;
 
         instance.set_process(child);
+        // Read output from the start: a pipe that fills before readiness would
+        // block the app until its startup timeout.
+        instance.drain_pipes_keeping_startup_output();
         app.set_instance_state(&instance, InstanceState::Starting);
 
         // Notify about start
@@ -147,7 +150,7 @@ impl Spawner {
             Ok(Ok(())) => {
                 app.set_instance_state(&instance, InstanceState::Healthy);
 
-                instance.drain_pipes();
+                instance.finish_startup_output();
 
                 tracing::info!(
                     app = %app_name,

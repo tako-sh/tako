@@ -173,14 +173,18 @@ describe("handleTakoEndpoint", () => {
       expect(response).toBeNull();
     });
 
-    test("returns status for loopback host with valid token", async () => {
-      const request = new Request("http://127.0.0.1:3000/status", {
-        headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
-      });
-      const response = await handleTakoEndpoint(request, mockStatus, channels);
-
-      expect(response).not.toBeNull();
-      expect(response!.status).toBe(200);
+    // Loopback is ordinary local traffic, such as `tako.sh healthcheck`
+    // probing http://127.0.0.1:3000/health. Tako addresses SDK endpoints as
+    // `<app>.tako` only, so loopback requests belong to the app.
+    test("leaves loopback hosts to the app", async () => {
+      for (const host of ["127.0.0.1:3000", "localhost:3000", "0.0.0.0:3000", "localhost"]) {
+        for (const path of ["/health", "/status"]) {
+          for (const headers of [{}, { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" }]) {
+            const request = new Request(`http://${host}${path}`, { headers });
+            expect(await handleTakoEndpoint(request, mockStatus, channels)).toBeNull();
+          }
+        }
+      }
     });
   });
 

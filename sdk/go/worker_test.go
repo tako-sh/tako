@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -772,5 +773,51 @@ func TestClientFromEnvExplainsAComposeServiceWithoutSDK(t *testing.T) {
 	t.Setenv(ComposeServiceEnv, "")
 	if _, err := ClientFromEnv(); err == nil || strings.Contains(err.Error(), "sdk: true") {
 		t.Fatalf("outside Compose the plain error stays: %v", err)
+	}
+}
+
+// Large attempt counts saturate at max instead of overflowing to zero.
+func TestExpBackoffSaturatesAtMax(t *testing.T) {
+	for _, attempts := range []uint32{34, 35, 64, 1000, math.MaxUint32} {
+		if got := expBackoff(attempts, time.Second, time.Hour); got < 48*time.Minute || got > 72*time.Minute {
+			t.Fatalf("attempt %d: backoff %v, want about 1h", attempts, got)
+		}
+	}
+}
+
+// A step whose attempt fails because the run was lost must not run again
+// in this worker: another owner may already be running it.
+func TestLostRunIsNotRetriedByInStepRetries(t *testing.T) {
+	s := startMockServer(t)
+	client := &Client{socketPath: s.path, app: "test-app"}
+	id := s.seed("job", 3)
+	var calls atomic.Int32
+	handlers := map[string]workflowRegistration{"job": {handler: func(ctx *WorkflowContext, _ json.RawMessage) error {
+		opts := StepRunOpts{Retries: 3}
+		opts.Backoff.Base = time.Millisecond
+		return ctx.Step.Run("charge", nil, func() (any, error) {
+			calls.Add(1)
+			s.operatorCancel(ctx.RunID)
+			select {
+			case <-ctx.Done():
+				return nil, errors.New("charge interrupted")
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("ownership was not lost")
+			}
+		}, opts)
+	}}}
+	w := newWorker(context.Background(), client, handlers)
+	w.heartbeatMs = 5
+	task, err := client.Claim(context.Background(), w.workerID, []string{"job"}, w.leaseMs)
+	if err != nil || task == nil {
+		t.Fatalf("claim: %v %v", task, err)
+	}
+	w.execute(task)
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("step body ran %d times after losing the run", got)
+	}
+	if got := s.find(id).Status; got != "cancelled" {
+		t.Fatalf("status: %s", got)
 	}
 }

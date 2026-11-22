@@ -275,7 +275,8 @@ fn servers_list_reads_enrolled_names_and_endpoints() {
 
 #[test]
 fn server_revoke_requires_selection_and_preserves_membership_when_cancelled() {
-    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    // Two servers, so the prompt is reached; the last one needs --yes.
+    let fixture = super::native_management::Fixture::with_servers(&["edge", "backup"]);
     let before = fs::read(&fixture.profile_path).unwrap();
     let missing = run_tako_with_env(
         &["network", "server", "revoke"],
@@ -293,6 +294,25 @@ fn server_revoke_requires_selection_and_preserves_membership_when_cancelled() {
     );
     assert!(cancelled.status.success(), "{}", stderr_str(&cancelled));
     assert!(stderr_str(&cancelled).contains("Operation cancelled"));
+    assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
+}
+
+#[test]
+fn server_revoke_refuses_the_last_server_without_yes() {
+    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    let before = fs::read(&fixture.profile_path).unwrap();
+    let last = run_tako_with_env(
+        &["network", "server", "revoke", "fleet/edge"],
+        fixture.directory.path(),
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(!last.status.success());
+    let message = stderr_str(&last);
+    assert!(
+        message.contains("last server in network fleet") && message.contains("--yes"),
+        "{message}"
+    );
     assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
 }
 

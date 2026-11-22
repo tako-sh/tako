@@ -568,7 +568,7 @@ async fn tunneled_channel_and_presence_websockets_use_the_trusted_proxy() {
     for path in paths {
         let url = local_proxy_url("app.test", &address, path).unwrap();
         let (outbound, mut responses) = mpsc::channel(4);
-        let (_sender, receiver) = mpsc::channel(4);
+        let (_sender, receiver) = mpsc::unbounded_channel();
         relay_local_websocket(
             &client,
             &url,
@@ -579,6 +579,7 @@ async fn tunneled_channel_and_presence_websockets_use_the_trusted_proxy() {
             },
             &outbound,
             receiver,
+            &WebSocketQueue::default(),
         )
         .await
         .unwrap();
@@ -689,7 +690,7 @@ async fn local_websocket_open_forwards_initial_text_frame() {
         ],
     };
 
-    let (_to_local, from_tunnel) = mpsc::channel(8);
+    let (_to_local, from_tunnel) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         relay_local_websocket(
             &reqwest::Client::new(),
@@ -697,6 +698,7 @@ async fn local_websocket_open_forwards_initial_text_frame() {
             open,
             &outbound,
             from_tunnel,
+            &WebSocketQueue::default(),
         )
         .await
     });
@@ -770,7 +772,7 @@ async fn local_websocket_may_accept_without_selecting_an_offered_protocol() {
         socket.close(None).await.unwrap();
     });
     let (outbound, mut inbound) = mpsc::channel(8);
-    let (_sender, receiver) = mpsc::channel(8);
+    let (_sender, receiver) = mpsc::unbounded_channel();
     relay_local_websocket(
         &reqwest::Client::new(),
         &format!("http://127.0.0.1:{port}/"),
@@ -781,6 +783,7 @@ async fn local_websocket_may_accept_without_selecting_an_offered_protocol() {
         },
         &outbound,
         receiver,
+        &WebSocketQueue::default(),
     )
     .await
     .unwrap();
@@ -808,7 +811,7 @@ async fn local_websocket_rejection_preserves_status_and_headers() {
             .unwrap();
     });
     let (outbound, mut incoming) = mpsc::channel(4);
-    let (_sender, receiver) = mpsc::channel(8);
+    let (_sender, receiver) = mpsc::unbounded_channel();
     relay_local_websocket(
         &reqwest::Client::new(),
         &format!("http://127.0.0.1:{upstream_port}/"),
@@ -819,6 +822,7 @@ async fn local_websocket_rejection_preserves_status_and_headers() {
         },
         &outbound,
         receiver,
+        &WebSocketQueue::default(),
     )
     .await
     .unwrap();
@@ -908,4 +912,20 @@ pub(super) fn tunnel_state_with_app(
         },
     );
     state
+}
+
+#[test]
+fn websocket_queue_absorbs_bursts_of_small_messages_and_bounds_bytes() {
+    let queue = WebSocketQueue::default();
+    // An eight-message queue used to close the socket on the ninth.
+    for _ in 0..WEBSOCKET_QUEUE_BYTES / MIN_CHUNK_CREDIT {
+        assert!(queue.try_reserve(1));
+    }
+    assert!(
+        !queue.try_reserve(1),
+        "a consumer this far behind is closed"
+    );
+    queue.release(1);
+    assert!(queue.try_reserve(MIN_CHUNK_CREDIT));
+    assert!(!queue.try_reserve(MAX_WS_FRAME));
 }

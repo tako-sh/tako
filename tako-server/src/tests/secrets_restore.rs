@@ -307,6 +307,136 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
 }
 
 #[tokio::test]
+async fn restore_does_not_start_an_app_whose_secrets_cannot_be_read() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "my-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state_a = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager.clone(),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release_dir = temp.path().join("apps/my-app/production/releases/v1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    write_release_manifest(
+        &release_dir,
+        "node",
+        "index.js",
+        &["/bin/sh", "-lc", "sleep 600"],
+        Some("true"),
+        300,
+    );
+    state_a
+        .state_store
+        .set_secrets(
+            app_id,
+            &HashMap::from([("DATABASE_URL".to_string(), "postgres://db".to_string())]),
+        )
+        .unwrap();
+    let app = state_a.app_manager.register_app(AppConfig {
+        name: "my-app".to_string(),
+        environment: "production".to_string(),
+        version: "v1".to_string(),
+        path: release_dir,
+        command: vec!["/bin/sh".into(), "-lc".into(), "sleep 600".into()],
+        min_instances: 1,
+        max_instances: 4,
+        ..Default::default()
+    });
+    state_a.load_balancer.register_app(app);
+    state_a.persist_app_state(app_id).await;
+    let db = state_a.state_store.path().to_path_buf();
+    drop(state_a);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE app_secrets SET encrypted_data = x'00'", [])
+        .unwrap();
+
+    let state_b = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    state_b.restore_from_state_store().await.unwrap();
+
+    // Unregistered, so neither a cold start nor an operator can start it
+    // without its secrets; status still reports it.
+    assert!(
+        state_b.app_manager.get_app(app_id).is_none(),
+        "an app must not be startable without its secrets"
+    );
+    assert!(state_b.routes.read().routes_for_app(app_id).is_empty());
+    let Response::Ok { data } = state_b
+        .handle_command(Command::Status {
+            app: app_id.to_string(),
+        })
+        .await
+    else {
+        panic!("an app that failed to restore must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    let error = status.last_error.unwrap();
+    assert!(error.starts_with("Restore failed: "), "{error}");
+    assert!(
+        !error.contains(app_id),
+        "the app prefix is dropped: {error}"
+    );
+}
+
+#[tokio::test]
+async fn restore_reports_an_interrupted_compose_deployment_it_cannot_remove() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    // A first deployment that never committed, whose candidates cannot be
+    // removed (an invalid project name fails before any engine call).
+    state
+        .state_store
+        .begin_compose_deployment("web/production", "not-a-tako-project")
+        .unwrap();
+
+    state.restore_from_state_store().await.unwrap();
+
+    let Response::Ok { data } = state
+        .handle_command(Command::Status {
+            app: "web/production".to_string(),
+        })
+        .await
+    else {
+        panic!("the interrupted deployment must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    assert_eq!(status.kind, tako_core::ApplicationKind::ApplicationGroup);
+    let error = status.last_error.unwrap();
+    assert!(
+        error.starts_with("Restore failed: could not remove an interrupted Compose deployment"),
+        "{error}"
+    );
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(data["apps"][0]["name"], "web/production");
+    assert_eq!(data["apps"][0]["state"], "error");
+}
+
+#[tokio::test]
 async fn restore_uses_the_pinned_runtime_for_http_instances() {
     let temp = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
@@ -383,6 +513,57 @@ async fn restore_uses_the_pinned_runtime_for_http_instances() {
             .routes_for_app("demo/production")
             .is_empty()
     );
+
+    // Unregistered, it is still reported, with why it is not running.
+    let Response::Ok { data } = state
+        .handle_command(Command::Status {
+            app: "demo/production".to_string(),
+        })
+        .await
+    else {
+        panic!("an app that failed to restore must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    assert_eq!(status.version, "v1");
+    assert!(status.instances.is_empty());
+    let error = status.last_error.unwrap();
+    assert!(error.starts_with("Restore failed: "), "{error}");
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(
+        data["apps"],
+        serde_json::json!([{
+            "name": "demo/production",
+            "kind": "application",
+            "version": "v1",
+            "state": "error",
+            "instances": 0
+        }])
+    );
+
+    // Deleting the app clears the report.
+    assert!(
+        state
+            .handle_command(Command::Delete {
+                app: "demo/production".to_string(),
+            })
+            .await
+            .is_ok()
+    );
+    assert!(
+        !state
+            .handle_command(Command::Status {
+                app: "demo/production".to_string(),
+            })
+            .await
+            .is_ok()
+    );
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(data["apps"], serde_json::json!([]));
 }
 
 #[tokio::test]

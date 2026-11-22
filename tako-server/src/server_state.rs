@@ -141,6 +141,18 @@ pub struct ServerState {
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
     /// Hosted databases and the database bindings of apps on this server.
     pub(crate) databases: Arc<crate::databases::Databases>,
+    /// Apps in durable state that the last restore could not register, by
+    /// deployment ID. Status and the app list report them until a deploy
+    /// registers the app or a delete removes it.
+    pub(crate) restore_failures: SyncRwLock<HashMap<String, RestoreFailure>>,
+}
+
+/// Why a persisted app was left unregistered at restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestoreFailure {
+    pub(crate) version: String,
+    pub(crate) compose: bool,
+    pub(crate) error: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

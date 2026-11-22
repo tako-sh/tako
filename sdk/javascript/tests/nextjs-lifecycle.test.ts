@@ -7,6 +7,7 @@ import {
   createNextjsFetchHandler,
   shutdownManagedNextjsServers,
 } from "../src/nextjs/fetch-handler";
+import { injectBootstrap } from "../src/tako/secrets";
 import type { ReadyableFetchHandler } from "../src/types";
 
 describe("managed Next.js lifecycle", () => {
@@ -47,6 +48,7 @@ describe("managed Next.js lifecycle", () => {
       `
       import { appendFileSync, existsSync } from "node:fs";
       import { createServer } from "node:http";
+      import { gzipSync } from "node:zlib";
       const [pidFile, mode] = process.argv.slice(2);
       const first = !existsSync(pidFile);
       appendFileSync(pidFile, process.pid + "\\n");
@@ -55,7 +57,21 @@ describe("managed Next.js lifecycle", () => {
         setInterval(() => {}, 1000);
       } else {
         if (mode === "ignore-term") process.on("SIGTERM", () => {});
-        createServer((_, response) => response.end(String(process.pid)))
+        const respond = {
+          // Next compresses responses itself unless compress is false.
+          gzip: (response) => {
+            const body = gzipSync("compressed hello");
+            response.writeHead(200, { "content-encoding": "gzip", "content-length": body.length });
+            response.end(body);
+          },
+          // App code reads secrets through the SDK, as Next server code does.
+          bootstrap: async (response) => {
+            const { loadSecrets } = await import(${JSON.stringify(path.resolve(import.meta.dir, "../src/tako/secrets.ts"))});
+            const secret = loadSecrets().API_KEY ?? null;
+            response.end(JSON.stringify({ secret, env: process.env.TAKO_BOOTSTRAP_DATA ?? null }));
+          },
+        }[mode] ?? ((response) => response.end(String(process.pid)));
+        createServer((_, response) => respond(response))
           .listen(Number(process.env.PORT), process.env.HOST);
       }
     `,
@@ -159,6 +175,25 @@ describe("managed Next.js lifecycle", () => {
       child.kill();
     }
   }, 12_000);
+
+  test("decoded upstream bodies are not labelled as compressed", async () => {
+    const response = await handler("gzip")(new Request("https://example.com/"), {});
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(await response.text()).toBe("compressed hello");
+  });
+
+  test("Next server code receives the bootstrap the parent consumed", async () => {
+    injectBootstrap({ token: "next-token", secrets: { API_KEY: "next-secret" }, storages: {} });
+    try {
+      const response = await handler("bootstrap")(new Request("https://example.com/"), {});
+      // The child's SDK consumed the envelope from its own environment.
+      expect(await response.json()).toEqual({ secret: "next-secret", env: null });
+      expect(process.env["TAKO_BOOTSTRAP_DATA"]).toBeUndefined();
+    } finally {
+      injectBootstrap({ token: null, secrets: {} });
+    }
+  });
 
   test("shutdown waits for SIGKILL when a child ignores SIGTERM", async () => {
     const fetch = handler("ignore-term");

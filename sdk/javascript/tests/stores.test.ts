@@ -94,7 +94,7 @@ test("internal loader requires the bootstrap token and forwards only trusted par
     },
   });
   stores.register(store);
-  const request = (token?: string, host = "localhost") =>
+  const request = (token?: string, host = "app.tako") =>
     new Request(`http://${host}/stores/load`, {
       method: "POST",
       headers: token ? { "x-tako-internal-token": token } : {},
@@ -150,7 +150,7 @@ test("loader rejects malformed requests and sanitizes failure and invalid or ove
     stores.register(defineStore(name, { load }));
   const call = (body: string, method = "POST") =>
     handleTakoEndpoint(
-      new Request("http://localhost/stores/load", {
+      new Request("http://app.tako/stores/load", {
         method,
         headers: { "x-tako-internal-token": "store-test-token" },
         ...(method === "POST" && { body }),

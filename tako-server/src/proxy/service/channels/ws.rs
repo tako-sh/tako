@@ -44,7 +44,7 @@ impl TakoProxy {
             .write_response_header(Box::new(header), false)
             .await?;
 
-        let mut reader = WebSocketFrameReader::default();
+        let mut reader = WebSocketFrameReader::from_client();
         let (auth, requested) = match auth_mode {
             ChannelWebSocketAuth::Authorized(auth) => (auth, requested),
             ChannelWebSocketAuth::FirstFrame {

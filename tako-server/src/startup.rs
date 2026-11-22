@@ -256,15 +256,10 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let _guard = state.management_lock.lock().await;
         crate::drain_observer::spawn(&rt, state.clone());
         state.ensure_internal_socket_started()?;
-        if native_config.is_some() && !standby {
-            if state.is_draining() {
-                Ok(())
-            } else {
-                state.restore_apps_from_state_store(true).await
-            }
-        } else {
-            state.restore_from_state_store().await
-        }
+        // One app that cannot start must not keep the server, and so every
+        // other app and the management API, down: it stays in the error
+        // state with its last error until a deploy or start fixes it.
+        state.restore_from_state_store().await
     }) {
         tracing::error!("Failed to restore server state from SQLite: {}", e);
         return Err(e.into());

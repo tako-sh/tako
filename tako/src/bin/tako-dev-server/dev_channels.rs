@@ -293,7 +293,7 @@ async fn serve_websocket(
     session
         .write_response_header(Box::new(header), false)
         .await?;
-    let mut reader = tako_channels::websocket::WebSocketFrameReader::default();
+    let mut reader = tako_channels::websocket::WebSocketFrameReader::from_client();
     let (auth, requested) = match auth {
         DevSocketAuth::Authorized(auth) => (auth, requested),
         DevSocketAuth::FirstFrame { app, cookie } => match authorize_first_frame(

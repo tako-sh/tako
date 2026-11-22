@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"strconv"
@@ -200,10 +199,15 @@ func (s *StepAPI) run(name string, out any, fn func() (any, error), opts ...Step
 	if max == 0 {
 		max = 30 * time.Second
 	}
-	attempts := o.Retries + 1
+	// uint64 so Retries: math.MaxUint32 does not wrap to zero attempts.
+	attempts := uint64(o.Retries) + 1
 
 	var lastErr error
-	for attempt := uint32(1); attempt <= attempts; attempt++ {
+	for attempt := uint64(1); attempt <= attempts; attempt++ {
+		// A run lost between attempts (or during the backoff) stops here.
+		if s.ownershipLost() {
+			return errOwnershipLost
+		}
 		value, err := fn()
 		if err == nil {
 			if perr := s.saveStep(name, value); perr != nil {
@@ -215,12 +219,17 @@ func (s *StepAPI) run(name string, out any, fn func() (any, error), opts ...Step
 		if isControlSignal(err) {
 			return err
 		}
+		// The attempt failed because this worker lost the run (often its
+		// cancelled context): stop, never retry or fail the run over it.
+		if s.ownershipLost() {
+			return errOwnershipLost
+		}
 		lastErr = err
 		if o.NoRetry {
 			return &failSignal{err: err}
 		}
 		if attempt < attempts {
-			time.Sleep(expBackoff(attempt, base, max))
+			time.Sleep(expBackoff(uint32(attempt), base, max))
 		}
 	}
 	return lastErr
@@ -728,9 +737,10 @@ func expBackoff(attempts uint32, base, max time.Duration) time.Duration {
 	if attempts < 1 {
 		attempts = 1
 	}
-	exp := base * time.Duration(math.Pow(2, float64(attempts-1)))
-	if exp > max {
-		exp = max
+	// base << (attempts-1), saturating at max instead of overflowing.
+	exp := max
+	if shift := attempts - 1; shift < 63 && base <= max>>shift {
+		exp = base << shift
 	}
 	jitter := time.Duration(float64(exp) * 0.2 * (rand.Float64()*2 - 1))
 	result := exp + jitter

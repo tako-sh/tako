@@ -57,21 +57,64 @@ fn trusted_headers_are_ignored_from_untrusted_peer() {
 }
 
 #[test]
-fn x_forwarded_for_uses_only_leftmost_address() {
+fn forwarded_chains_ignore_entries_the_client_supplied() {
     let config = TrustedProxyConfig::from_raw(
         false,
-        &["127.0.0.1/32".to_string()],
-        &["x-forwarded-for".to_string()],
+        &["10.0.0.0/8".to_string()],
+        &["x-forwarded-for".to_string(), "forwarded".to_string()],
     )
     .unwrap();
-    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
-    request
-        .insert_header("X-Forwarded-For", "not-an-ip, 203.0.113.15")
-        .unwrap();
-
-    let ip = client_ip_from_trusted_headers(&request, "127.0.0.1".parse().unwrap(), &config);
-
-    assert_eq!(ip, None);
+    let peer = "10.0.0.2".parse().unwrap();
+    let resolve = |name: &str, values: &[&str]| {
+        let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+        for value in values {
+            request.append_header(name.to_string(), *value).unwrap();
+        }
+        client_ip_from_trusted_headers(&request, peer, &config)
+    };
+    let client = Some("203.0.113.15".parse().unwrap());
+    // The trusted proxy appended the address it saw after the client's value.
+    assert_eq!(
+        resolve("X-Forwarded-For", &["198.51.100.66, 203.0.113.15"]),
+        client
+    );
+    assert_eq!(
+        resolve("X-Forwarded-For", &["not-an-ip, 203.0.113.15"]),
+        client
+    );
+    // Trusted hops are skipped, across repeated header lines.
+    assert_eq!(
+        resolve(
+            "X-Forwarded-For",
+            &["198.51.100.66", "203.0.113.15, 10.1.1.1"]
+        ),
+        client
+    );
+    assert_eq!(
+        resolve(
+            "Forwarded",
+            &["for=198.51.100.66, for=203.0.113.15;proto=https, for=\"10.1.1.1\""]
+        ),
+        client
+    );
+    // A quoted comma or semicolon does not end an element or parameter.
+    assert_eq!(
+        resolve(
+            "Forwarded",
+            &[r#"for=203.0.113.15;by="edge, zone", for=10.1.1.1;by="a;for=10.2.2.2""#]
+        ),
+        client
+    );
+    // A malformed hop cannot be skipped to reach a client-supplied address.
+    assert_eq!(
+        resolve("X-Forwarded-For", &["198.51.100.66, garbage"]),
+        None
+    );
+    // A request that only crossed trusted hops keeps the original address.
+    assert_eq!(
+        resolve("X-Forwarded-For", &["10.9.9.9, 10.1.1.1"]),
+        "10.9.9.9".parse().ok()
+    );
 }
 
 #[test]

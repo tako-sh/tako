@@ -81,7 +81,7 @@ tako backups status --env production --json
 
 Archive status reports the last manual full archive, the last failed attempt, retention, and unfinished restores. Full archives retain 30 days by default; their cleanup runs when an archive is created, not on a timer. `backups list` also shows `databases` archives created by older servers.
 
-A deployment grant can operate the app's already-provisioned private backups.
+Creating, listing, downloading and restoring backups needs a full client. A deploy client can change an environment's backup settings in `tako.toml`, which apply when it deploys, but cannot run these commands.
 
 Download a manual archive with `tako backups download <backup-id> --env production --server la`. The result is an encrypted zstd-compressed tar archive.
 

@@ -62,6 +62,21 @@ describe("tako init --ci", () => {
     expect(toml).toMatch(/^runtime = "bun@\d+\.\d+\.\d+"$/m);
   });
 
+  test("leaves an existing tako.toml that does not parse untouched", async () => {
+    await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "test-app" }));
+    const original = 'name = "half-edited\n[envs.production\n';
+    await writeFile(join(tempDir, "tako.toml"), original);
+
+    const takoHome = join(tempDir, ".tako");
+    const { exitCode } = await run(["--ci", "init"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(await readFile(join(tempDir, "tako.toml"), "utf-8")).toBe(original);
+  });
+
   test("--ci produces no ANSI color codes in output", async () => {
     await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "test-app" }));
 

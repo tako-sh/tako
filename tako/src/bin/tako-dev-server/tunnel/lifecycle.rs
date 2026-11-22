@@ -244,6 +244,38 @@ pub(super) fn disable_tunnel_generation(
     (Some(url), Some(expires_at))
 }
 
+/// The tunnel a re-registered app keeps. Its session keeps serving the same
+/// public URL and local host, so it carries over only while both are unchanged;
+/// otherwise it stops here instead of serving after it is reported off.
+pub(crate) fn carry_over_tunnel(
+    state: &mut State,
+    config_path: &str,
+    old: (&str, &[String]),
+    new: (&str, &[String]),
+) -> Option<TunnelRegistration> {
+    let tunnel = state.apps.get_mut(config_path)?.tunnel.take()?;
+    if old.0 == new.0 && primary_local_host(old.1) == primary_local_host(new.1) {
+        return Some(tunnel);
+    }
+    tunnel.abort_handle.abort();
+    let lifecycle = state
+        .tunnel_lifecycles
+        .entry(config_path.to_string())
+        .or_default();
+    lifecycle.generation = lifecycle.generation.wrapping_add(1);
+    state.events.broadcast(Response::Event {
+        event: protocol::DevEvent::TunnelModeChanged {
+            config_path: config_path.to_string(),
+            app_name: old.0.to_string(),
+            enabled: false,
+            url: None,
+            expires_at: None,
+            close_reason: Some(TunnelCloseReason::Shutdown),
+        },
+    });
+    None
+}
+
 pub(super) fn tunnel_is_current(
     state: &Arc<Mutex<State>>,
     config_path: &str,

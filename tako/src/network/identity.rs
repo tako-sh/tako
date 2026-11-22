@@ -135,10 +135,39 @@ pub(crate) unsafe fn take_from_env() {
     let value = std::env::var_os(ENV);
     if value.is_some() {
         // SAFETY: the caller guarantees no other thread reads the environment.
-        unsafe { std::env::remove_var(ENV) };
+        unsafe {
+            scrub_initial_value(ENV);
+            std::env::remove_var(ENV);
+        }
     }
     let _ = TAKEN.set(value);
 }
+
+/// Overwrite `name`'s value where it is stored. Removing a variable only drops
+/// it from the `environ` array; the process's initial environment block keeps
+/// the bytes, and processes of the same user can read that block
+/// (`/proc/<pid>/environ` on Linux, `KERN_PROCARGS2` on macOS).
+///
+/// # Safety
+///
+/// No other thread may read or change the environment.
+#[cfg(unix)]
+unsafe fn scrub_initial_value(name: &str) {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return;
+    };
+    // SAFETY: getenv returns null or a NUL-terminated string that this
+    // process owns, and nothing else reads the environment meanwhile.
+    unsafe {
+        let value = libc::getenv(name.as_ptr());
+        if !value.is_null() {
+            std::ptr::write_bytes(value, 0, libc::strlen(value));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+unsafe fn scrub_initial_value(_name: &str) {}
 
 /// `TAKO_CLIENT_IDENTITY` as this process received it, for passing on to a child
 /// `tako` process only, never to project code.
@@ -247,6 +276,40 @@ impl Drop for SuspendedKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Re-runs this test in a child whose initial environment holds a fake
+    // identity, as a `tako` process started with one would.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn taken_identity_leaves_no_copy_in_the_initial_environment() {
+        const SECRET: &str = "fake-identity-private-key";
+        if std::env::var_os("TAKO_TEST_IDENTITY_CHILD").is_some() {
+            // SAFETY: this child runs only this test, which touches the
+            // environment from this thread alone.
+            unsafe { take_from_env() };
+            let initial = std::fs::read("/proc/self/environ").unwrap();
+            assert!(std::env::var_os(ENV).is_none());
+            assert!(
+                !initial
+                    .windows(SECRET.len())
+                    .any(|window| window == SECRET.as_bytes()),
+                "the identity is still readable from /proc/<pid>/environ"
+            );
+            assert_eq!(from_env().as_deref(), Some(std::ffi::OsStr::new(SECRET)));
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "network::identity::tests::taken_identity_leaves_no_copy_in_the_initial_environment",
+                "--test-threads=1",
+            ])
+            .env("TAKO_TEST_IDENTITY_CHILD", "1")
+            .env(ENV, SECRET)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn suspended_keys_are_off_disk_for_child_processes_until_resumed() {

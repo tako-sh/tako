@@ -48,6 +48,12 @@ impl EventsHub {
         inner.tunnel_states.remove(config_path);
     }
 
+    /// Like `forget_app`, but keeps the connection state of a tunnel that
+    /// survives the app's re-registration.
+    pub(crate) fn forget_app_status(&self, config_path: &str) {
+        self.inner.lock().unwrap().app_states.remove(config_path);
+    }
+
     pub(crate) fn broadcast(&self, r: Response) {
         let mut inner = self.inner.lock().unwrap();
         if let Response::Event { event } = &r {

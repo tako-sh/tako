@@ -24,7 +24,6 @@ export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
 export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
 /** Header used to authenticate SDK-internal requests. */
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
-const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
 
 function baseAppName(value: string): string {
   const [appName = ""] = value.trim().toLowerCase().split("/");
@@ -56,12 +55,11 @@ function runtimeAppName(): string | null {
   return appName && appName.length > 0 ? appName : null;
 }
 
+// Only `<app>.tako` is internal. Loopback hosts carry ordinary local traffic
+// (healthchecks, curl) and belong to the app.
 function isInternalHost(host: string | null): boolean {
   if (!host) {
     return false;
-  }
-  if (LOOPBACK_INTERNAL_HOSTS.has(host)) {
-    return true;
   }
   const appName = runtimeAppName();
   if (appName) {

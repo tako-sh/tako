@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { handleTakoEndpoint } from "../src/tako/endpoints";
+import { injectBootstrap } from "../src/tako/secrets";
+import type { TakoStatus } from "../src/types";
 
 const cli = resolve(import.meta.dir, "../bin/cli.ts");
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -92,6 +95,22 @@ describe("tako.sh healthcheck", () => {
       expect(new URL(request.url).pathname).toBe("/health");
       return new Response("ok");
     });
+    expect((await run(["healthcheck"], { PORT: String(server.port) })).exitCode).toBe(0);
+  });
+
+  test("reaches the app's /health behind the SDK's internal endpoints", async () => {
+    injectBootstrap({ token: "healthcheck-token", secrets: {} });
+    const status: TakoStatus = {
+      status: "healthy",
+      app: "app",
+      version: "dev",
+      instance_id: "1",
+      pid: process.pid,
+      uptime_seconds: 0,
+    };
+    const server = serve(
+      async (request) => (await handleTakoEndpoint(request, status)) ?? new Response("ok"),
+    );
     expect((await run(["healthcheck"], { PORT: String(server.port) })).exitCode).toBe(0);
   });
 

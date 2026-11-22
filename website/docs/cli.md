@@ -297,7 +297,7 @@ tako network server ls
 tako status
 tako network server reload <name> [--network <alias-or-id>] [--force]
 tako network server upgrade [name] [--network <alias-or-id>] [--force]
-tako network server revoke [name] [--network <alias-or-id>]
+tako network server revoke [name] [--network <alias-or-id>] [-y|--yes]
 tako network server remove [name] [--network <alias-or-id>] [--uninstall] [-y|--yes]
 tako network server rm [name] [--network <alias-or-id>] [--uninstall] [-y|--yes]
 ```

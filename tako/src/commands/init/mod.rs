@@ -26,13 +26,16 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     let project_dir = context.project_dir;
     let mut tako_toml_path = context.config_path;
 
-    let existing = if tako_toml_path.exists() {
+    // Confirm on any existing file: one that does not parse is still the
+    // user's configuration and must not be replaced silently.
+    let file_exists = tako_toml_path.exists();
+    let existing = if file_exists {
         TakoToml::load_from_file(&tako_toml_path).ok()
     } else {
         None
     };
 
-    if existing.is_some() {
+    if file_exists {
         if !output::is_interactive() {
             output::operation_cancelled();
             return Ok(());
