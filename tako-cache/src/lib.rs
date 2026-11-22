@@ -1,9 +1,10 @@
-//! A bounded, disposable redb store per app/environment. The runtime supplies
-//! the private directory; a request can supply only a cache key.
+//! Bounded, disposable redb stores. The host resolves the private app or shared
+//! environment directory; requests never select a filesystem path.
 use redb::{ConcurrencyMode, Database, ReadableDatabase, ReadableTable, TableDefinition};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,7 +27,7 @@ type FileId = (u64, u64);
 pub struct Caches(Mutex<VecDeque<(PathBuf, FileId, Arc<Database>)>>);
 
 impl Caches {
-    fn database(&self, dir: &Path) -> Result<Arc<Database>, DbError> {
+    fn database(&self, dir: &Path, create: bool) -> Result<Option<Arc<Database>>, DbError> {
         let path = dir.join(FILE_NAME);
         let file_id = || fs::metadata(&path).map(|m| (m.dev(), m.ino()));
         let mut recent = self.0.lock().map_err(|_| "cache registry poisoned")?;
@@ -36,22 +37,30 @@ impl Caches {
         {
             let db = Arc::clone(&entry.2);
             recent.push_front(entry);
-            return Ok(db);
+            return Ok(Some(db));
         }
+        // A miss in a never-written store must not create a file or evict a hot handle.
         if recent.len() == HOT_STORES {
+            if !create && !path.try_exists()? {
+                return Ok(None);
+            }
             let idle = recent
                 .iter()
                 .rposition(|(_, _, db)| Arc::strong_count(db) == 1)
                 .ok_or("all cache handles are busy")?;
             recent.remove(idle);
         }
-        let file = fs::OpenOptions::new()
+        let file = match fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(create)
             .truncate(false)
             .mode(0o600)
-            .open(&path)?;
+            .open(&path)
+        {
+            Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        };
         let meta = file.metadata()?;
         // Rolling upgrades and a concurrent `tako run` may overlap writers.
         let db = Database::builder()
@@ -72,20 +81,39 @@ impl Caches {
         }
         let db = Arc::new(db);
         recent.push_front((path, (meta.dev(), meta.ino()), Arc::clone(&db)));
-        Ok(db)
+        Ok(Some(db))
     }
 
     pub fn reply(&self, dir: &Path, request: CacheRequest) -> tako_core::Response {
-        match self.execute(dir, request) {
+        self.reply_at(dir, request, false)
+    }
+
+    /// Kept outside app data trees (including shared-data mounts). Only the
+    /// host supplies `environment`; hashing also supports long local env names.
+    pub fn reply_shared(
+        &self,
+        host: &Path,
+        environment: &str,
+        request: CacheRequest,
+    ) -> tako_core::Response {
+        let dir = host
+            .join("shared-cache")
+            .join(hex::encode(Sha256::digest(environment.as_bytes())));
+        self.reply_at(&dir, request, true)
+    }
+
+    fn reply_at(&self, dir: &Path, request: CacheRequest, shared: bool) -> tako_core::Response {
+        match self.execute(dir, request, shared) {
             Ok(json) => tako_core::Response::ok(json),
             Err(error) => error.into(),
         }
     }
 
-    pub fn execute(
+    fn execute(
         &self,
         dir: &Path,
         request: CacheRequest,
+        shared: bool,
     ) -> Result<Option<String>, SocketError> {
         let key = match &request {
             CacheRequest::Get { key }
@@ -111,11 +139,20 @@ impl Caches {
                 .unwrap_or_default()
                 .as_millis() as u64
         };
-        self.database(dir)
-            .and_then(|db| execute(&db, request, now, CAPACITY))
-            .map_err(|e| {
-                SocketError::new(ErrorCode::Unavailable, format!("cache unavailable: {e}"))
-            })
+        let create = matches!(request, CacheRequest::Put { .. });
+        (|| -> Result<_, DbError> {
+            if shared && create && !dir.is_dir() {
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(dir)?;
+            }
+            match self.database(dir, create)? {
+                Some(db) => execute(&db, request, now, CAPACITY),
+                None => Ok(None),
+            }
+        })()
+        .map_err(|e| SocketError::new(ErrorCode::Unavailable, format!("cache unavailable: {e}")))
     }
 }
 

@@ -97,11 +97,15 @@ SDKs decide lost ownership only from `run_not_owned` on a worker write, never fr
 
 The server-local cache uses the internal socket, not a network address.
 `{command:"cache", app, operation:"get"|"delete", key}` reads or removes a key
-in the authenticated app/environment; `"put"` also takes `json` (serialized
+in the authenticated app/environment; optional `shared:true` selects a separate
+store shared by apps on that server in the caller's environment. Omitted or
+false selects the private store. The caller cannot select another environment.
+`"put"` also takes `json` (serialized
 JSON, at most 256 KiB) and a positive integer `ttl_ms`. Keys are nonblank and
 at most 1 KiB of UTF-8. Get replies carry the JSON **string** on a hit (including
 `"null"`) or `null` on a miss. Writes reply with `null`. Management rejects
-this command. `tako-server` owns `data/tako/cache.redb`; SDKs never open it.
+this command. `tako-server` owns private `data/tako/cache.redb` files and
+`<server-data>/shared-cache/<environment-digest>/cache.redb`; SDKs never open them.
 The dev daemon and one-shot local run host use the same implementation.
 
 ## Network primitives

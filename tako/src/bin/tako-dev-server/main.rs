@@ -228,15 +228,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let registry = Arc::downgrade(&state);
         let caches = tako_cache::Caches::default();
-        workflows.set_cache(Arc::new(move |name, request| {
-            let dir = registry.upgrade().and_then(|state| {
+        workflows.set_cache(Arc::new(move |name, shared, request| {
+            let scope = registry.upgrade().and_then(|state| {
                 let state = state.lock().ok()?;
                 let app = state.apps.values().find(|app| app.name == name)?;
                 let data = std::path::Path::new(app.env.get("TAKO_DATA_DIR")?);
-                Some(data.parent()?.join("tako"))
+                Some((data.parent()?.join("tako"), app.environment.clone()))
             });
-            match dir {
-                Some(dir) => caches.reply(&dir, request),
+            match scope {
+                Some((_, environment)) if shared => {
+                    caches.reply_shared(&data_dir, &environment, request)
+                }
+                Some((dir, _)) => caches.reply(&dir, request),
                 None => tako_core::Response::error("unknown development cache"),
             }
         }));

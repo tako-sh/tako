@@ -35,9 +35,23 @@ await tako.cache.delete(`product:${id}`);
 
 There is no automatic connection between your database writes and this cache. Concurrent cache misses can run the loader more than once; the read-then-populate example does not provide a distributed lock.
 
+## Share a value between apps
+
+Use `{ shared: true }` on every operation that addresses a shared key. For example, a worker can fill a product catalog entry and an API can read it:
+
+```ts
+// Catalog worker
+await tako.cache.put("catalog:v1:42", product, { ttl: 60_000, shared: true });
+// API app on the same server, in the same environment
+const cached = await tako.cache.get<Product>("catalog:v1:42", { shared: true });
+await tako.cache.delete("catalog:v1:42", { shared: true });
+```
+
+Without `shared: true`, the same key is private to the app. There is no fallback between the two stores. Any app in that server/environment can read, overwrite, or delete a shared entry. The shared store has its own 64 MiB budget across those apps and survives individual app restores. Locally, projects share only when using the same Tako home and environment.
+
 ## Persistence and isolation
 
-`tako-server` stores entries in `data/tako/cache.redb`, outside the app-owned data directory and outside backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches. `tako dev` and `tako run` share the selected local environment's cache.
+`tako-server` stores private entries in `data/tako/cache.redb` and shared entries under the server's `shared-cache/` directory. Both are outside the app-owned data directory and app backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches. `tako dev` and `tako run` use the same stores for the selected local environment.
 
 Each store has a 64 MiB budget for JSON, keys, and per-entry overhead. Keys are limited to 1 KiB of UTF-8 and values to 256 KiB of serialized JSON. Writes reclaim expired entries even if nobody reads those keys; under pressure the soonest-expiring entries go first. Always handle a miss before the TTL. redb reuses freed pages, so the file can stay at its high-water mark. The byte budget is not an exact filesystem-size limit.
 

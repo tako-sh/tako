@@ -352,6 +352,7 @@ fn commands() -> Vec<Fixture> {
             "cache-get",
             Command::Cache {
                 app: APP.into(),
+                shared: false,
                 request: crate::CacheRequest::Get {
                     key: "profile:1".into(),
                 },
@@ -361,6 +362,7 @@ fn commands() -> Vec<Fixture> {
             "cache-put",
             Command::Cache {
                 app: APP.into(),
+                shared: false,
                 request: crate::CacheRequest::Put {
                     key: "profile:1".into(),
                     json: "null".into(),
@@ -372,8 +374,19 @@ fn commands() -> Vec<Fixture> {
             "cache-delete",
             Command::Cache {
                 app: APP.into(),
+                shared: false,
                 request: crate::CacheRequest::Delete {
                     key: "profile:1".into(),
+                },
+            },
+        ),
+        command(
+            "cache-get-shared",
+            Command::Cache {
+                app: APP.into(),
+                shared: true,
+                request: crate::CacheRequest::Get {
+                    key: "catalog:v1".into(),
                 },
             },
         ),

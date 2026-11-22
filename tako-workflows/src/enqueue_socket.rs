@@ -119,7 +119,7 @@ pub struct SocketOptions {
     pub cache: Option<CacheFn>,
 }
 
-pub type CacheFn = Arc<dyn Fn(&str, tako_core::CacheRequest) -> Response + Send + Sync>;
+pub type CacheFn = Arc<dyn Fn(&str, bool, tako_core::CacheRequest) -> Response + Send + Sync>;
 
 /// Routes a validated destination after the socket has authenticated the caller.
 pub type NetworkCallFn =
@@ -512,9 +512,12 @@ fn handle_command(
     if let Err(error) = authorize_peer(peer_auth, peer_uid, &app) {
         return Response::error(error);
     }
-    if let Command::Cache { request, .. } = cmd {
+    if let Command::Cache {
+        shared, request, ..
+    } = cmd
+    {
         return match cache {
-            Some(cache) => cache(&app, request),
+            Some(cache) => cache(&app, shared, request),
             None => Response::coded_error(ErrorCode::Unavailable, "cache unavailable"),
         };
     }

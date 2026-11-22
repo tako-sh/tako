@@ -121,6 +121,8 @@ The generated declaration file is type-only and is not imported by app code. In 
 
 Server-side JavaScript can cache JSON-serializable values with explicit get/put/delete calls:
 
+Keys are private by default. Use `{ shared: true }` on `get` and `delete`, and `{ ttl, shared: true }` on `put`, to let apps on the same server and in the same environment read, overwrite, or delete a shared key. A shared miss never falls back to private data.
+
 ```typescript
 import { tako } from "tako.sh";
 

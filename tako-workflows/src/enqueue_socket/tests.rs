@@ -32,8 +32,9 @@ fn lookup_for(map: std::collections::HashMap<String, Arc<RunsDb>>) -> AppLookup 
 #[test]
 fn cache_authenticates_before_opening_an_app_store() {
     let lookup: AppLookup = Arc::new(|_| panic!("cache must not require a workflow worker"));
-    let cache: CacheFn = Arc::new(|app, _| {
+    let cache: CacheFn = Arc::new(|app, shared, _| {
         assert_eq!(app, "web/staging");
+        assert!(shared);
         Response::ok("null")
     });
     let auth = pinned_app_auth("web/staging");
@@ -47,6 +48,7 @@ fn cache_authenticates_before_opening_an_app_store() {
             Some(&cache),
             Command::Cache {
                 app: app.into(),
+                shared: true,
                 request: tako_core::CacheRequest::Get { key: "k".into() },
             },
         )

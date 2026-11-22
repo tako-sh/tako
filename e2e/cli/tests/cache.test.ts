@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -9,10 +9,13 @@ test("tako run serves the cache across processes and isolates local environments
   const project = await mkdtemp(join(tmpdir(), "cache-run-"));
   try {
     await writeFile(join(project, "tako.toml"), 'name = "cache-run"\nruntime = "bun"\n');
-    const run = async (env: string, source: string) => {
+    const worker = join(project, "worker");
+    await mkdir(worker);
+    await writeFile(join(worker, "tako.toml"), 'name = "cache-worker"\nruntime = "bun"\n');
+    const run = async (env: string, source: string, cwd = project) => {
       const script = `import {cache} from ${JSON.stringify(join(root, "sdk/javascript/src/cache.ts"))}; ${source}`;
       const child = Bun.spawn([cli, "run", "--env", env, "--", process.execPath, "-e", script], {
-        cwd: project,
+        cwd,
         env: { ...process.env, TAKO_HOME: join(project, ".home"), TAKO_TELEMETRY: "0" },
         stdout: "pipe",
         stderr: "pipe",
@@ -30,6 +33,18 @@ test("tako run serves the cache across processes and isolates local environments
       '{"v":1}',
     );
     expect(await run("staging", 'console.log(await cache.get("key"))')).toBe("undefined");
+    await run("development", 'await cache.put("key", "catalog", {ttl: 120000, shared: true})');
+    const sharedRead = 'console.log(await cache.get("key", {shared: true}))';
+    expect(await run("development", sharedRead, worker)).toBe("catalog");
+    expect(await run("development", 'console.log(await cache.get("key"))', worker)).toBe(
+      "undefined",
+    );
+    expect(await run("staging", sharedRead, worker)).toBe("undefined");
+    await run("development", 'await cache.delete("key", {shared: true})', worker);
+    expect(await run("development", sharedRead)).toBe("undefined");
+    expect(
+      await run("development", 'console.log((await cache.get("key", {shared: false})).v)'),
+    ).toBe("1");
     await run("development", 'await cache.delete("key")');
     expect(await run("development", 'console.log(await cache.get("key"))')).toBe("undefined");
   } finally {

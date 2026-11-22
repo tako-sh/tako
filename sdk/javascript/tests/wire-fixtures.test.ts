@@ -220,8 +220,11 @@ describe("channel, store, and network commands match the wire fixtures", () => {
     await cache.delete("profile:1");
     expect(socket.take()).toEqual(fixture("commands/cache-delete.json"));
     socket.reply("replies/ok-null.json");
-    expect(await cache.get("profile:1")).toBeUndefined();
+    expect(await cache.get("profile:1", { shared: false })).toBeUndefined();
     expect(socket.take()).toEqual(fixture("commands/cache-get.json"));
+    socket.reply("replies/ok-null.json");
+    expect(await cache.get("catalog:v1", { shared: true })).toBeUndefined();
+    expect(socket.take()).toEqual(fixture("commands/cache-get-shared.json"));
   });
 
   test("channel_publish", async () => {

@@ -16,7 +16,10 @@ fn get(key: &str) -> CacheRequest {
 #[test]
 fn eviction_and_expiry_update_both_indexes_and_accounting() {
     let dir = tempdir().unwrap();
-    let db = Caches::default().database(dir.path()).unwrap();
+    let db = Caches::default()
+        .database(dir.path(), true)
+        .unwrap()
+        .unwrap();
     let run = |r, now| execute(&db, r, || now, 2 * weight("a", "0")).unwrap();
     run(put("a", "1", 1), 10);
     assert_eq!(run(get("a"), 11), None);
@@ -47,24 +50,31 @@ fn server_restart_shares_commits_but_restore_never_serves_old_inode() {
     let other = tempdir().unwrap();
     let caches = Caches::default();
     caches
-        .execute(dir.path(), put("k", "null", 60_000))
+        .execute(dir.path(), put("k", "null", 60_000), false)
         .unwrap();
-    assert_eq!(caches.execute(other.path(), get("k")).unwrap(), None);
+    assert_eq!(caches.execute(other.path(), get("k"), false).unwrap(), None);
+    assert!(!other.path().join(FILE_NAME).exists());
     let successor = Caches::default();
     assert_eq!(
-        successor.execute(dir.path(), get("k")).unwrap().as_deref(),
+        successor
+            .execute(dir.path(), get("k"), false)
+            .unwrap()
+            .as_deref(),
         Some("null")
     );
     successor
-        .execute(dir.path(), put("k", "42", 60_000))
+        .execute(dir.path(), put("k", "42", 60_000), false)
         .unwrap();
     assert_eq!(
-        caches.execute(dir.path(), get("k")).unwrap().as_deref(),
+        caches
+            .execute(dir.path(), get("k"), false)
+            .unwrap()
+            .as_deref(),
         Some("42")
     );
     drop(successor);
     fs::rename(dir.path().join(FILE_NAME), dir.path().join("retired")).unwrap();
-    assert_eq!(caches.execute(dir.path(), get("k")).unwrap(), None);
+    assert_eq!(caches.execute(dir.path(), get("k"), false).unwrap(), None);
 }
 
 #[test]
@@ -79,7 +89,7 @@ fn invalid_cache_requests_never_open_a_store() {
         put("k", &"x".repeat(MAX_JSON + 1), 1),
     ] {
         assert_eq!(
-            caches.execute(dir.path(), request).unwrap_err().code,
+            caches.execute(dir.path(), request, false).unwrap_err().code,
             Some(ErrorCode::InvalidRequest)
         );
     }
@@ -92,18 +102,33 @@ fn page_cache_budget_is_shared_across_apps() {
     let caches = Caches::default();
     let mut busy: Vec<_> = dirs[..HOT_STORES]
         .iter()
-        .map(|d| caches.database(d.path()).unwrap())
+        .map(|d| caches.database(d.path(), true).unwrap().unwrap())
         .collect();
-    assert!(caches.database(dirs[HOT_STORES].path()).is_err());
+    assert!(
+        caches
+            .database(dirs[HOT_STORES].path(), false)
+            .unwrap()
+            .is_none()
+    );
+    assert!(caches.database(dirs[HOT_STORES].path(), true).is_err());
+    assert!(!dirs[HOT_STORES].path().join(FILE_NAME).exists());
     drop(busy.pop());
-    assert!(caches.database(dirs[HOT_STORES].path()).is_ok());
+    assert!(
+        caches
+            .database(dirs[HOT_STORES].path(), true)
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(caches.0.lock().unwrap().len(), HOT_STORES);
 }
 
 #[test]
 fn disk_pages_are_reused_under_sustained_churn() {
     let dir = tempdir().unwrap();
-    let db = Caches::default().database(dir.path()).unwrap();
+    let db = Caches::default()
+        .database(dir.path(), true)
+        .unwrap()
+        .unwrap();
     let payload = format!("\"{}\"", "x".repeat(16 * 1024));
     let mut sizes = Vec::new();
     for epoch in 0..4 {

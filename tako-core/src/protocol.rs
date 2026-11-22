@@ -660,6 +660,8 @@ pub enum Command {
     },
     Cache {
         app: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shared: bool,
         #[serde(flatten)]
         request: CacheRequest,
     },

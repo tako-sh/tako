@@ -230,6 +230,8 @@ Storage URLs are private by default. S3-compatible storage uses SigV4; local sto
 
 Use the cache for JSON-serializable server-side values:
 
+Keys are private by default. Pass `{ shared: true }` on `get` and `delete`, or `{ ttl, shared: true }` on `put`, to access the cache shared by apps on the same server in the same environment.
+
 ```ts
 import { tako } from "tako.sh";
 

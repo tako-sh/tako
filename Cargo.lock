@@ -6569,8 +6569,10 @@ dependencies = [
 name = "tako-cache"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "redb",
  "serde_json",
+ "sha2 0.11.0",
  "tako-core",
  "tempfile",
 ]

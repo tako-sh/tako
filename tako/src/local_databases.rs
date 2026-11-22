@@ -228,6 +228,8 @@ impl LocalDatabases {
         }
         let _guard = self.runtime.as_ref().expect("initialized runtime").enter();
         let caches = tako_cache::Caches::default();
+        let host = crate::paths::tako_data_dir()?;
+        let environment = environment.to_owned();
         let app = format!("local/{environment}");
         let handle = spawn_with_options(
             &socket,
@@ -237,7 +239,13 @@ impl LocalDatabases {
             None,
             SocketOptions {
                 mode: Some(0o600),
-                cache: Some(Arc::new(move |_, req| caches.reply(&dir, req))),
+                cache: Some(Arc::new(move |_, shared, req| {
+                    if shared {
+                        caches.reply_shared(&host, &environment, req)
+                    } else {
+                        caches.reply(&dir, req)
+                    }
+                })),
             },
         )?;
         env.insert(
