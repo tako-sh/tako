@@ -1,0 +1,183 @@
+---
+title: KV stores
+description: "Create Tako-hosted key-value stores that speak the Redis protocol, bind them to apps, and share challenges, sessions, counters, and locks across every server of a network."
+---
+
+A Tako KV store is a key-value store that `tako-server` hosts on one server of a [native network](/networks/). Apps reach it over the Redis protocol (RESP2 and RESP3) with a per-binding URL, so existing Redis clients work unchanged: Bun's `RedisClient`, ioredis, node-redis, go-redis, and redis-rs. Apps on every server of the network use the same store, which makes it the place for short-lived state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, rate-limit counters, and locks. Keys can expire, writes are on disk before they are acknowledged, and the same code runs under `tako dev`.
+
+| Need                                                           | Use                                                   |
+| -------------------------------------------------------------- | ----------------------------------------------------- |
+| Short-lived values every server must see, with expiry          | A KV store                                            |
+| Recomputable values cached next to each app, evicted when full | [`tako.cache`](/cache/)                               |
+| Relational or canonical records that must survive server loss  | A [hosted database](/databases/) with backups         |
+| Files and uploads                                              | [Storage](/storage/)                                  |
+| An external Redis or Valkey                                    | A [secret](/secrets/) holding its URL                 |
+
+## Create and bind a store
+
+A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Creating one requires full access:
+
+```bash
+tako kv create sessions --server edge-a
+```
+
+`--server` can be omitted when the network has a single server. Bind the store in each environment that uses it; the key is the binding name the app reads, and the value is the store's name:
+
+```toml
+[envs.production]
+kv = { auth = "sessions" }
+```
+
+Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `auth = "sessions_staging"` in staging.
+
+`tako kv` commands find the network like `tako sqlite` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
+
+## Use it from application code
+
+Each binding is a `redis://` URL whose password is the binding's token. Pass it to a Redis client as is.
+
+<CodeGroup>
+
+```ts JavaScript
+import { RedisClient } from "bun";
+import { tako } from "tako.sh";
+
+const auth = tako.kv.auth;
+if (!auth) throw new Error("No KV store is bound as auth");
+const kv = new RedisClient(auth.url);
+
+// Issue a challenge that expires in five minutes.
+await kv.set(`challenge:${userId}`, challenge, "PX", 300_000);
+
+// Verify it on whichever server handles the response. GETDEL consumes it,
+// so it cannot be replayed.
+const expected = await kv.getdel(`challenge:${userId}`);
+```
+
+```go Go
+package main
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"tako.sh"
+)
+
+// Create one client per process and reuse it.
+func newKV() (*redis.Client, error) {
+	auth, ok := tako.GetKV("auth")
+	if !ok {
+		return nil, errors.New("no KV store bound as auth")
+	}
+	options, err := redis.ParseURL(auth.URL)
+	if err != nil {
+		return nil, err
+	}
+	return redis.NewClient(options), nil
+}
+
+func issue(ctx context.Context, kv *redis.Client, userID, challenge string) error {
+	return kv.Set(ctx, "challenge:"+userID, challenge, 5*time.Minute).Err()
+}
+
+// GETDEL consumes the challenge, so it cannot be replayed.
+func consume(ctx context.Context, kv *redis.Client, userID string) (string, error) {
+	return kv.GetDel(ctx, "challenge:"+userID).Result()
+}
+```
+
+```rust Rust
+use redis::AsyncCommands;
+
+async fn challenges(user_id: &str, challenge: &str) -> redis::RedisResult<Option<String>> {
+    let auth = tako::kv("auth").expect("a KV store bound as auth");
+    let client = redis::Client::open(auth.url())?;
+    let mut kv = client.get_multiplexed_async_connection().await?;
+    let key = format!("challenge:{user_id}");
+    let _: () = kv.set_ex(&key, challenge, 300).await?;
+    kv.get_del(&key).await
+}
+```
+
+</CodeGroup>
+
+With Node.js, `new Redis(tako.kv.auth.url)` from ioredis and `createClient({ url: tako.kv.auth.url })` from node-redis work the same way. Create one client per process and reuse it: clients keep a connection open and reconnect on their own, for example after a server upgrade.
+
+`tako generate` adds a `TakoKv` interface to `tako.d.ts`, so `tako.kv.auth` is typed for every bound name. Bindings are read when accessed. Logging or serializing a binding redacts its token; treat the URL as a secret and never send it to a browser. Go uses `tako.GetKV(name)` and `tako.KVNames()`; formatting a `tako.KV` with `%v`, `%#v`, or `encoding/json` redacts the token. Rust uses `tako::kv(name)`, returning `Option<tako::Kv>` with `url()`; its `Debug` output redacts the token.
+
+## Expiry
+
+Keys expire like in Redis. `SET` takes `EX`, `PX`, `EXAT`, `PXAT`, and `KEEPTTL`, together with `NX`, `XX`, and `GET`; `SETEX`, `PSETEX`, and `GETEX` set an expiry too. `EXPIRE`, `PEXPIRE`, `EXPIREAT`, and `PEXPIREAT` take `NX`, `XX`, `GT`, and `LT`; `TTL`, `PTTL`, `EXPIRETIME`, `PEXPIRETIME`, and `PERSIST` read and clear it. Commands that change a value in place, such as `INCR` or `HSET`, keep its expiry; plain `SET` and `MSET` clear it, as in Redis.
+
+An expired key is never returned. The server removes expired keys four times a second and whenever a write finds one, so they stop counting against the store's size without anyone reading them. Expiry times are absolute Unix times, so they survive restarts; moving a server's clock moves them.
+
+## Supported commands
+
+- **Strings and counters**: `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETDEL`, `GETEX`, `GETSET`, `MGET`, `MSET`, `MSETNX`, `APPEND`, `STRLEN`, `INCR`, `INCRBY`, `DECR`, `DECRBY`, `INCRBYFLOAT`.
+- **Hashes**: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HDEL`, `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HSCAN` (returns every match in one page).
+- **Keys**: `DEL`, `UNLINK`, `EXISTS`, `TOUCH`, `TYPE`, the expiry commands above, `RENAME`, `RENAMENX`, `SCAN` (with `MATCH`, `COUNT`, and `TYPE`), `KEYS`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`.
+- **Transactions**: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`. A transaction's commands apply together, and nothing else runs between them.
+- **Connection and server**: `AUTH`, `HELLO`, `PING`, `ECHO`, `SELECT 0`, `QUIT`, `RESET`, `CLIENT` (`SETNAME`, `GETNAME`, `ID`, `INFO`, `LIST`, `SETINFO`), `INFO`, `TIME`, `WAIT`, `CONFIG GET`, `COMMAND COUNT`.
+
+Replies and errors match Redis 7, including error messages that client libraries recognize, such as `WRONGTYPE`. Lists, sets, sorted sets, streams, pub/sub, blocking commands, Lua scripts (`EVAL`, `EVALSHA`, `FUNCTION`), ACLs, cluster commands, and databases other than 0 are not supported; they fail with `ERR unknown command`, so a library that needs them fails at once rather than misbehaving. Libraries built on plain commands and `MULTI` work; libraries that run Lua scripts, as many queue and rate-limit libraries do, do not. Use [Workflows](/workflows/) for queues and [Channels](/channels/) for pub/sub.
+
+## Durability and limits
+
+- Every write is on disk before it is acknowledged, so an acknowledged write survives a crash or power loss. Writes arriving together share one flush to disk.
+- A store holds up to 1 GiB of keys, values, and per-entry overhead. At the limit, commands that add data fail with Redis's `OOM` error; nothing is evicted. Deletes, expiry, and overwrites with smaller values still work.
+- Keys and hash fields are limited to 64 KiB, values to 16 MiB, one command to 32 MiB, and one reply to 64 MiB; use `SCAN` or `HSCAN` rather than `KEYS` or `HGETALL` for large results. A server accepts at most 4,096 connections on each KV port.
+- **KV stores have no snapshots or backups.** A store lives on its server's disk and is lost with that server. Keep canonical records in a [hosted database](/databases/) and use KV stores for data an app can rebuild or users can redo, such as a challenge or a session.
+- KV bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
+
+## Develop locally
+
+`tako dev` and `tako run` serve bound stores from local files over the same protocol, so code does not change between development and production:
+
+```text
+.tako/data/kv/<store-name>.redb
+```
+
+Files are created on first use. Development uses `[envs.development].kv` when it is set. Otherwise it binds every name used under `kv` by any environment, taking the store from the first environment in name order. The endpoint listens on a random loopback port; its URL and token change between sessions, so read them from the binding. With `--env` set to another environment, `tako run` serves no KV stores and prints a warning: hosted stores are reachable only from deployed apps.
+
+## Inspect
+
+```bash
+tako kv list --json
+tako kv status sessions --json
+tako kv shell sessions GET challenge:42
+tako kv shell sessions
+```
+
+`list` shows the network's KV stores, their servers, and whether this project binds them (`in_project`). `status` reports a store's size and the app environments using it on its server (`bindings`) or from other servers (`remote_grants`). Without a name it reports every store the project binds.
+
+`shell` runs Redis commands with full access. With a command as arguments it runs that one command and prints its reply the way `redis-cli` does, or as JSON with `--json`; an error reply makes it exit with an error. Without a command it reads one command per line (quote arguments containing spaces) until `quit` or the end of input. Transactions and other connection commands are not available in the shell; connect with a Redis client for those.
+
+## Apps on other servers
+
+An app on another server than its store's connects to its own server as usual. That server checks the token and relays the connection over the network's private WireGuard transport to the store's server on port 9848, which the network firewall opens only to other servers. The relay presents the key of the grant that a full client's deploy gave the app environment on the store's server, so other processes on a granted server cannot act for the environment, and tokens are checked only on the app's server. Grants work as for [databases](/databases/#apps-on-other-servers): a deploy adds them before its rollout and narrows them once it succeeds.
+
+Each command to a store on another server adds a private-network round trip, so place a store on the server where most of its traffic runs. While a store's server is down, every server's apps fail to connect to it. When a deploy changes or revokes a binding, the next command on a connection that uses it fails and the connection closes; clients reconnect with the binding they have then.
+
+## Delete a store
+
+```bash
+tako kv delete sessions
+```
+
+`delete` (alias `rm`) removes the store and every key in it from its server, its record in the network state, and the store's bindings from `tako.toml`. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails.
+
+## Limits and security
+
+- Each binding has its own random token. A token works only on the server that issued it, only on its loopback KV port (9846), and only for the store its binding names. Tokens stay stable across deploys while a binding names the same store on the same server.
+- During a rolling deploy, the old and new release's bindings are both active, so old instances keep working until they drain. A release command receives temporary bindings that are revoked when it finishes.
+- Apps that bind the same store share its keys. Prefix keys with the app or feature (`auth:challenge:42`) when several apps share a store.
+- Managing KV stores (`create`, `status`, `shell`, `delete`) requires full access. Every member that may deploy can read where stores live (`list` and deploys). A deploy client cannot change an environment's bindings.
+
+## Verify
+
+1. Run `tako kv status <name> --json` and confirm the server and `bindings` or `remote_grants`.
+2. Run `tako kv shell <name> SET tako:check ok EX 60`, then `tako kv shell <name> GET tako:check` and `tako kv shell <name> TTL tako:check`.
+3. From the app, write a key on one server and read it through another server of the environment.

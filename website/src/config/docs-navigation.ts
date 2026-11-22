@@ -28,6 +28,7 @@ export const docsNavigation = [
     pages: [
       "secrets",
       "databases",
+      "kv",
       "storage",
       "images",
       "cache",

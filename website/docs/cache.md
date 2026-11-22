@@ -5,7 +5,7 @@ description: "Cache JSON on your Tako server with per-key TTLs, bounded disk and
 
 `tako.cache` is the JavaScript and TypeScript client for Tako's server-owned JSON cache. Use it for values that can be recomputed, such as an expensive query result or an external API response. App code calls the runtime over its internal socket; it needs no database driver.
 
-Go and Rust currently have no equivalent SDK cache API. Use an application-owned cache library for those backends; the snippets below specifically demonstrate `tako.cache`.
+Go and Rust currently have no equivalent SDK cache API. Use an application-owned cache library for those backends, or a [KV store](/kv/) through a Redis client; the snippets below specifically demonstrate `tako.cache`.
 
 ## Read and populate a cache entry
 
@@ -33,7 +33,7 @@ After a write, explicitly delete stale cached data:
 await tako.cache.delete(`product:${id}`);
 ```
 
-There is no automatic connection between your database writes and this cache. Concurrent cache misses can run the loader more than once; the read-then-populate example does not provide a distributed lock.
+There is no automatic connection between your database writes and this cache. Concurrent cache misses can run the loader more than once; the read-then-populate example does not provide a distributed lock. A [KV store](/kv/) can hold one (`SET lock:<key> <owner> NX PX <ms>`).
 
 ## Share a value between apps
 
@@ -51,7 +51,7 @@ Without `shared: true`, the same key is private to the app. There is no fallback
 
 ## Persistence and isolation
 
-`tako-server` stores private entries in `data/tako/cache.redb` and shared entries under the server's `shared-cache/` directory. Both are outside the app-owned data directory and app backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches. `tako dev` and `tako run` use the same stores for the selected local environment.
+`tako-server` stores private entries in `data/tako/cache.redb` and shared entries under the server's `shared-cache/` directory. Both are outside the app-owned data directory and app backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches, so a value written on one server is a miss on the others; keep values every server must read, such as login challenges, sessions, and rate-limit counters, in a [KV store](/kv/). `tako dev` and `tako run` use the same stores for the selected local environment.
 
 Each store has a 64 MiB budget for JSON, keys, and per-entry overhead. Keys are limited to 1 KiB of UTF-8 and values to 256 KiB of serialized JSON. Writes reclaim expired entries even if nobody reads those keys; under pressure the soonest-expiring entries go first. Always handle a miss before the TTL. redb reuses freed pages, so the file can stay at its high-water mark. The byte budget is not an exact filesystem-size limit.
 
@@ -65,7 +65,8 @@ Upgrade the server and SDK together. The new cache starts cold. After every old 
 
 ## Choose the right cache
 
-- Use `tako.cache` for disposable backend JSON with a TTL.
+- Use `tako.cache` for disposable backend JSON with a TTL that each server can recompute on its own.
+- Use a [KV store](/kv/) for short-lived values every server of the network must see, such as challenges, one-time tokens, sessions, rate limits, and locks. It writes to disk before acknowledging, never evicts, has no backups, and works from JavaScript, Go, and Rust through Redis clients.
 - Use [Stores](/stores/#opt-into-cached-offline-reads) for authorized UI reads with optional IndexedDB persistence and explicit invalidation.
 - Use your application database for canonical records.
 - Use [Storage](/storage/) for uploaded files.

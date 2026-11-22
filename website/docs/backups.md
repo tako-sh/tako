@@ -5,13 +5,14 @@ description: "Back up Tako-hosted databases with encrypted snapshots, and create
 
 Tako protects two kinds of data separately:
 
-| Data | Protection | Configure |
-| --- | --- | --- |
-| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands, migrations, and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
-| Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives | `[envs.<env>].backup` |
-| Files in the shared data directory | Not backed up; copy them separately during coordinated downtime | — |
-| Compose named volumes, external databases, S3 contents | Protect separately | — |
-| Network membership, shared secrets, device keys | Protect separately | — |
+| Data                                                                         | Protection                                                                                                   | Configure                                                    |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| [Hosted databases](/databases/)                                              | Encrypted snapshots: hourly while changing, before release commands, migrations, and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
+| Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives                                                                     | `[envs.<env>].backup`                                        |
+| Files in the shared data directory                                           | Not backed up; copy them separately during coordinated downtime                                              | —                                                            |
+| [KV stores](/kv/)                                                            | Not backed up; a store is lost with its server                                                               | —                                                            |
+| Compose named volumes, external databases, S3 contents                       | Protect separately                                                                                           | —                                                            |
+| Network membership, shared secrets, device keys                              | Protect separately                                                                                           | —                                                            |
 
 Use [release rollback](/operations/#logs-and-releases) to recover code and a backup to recover data. Deploys and timers do not create app-directory archives.
 
@@ -148,11 +149,10 @@ To keep the restored data instead, run the restore again after removing the
 directory. Either way, then remove the leftover directory and start the app with
 `tako deploy`. A normal server restart also starts it.
 
-
 ## Recover on a fresh server
 
 1. Enroll the replacement server in the network. Restore access to the app's backup configuration, backup keys, and storage credentials.
-2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server.
+2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server. KV stores cannot be recovered: create a store under a new name on a running server with `tako kv create`, and point the environment's `kv` bindings at it.
 3. Deploy the app to the replacement server.
 4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backups restore <backup-id> --server <new-server>`.
 5. Verify known records and app behavior before sending traffic to the replacement.

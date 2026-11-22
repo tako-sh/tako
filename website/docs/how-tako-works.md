@@ -7,13 +7,13 @@ Tako is a local CLI plus a server runtime. The CLI owns project config, local de
 
 ## Main Pieces
 
-| Piece                | Role                                                                                                                                                      |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tako`               | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, backups, and generated files.                     |
-| `tako-server`        | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, backups, logs, metrics, and management APIs.                                    |
-| SDKs                 | Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`).                                                                 |
-| `tako.toml`          | App identity, runtime, routes, environments, builds, storage bindings, backups, SSL, source-IP policy, workflows, and server targets.                     |
-| Presets              | Framework defaults for entrypoints, asset roots, and dev commands. Built-ins currently include Vite, TanStack Start, and Next.js for JavaScript runtimes. |
+| Piece         | Role                                                                                                                                                      |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tako`        | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, backups, and generated files.                     |
+| `tako-server` | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, backups, logs, metrics, and management APIs.                                    |
+| SDKs          | Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`).                                                                 |
+| `tako.toml`   | App identity, runtime, routes, environments, builds, storage bindings, backups, SSL, source-IP policy, workflows, and server targets.                     |
+| Presets       | Framework defaults for entrypoints, asset roots, and dev commands. Built-ins currently include Vite, TanStack Start, and Next.js for JavaScript runtimes. |
 
 ## Local Development
 
@@ -105,6 +105,10 @@ A [hosted database](/databases/) is a SQLite file under `databases/<name>/` in t
 A database's name identifies it within the network. Its records live in the encrypted network state: one with its server, readable by every member that may deploy, so deploys resolve bindings by name, and one with its snapshot encryption key, readable by full clients. Apps on any server of the network can bind it: on other servers than the database's, their own server forwards requests over the private WireGuard network to the database's server on port 9847, identifying the app environment rather than sending its token. An administrator's deploy grants the environment the database on its server, which issues a key for that grant; the deploy hands the key to the app's servers. The database's server accepts a forwarded request only from another network server carrying that key, and the network firewall opens port 9847 to servers only.
 
 With a backup storage (`[envs.<env>].backup.storage` or `[databases.<name>].backup`), the server snapshots a changed database hourly, before release commands, and before restores or imports: a `VACUUM INTO` copy, integrity-checked, zstd-compressed, and AES-256-GCM encrypted. Replacing a database (restore or import) pauses its requests with `503` responses for the swap.
+
+### KV stores
+
+A [KV store](/kv/) is a redb file under `databases/<name>/` in the server data directory of one server, owned by `tako-server` like a hosted database. The server speaks the Redis protocol (RESP2 and RESP3) to apps on `127.0.0.1:9846`. Each binding's token is the password of its `redis://` URL in the bootstrap envelope and resolves to one store for one app environment. KV stores share the databases' network records, so one name identifies a database or a store, and their grants: on other servers than the store's, the app's own server checks the token and relays the connection over the private WireGuard network to the store's server on port 9848, presenting the key of the environment's grant. The network firewall opens port 9848 to servers only. Every write is on disk before it is acknowledged; KV stores have no snapshots and are not part of app-directory archives.
 
 ### App data archives
 

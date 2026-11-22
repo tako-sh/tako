@@ -23,6 +23,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 - [Local development](/development/): start and inspect apps, use HTTPS routes, and run one-off scripts.
 - [Secrets](/secrets/): set app secrets, access them through an SDK, and rotate deployed values.
 - [Databases](/databases/): create Tako-hosted SQLite databases, bind them to apps, and back them up.
+- [KV stores](/kv/): share sessions, challenges, counters, and locks across servers through any Redis client.
 - [Storage](/storage/): bind local or S3-compatible files and issue upload/download URLs.
 - [Images](/images/): optimize public images and generate responsive image URLs.
 - [Cache](/cache/): cache server-side JSON results with a TTL.

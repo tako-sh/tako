@@ -70,6 +70,57 @@ deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
 the release command; the endpoint is loopback-only on the server. Container
 releases cannot bind databases yet.
 
+## KV stores
+
+Tako-hosted KV stores speak the Redis protocol, live on one server of the
+network, and are reachable from apps on every server. Use them for values any
+server may need next: login and WebAuthn challenges, one-time tokens, sessions,
+rate-limit counters, and locks. Create one with `tako kv create <name>`
+(administrator permission) and bind it in `[envs.<env>].kv`.
+`tako::kv("auth")` returns `Option<tako::Kv>` with `url()`, a
+`redis://:<token>@127.0.0.1:9846` URL that redis-rs opens as is; `Debug`
+redacts the token. `tako::bootstrap()?.kv("auth")` and `.kv_stores()` read the
+same bindings.
+
+```rust
+use redis::AsyncCommands;
+use redis::aio::MultiplexedConnection;
+
+/// Connect once per process; clone the connection where it is needed.
+async fn connect() -> redis::RedisResult<MultiplexedConnection> {
+    let auth = tako::kv("auth").expect("a KV store bound as auth");
+    redis::Client::open(auth.url())?
+        .get_multiplexed_async_connection()
+        .await
+}
+
+async fn issue(kv: &mut MultiplexedConnection, user_id: &str, challenge: &str) -> redis::RedisResult<()> {
+    kv.set_ex(format!("challenge:{user_id}"), challenge, 300).await
+}
+
+/// GETDEL consumes the challenge, so it cannot be replayed.
+async fn consume(kv: &mut MultiplexedConnection, user_id: &str) -> redis::RedisResult<Option<String>> {
+    kv.get_del(format!("challenge:{user_id}")).await
+}
+```
+
+A `MultiplexedConnection` does not reconnect once its socket closes, which
+happens after a server upgrade and when a deploy changes or revokes the
+binding. For a long-lived connection, use redis-rs's `ConnectionManager`
+(feature `connection-manager`, `client.get_connection_manager()`), which
+reconnects with the same URL.
+
+An environment's `databases` and `kv` share one set of binding names, and
+store names share the network's namespace with databases. Strings, counters,
+hashes, expiry, `SCAN`, and `MULTI`/`EXEC`/`WATCH` work; lists, sets, sorted
+sets, streams, pub/sub, blocking commands, and Lua scripts fail with
+`ERR unknown command`. A store holds up to 1 GiB and evicts nothing (writes
+that add data then fail with `OOM`). Every write is on disk before it is
+acknowledged, but KV stores have no snapshots or backups, so keep canonical
+records in a database. `tako dev` and `tako run` serve bindings from
+`.tako/data/kv/<store>.redb` on a random loopback port. Container releases
+cannot bind KV stores yet.
+
 ## Presence
 
 Use `PresenceRegistry` and `PresenceDefinition` for a Rust backend consumed by

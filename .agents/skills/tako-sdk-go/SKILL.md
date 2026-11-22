@@ -113,6 +113,10 @@ Returns a secret value by name. Prefer the generated `Secrets` struct instead of
 
 Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
 
+### `tako.GetKV(name string) (tako.KV, bool)`
+
+Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the environment does not bind it. `tako.KVNames()` lists bound names, sorted.
+
 ## Databases
 
 Tako-hosted SQLite databases are created with `tako sqlite create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
@@ -134,6 +138,45 @@ db, err := sql.Open("libsql", main.DSN())
 ```
 
 Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+
+## KV stores
+
+Tako-hosted KV stores speak the Redis protocol and are hosted on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, rate-limit counters, and locks. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { auth = "<name>" }` under `[envs.<env>]`. `KV` has `URL`, a `redis://:<token>@127.0.0.1:9846` URL that go-redis parses as is:
+
+```go
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"tako.sh"
+)
+
+// Create one client per process and reuse it; it reconnects on its own.
+func newKV() (*redis.Client, error) {
+	auth, ok := tako.GetKV("auth")
+	if !ok {
+		return nil, errors.New("no KV store bound as auth")
+	}
+	options, err := redis.ParseURL(auth.URL)
+	if err != nil {
+		return nil, err
+	}
+	return redis.NewClient(options), nil
+}
+
+func issue(ctx context.Context, kv *redis.Client, userID, challenge string) error {
+	return kv.Set(ctx, "challenge:"+userID, challenge, 5*time.Minute).Err()
+}
+
+// GETDEL consumes the challenge on whichever server handles the response.
+func consume(ctx context.Context, kv *redis.Client, userID string) (string, error) {
+	return kv.GetDel(ctx, "challenge:"+userID).Result()
+}
+```
+
+Formatting a `KV` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `URL`. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases. Strings, counters, hashes, expiry, `SCAN`, and `MULTI`/`EXEC`/`WATCH` (go-redis `TxPipelined` and `Watch`) work; lists, sets, sorted sets, streams, pub/sub, blocking commands, and Lua scripts fail with `ERR unknown command`. A store holds up to 1 GiB and evicts nothing (writes that add data then fail with `OOM`); every write is on disk before it is acknowledged, but **KV stores have no snapshots or backups**, so keep canonical records in a database. `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` on a random loopback port. Container releases cannot bind KV stores yet.
 
 ## Secrets
 

@@ -9,13 +9,14 @@ The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Ru
 
 ## Choose where data lives
 
-| Need                                    | Use                                      | Boundary                                                                      |
-| --------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| Files uploaded or downloaded by clients | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
-| Relational app data                     | A [hosted database](/databases/)         | Bound by name; snapshots go to private S3 storage.                            |
-| App-owned local files                   | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
-| Recover the deployed app data tree      | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
-| Disposable computed JSON                | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
+| Need                                     | Use                                      | Boundary                                                                      |
+| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| Files uploaded or downloaded by clients  | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
+| Relational app data                      | A [hosted database](/databases/)         | Bound by name; snapshots go to private S3 storage.                            |
+| Short-lived values every server must see | A [KV store](/kv/)                       | Redis protocol; no snapshots, so it is lost with its server.                  |
+| App-owned local files                    | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
+| Recover the deployed app data tree       | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
+| Disposable computed JSON                 | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
 
 A storage binding does not provision a database. Use a [hosted database](/databases/) for relational data; Tako's shared runtime-state Postgres credential is a separate choice.
 

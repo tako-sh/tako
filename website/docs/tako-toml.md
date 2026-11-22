@@ -1,9 +1,9 @@
 ---
 title: "tako.toml Reference"
-description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, databases, backups, images, workflows, and deployment targets."
+description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, databases, KV stores, backups, images, workflows, and deployment targets."
 ---
 
-`tako.toml` describes one app: identity, runtime, build, routes, variables, storage and database bindings, backups, SSL provider, source-IP policy, workflows, networks, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage, database, and KV store bindings, backups, SSL provider, source-IP policy, workflows, networks, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file.
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
@@ -86,7 +86,7 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `kv`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
 `[envs.<env>].network` is the stable 32-character lowercase hexadecimal network ID from `tako network list --json`. Local aliases are not accepted in the config. Set it explicitly or let the first deploy record its chosen network, then commit the config. `development` runs locally and cannot set `network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
@@ -206,11 +206,26 @@ backup = "private_backups"
 
 `[databases.<name>]` is optional and has one field:
 
-| Field    | Purpose                                                                                                                     |
-| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Field    | Purpose                                                                                                                                                                                                                                                                           |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backup` | Private S3 storage resource that receives the database's encrypted snapshots, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database has no snapshots; removing them and deploying stops them. |
 
 `id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live; every database is usable from every server of its network. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. Bindings are written by hand; `tako sqlite delete` removes a deleted database's bindings and table and preserves the rest of the file. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
+
+## KV Stores
+
+```toml
+[envs.production]
+databases = { main = "main" }
+kv = { auth = "sessions" }
+
+[envs.staging]
+kv = { auth = "sessions_staging" }
+```
+
+`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `databases` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
+
+Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`. A top-level `[kv.<name>]` table is rejected: KV stores have no snapshots or other per-store settings. `tako kv delete` removes a deleted store's bindings and preserves the rest of the file. Container and Compose releases cannot bind KV stores yet. See [KV stores](/kv/).
 
 ## Backups
 
@@ -287,6 +302,7 @@ route = "app.example.com"
 servers = ["la", "nyc"]
 storages = { uploads = "prod_uploads" }
 databases = { main = "main" }
+kv = { auth = "sessions" }
 backup = { storage = "private_backups" }
 ssl = "letsencrypt"
 source_ip = "auto"
