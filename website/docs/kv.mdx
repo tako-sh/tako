@@ -5,13 +5,13 @@ description: "Create Tako-hosted key-value stores that speak the Redis protocol,
 
 A Tako KV store is a key-value store that `tako-server` hosts on one server of a [native network](/networks/). Apps reach it over the Redis protocol (RESP2 and RESP3) with a per-binding URL, so existing Redis clients work unchanged: Bun's `RedisClient`, ioredis, node-redis, go-redis, and redis-rs. Apps on every server of the network use the same store, which makes it the place for short-lived state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, rate-limit counters, and locks. Keys can expire, writes are on disk before they are acknowledged, and the same code runs under `tako dev`.
 
-| Need                                                           | Use                                                   |
-| -------------------------------------------------------------- | ----------------------------------------------------- |
-| Short-lived values every server must see, with expiry          | A KV store                                            |
-| Recomputable values cached next to each app, evicted when full | [`tako.cache`](/cache/)                               |
-| Relational or canonical records that must survive server loss  | A [hosted database](/databases/) with backups         |
-| Files and uploads                                              | [Storage](/storage/)                                  |
-| An external Redis or Valkey                                    | A [secret](/secrets/) holding its URL                 |
+| Need                                                           | Use                                           |
+| -------------------------------------------------------------- | --------------------------------------------- |
+| Short-lived values every server must see, with expiry          | A KV store                                    |
+| Recomputable values cached next to each app, evicted when full | [`tako.cache`](/cache/)                       |
+| Relational or canonical records that must survive server loss  | A [hosted database](/databases/) with backups |
+| Files and uploads                                              | [Storage](/storage/)                          |
+| An external Redis or Valkey                                    | A [secret](/secrets/) holding its URL         |
 
 ## Create and bind a store
 
@@ -91,20 +91,30 @@ func consume(ctx context.Context, kv *redis.Client, userID string) (string, erro
 
 ```rust Rust
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 
-async fn challenges(user_id: &str, challenge: &str) -> redis::RedisResult<Option<String>> {
+// Create one manager per process and clone it; it reconnects on its own.
+// Needs the redis crate's `tokio-comp` and `connection-manager` features.
+async fn connect() -> redis::RedisResult<ConnectionManager> {
     let auth = tako::kv("auth").expect("a KV store bound as auth");
-    let client = redis::Client::open(auth.url())?;
-    let mut kv = client.get_multiplexed_async_connection().await?;
+    ConnectionManager::new(redis::Client::open(auth.url())?).await
+}
+
+async fn challenges(
+    kv: &mut ConnectionManager,
+    user_id: &str,
+    challenge: &str,
+) -> redis::RedisResult<Option<String>> {
     let key = format!("challenge:{user_id}");
     let _: () = kv.set_ex(&key, challenge, 300).await?;
+    // GETDEL consumes the challenge, so it cannot be replayed.
     kv.get_del(&key).await
 }
 ```
 
 </CodeGroup>
 
-With Node.js, `new Redis(tako.kv.auth.url)` from ioredis and `createClient({ url: tako.kv.auth.url })` from node-redis work the same way. Create one client per process and reuse it: clients keep a connection open and reconnect on their own, for example after a server upgrade.
+With Node.js, `new Redis(tako.kv.auth.url)` from ioredis and `createClient({ url: tako.kv.auth.url })` from node-redis work the same way. Create one client per process and reuse it. Bun's `RedisClient`, ioredis, node-redis, go-redis, and redis-rs's `ConnectionManager` keep a connection open and reconnect on their own, for example after a server upgrade; a plain redis-rs connection does not.
 
 `tako generate` adds a `TakoKv` interface to `tako.d.ts`, so `tako.kv.auth` is typed for every bound name. Bindings are read when accessed. Logging or serializing a binding redacts its token; treat the URL as a secret and never send it to a browser. Go uses `tako.GetKV(name)` and `tako.KVNames()`; formatting a `tako.KV` with `%v`, `%#v`, or `encoding/json` redacts the token. Rust uses `tako::kv(name)`, returning `Option<tako::Kv>` with `url()`; its `Debug` output redacts the token.
 
@@ -153,7 +163,7 @@ tako kv shell sessions
 
 `list` shows the network's KV stores, their servers, and whether this project binds them (`in_project`). `status` reports a store's size and the app environments using it on its server (`bindings`) or from other servers (`remote_grants`). Without a name it reports every store the project binds.
 
-`shell` runs Redis commands with full access. With a command as arguments it runs that one command and prints its reply the way `redis-cli` does, or as JSON with `--json`; an error reply makes it exit with an error. Without a command it reads one command per line (quote arguments containing spaces) until `quit` or the end of input. Transactions and other connection commands are not available in the shell; connect with a Redis client for those.
+`shell` runs Redis commands with full access. With a command as arguments it runs that one command and prints its reply the way `redis-cli` does, or as JSON with `--json`; an error reply makes it exit with an error (with `--json`, as `{"ok": false, "error": ...}`). Without a command it reads one command per line (quote arguments containing spaces) until `quit`, `exit`, or the end of input, printing error replies and carrying on. Transactions and other connection commands are not available in the shell; connect with a Redis client for those.
 
 ## Apps on other servers
 
@@ -167,7 +177,7 @@ Each command to a store on another server adds a private-network round trip, so 
 tako kv delete sessions
 ```
 
-`delete` (alias `rm`) removes the store and every key in it from its server, its record in the network state, and the store's bindings from `tako.toml`. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails.
+`delete` (alias `rm`) removes the store and every key in it from its server, its record in the network state, and the store's bindings from `tako.toml`. When the store's server is no longer a member of the network, the store's data went with it: `delete` then removes only its record and bindings, so the name can be created again on another server. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails.
 
 ## Limits and security
 

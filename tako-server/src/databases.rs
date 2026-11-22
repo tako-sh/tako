@@ -291,10 +291,16 @@ impl Databases {
                     key: key.clone(),
                 },
                 (_, None) => Home::Unavailable {
-                    reason: "the database's server has not granted this app access; deploy it again from a full client".into(),
+                    reason: format!(
+                        "the {}'s server has not granted this app access; deploy it again from a full client",
+                        binding.engine.noun()
+                    ),
                 },
                 (None, _) => Home::Unavailable {
-                    reason: "the server hosting this database is not reachable right now".into(),
+                    reason: format!(
+                        "the server hosting this {} is not reachable right now",
+                        binding.engine.noun()
+                    ),
                 },
             },
             // Outside a native network every database is local.
@@ -392,7 +398,7 @@ impl Databases {
         }
         if config.compose.is_some() || !matches!(config.launch, AppLaunch::Native) {
             return Err(
-                "Database bindings are available to native releases only; container and Compose releases cannot use them yet."
+                "Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet."
                     .into(),
             );
         }

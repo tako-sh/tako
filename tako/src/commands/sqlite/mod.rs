@@ -1332,8 +1332,21 @@ pub(crate) async fn delete(
     engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.resource(name, engine)?;
     let noun = engine.noun();
+    // A KV store has no snapshots to move it with, so one whose server left
+    // the network is gone; its record would otherwise hold the name forever.
+    if engine == DatabaseEngine::Kv {
+        let record = ctx.record_of(name, engine)?;
+        let member = ctx.servers.servers.values().any(|entry| {
+            entry.native.as_ref().is_some_and(|native| {
+                native.network.id == ctx.network && native.server_id.to_string() == record.server
+            })
+        });
+        if !member {
+            return forget_lost_store(ctx, &record, yes);
+        }
+    }
+    let (record, home) = ctx.resource(name, engine)?;
     let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
     // A delete whose network record could not be removed leaves the record
     // behind; deleting again finishes it.
@@ -1415,6 +1428,37 @@ pub(crate) async fn delete(
     }
     if output::is_json() {
         return output::json_success(command_name(engine));
+    }
+    Ok(())
+}
+
+/// Removes the record and bindings of a KV store whose server is no longer
+/// a member of the network, which took the store's data with it.
+fn forget_lost_store(
+    ctx: &Context,
+    record: &DatabaseRecord,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = &record.name;
+    output::warning(&format!(
+        "KV store {name} lived on a server that is no longer in this network; its data is gone."
+    ));
+    confirm(
+        &format!("Forget KV store {name}?"),
+        "Its network record and this project's bindings to it are removed, so the name can be created again.",
+        yes,
+    )?;
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Forget KV store {name}"),
+            serde_json::json!({"database": name, "engine": DatabaseEngine::Kv}),
+        );
+    }
+    let alias = ctx.alias()?;
+    tokio::task::block_in_place(|| crate::network::databases::remove(&alias, record))?;
+    TakoToml::remove_kv_from_file(&ctx.config_path, name)?;
+    if output::is_json() {
+        return output::json_success(command_name(DatabaseEngine::Kv));
     }
     Ok(())
 }

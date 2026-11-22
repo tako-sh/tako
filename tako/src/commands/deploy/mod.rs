@@ -374,7 +374,7 @@ async fn run_async(
     )?;
     if !database_plan.is_empty() && is_container_release {
         return Err(
-            "Database bindings are available to native releases only; container and Compose releases cannot use them yet."
+            "Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet."
                 .into(),
         );
     }

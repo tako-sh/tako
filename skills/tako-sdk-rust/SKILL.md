@@ -84,31 +84,28 @@ same bindings.
 
 ```rust
 use redis::AsyncCommands;
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 
-/// Connect once per process; clone the connection where it is needed.
-async fn connect() -> redis::RedisResult<MultiplexedConnection> {
+/// Connect once per process and clone the manager where it is needed.
+async fn connect() -> redis::RedisResult<ConnectionManager> {
     let auth = tako::kv("auth").expect("a KV store bound as auth");
-    redis::Client::open(auth.url())?
-        .get_multiplexed_async_connection()
-        .await
+    ConnectionManager::new(redis::Client::open(auth.url())?).await
 }
 
-async fn issue(kv: &mut MultiplexedConnection, user_id: &str, challenge: &str) -> redis::RedisResult<()> {
+async fn issue(kv: &mut ConnectionManager, user_id: &str, challenge: &str) -> redis::RedisResult<()> {
     kv.set_ex(format!("challenge:{user_id}"), challenge, 300).await
 }
 
 /// GETDEL consumes the challenge, so it cannot be replayed.
-async fn consume(kv: &mut MultiplexedConnection, user_id: &str) -> redis::RedisResult<Option<String>> {
+async fn consume(kv: &mut ConnectionManager, user_id: &str) -> redis::RedisResult<Option<String>> {
     kv.get_del(format!("challenge:{user_id}")).await
 }
 ```
 
-A `MultiplexedConnection` does not reconnect once its socket closes, which
-happens after a server upgrade and when a deploy changes or revokes the
-binding. For a long-lived connection, use redis-rs's `ConnectionManager`
-(feature `connection-manager`, `client.get_connection_manager()`), which
-reconnects with the same URL.
+`ConnectionManager` needs the redis crate's `tokio-comp` and
+`connection-manager` features. It reconnects with the same URL after a server
+upgrade or when a deploy changes or revokes the binding; a plain
+`MultiplexedConnection` does not.
 
 An environment's `databases` and `kv` share one set of binding names, and
 store names share the network's namespace with databases. Strings, counters,

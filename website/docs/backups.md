@@ -152,7 +152,7 @@ directory. Either way, then remove the leftover directory and start the app with
 ## Recover on a fresh server
 
 1. Enroll the replacement server in the network. Restore access to the app's backup configuration, backup keys, and storage credentials.
-2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server. KV stores cannot be recovered: create a store under a new name on a running server with `tako kv create`, and point the environment's `kv` bindings at it.
+2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server. KV stores cannot be recovered: once the lost server is removed from the network, `tako kv delete <name>` forgets the store, and `tako kv create <name> --server <new-server>` creates an empty one under the same name.
 3. Deploy the app to the replacement server.
 4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backups restore <backup-id> --server <new-server>`.
 5. Verify known records and app behavior before sending traffic to the replacement.

@@ -98,15 +98,20 @@ async fn shell(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !command.is_empty() {
         let reply = query(home, name, command).await?;
+        // An error reply fails the command; with --json the CLI reports it
+        // as `{"ok": false, "error": ...}`.
+        if let Some(error) = reply.get("error").and_then(|e| e.as_str()) {
+            if !output::is_json() {
+                println!("{}", render(&reply, 0));
+            }
+            return Err(error.to_owned().into());
+        }
         if output::is_json() {
             return output::json_result(
                 serde_json::json!({"ok": true, "command": "kv", "reply": reply}),
             );
         }
         println!("{}", render(&reply, 0));
-        if let Some(error) = reply.get("error").and_then(|e| e.as_str()) {
-            return Err(error.to_owned().into());
-        }
         return Ok(());
     }
     let interactive = output::is_interactive();
