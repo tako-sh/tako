@@ -269,7 +269,8 @@ import { withTako } from "tako.sh/nextjs";
 export default withTako({});
 ```
 
-`withTako()` sets `output = "standalone"`, points `adapterPath` at the Tako adapter,
+`withTako()` sets `output = "standalone"` and `compress = false` (Tako's proxy
+compresses responses), points `adapterPath` at the Tako adapter,
 and adds `*.test` / `*.tako.test` to `allowedDevOrigins`. It configures `next/image`
 to use Tako's public image optimizer globally, aligning generated widths with
 Tako's defaults. Remote image sources must be permitted by `[images].remote_patterns`.
