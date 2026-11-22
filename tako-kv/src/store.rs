@@ -399,8 +399,10 @@ fn field_prefix(key: &[u8]) -> Vec<u8> {
     id
 }
 
+/// A field sorts by its slot within its hash, so `HSCAN` pages like `SCAN`.
 fn field_id(key: &[u8], field: &[u8]) -> Vec<u8> {
     let mut id = field_prefix(key);
+    id.extend_from_slice(&slot(field).to_be_bytes());
     id.extend_from_slice(field);
     id
 }
@@ -519,12 +521,16 @@ fn field_weight(key: &[u8], field: &[u8], value: &[u8]) -> u64 {
     FIELD_OVERHEAD + (key.len() + field.len() + value.len()) as u64
 }
 
+/// Called with a field's slot, the field, and its value.
+type FieldVisit<'a> = dyn FnMut(u64, &[u8], &[u8]) -> bool + 'a;
+
 /// What both kinds of transaction can read.
 trait View {
     fn entry(&self, key: &[u8]) -> Result<Option<Entry>>;
     fn field(&self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>>;
-    /// Visits a hash's fields in order until `visit` returns false.
-    fn each_field(&self, key: &[u8], visit: &mut dyn FnMut(&[u8], &[u8]) -> bool) -> Result<()>;
+    /// Visits a hash's fields from `slot` on, in slot order, until `visit`
+    /// returns false.
+    fn each_field(&self, key: &[u8], from: u64, visit: &mut FieldVisit) -> Result<()>;
     /// Visits keys from `slot` on, in slot order, until `visit` returns false.
     fn each_key(&self, from: u64, visit: &mut dyn FnMut(u64, &[u8], &Entry) -> bool) -> Result<()>;
     fn stats(&self) -> Stats;
@@ -554,16 +560,27 @@ fn get_field<T: ReadableTable<&'static [u8], &'static [u8]>>(
 fn each_field<T: ReadableTable<&'static [u8], &'static [u8]>>(
     fields: &T,
     key: &[u8],
-    visit: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+    from: u64,
+    visit: &mut FieldVisit,
 ) -> Result<()> {
     let prefix = field_prefix(key);
     let end = prefix_end(&prefix);
+    let mut start = prefix.clone();
+    start.extend_from_slice(&from.to_be_bytes());
     for item in fields
-        .range(prefix.as_slice()..end.as_slice())
+        .range(start.as_slice()..end.as_slice())
         .map_err(storage)?
     {
         let (id, value) = item.map_err(storage)?;
-        if !visit(&id.value()[prefix.len()..], value.value()) {
+        let Some(rest) = id
+            .value()
+            .get(prefix.len()..)
+            .filter(|rest| rest.len() >= 8)
+        else {
+            return Err(StoreError::Storage("corrupt field id".into()));
+        };
+        let slot = u64::from_be_bytes(rest[..8].try_into().unwrap());
+        if !visit(slot, &rest[8..], value.value()) {
             break;
         }
     }
@@ -627,8 +644,8 @@ impl View for ReadView {
     fn field(&self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>> {
         get_field(&self.fields, key, field)
     }
-    fn each_field(&self, key: &[u8], visit: &mut dyn FnMut(&[u8], &[u8]) -> bool) -> Result<()> {
-        each_field(&self.fields, key, visit)
+    fn each_field(&self, key: &[u8], from: u64, visit: &mut FieldVisit) -> Result<()> {
+        each_field(&self.fields, key, from, visit)
     }
     fn each_key(&self, from: u64, visit: &mut dyn FnMut(u64, &[u8], &Entry) -> bool) -> Result<()> {
         each_key(&self.keys, from, visit)
@@ -658,8 +675,8 @@ impl View for WriteView<'_> {
     fn field(&self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>> {
         get_field(&self.fields, key, field)
     }
-    fn each_field(&self, key: &[u8], visit: &mut dyn FnMut(&[u8], &[u8]) -> bool) -> Result<()> {
-        each_field(&self.fields, key, visit)
+    fn each_field(&self, key: &[u8], from: u64, visit: &mut FieldVisit) -> Result<()> {
+        each_field(&self.fields, key, from, visit)
     }
     fn each_key(&self, from: u64, visit: &mut dyn FnMut(u64, &[u8], &Entry) -> bool) -> Result<()> {
         each_key(&self.keys, from, visit)
@@ -1108,32 +1125,74 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
             }
             Reply::Array(items)
         }
-        Cmd::HGetAll(key) | Cmd::HKeys(key) | Cmd::HVals(key) | Cmd::HScan { key, .. } => {
-            let mut pairs = Vec::new();
+        Cmd::HScan {
+            key,
+            cursor,
+            pattern,
+            count,
+            values,
+        } => {
+            let mut items = Vec::new();
+            let mut next = 0;
             if tri!(hash(view, key, now)).is_some() {
-                let (pattern, keys, values) = match cmd {
-                    Cmd::HKeys(_) => (None, true, false),
-                    Cmd::HVals(_) => (None, false, true),
-                    Cmd::HScan {
-                        pattern, values, ..
-                    } => (pattern.as_ref(), true, *values),
-                    _ => (None, true, true),
-                };
+                let mut visited = 0;
                 let mut size = 0;
-                let mut over = false;
+                let mut last = 0;
                 let mut budget = glob::Budget::new();
                 let mut complex = false;
-                view.each_field(key, &mut |field, value| {
-                    if let Some(pattern) = pattern {
-                        match glob::matches(pattern, field, &mut budget) {
+                view.each_field(key, *cursor, &mut |slot, field, value| {
+                    // Pages end like SCAN's, at a slot boundary.
+                    if visited >= *count && slot != last {
+                        next = slot;
+                        return false;
+                    }
+                    let matched = match pattern {
+                        Some(pattern) => match glob::matches(pattern, field, &mut budget) {
                             None => {
                                 complex = true;
                                 return false;
                             }
-                            Some(false) => return true,
-                            Some(true) => {}
+                            Some(matched) => matched,
+                        },
+                        None => true,
+                    };
+                    let cost = match matched {
+                        true => 32 + field.len() + if *values { value.len() } else { 0 },
+                        false => 0,
+                    };
+                    // Large values end a page early instead of failing it.
+                    if size + cost > limit && visited > 0 && slot != last {
+                        next = slot;
+                        return false;
+                    }
+                    visited += 1;
+                    last = slot;
+                    if matched {
+                        size += cost;
+                        items.push(Reply::bulk(Bytes::copy_from_slice(field)));
+                        if *values {
+                            items.push(Reply::bulk(Bytes::copy_from_slice(value)));
                         }
                     }
+                    true
+                })?;
+                if complex {
+                    return Ok(Reply::error(glob::TOO_COMPLEX));
+                }
+            }
+            Reply::Array(vec![Reply::bulk(next.to_string()), Reply::Array(items)])
+        }
+        Cmd::HGetAll(key) | Cmd::HKeys(key) | Cmd::HVals(key) => {
+            let mut pairs = Vec::new();
+            if tri!(hash(view, key, now)).is_some() {
+                let (keys, values) = match cmd {
+                    Cmd::HKeys(_) => (true, false),
+                    Cmd::HVals(_) => (false, true),
+                    _ => (true, true),
+                };
+                let mut size = 0;
+                let mut over = false;
+                view.each_field(key, 0, &mut |_, field, value| {
                     size += 32
                         + if keys { field.len() } else { 0 }
                         + if values { value.len() } else { 0 };
@@ -1147,9 +1206,6 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
                     ));
                     true
                 })?;
-                if complex {
-                    return Ok(Reply::error(glob::TOO_COMPLEX));
-                }
                 if over {
                     return Ok(too_large(limit));
                 }
@@ -1161,17 +1217,6 @@ fn read<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64, config: &StoreConfig) -
                         .map(|(f, v)| (Reply::bulk(f.unwrap()), Reply::bulk(v.unwrap())))
                         .collect(),
                 ),
-                Cmd::HScan { .. } => {
-                    let mut flat = Vec::new();
-                    for (field, value) in pairs {
-                        flat.push(Reply::bulk(field.unwrap()));
-                        if let Some(value) = value {
-                            flat.push(Reply::bulk(value));
-                        }
-                    }
-                    // Like a small hash in Redis: everything in one page.
-                    Reply::Array(vec![Reply::bulk_str("0"), Reply::Array(flat)])
-                }
                 _ => Reply::Array(
                     pairs
                         .into_iter()
@@ -1436,7 +1481,7 @@ fn write(w: &mut WriteView, cmd: &Cmd, now: u64, config: &StoreConfig) -> Result
             }
             let mut fields = Vec::new();
             if entry.kind == KeyType::Hash {
-                w.each_field(from, &mut |field, value| {
+                w.each_field(from, 0, &mut |_, field, value| {
                     fields.push((field.to_vec(), value.to_vec()));
                     true
                 })?;

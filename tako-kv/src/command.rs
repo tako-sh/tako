@@ -366,7 +366,9 @@ pub(crate) enum Cmd {
     },
     HScan {
         key: Bytes,
+        cursor: u64,
         pattern: Option<Bytes>,
+        count: usize,
         values: bool,
     },
 }
@@ -710,17 +712,9 @@ fn parse_args(name: &'static str, args: &[Bytes]) -> Result<Cmd, Reply> {
             field: a[2].clone(),
         },
         "hscan" => {
-            let cursor = a[2].as_ref();
-            if cursor.is_empty()
-                || !cursor.iter().all(u8::is_ascii_digit)
-                || std::str::from_utf8(cursor)
-                    .ok()
-                    .and_then(|c| c.parse::<u64>().ok())
-                    .is_none()
-            {
-                return Err(err("ERR invalid cursor"));
-            }
+            let cursor = cursor_arg(&a[2])?;
             let mut pattern = None;
+            let mut count = 10;
             let mut values = true;
             let mut i = 3;
             while i < a.len() {
@@ -728,9 +722,7 @@ fn parse_args(name: &'static str, args: &[Bytes]) -> Result<Cmd, Reply> {
                     pattern = Some(a[i + 1].clone());
                     i += 2;
                 } else if is(&a[i], "count") && i + 1 < a.len() {
-                    if int_arg(&a[i + 1])? < 1 {
-                        return Err(err(SYNTAX));
-                    }
+                    count = count_arg(&a[i + 1])?;
                     i += 2;
                 } else if is(&a[i], "novalues") {
                     values = false;
@@ -741,7 +733,9 @@ fn parse_args(name: &'static str, args: &[Bytes]) -> Result<Cmd, Reply> {
             }
             Cmd::HScan {
                 key: a[1].clone(),
+                cursor,
                 pattern,
+                count,
                 values,
             }
         }
@@ -861,12 +855,25 @@ fn parse_expire(name: &'static str, a: &[Bytes]) -> Result<Cmd, Reply> {
     })
 }
 
-fn parse_scan(a: &[Bytes]) -> Result<Cmd, Reply> {
-    let cursor = std::str::from_utf8(&a[1])
+fn cursor_arg(arg: &[u8]) -> Result<u64, Reply> {
+    std::str::from_utf8(arg)
         .ok()
         .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|c| c.parse::<u64>().ok())
-        .ok_or_else(|| err("ERR invalid cursor"))?;
+        .ok_or_else(|| err("ERR invalid cursor"))
+}
+
+/// A `COUNT` hint, capped so one page cannot take long.
+fn count_arg(arg: &[u8]) -> Result<usize, Reply> {
+    let n = int_arg(arg)?;
+    if n < 1 {
+        return Err(err(SYNTAX));
+    }
+    Ok(n.min(100_000) as usize)
+}
+
+fn parse_scan(a: &[Bytes]) -> Result<Cmd, Reply> {
+    let cursor = cursor_arg(&a[1])?;
     let mut pattern = None;
     let mut count = 10;
     let mut kind = None;
@@ -876,11 +883,7 @@ fn parse_scan(a: &[Bytes]) -> Result<Cmd, Reply> {
         if is(&a[i], "match") {
             pattern = Some(value.clone());
         } else if is(&a[i], "count") {
-            let n = int_arg(value)?;
-            if n < 1 {
-                return Err(err(SYNTAX));
-            }
-            count = n.min(100_000) as usize;
+            count = count_arg(value)?;
         } else if is(&a[i], "type") {
             kind = Some(if is(value, "string") {
                 Some(KeyType::String)
@@ -1043,6 +1046,20 @@ mod tests {
                 name: "set",
             }
         );
+        assert!(matches!(
+            try_parse("hscan h 7 count 3 novalues").unwrap(),
+            Cmd::HScan {
+                cursor: 7,
+                count: 3,
+                values: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            try_parse("hscan h x").unwrap_err(),
+            err("ERR invalid cursor")
+        );
+        assert_eq!(try_parse("hscan h 0 count 0").unwrap_err(), err(SYNTAX));
         assert!(matches!(
             try_parse("scan 5 match a* count 3 type hash").unwrap(),
             Cmd::Scan {

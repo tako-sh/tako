@@ -20,7 +20,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::command::{self, Class, Cmd, Spec, wrong_arguments};
 use crate::glob;
 use crate::host::{Forward, HostConfig, KvHost, Resolved, StoreId, TokenHash, hash_token};
-use crate::resp::{self, Frame, Parsed, Reply};
+use crate::resp::{self, Frame, Limits, Parsed, Reply};
 use crate::store::{Op, Store, StoreError, WatchGuard, Watched};
 
 /// The first command on a peer connection: `TAKO-FORWARD <scope> <store>
@@ -243,12 +243,19 @@ impl Connection {
         matches!(written, Ok(Ok(())))
     }
 
-    /// Makes room for a request of `needed` bytes, drawing on the shared
-    /// budget beyond the base buffer. False when none frees up in time.
-    async fn reserve(&mut self, needed: usize) -> bool {
-        let held = self.permit.as_ref().map_or(0, |p| p.num_permits());
-        if needed > BASE_BUFFER + held {
-            let more = (needed - BASE_BUFFER - held) as u32;
+    /// Request memory this connection may hold now: the base allowance and
+    /// any budget it holds.
+    fn allowance(&self) -> usize {
+        BASE_BUFFER + self.permit.as_ref().map_or(0, |p| p.num_permits())
+    }
+
+    /// Makes room for a request that buffers `bytes` and holds `cost` in all,
+    /// drawing on the shared budget beyond the base allowance. False when
+    /// none frees up in time.
+    async fn reserve(&mut self, cost: usize, bytes: usize) -> bool {
+        let allowance = self.allowance();
+        if cost > allowance {
+            let more = (cost - allowance) as u32;
             let budget = self.host.inner.buffered.clone();
             let stall = self.config().stall_timeout;
             match tokio::time::timeout(stall, budget.acquire_many_owned(more)).await {
@@ -259,8 +266,8 @@ impl Connection {
                 _ => return false,
             }
         }
-        if needed > self.buf.capacity() {
-            self.buf.reserve(needed - self.buf.len());
+        if bytes > self.buf.capacity() {
+            self.buf.reserve(bytes - self.buf.len());
         }
         true
     }
@@ -305,20 +312,38 @@ impl Connection {
             return;
         }
         let max_request = self.config().max_request_bytes;
+        let short = || Some("ERR the server is short of request buffer space; retry".to_owned());
         loop {
             let mut frames = Vec::new();
+            // Memory the parsed requests hold until they run.
+            let mut held = 0;
             let mut fatal = None;
             while frames.len() < MAX_FRAMES {
-                match resp::parse(&self.buf, max_request) {
+                // Until it authenticates a connection runs one small request
+                // at a time, and never draws on the shared budget.
+                let authenticated = !matches!(self.auth, Auth::None);
+                if !authenticated && !frames.is_empty() {
+                    break;
+                }
+                match resp::parse(&self.buf, Limits::new(max_request, authenticated)) {
                     Ok(Parsed::Frame(frame)) => {
+                        let cost = held + frame.cost();
+                        if cost > self.allowance() {
+                            if !frames.is_empty() {
+                                break;
+                            }
+                            if !self.reserve(cost, 0).await {
+                                fatal = short();
+                                break;
+                            }
+                        }
+                        held = cost;
                         let args = self.take(frame);
                         frames.push(args);
                     }
-                    Ok(Parsed::Incomplete { needed }) => {
-                        if frames.is_empty() && !self.reserve(needed).await {
-                            fatal = Some(
-                                "ERR the server is short of request buffer space; retry".into(),
-                            );
+                    Ok(Parsed::Incomplete { needed, overhead }) => {
+                        if frames.is_empty() && !self.reserve(needed + overhead, needed).await {
+                            fatal = short();
                         }
                         break;
                     }
@@ -394,7 +419,7 @@ impl Connection {
     async fn handshake(&mut self) -> bool {
         let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
         let args = loop {
-            match resp::parse(&self.buf, 4096) {
+            match resp::parse(&self.buf, Limits::new(4096, false)) {
                 Ok(Parsed::Frame(frame)) => break self.take(frame),
                 Ok(Parsed::Incomplete { .. }) => {}
                 Err(_) => return false,

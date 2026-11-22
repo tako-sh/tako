@@ -13,8 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 /// Commands whose replies must match. A leading `~` compares an array reply
-/// (or a `SCAN` page's keys) without regard to order; `?` only the reply's
-/// type, for values that depend on timing.
+/// (or a `SCAN` page's keys) without regard to order; `%` a field and value
+/// list (or an `HSCAN` page's) as pairs without regard to order; `?` only
+/// the reply's type, for values that depend on timing.
 const SCRIPT: &str = r#"
 PING
 PING hello
@@ -149,10 +150,15 @@ HGET h a
 HGET h nothing
 HGET nothing a
 HMGET h a nothing c
-HGETALL h
+%HGETALL h
 HGETALL nothing
-HKEYS h
-HVALS h
+~HKEYS h
+~HVALS h
+%HSCAN h 0
+%HSCAN h 0 MATCH [ab]
+HSCAN nothing 0
+HSCAN h abc
+HSCAN h 0 COUNT 0
 HLEN h
 HLEN nothing
 HEXISTS h a
@@ -279,11 +285,16 @@ fn complete(buf: &[u8], at: usize) -> Option<usize> {
 
 /// Splits an array reply's top-level items (or a SCAN page's keys).
 fn items(reply: &[u8]) -> Vec<Vec<u8>> {
+    if !matches!(reply[0], b'*' | b'%' | b'~') {
+        // Not a list, such as an error: compared whole.
+        return vec![reply.to_vec()];
+    }
     let end = reply.windows(2).position(|w| w == b"\r\n").unwrap();
     let count: usize = std::str::from_utf8(&reply[1..end])
         .unwrap()
         .parse()
         .unwrap();
+    let count = if reply[0] == b'%' { count * 2 } else { count };
     let mut pos = end + 2;
     let mut out = Vec::new();
     for _ in 0..count {
@@ -302,6 +313,20 @@ fn unordered(reply: &[u8]) -> Vec<Vec<u8>> {
     }
     parts.sort();
     parts
+}
+
+/// A field and value list's pairs, sorted, after an `HSCAN` page's cursor.
+fn pairs(reply: &[u8]) -> Vec<Vec<u8>> {
+    let mut parts = items(reply);
+    let mut cursor = Vec::new();
+    if parts.len() == 2 && parts[0].starts_with(b"$") && parts[1].first() == Some(&b'*') {
+        cursor = parts[0].clone();
+        parts = items(&parts[1]);
+    }
+    let mut pairs: Vec<Vec<u8>> = parts.chunks(2).map(<[Vec<u8>]>::concat).collect();
+    pairs.sort();
+    pairs.insert(0, cursor);
+    pairs
 }
 
 fn split(line: &str) -> Vec<String> {
@@ -382,7 +407,7 @@ async fn replies_match_redis() {
         .chain(SCRIPT.lines());
     for line in script.map(str::trim).filter(|l| !l.is_empty()) {
         let (mode, line) = match line.as_bytes()[0] {
-            b'~' | b'?' => (line.as_bytes()[0], &line[1..]),
+            b'~' | b'%' | b'?' => (line.as_bytes()[0], &line[1..]),
             _ => (b'=', line),
         };
         let mut request = Vec::new();
@@ -393,6 +418,7 @@ async fn replies_match_redis() {
         let got = reply(&mut kv, &mut kv_buf).await;
         let same = match mode {
             b'~' => unordered(&expected) == unordered(&got),
+            b'%' => pairs(&expected) == pairs(&got),
             b'?' => expected[0] == got[0],
             _ => expected == got,
         };

@@ -194,13 +194,18 @@ async fn hashes_track_fields_and_sizes() {
     assert_eq!(f.run("HSET h b 3 c 4").await, Reply::Int(1));
     assert_eq!(f.run("HLEN h").await, Reply::Int(3));
     assert_eq!(f.run("HGET h b").await, bulk("3"));
+    let Reply::Map(mut all) = f.run("HGETALL h").await else {
+        panic!()
+    };
+    // Fields come in slot order, like keys.
+    all.sort_by_key(|(field, _)| format!("{field:?}"));
     assert_eq!(
-        f.run("HGETALL h").await,
-        Reply::Map(vec![
+        all,
+        vec![
             (bulk("a"), bulk("1")),
             (bulk("b"), bulk("3")),
             (bulk("c"), bulk("4"))
-        ])
+        ]
     );
     assert_eq!(
         f.run("HMGET h a x c").await,
@@ -214,8 +219,8 @@ async fn hashes_track_fields_and_sizes() {
     assert_eq!(f.run("HSTRLEN h t").await, Reply::Int(4));
     assert_eq!(f.run("HEXISTS h t").await, Reply::Int(1));
     assert_eq!(
-        f.run("HSCAN h 0 MATCH [ab] NOVALUES").await,
-        Reply::Array(vec![bulk("0"), Reply::Array(vec![bulk("a"), bulk("b")])])
+        hscan_all(&f, "h", "MATCH [ab] NOVALUES").await,
+        BTreeSet::from(["a".to_owned(), "b".to_owned()])
     );
     f.run("EXPIRE h 100").await;
     assert_eq!(f.run("RENAME h g").await, Reply::Ok);
@@ -512,6 +517,58 @@ async fn scan_visits_every_key_once_the_cursor_ends() {
     assert_eq!(f.run("DBSIZE").await, Reply::Int(501));
 }
 
+/// Follows HSCAN's cursor to the end, collecting what each page returns.
+async fn hscan_pages(f: &Fixture, key: &str, options: &str) -> (Vec<String>, usize) {
+    let mut seen = Vec::new();
+    let mut cursor = "0".to_owned();
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        let Reply::Array(parts) = f.run(&format!("HSCAN {key} {cursor} {options}")).await else {
+            panic!()
+        };
+        let [Reply::Bulk(next), Reply::Array(items)] = parts.as_slice() else {
+            panic!("{parts:?}")
+        };
+        for item in items {
+            let Reply::Bulk(item) = item else { panic!() };
+            seen.push(String::from_utf8(item.to_vec()).unwrap());
+        }
+        cursor = String::from_utf8(next.to_vec()).unwrap();
+        if cursor == "0" {
+            return (seen, calls);
+        }
+    }
+}
+
+async fn hscan_all(f: &Fixture, key: &str, options: &str) -> BTreeSet<String> {
+    hscan_pages(f, key, options).await.0.into_iter().collect()
+}
+
+#[tokio::test]
+async fn hscan_pages_through_large_hashes() {
+    let f = fixture(1 << 30);
+    let mut expected = BTreeSet::new();
+    for i in 0..500 {
+        f.run(&format!("HSET h f:{i} v{i}")).await;
+        expected.insert(format!("f:{i}"));
+    }
+    f.run("HSET h other x").await;
+    let (fields, calls) = hscan_pages(&f, "h", "MATCH f:* COUNT 7 NOVALUES").await;
+    assert_eq!(fields.len(), 500, "no field is returned twice");
+    assert_eq!(fields.into_iter().collect::<BTreeSet<_>>(), expected);
+    assert!(calls > 50, "COUNT bounds each call's work");
+    // With values, fields and values alternate.
+    let (items, _) = hscan_pages(&f, "h", "COUNT 100").await;
+    assert_eq!(items.len(), 1002);
+    for pair in items.chunks(2) {
+        if pair[0] != "other" {
+            assert_eq!(pair[1], format!("v{}", &pair[0][2..]));
+        }
+    }
+    assert_eq!(hscan_all(&f, "missing", "COUNT 5").await, BTreeSet::new());
+}
+
 #[tokio::test]
 async fn large_replies_are_refused() {
     let f = fixture(1 << 30);
@@ -523,4 +580,8 @@ async fn large_replies_are_refused() {
     assert!(matches!(f.run("HGETALL h").await, Reply::Error(m) if m.contains("exceed")));
     assert!(matches!(f.run("MGET s0 s1 s2 s3").await, Reply::Error(m) if m.contains("exceed")));
     assert_eq!(f.run("HLEN h").await, Reply::Int(4));
+    // HSCAN pages instead: each page stays under the limit.
+    let (items, calls) = hscan_pages(&f, "h", "COUNT 100").await;
+    assert_eq!(items.len(), 8);
+    assert!(calls > 1);
 }

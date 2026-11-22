@@ -201,6 +201,37 @@ async fn raw_protocol_matches_redis() {
 }
 
 #[tokio::test]
+async fn requests_are_limited_before_and_after_authentication() {
+    let s = server("secret").await;
+    // Before AUTH, requests stay as small as Redis keeps them.
+    let mut stream = TcpStream::connect(s.addr).await.unwrap();
+    let got = raw(&mut stream, b"*11\r\n", 100).await;
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        "-ERR Protocol error: unauthenticated multibulk length\r\n"
+    );
+    let mut stream = TcpStream::connect(s.addr).await.unwrap();
+    let got = raw(&mut stream, b"*2\r\n$3\r\nGET\r\n$20000\r\n", 100).await;
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        "-ERR Protocol error: unauthenticated bulk length\r\n"
+    );
+    // A large request pipelined right after AUTH is read under the full limit.
+    let mut stream = TcpStream::connect(s.addr).await.unwrap();
+    let mut send = b"AUTH secret\r\n".to_vec();
+    tako_kv::encode_request(&[b"SET".as_slice(), b"k", &[b'v'; 100_000]], &mut send);
+    tako_kv::encode_request(&["STRLEN", "k"], &mut send);
+    let got = raw(&mut stream, &send, 18).await;
+    assert_eq!(String::from_utf8_lossy(&got), "+OK\r\n+OK\r\n:100000\r\n");
+    // Arguments count against the limit even when they are empty.
+    let got = raw(&mut stream, b"*1000000\r\n", 100).await;
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        "-ERR Protocol error: request exceeds 33554432 bytes\r\n"
+    );
+}
+
+#[tokio::test]
 async fn transactions_are_limited_in_size() {
     let dir = tempfile::tempdir().unwrap();
     let host = KvHost::new(HostConfig {

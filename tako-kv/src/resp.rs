@@ -7,6 +7,46 @@ use bytes::Bytes;
 const MAX_ARGUMENTS: i64 = 1024 * 1024;
 /// Longest inline command or array header line.
 const MAX_INLINE: usize = 64 * 1024;
+/// Memory each argument takes beyond its bytes, counted against the request
+/// limit: its range while it is parsed and its handle once it is taken.
+pub(crate) const ARGUMENT_OVERHEAD: usize = 48;
+/// Before authentication requests stay as small as Redis keeps them: ten
+/// arguments of at most 16 KiB, and, here, 16 KiB in all.
+const UNAUTHENTICATED_ARGUMENTS: usize = 10;
+const UNAUTHENTICATED_REQUEST: usize = 16 * 1024;
+
+/// How large the next request may be.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// Bytes of arguments, plus [`ARGUMENT_OVERHEAD`] for each.
+    pub(crate) request: usize,
+    pub(crate) authenticated: bool,
+}
+
+impl Limits {
+    pub(crate) fn new(request: usize, authenticated: bool) -> Self {
+        let request = if authenticated {
+            request
+        } else {
+            request.min(UNAUTHENTICATED_REQUEST)
+        };
+        Self {
+            request,
+            authenticated,
+        }
+    }
+
+    fn arguments(&self, count: usize) -> Result<(), ProtocolError> {
+        if !self.authenticated && count > UNAUTHENTICATED_ARGUMENTS {
+            return Err(ProtocolError::new("unauthenticated multibulk length"));
+        }
+        Ok(())
+    }
+
+    fn exceeded(&self) -> ProtocolError {
+        ProtocolError::new(format!("request exceeds {} bytes", self.request))
+    }
+}
 
 /// A request that cannot be parsed. The connection replies with it and closes.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,13 +70,35 @@ pub(crate) enum Frame {
     Inline { args: Vec<Bytes>, consumed: usize },
 }
 
+impl Frame {
+    /// Memory the request holds until it runs: its bytes and its arguments.
+    pub(crate) fn cost(&self) -> usize {
+        let (args, consumed) = match self {
+            Frame::Array { args, consumed } => (args.len(), consumed),
+            Frame::Inline { args, consumed } => (args.len(), consumed),
+        };
+        consumed + args * ARGUMENT_OVERHEAD
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Parsed {
     Frame(Frame),
-    /// More bytes are needed; at least `needed` in total, when known.
+    /// More bytes are needed: at least `needed` in total, when known. Once
+    /// they arrive the request also holds `overhead` bytes of arguments.
     Incomplete {
         needed: usize,
+        overhead: usize,
     },
+}
+
+impl Parsed {
+    fn more(needed: usize) -> Self {
+        Parsed::Incomplete {
+            needed,
+            overhead: 0,
+        }
+    }
 }
 
 fn line(buf: &[u8], from: usize) -> Option<usize> {
@@ -50,22 +112,20 @@ fn integer(bytes: &[u8]) -> Option<i64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
-/// Parses the request at the start of `buf`. A request whose arguments add up
-/// to more than `max_request` bytes is refused before it is buffered.
-pub(crate) fn parse(buf: &[u8], max_request: usize) -> Result<Parsed, ProtocolError> {
+/// Parses the request at the start of `buf`. A request larger than `limits`
+/// allow is refused before it is buffered.
+pub(crate) fn parse(buf: &[u8], limits: Limits) -> Result<Parsed, ProtocolError> {
     if buf.is_empty() {
-        return Ok(Parsed::Incomplete { needed: 1 });
+        return Ok(Parsed::more(1));
     }
     if buf[0] != b'*' {
-        return parse_inline(buf);
+        return parse_inline(buf, limits);
     }
     let Some(end) = line(buf, 1) else {
         if buf.len() > 32 {
             return Err(ProtocolError::new("invalid multibulk length"));
         }
-        return Ok(Parsed::Incomplete {
-            needed: buf.len() + 1,
-        });
+        return Ok(Parsed::more(buf.len() + 1));
     };
     let count = integer(&buf[1..end])
         .filter(|count| *count <= MAX_ARGUMENTS)
@@ -77,11 +137,18 @@ pub(crate) fn parse(buf: &[u8], max_request: usize) -> Result<Parsed, ProtocolEr
             consumed: at,
         }));
     }
-    let mut args = Vec::with_capacity(count.min(1024) as usize);
-    let mut total = 0usize;
+    let count = count as usize;
+    limits.arguments(count)?;
+    let overhead = count * ARGUMENT_OVERHEAD;
+    if overhead > limits.request {
+        return Err(limits.exceeded());
+    }
+    let incomplete = |needed| Ok(Parsed::Incomplete { needed, overhead });
+    let mut args = Vec::with_capacity(count.min(1024));
+    let mut total = overhead;
     for _ in 0..count {
         let Some(&first) = buf.get(at) else {
-            return Ok(Parsed::Incomplete { needed: at + 1 });
+            return incomplete(at + 1);
         };
         if first != b'$' {
             return Err(ProtocolError::new(format!(
@@ -93,24 +160,22 @@ pub(crate) fn parse(buf: &[u8], max_request: usize) -> Result<Parsed, ProtocolEr
             if buf.len() - at > 32 {
                 return Err(ProtocolError::new("invalid bulk length"));
             }
-            return Ok(Parsed::Incomplete {
-                needed: buf.len() + 1,
-            });
+            return incomplete(buf.len() + 1);
         };
         let len = integer(&buf[at + 1..end])
             .and_then(|len| usize::try_from(len).ok())
             .ok_or_else(|| ProtocolError::new("invalid bulk length"))?;
+        if !limits.authenticated && len > UNAUTHENTICATED_REQUEST {
+            return Err(ProtocolError::new("unauthenticated bulk length"));
+        }
         total = total.saturating_add(len);
-        if total > max_request {
-            return Err(ProtocolError::new(format!(
-                "request exceeds {} bytes",
-                max_request
-            )));
+        if total > limits.request {
+            return Err(limits.exceeded());
         }
         let start = end + 2;
         let stop = start + len;
         if buf.len() < stop + 2 {
-            return Ok(Parsed::Incomplete { needed: stop + 2 });
+            return incomplete(stop + 2);
         }
         if &buf[stop..stop + 2] != b"\r\n" {
             return Err(ProtocolError::new("bulk string is not terminated"));
@@ -121,20 +186,20 @@ pub(crate) fn parse(buf: &[u8], max_request: usize) -> Result<Parsed, ProtocolEr
     Ok(Parsed::Frame(Frame::Array { args, consumed: at }))
 }
 
-fn parse_inline(buf: &[u8]) -> Result<Parsed, ProtocolError> {
-    let Some(newline) = buf.iter().position(|b| *b == b'\n') else {
-        if buf.len() > MAX_INLINE {
+fn parse_inline(buf: &[u8], limits: Limits) -> Result<Parsed, ProtocolError> {
+    let longest = MAX_INLINE.min(limits.request);
+    let Some(newline) = buf.iter().take(longest + 1).position(|b| *b == b'\n') else {
+        if buf.len() > longest {
             return Err(ProtocolError::new("too big inline request"));
         }
-        return Ok(Parsed::Incomplete {
-            needed: buf.len() + 1,
-        });
+        return Ok(Parsed::more(buf.len() + 1));
     };
     let mut text = &buf[..newline];
     if text.last() == Some(&b'\r') {
         text = &text[..text.len() - 1];
     }
     let args = split_inline(text)?;
+    limits.arguments(args.len())?;
     Ok(Parsed::Frame(Frame::Inline {
         args,
         consumed: newline + 1,
@@ -365,8 +430,12 @@ pub fn encode_request<A: AsRef<[u8]>>(args: &[A], out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    fn open(request: usize) -> Limits {
+        Limits::new(request, true)
+    }
+
     fn args(buf: &[u8]) -> Vec<Vec<u8>> {
-        match parse(buf, 1 << 20).unwrap() {
+        match parse(buf, open(1 << 20)).unwrap() {
             Parsed::Frame(Frame::Array { args, .. }) => {
                 args.into_iter().map(|(s, e)| buf[s..e].to_vec()).collect()
             }
@@ -382,33 +451,84 @@ mod tests {
         let full = b"*2\r\n$3\r\nGET\r\n$5\r\nhello\r\n";
         for cut in 0..full.len() {
             assert!(matches!(
-                parse(&full[..cut], 1 << 20).unwrap(),
+                parse(&full[..cut], open(1 << 20)).unwrap(),
                 Parsed::Incomplete { .. }
             ));
         }
         assert_eq!(args(full), vec![b"GET".to_vec(), b"hello".to_vec()]);
         // The size of a pending bulk string is known before it arrives.
         assert_eq!(
-            parse(b"*1\r\n$100\r\n", 1 << 20).unwrap(),
-            Parsed::Incomplete { needed: 112 }
+            parse(b"*1\r\n$100\r\n", open(1 << 20)).unwrap(),
+            Parsed::Incomplete {
+                needed: 112,
+                overhead: ARGUMENT_OVERHEAD
+            }
         );
     }
 
     #[test]
     fn refuses_malformed_and_oversized_requests() {
-        assert!(parse(b"*x\r\n", 1024).is_err());
-        assert!(parse(b"*1\r\n:1\r\n", 1024).is_err());
-        assert!(parse(b"*1\r\n$-5\r\n", 1024).is_err());
-        assert!(parse(b"*1\r\n$3\r\nabcde", 1024).is_err());
-        assert!(parse(b"*1\r\n$2000\r\n", 1024).is_err());
-        assert!(parse(&[b'*'; 40], 1024).is_err());
+        assert!(parse(b"*x\r\n", open(1024)).is_err());
+        assert!(parse(b"*1\r\n:1\r\n", open(1024)).is_err());
+        assert!(parse(b"*1\r\n$-5\r\n", open(1024)).is_err());
+        assert!(parse(b"*1\r\n$3\r\nabcde", open(1024)).is_err());
+        assert!(parse(b"*1\r\n$2000\r\n", open(1024)).is_err());
+        assert!(parse(&[b'*'; 40], open(1024)).is_err());
         assert_eq!(
-            parse(b"*0\r\n", 1024).unwrap(),
+            parse(b"*0\r\n", open(1024)).unwrap(),
             Parsed::Frame(Frame::Array {
                 args: vec![],
                 consumed: 4
             })
         );
+    }
+
+    #[test]
+    fn counts_each_argument_against_the_limit() {
+        // A million empty arguments carry no bytes but still take memory.
+        let mut many = b"*1000000\r\n".to_vec();
+        many.extend_from_slice(&b"$0\r\n\r\n".repeat(1000));
+        assert_eq!(
+            parse(&many, open(32 << 20)).unwrap_err().0,
+            "ERR Protocol error: request exceeds 33554432 bytes"
+        );
+        let mut empty = b"*100\r\n".to_vec();
+        empty.extend_from_slice(&b"$0\r\n\r\n".repeat(100));
+        assert!(parse(&empty, open(100 * ARGUMENT_OVERHEAD - 1)).is_err());
+        let Parsed::Frame(frame) = parse(&empty, open(100 * ARGUMENT_OVERHEAD)).unwrap() else {
+            panic!("incomplete");
+        };
+        assert_eq!(frame.cost(), empty.len() + 100 * ARGUMENT_OVERHEAD);
+        assert_eq!(
+            parse(&empty[..20], open(1 << 20)).unwrap(),
+            Parsed::Incomplete {
+                needed: 21,
+                overhead: 100 * ARGUMENT_OVERHEAD
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_requests_small_before_authentication() {
+        let closed = Limits::new(32 << 20, false);
+        let mut request = Vec::new();
+        encode_request(&["AUTH", "token"], &mut request);
+        assert!(matches!(parse(&request, closed).unwrap(), Parsed::Frame(_)));
+        assert_eq!(
+            parse(b"*11\r\n", closed).unwrap_err().0,
+            "ERR Protocol error: unauthenticated multibulk length"
+        );
+        assert_eq!(
+            parse(b"*1\r\n$16385\r\n", closed).unwrap_err().0,
+            "ERR Protocol error: unauthenticated bulk length"
+        );
+        assert_eq!(
+            parse(b"*2\r\n$16300\r\n", closed).unwrap_err().0,
+            "ERR Protocol error: request exceeds 16384 bytes"
+        );
+        assert!(parse(&[b'a'; 20_000], closed).is_err());
+        assert!(parse(b"a b c d e f g h i j k\r\n", closed).is_err());
+        assert!(parse(b"a b c d e f g h i j k\r\n", open(1024)).is_ok());
     }
 
     #[test]
@@ -422,8 +542,8 @@ mod tests {
                 b"it's".to_vec()
             ]
         );
-        assert!(parse(b"SET \"a\r\n", 1024).is_err());
-        assert!(parse(b"SET \"a\"b\r\n", 1024).is_err());
+        assert!(parse(b"SET \"a\r\n", open(1024)).is_err());
+        assert!(parse(b"SET \"a\"b\r\n", open(1024)).is_err());
         assert_eq!(args(b"\r\n"), Vec::<Vec<u8>>::new());
     }
 
