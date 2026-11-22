@@ -31,21 +31,14 @@ async fn stale_name_choices_cannot_register_two_callers_under_one_runtime_identi
 }
 
 #[tokio::test]
-async fn register_app_roundtrip() {
+async fn plain_app_can_register_when_internal_socket_startup_fails() {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
-    let st = State::new(
-        shutdown_tx,
-        proxy::Routes::default(),
-        EventsHub::default(),
-        true,
-        53535,
-        8443,
-        "127.0.0.1:8443".to_string(),
-        "127.0.0.1".to_string(),
-    );
-    let _ = test_workflows();
-    let state = Arc::new(Mutex::new(st));
+    let (state, tmp) = test_state();
+    let workflows = Arc::new(tako_workflows::WorkflowManager::new(tmp.path()));
+    std::fs::create_dir(workflows.socket_path()).unwrap(); // prevent publishing the socket
+    state.lock().unwrap().workflows = Some(workflows.clone());
+    start_internal_socket(&state, &workflows);
+    assert!(state.lock().unwrap().internal_socket.is_none());
     let h = tokio::spawn(async move { handle_client(a, state).await });
 
     let (r, mut w) = b.into_split();

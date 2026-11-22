@@ -245,8 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
     network::install(&state, &workflows);
-    workflows.start_socket()?;
-    state.lock().unwrap().internal_socket = Some(workflows.socket_path());
+    start_internal_socket(&state, &workflows);
 
     // Events relay: broadcast to subscribers + trigger wake-on-request.
     {
@@ -294,6 +293,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+        }
+    }
+}
+
+fn start_internal_socket(state: &Mutex<State>, workflows: &tako_workflows::WorkflowManager) {
+    match workflows.start_socket() {
+        Ok(()) => state.lock().unwrap().internal_socket = Some(workflows.socket_path()),
+        Err(error) => {
+            tracing::warn!(%error, "internal socket unavailable; continuing without SDK socket services")
         }
     }
 }
