@@ -366,19 +366,74 @@ async fn restore_does_not_start_an_app_whose_secrets_cannot_be_read() {
     .unwrap();
     state_b.restore_from_state_store().await.unwrap();
 
-    let restored = state_b.app_manager.get_app(app_id).expect("app registered");
-    assert_eq!(restored.state(), crate::socket::AppState::Error);
+    // Unregistered, so neither a cold start nor an operator can start it
+    // without its secrets; status still reports it.
     assert!(
-        restored
-            .last_error()
-            .is_some_and(|error| error.starts_with("Restore failed")),
-        "{:?}",
-        restored.last_error()
+        state_b.app_manager.get_app(app_id).is_none(),
+        "an app must not be startable without its secrets"
     );
+    assert!(state_b.routes.read().routes_for_app(app_id).is_empty());
+    let Response::Ok { data } = state_b
+        .handle_command(Command::Status {
+            app: app_id.to_string(),
+        })
+        .await
+    else {
+        panic!("an app that failed to restore must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    let error = status.last_error.unwrap();
+    assert!(error.starts_with("Restore failed: "), "{error}");
     assert!(
-        restored.get_instances().is_empty(),
-        "an app must not start without its secrets"
+        !error.contains(app_id),
+        "the app prefix is dropped: {error}"
     );
+}
+
+#[tokio::test]
+async fn restore_reports_an_interrupted_compose_deployment_it_cannot_remove() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    // A first deployment that never committed, whose candidates cannot be
+    // removed (an invalid project name fails before any engine call).
+    state
+        .state_store
+        .begin_compose_deployment("web/production", "not-a-tako-project")
+        .unwrap();
+
+    state.restore_from_state_store().await.unwrap();
+
+    let Response::Ok { data } = state
+        .handle_command(Command::Status {
+            app: "web/production".to_string(),
+        })
+        .await
+    else {
+        panic!("the interrupted deployment must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    assert_eq!(status.kind, tako_core::ApplicationKind::ApplicationGroup);
+    let error = status.last_error.unwrap();
+    assert!(
+        error.starts_with("Restore failed: could not remove an interrupted Compose deployment"),
+        "{error}"
+    );
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(data["apps"][0]["name"], "web/production");
+    assert_eq!(data["apps"][0]["state"], "error");
 }
 
 #[tokio::test]

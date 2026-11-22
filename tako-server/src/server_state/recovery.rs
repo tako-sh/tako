@@ -13,8 +13,12 @@ impl ServerState {
         strict: bool,
     ) -> Result<(), StateStoreError> {
         let mut errors = Vec::new();
+        // Interrupted Compose deployments whose candidates could not be
+        // removed. Their app is not started over containers left running.
+        let mut pending_cleanup_errors = HashMap::new();
         let apps = self.state_store.load_apps()?;
         for (app, project) in self.state_store.pending_compose_deployments()? {
+            self.restore_failures.write().remove(&app);
             let existing = apps
                 .iter()
                 .find(|persisted| persisted.config.deployment_id() == app);
@@ -42,7 +46,15 @@ impl ServerState {
                     Ok(()) => self.state_store.clear_compose_deployment(&app)?,
                     Err(error) => {
                         tracing::error!(%app, %error, "Could not clean interrupted Compose deployment");
-                        errors.push(format!("{app}: {error}"));
+                        let error =
+                            format!("could not remove an interrupted Compose deployment: {error}");
+                        if existing.is_none() {
+                            // A first deployment: no app restores below to report it.
+                            errors.push(format!("{app}: {error}"));
+                            self.record_restore_failure(&app, "", true, &error);
+                        } else {
+                            pending_cleanup_errors.insert(app, error);
+                        }
                     }
                 }
             }
@@ -62,6 +74,9 @@ impl ServerState {
             let routes = persisted.routes.clone();
             let errors_before = errors.len();
             self.restore_failures.write().remove(&app_name);
+            if let Some(error) = pending_cleanup_errors.remove(&app_name) {
+                errors.push(format!("{app_name}: {error}"));
+            }
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
@@ -70,7 +85,7 @@ impl ServerState {
                     Err(error) => {
                         tracing::error!(app = %app_name, %error, "Failed to restore app runtime");
                         errors.push(format!("{app_name}: {error}"));
-                        self.record_restore_failure(&persisted.config, &error);
+                        self.record_persisted_restore_failure(&persisted.config, &error);
                         continue;
                     }
                 };
@@ -81,7 +96,7 @@ impl ServerState {
             ) {
                 tracing::error!(app = %app_name, "Failed to restore app config: {}", error);
                 errors.push(format!("{app_name}: {error}"));
-                self.record_restore_failure(&persisted.config, &error);
+                self.record_persisted_restore_failure(&persisted.config, &error);
                 continue;
             }
             if config.compose.is_none() {
@@ -106,7 +121,7 @@ impl ServerState {
                 Err(error) => {
                     tracing::error!(app = %app_name, "Failed to prepare app data dirs: {}", error);
                     errors.push(format!("{app_name}: {error}"));
-                    self.record_restore_failure(&persisted.config, &error);
+                    self.record_persisted_restore_failure(&persisted.config, &error);
                     continue;
                 }
             }
@@ -121,7 +136,7 @@ impl ServerState {
                     {
                         tracing::error!(app = %app_name, %error, "Failed to reconcile app containers");
                         errors.push(format!("{app_name}: {error}"));
-                        self.record_restore_failure(&persisted.config, &error);
+                        self.record_persisted_restore_failure(&persisted.config, &error);
                         continue;
                     }
                 }
@@ -160,6 +175,21 @@ impl ServerState {
                     tracing::error!(app = %app_name, %error, "Failed to prepare the Compose SDK runtime");
                     errors.push(format!("{app_name}: {error}"));
                 }
+            }
+
+            // An app whose own state could not be read is not registered, so
+            // neither a request nor an operator can start it without that state.
+            if errors.len() > errors_before {
+                self.databases.remove_bindings(&app_name);
+                if config.compose.is_some() {
+                    self.retire_compose_socket(&app_name).await;
+                }
+                let error = app_restore_error(&app_name, &errors[errors_before..]);
+                self.record_persisted_restore_failure(&config, &error);
+                if strict {
+                    break;
+                }
+                continue;
             }
 
             let app = self.app_manager.register_app(config.clone());
@@ -202,14 +232,19 @@ impl ServerState {
             if strict && !errors.is_empty() {
                 break;
             }
-            // Without strict mode the other apps still restore, but this one
-            // must not start without the state it failed to read.
+            // Without strict mode the other apps still restore. This one is
+            // unregistered again, as if its state had failed to read: nothing
+            // has started it yet, and a cold start must not.
             if errors.len() > errors_before {
-                app.set_state(AppState::Error);
-                app.set_last_error(format!(
-                    "Restore failed: {}",
-                    errors[errors_before..].join("; ")
-                ));
+                self.app_manager.remove_app(&app_name);
+                self.load_balancer.unregister_app(&app_name);
+                self.routes.write().remove_app_routes(&app_name);
+                self.databases.remove_bindings(&app_name);
+                if config.compose.is_some() {
+                    self.retire_compose_socket(&app_name).await;
+                }
+                let error = app_restore_error(&app_name, &errors[errors_before..]);
+                self.record_persisted_restore_failure(&config, &error);
                 continue;
             }
 
@@ -262,16 +297,31 @@ impl ServerState {
     /// status reports it from here rather than from the app manager.
     fn record_restore_failure(
         &self,
-        config: &crate::instances::AppConfig,
+        app_name: &str,
+        version: &str,
+        compose: bool,
         error: &impl std::fmt::Display,
     ) {
         self.restore_failures.write().insert(
-            config.deployment_id(),
+            app_name.to_string(),
             super::RestoreFailure {
-                version: config.version.clone(),
-                compose: config.compose.is_some(),
+                version: version.to_string(),
+                compose,
                 error: format!("Restore failed: {error}"),
             },
+        );
+    }
+
+    fn record_persisted_restore_failure(
+        &self,
+        config: &crate::instances::AppConfig,
+        error: &impl std::fmt::Display,
+    ) {
+        self.record_restore_failure(
+            &config.deployment_id(),
+            &config.version,
+            config.compose.is_some(),
+            error,
         );
     }
 
@@ -288,4 +338,14 @@ impl ServerState {
             tracing::warn!(app = app_name, "Failed to persist app state: {}", e);
         }
     }
+}
+
+/// This app's entries of the run-wide error list, without their app prefix.
+fn app_restore_error(app_name: &str, errors: &[String]) -> String {
+    let prefix = format!("{app_name}: ");
+    errors
+        .iter()
+        .map(|error| error.strip_prefix(&prefix).unwrap_or(error))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
