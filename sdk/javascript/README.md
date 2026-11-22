@@ -230,6 +230,8 @@ Storage URLs are private by default. S3-compatible storage uses SigV4; local sto
 
 Use the cache for JSON-serializable server-side values:
 
+Keys are private by default. Pass `{ shared: true }` on `get` and `delete`, or `{ ttl, shared: true }` on `put`, to access the cache shared by apps on the same server in the same environment.
+
 ```ts
 import { tako } from "tako.sh";
 
@@ -242,7 +244,7 @@ if (!cached) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Cache entries are stored in Tako-managed SQLite and are not included in app data backups.
+`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of JSON; `ttl` is milliseconds. `delete(key)` removes one key. The SDK calls the runtime over its internal socket. Tako manages persistence, eviction, and isolation per app/environment and server. Cache entries survive restarts and are excluded from backups.
 
 ## Channels
 

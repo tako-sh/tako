@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
 import { loadDatabases } from "../src/database";
+import { cache } from "../src/cache";
 import { call, channel, setNetworkCaller, workflow } from "../src/network";
 import { defineStore } from "../src/stores/define";
 import { initBootstrapFromFd } from "../src/tako/secrets-fd";
@@ -208,6 +209,22 @@ describe("channel, store, and network commands match the wire fixtures", () => {
     setChannelSocketPublisher(null);
     setChannelSocketCloser(null);
     setNetworkCaller(null);
+  });
+
+  test("cache commands preserve JSON null and distinguish misses", async () => {
+    await cache.put("profile:1", null, { ttl: 60_000 });
+    expect(socket.take()).toEqual(fixture("commands/cache-put.json"));
+    socket.reply("replies/cache-hit-null.json");
+    expect(await cache.get("profile:1")).toBeNull();
+    expect(socket.take()).toEqual(fixture("commands/cache-get.json"));
+    await cache.delete("profile:1");
+    expect(socket.take()).toEqual(fixture("commands/cache-delete.json"));
+    socket.reply("replies/ok-null.json");
+    expect(await cache.get("profile:1", { shared: false })).toBeUndefined();
+    expect(socket.take()).toEqual(fixture("commands/cache-get.json"));
+    socket.reply("replies/ok-null.json");
+    expect(await cache.get("catalog:v1", { shared: true })).toBeUndefined();
+    expect(socket.take()).toEqual(fixture("commands/cache-get-shared.json"));
   });
 
   test("channel_publish", async () => {

@@ -25,8 +25,8 @@ use super::cron::{self, CronTickerHandle};
 use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
-    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn, OnEnqueue,
-    PeerAuthFn, SocketOptions, pinned_app_auth, spawn as spawn_internal_socket, spawn_with_options,
+    AppHandlers, AppLookup, CacheFn, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn,
+    OnEnqueue, PeerAuthFn, SocketOptions, pinned_app_auth, spawn_with_options,
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
@@ -118,6 +118,7 @@ pub struct WorkflowManager {
     /// accept loop.
     channel_publish: parking_lot::Mutex<Option<ChannelPublishFn>>,
     peer_auth: parking_lot::Mutex<Option<PeerAuthFn>>,
+    cache: parking_lot::Mutex<Option<CacheFn>>,
     network_call: Arc<RwLock<Option<NetworkCallFn>>>,
     /// Serializes `ensure` calls so two concurrent deploys of the same app
     /// can't each start their own supervisor + cron ticker and then have
@@ -282,6 +283,7 @@ impl WorkflowManager {
             postgres_url: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
+            cache: parking_lot::Mutex::new(None),
             network_call: Arc::new(RwLock::new(None)),
             ensure_gate: tokio::sync::Mutex::new(()),
             retired: parking_lot::Mutex::new(Vec::new()),
@@ -302,6 +304,10 @@ impl WorkflowManager {
 
     pub fn set_peer_auth(&self, auth: PeerAuthFn) {
         *self.peer_auth.lock() = Some(auth);
+    }
+
+    pub fn set_cache(&self, cache: CacheFn) {
+        *self.cache.lock() = Some(cache);
     }
 
     pub fn set_postgres_url_resolver(&self, resolver: PostgresUrlResolver) {
@@ -346,12 +352,16 @@ impl WorkflowManager {
         }
         let (lookup, publisher, route) = self.socket_handlers();
         let peer_auth = self.peer_auth.lock().clone();
-        *guard = Some(spawn_internal_socket(
+        *guard = Some(spawn_with_options(
             self.socket_path(),
             lookup,
             publisher,
             peer_auth,
             Some(route),
+            SocketOptions {
+                mode: None,
+                cache: self.cache.lock().clone(),
+            },
         )?);
         Ok(())
     }
@@ -382,7 +392,10 @@ impl WorkflowManager {
             publisher,
             Some(pinned_app_auth(app)),
             Some(route),
-            SocketOptions { mode: Some(mode) },
+            SocketOptions {
+                mode: Some(mode),
+                cache: self.cache.lock().clone(),
+            },
         )?;
         sockets.insert(app.to_string(), (symlink_path.to_path_buf(), handle));
         Ok(())

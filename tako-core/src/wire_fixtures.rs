@@ -349,6 +349,48 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         command(
+            "cache-get",
+            Command::Cache {
+                app: APP.into(),
+                shared: false,
+                request: crate::CacheRequest::Get {
+                    key: "profile:1".into(),
+                },
+            },
+        ),
+        command(
+            "cache-put",
+            Command::Cache {
+                app: APP.into(),
+                shared: false,
+                request: crate::CacheRequest::Put {
+                    key: "profile:1".into(),
+                    json: "null".into(),
+                    ttl_ms: 60_000,
+                },
+            },
+        ),
+        command(
+            "cache-delete",
+            Command::Cache {
+                app: APP.into(),
+                shared: false,
+                request: crate::CacheRequest::Delete {
+                    key: "profile:1".into(),
+                },
+            },
+        ),
+        command(
+            "cache-get-shared",
+            Command::Cache {
+                app: APP.into(),
+                shared: true,
+                request: crate::CacheRequest::Get {
+                    key: "catalog:v1".into(),
+                },
+            },
+        ),
+        command(
             "channel_close",
             Command::ChannelClose {
                 app: APP.into(),
@@ -393,6 +435,7 @@ fn replies() -> Vec<Fixture> {
     let mut replies = vec![
         // Worker writes acknowledge with an empty object.
         reply("ok", Response::ok(json!({}))),
+        reply("cache-hit-null", Response::ok("null")),
         // Nothing due on claim_run; no retained run on get_run_result.
         reply("ok-null", Response::ok(Value::Null)),
         reply(

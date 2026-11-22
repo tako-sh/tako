@@ -218,6 +218,7 @@ pub(super) fn rpc_action(
         | Command::WaitForEvent { .. }
         | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
+        | Command::Cache { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. } => {
             return Err(error(

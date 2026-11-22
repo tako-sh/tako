@@ -144,11 +144,15 @@ download_file() {
     *)
       auth_header="$(github_auth_header "$src")"
       if need_cmd curl; then
-        if [ -n "$auth_header" ]; then
-          curl -fsSL -H "$auth_header" "$src" -o "$dest"
-        else
-          curl -fsSL "$src" -o "$dest"
+        set -- --retry 3 --retry-max-time 90
+        # curl before 7.71 supports ordinary retries but not --retry-all-errors.
+        if curl --retry-all-errors --version >/dev/null 2>&1; then
+          set -- "$@" --retry-all-errors
         fi
+        if [ -n "$auth_header" ]; then
+          set -- "$@" -H "$auth_header"
+        fi
+        curl -fsSL "$@" "$src" -o "$dest"
       else
         if [ -n "$auth_header" ]; then
           wget --header="$auth_header" -qO "$dest" "$src"

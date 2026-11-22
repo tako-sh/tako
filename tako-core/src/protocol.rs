@@ -15,6 +15,22 @@ pub const UPGRADE_RELOAD_MARKER_FILE: &str = ".upgrade-reload";
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
 pub const MAX_RELEASE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_BACKUP_RETENTION_DAYS: u16 = 30;
+/// Operations on the authenticated caller's server-local cache.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum CacheRequest {
+    Get {
+        key: String,
+    },
+    Put {
+        key: String,
+        json: String,
+        ttl_ms: u64,
+    },
+    Delete {
+        key: String,
+    },
+}
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
 
 pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec<u8> {
@@ -641,6 +657,13 @@ pub enum Command {
         build: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lifecycle: Option<serde_json::Value>,
+    },
+    Cache {
+        app: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shared: bool,
+        #[serde(flatten)]
+        request: CacheRequest,
     },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.
     NetworkCall {

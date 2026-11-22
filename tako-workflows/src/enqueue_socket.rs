@@ -110,13 +110,16 @@ pub fn pinned_app_auth(app: impl Into<String>) -> PeerAuthFn {
 }
 
 /// How [`spawn_with_options`] exposes the bound socket file.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct SocketOptions {
     /// Mode of the bound socket. `None` keeps the shared socket's 0660 with
     /// the `tako-app` group; a pinned socket mounted into containers of any
     /// user uses 0666 behind a directory only Tako can list.
     pub mode: Option<u32>,
+    pub cache: Option<CacheFn>,
 }
+
+pub type CacheFn = Arc<dyn Fn(&str, bool, tako_core::CacheRequest) -> Response + Send + Sync>;
 
 /// Routes a validated destination after the socket has authenticated the caller.
 pub type NetworkCallFn =
@@ -242,6 +245,7 @@ pub fn spawn_with_options(
         channel_publish,
         peer_auth,
         network_call,
+        options.cache,
         shutdown_rx,
     ));
 
@@ -352,6 +356,7 @@ async fn run(
     channel_publish: Option<ChannelPublishFn>,
     peer_auth: Option<PeerAuthFn>,
     network_call: Option<NetworkCallFn>,
+    cache: Option<CacheFn>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     tokio::pin!(shutdown_rx);
@@ -365,6 +370,7 @@ async fn run(
                         let channel_publish = channel_publish.clone();
                         let peer_auth = peer_auth.clone();
                         let network_call = network_call.clone();
+                        let cache = cache.clone();
                         let peer_uid = stream.peer_cred().ok().map(|cred| cred.uid());
                         tokio::spawn(async move {
                             let _ = serve_jsonl_connection(
@@ -374,6 +380,7 @@ async fn run(
                                     let channel_publish = channel_publish.clone();
                                     let peer_auth = peer_auth.clone();
                                     let network_call = network_call.clone();
+                                    let cache = cache.clone();
                                     async move {
                                         let is_network = matches!(&cmd, Command::NetworkCall { .. });
                                         let operation = move || {
@@ -383,6 +390,7 @@ async fn run(
                                                 peer_auth.as_ref(),
                                                 peer_uid,
                                                 network_call.as_ref(),
+                                                cache.as_ref(),
                                                 cmd,
                                             )
                                         };
@@ -458,6 +466,7 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::Signal { app, .. }
         | Command::ChannelPublish { app, .. }
         | Command::ChannelClose { app, .. }
+        | Command::Cache { app, .. }
         | Command::NetworkCall { app, .. } => Some(app),
         _ => None,
     }
@@ -485,6 +494,7 @@ fn handle_command(
     peer_auth: Option<&PeerAuthFn>,
     peer_uid: Option<u32>,
     network_call: Option<&NetworkCallFn>,
+    cache: Option<&CacheFn>,
     cmd: Command,
 ) -> Response {
     let app = match command_app(&cmd) {
@@ -501,6 +511,15 @@ fn handle_command(
     };
     if let Err(error) = authorize_peer(peer_auth, peer_uid, &app) {
         return Response::error(error);
+    }
+    if let Command::Cache {
+        shared, request, ..
+    } = cmd
+    {
+        return match cache {
+            Some(cache) => cache(&app, shared, request),
+            None => Response::coded_error(ErrorCode::Unavailable, "cache unavailable"),
+        };
     }
 
     if let Command::NetworkCall {

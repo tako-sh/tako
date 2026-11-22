@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "cache",
+  "key": "catalog:v1",
+  "operation": "get",
+  "shared": true
+}
