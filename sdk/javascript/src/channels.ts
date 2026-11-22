@@ -192,6 +192,9 @@ function closeRaw(raw: unknown, code?: number, reason?: string): void {
   }
 }
 
+/** The server's limit on one client frame of a dedicated WebSocket. */
+const MAX_DEDICATED_FRAME_BYTES = 1024 * 1024;
+
 function sendRaw(raw: unknown, data: unknown): void {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Channel connection does not support send().");
@@ -209,6 +212,14 @@ function sendRaw(raw: unknown, data: unknown): void {
     !(typeof Blob !== "undefined" && data instanceof Blob)
   ) {
     payload = JSON.stringify(data);
+  }
+  // Each UTF-16 unit encodes to at most 3 bytes, so only long text is measured.
+  if (
+    typeof payload === "string" &&
+    payload.length > MAX_DEDICATED_FRAME_BYTES / 3 &&
+    new TextEncoder().encode(payload).byteLength > MAX_DEDICATED_FRAME_BYTES
+  ) {
+    throw new RangeError("Channel message exceeds 1 MiB; send smaller events.");
   }
   maybeSend.call(raw, payload);
 }

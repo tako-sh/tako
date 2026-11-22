@@ -344,6 +344,7 @@ impl crate::ServerState {
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);
         self.manual_backup_states.write().remove(app_name);
+        self.restore_failures.write().remove(app_name);
 
         {
             let mut route_table = self.routes.write();

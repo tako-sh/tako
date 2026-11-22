@@ -61,6 +61,7 @@ impl ServerState {
             let app_name = config.deployment_id();
             let routes = persisted.routes.clone();
             let errors_before = errors.len();
+            self.restore_failures.write().remove(&app_name);
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
@@ -69,6 +70,7 @@ impl ServerState {
                     Err(error) => {
                         tracing::error!(app = %app_name, %error, "Failed to restore app runtime");
                         errors.push(format!("{app_name}: {error}"));
+                        self.record_restore_failure(&persisted.config, &error);
                         continue;
                     }
                 };
@@ -79,6 +81,7 @@ impl ServerState {
             ) {
                 tracing::error!(app = %app_name, "Failed to restore app config: {}", error);
                 errors.push(format!("{app_name}: {error}"));
+                self.record_restore_failure(&persisted.config, &error);
                 continue;
             }
             if config.compose.is_none() {
@@ -103,6 +106,7 @@ impl ServerState {
                 Err(error) => {
                     tracing::error!(app = %app_name, "Failed to prepare app data dirs: {}", error);
                     errors.push(format!("{app_name}: {error}"));
+                    self.record_restore_failure(&persisted.config, &error);
                     continue;
                 }
             }
@@ -117,6 +121,7 @@ impl ServerState {
                     {
                         tracing::error!(app = %app_name, %error, "Failed to reconcile app containers");
                         errors.push(format!("{app_name}: {error}"));
+                        self.record_restore_failure(&persisted.config, &error);
                         continue;
                     }
                 }
@@ -251,6 +256,23 @@ impl ServerState {
             return Err(StateStoreError::InvalidData(errors.join("; ")));
         }
         Ok(())
+    }
+
+    /// An app a restore could not register keeps no routes or instances, so
+    /// status reports it from here rather than from the app manager.
+    fn record_restore_failure(
+        &self,
+        config: &crate::instances::AppConfig,
+        error: &impl std::fmt::Display,
+    ) {
+        self.restore_failures.write().insert(
+            config.deployment_id(),
+            super::RestoreFailure {
+                version: config.version.clone(),
+                compose: config.compose.is_some(),
+                error: format!("Restore failed: {error}"),
+            },
+        );
     }
 
     pub async fn persist_app_state(&self, app_name: &str) {

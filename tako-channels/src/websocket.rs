@@ -34,11 +34,12 @@ impl Default for WebSocketFrameReader {
 }
 
 impl WebSocketFrameReader {
-    /// A reader for frames from a subscriber. Clients only send control
-    /// frames, auth and presence updates (at most 16 KiB), so this uses the
-    /// shared route's command frame limit instead of buffering large frames.
+    /// A reader for frames from a dedicated WebSocket client: auth, presence
+    /// updates, control frames and publishes. A publish is held to the 1 MiB
+    /// event limit that server-side publishes and shared-route delivery
+    /// already have, instead of buffering frames of up to 128 MiB.
     pub fn from_client() -> Self {
-        Self::bounded(crate::shared::MAX_FRAME_BYTES as u64, false)
+        Self::bounded(crate::shared::MAX_MESSAGE_BYTES as u64, false)
     }
 
     pub fn bounded(max_payload_bytes: u64, require_mask: bool) -> Self {
@@ -326,14 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn client_reader_rejects_frames_above_the_command_limit_from_the_header() {
+    fn client_reader_rejects_frames_above_the_event_limit_from_the_header() {
         let header = |len: u64| {
             let mut frame = vec![0x81, 0xff];
             frame.extend_from_slice(&len.to_be_bytes());
             frame.extend_from_slice(&[0, 0, 0, 0]);
             frame
         };
-        let limit = crate::shared::MAX_FRAME_BYTES as u64;
+        let limit = crate::shared::MAX_MESSAGE_BYTES as u64;
         let mut reader = WebSocketFrameReader::from_client();
         reader.extend(&header(limit + 1));
         assert!(

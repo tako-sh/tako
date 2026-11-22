@@ -5,7 +5,12 @@ impl crate::ServerState {
     pub(crate) async fn get_status(&self, app_name: &str) -> Response {
         let app = match self.app_manager.get_app(app_name) {
             Some(app) => app,
-            None => return Response::error(format!("App not found: {}", app_name)),
+            None => {
+                if let Some(failure) = self.restore_failures.read().get(app_name) {
+                    return Response::ok(restore_failure_status(app_name, failure));
+                }
+                return Response::error(format!("App not found: {}", app_name));
+            }
         };
 
         let instances: Vec<InstanceStatus> =
@@ -122,7 +127,7 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn list_apps(&self) -> Response {
-        let apps: Vec<serde_json::Value> = self
+        let mut apps: Vec<serde_json::Value> = self
             .app_manager
             .list_apps()
             .iter()
@@ -138,6 +143,24 @@ impl crate::ServerState {
                 })
             })
             .collect();
+        // Apps a restore left unregistered, so they are not missing from status.
+        let mut failed: Vec<_> = self
+            .restore_failures
+            .read()
+            .iter()
+            .filter(|(name, _)| self.app_manager.get_app(name).is_none())
+            .map(|(name, failure)| (name.clone(), failure.clone()))
+            .collect();
+        failed.sort_by(|a, b| a.0.cmp(&b.0));
+        apps.extend(failed.into_iter().map(|(name, failure)| {
+            serde_json::json!({
+                "name": name,
+                "kind": if failure.compose { "application_group" } else { "application" },
+                "version": failure.version,
+                "state": tako_core::AppState::Error,
+                "instances": 0
+            })
+        }));
 
         Response::ok(serde_json::json!({ "apps": apps }))
     }
@@ -154,6 +177,32 @@ impl crate::ServerState {
             })
             .collect();
         Response::ok(serde_json::json!({ "routes": routes }))
+    }
+}
+
+/// The status of an app a restore could not register: it has no instances,
+/// routes or builds, only the error that kept it from starting.
+fn restore_failure_status(
+    app_name: &str,
+    failure: &crate::server_state::RestoreFailure,
+) -> AppStatus {
+    AppStatus {
+        kind: if failure.compose {
+            tako_core::ApplicationKind::ApplicationGroup
+        } else {
+            tako_core::ApplicationKind::Application
+        },
+        applications: Vec::new(),
+        replica_overrides: Default::default(),
+        services: Vec::new(),
+        services_error: None,
+        name: app_name.to_string(),
+        version: failure.version.clone(),
+        instances: Vec::new(),
+        builds: Vec::new(),
+        state: tako_core::AppState::Error,
+        last_error: Some(failure.error.clone()),
+        recovery: None,
     }
 }
 

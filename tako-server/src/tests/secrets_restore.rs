@@ -458,6 +458,57 @@ async fn restore_uses_the_pinned_runtime_for_http_instances() {
             .routes_for_app("demo/production")
             .is_empty()
     );
+
+    // Unregistered, it is still reported, with why it is not running.
+    let Response::Ok { data } = state
+        .handle_command(Command::Status {
+            app: "demo/production".to_string(),
+        })
+        .await
+    else {
+        panic!("an app that failed to restore must have a status");
+    };
+    let status: tako_core::AppStatus = serde_json::from_value(data).unwrap();
+    assert_eq!(status.state, AppState::Error);
+    assert_eq!(status.version, "v1");
+    assert!(status.instances.is_empty());
+    let error = status.last_error.unwrap();
+    assert!(error.starts_with("Restore failed: "), "{error}");
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(
+        data["apps"],
+        serde_json::json!([{
+            "name": "demo/production",
+            "kind": "application",
+            "version": "v1",
+            "state": "error",
+            "instances": 0
+        }])
+    );
+
+    // Deleting the app clears the report.
+    assert!(
+        state
+            .handle_command(Command::Delete {
+                app: "demo/production".to_string(),
+            })
+            .await
+            .is_ok()
+    );
+    assert!(
+        !state
+            .handle_command(Command::Status {
+                app: "demo/production".to_string(),
+            })
+            .await
+            .is_ok()
+    );
+    let Response::Ok { data } = state.handle_command(Command::List).await else {
+        panic!("list failed");
+    };
+    assert_eq!(data["apps"], serde_json::json!([]));
 }
 
 #[tokio::test]
