@@ -348,7 +348,9 @@ function withoutDecodedEncoding(response: Response): Response {
   const decoded = encoding
     ?.split(",")
     .every((coding) => FETCH_DECODED_CODINGS.has(coding.trim().toLowerCase()));
-  if (!decoded) return response;
+  // HEAD and 304 responses have no body to decode; their headers still
+  // describe the representation.
+  if (!decoded || response.body === null) return response;
   const headers = new Headers(response.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");

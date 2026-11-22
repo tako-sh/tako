@@ -214,6 +214,23 @@ describe("tako Next.js adapter", () => {
     expect(response.headers.get("content-length")).toBe("3");
   });
 
+  test("fetch handler keeps encoding headers on bodyless responses", async () => {
+    const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
+      unstable_testing: {
+        ensureServer: async () => 4031,
+        fetchImplementation: async () =>
+          new Response(null, {
+            status: 304,
+            headers: { "content-encoding": "gzip", "content-length": "42" },
+          }),
+      },
+    });
+    const response = await handler(new Request("https://example.com/", { method: "HEAD" }), {});
+
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("content-length")).toBe("42");
+  });
+
   test("fetch handler preserves upstream redirects", async () => {
     const handler = createNextjsFetchHandler(path.join(rootDir, "server.mjs"), {
       unstable_testing: {

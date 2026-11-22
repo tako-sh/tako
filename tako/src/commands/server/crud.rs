@@ -111,10 +111,15 @@ pub(super) async fn revoke_server(
                     &servers,
                     assume_yes,
                 )?;
-                match output::confirm(
-                    &revocation_prompt(&selected_name, servers.get(&selected_name).unwrap()),
-                    false,
-                ) {
+                let confirmed = if assume_yes {
+                    Ok(true)
+                } else {
+                    output::confirm(
+                        &revocation_prompt(&selected_name, servers.get(&selected_name).unwrap()),
+                        false,
+                    )
+                };
+                match confirmed {
                     Ok(true) => {
                         revoke_entry(&selected_name, servers.get(&selected_name).unwrap())?;
                         output::success(&format!("Revoked {}", output::strong(&selected_name)));
