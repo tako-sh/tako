@@ -334,6 +334,24 @@ impl Connection {
         }
     }
 
+    /// Makes room for a reply the connection built itself, such as
+    /// `CLIENT LIST`'s, or replaces it with an error when none frees up.
+    async fn fit(&mut self, reply: Reply) -> Reply {
+        let need = reply.size();
+        if need <= self.reply_room() {
+            return reply;
+        }
+        self.take_reply_room();
+        if need <= self.reply_room() {
+            return reply;
+        }
+        if self.flush().await && self.wait_for_reply_room(need).await {
+            reply
+        } else {
+            Reply::error(SHORT_OF_REPLY_SPACE)
+        }
+    }
+
     /// Waits for room for a reply of `need` bytes, once what is buffered
     /// has been sent. False when none frees up in time.
     async fn wait_for_reply_room(&mut self, need: usize) -> bool {
@@ -450,10 +468,15 @@ impl Connection {
                             if !frames.is_empty() {
                                 break;
                             }
+                            // Only the buffered bytes wait for the budget:
+                            // the parsed arguments are dropped and parsed
+                            // again once it has room.
+                            drop(frame);
                             if !self.reserve(cost, 0).await {
                                 fatal = short();
                                 break;
                             }
+                            continue;
                         }
                         held = cost;
                         let args = self.take(frame);
@@ -701,7 +724,15 @@ impl Connection {
                         return Flow::Close;
                     }
                     match self.local(spec, args).await {
-                        Local::Reply(reply) => self.reply(reply),
+                        Local::Reply(reply) => {
+                            // `EXEC` reserved room for its reply before it
+                            // ran, and its writes cannot be undone.
+                            let reply = match spec.name {
+                                "exec" => reply,
+                                _ => self.fit(reply).await,
+                            };
+                            self.reply(reply);
+                        }
                         Local::Close(reply) => {
                             self.reply(reply);
                             return Flow::Close;
@@ -723,7 +754,7 @@ impl Connection {
                     }
                 }
             }
-            if self.out.len() > OUT_FLUSH && !self.flush().await {
+            if (self.out.len() > OUT_FLUSH || self.reply_room() == 0) && !self.flush().await {
                 return Flow::Close;
             }
         }
@@ -1035,6 +1066,31 @@ impl Connection {
                 Err(reply) => Op::Failed(reply),
             })
             .collect();
+        // Room for every reply the transaction could have, the connection's
+        // own included, reserved before it runs, since it cannot stop
+        // partway.
+        let max_reply = self.config().max_reply_bytes;
+        let own = multi
+            .queued
+            .iter()
+            .filter(|(_, spec)| spec.class == Class::Connection)
+            .map(|(args, spec)| self.reply_bound(spec, args))
+            .fold(0usize, usize::saturating_add);
+        let bound = ops
+            .iter()
+            .map(|op| match op {
+                Op::Cmd(cmd) => cmd.reply_bound(limits, max_reply),
+                Op::Failed(reply) => reply.size(),
+            })
+            .fold(16usize.saturating_add(own), usize::saturating_add)
+            .min(max_reply);
+        self.take_reply_room();
+        if bound > self.reply_room()
+            && !(self.flush().await && self.wait_for_reply_room(bound).await)
+        {
+            return Reply::error(SHORT_OF_REPLY_SPACE);
+        }
+        let room = self.reply_room().min(max_reply);
         let replies = if ops.is_empty() && watched.is_empty() {
             Vec::new()
         } else {
@@ -1043,42 +1099,50 @@ impl Connection {
                 Err(Gone::Unavailable(message)) => return Reply::Error(message),
                 Err(Gone::Rebound) => return Reply::error(REBOUND),
             };
-            // Room for every reply the transaction could have, reserved
-            // before it runs, since it cannot stop partway.
-            let max_reply = self.config().max_reply_bytes;
-            let bound = ops
-                .iter()
-                .map(|op| match op {
-                    Op::Cmd(cmd) => cmd.reply_bound(limits, max_reply),
-                    Op::Failed(reply) => reply.size(),
-                })
-                .fold(16usize, usize::saturating_add)
-                .min(max_reply);
-            self.take_reply_room();
-            if bound > self.reply_room()
-                && !(self.flush().await && self.wait_for_reply_room(bound).await)
-            {
-                return Reply::error(SHORT_OF_REPLY_SPACE);
-            }
-            match store.exec(ops, watched, self.reply_room()).await {
+            match store.exec(ops, watched, room).await {
                 Ok(Reply::Array(replies)) => replies,
                 Ok(other) => return other,
                 Err(error) => return Reply::Error(store_error(&error)),
             }
         };
+        // The connection's own replies get what room is left; past it they
+        // become errors, as large store replies do.
+        let mut size = 16 + replies.iter().map(Reply::size).sum::<usize>();
         let mut replies = replies.into_iter();
         let mut results = Vec::with_capacity(multi.queued.len());
         for (args, spec) in &multi.queued {
             results.push(if spec.class == Class::Connection {
-                match spec.name {
+                let mut reply = match spec.name {
                     "info" => self.info(args).await,
                     _ => self.simple(spec, args),
+                };
+                if size + reply.size() > room {
+                    reply = Reply::Error(format!(
+                        "ERR reply would exceed {room} bytes; use smaller transactions"
+                    ));
                 }
+                size += reply.size();
+                reply
             } else {
                 replies.next().unwrap_or(Reply::Nil)
             });
         }
         Reply::Array(results)
+    }
+
+    /// The largest reply a command the connection answers itself can have,
+    /// for reserving room for it inside a transaction.
+    fn reply_bound(&self, spec: &Spec, args: &[Bytes]) -> usize {
+        const SMALL: usize = 256;
+        match spec.name {
+            "client" if args.get(1).is_some_and(|sub| is(sub, "list")) => {
+                (self.host.inner.clients.lock().len() + 1).saturating_mul(SMALL)
+            }
+            "echo" | "ping" => SMALL + args.iter().map(Bytes::len).sum::<usize>(),
+            "info" | "config" => 8 * 1024,
+            "command" => 64 * 1024,
+            _ => SMALL,
+        }
     }
 
     async fn info(&self, args: &[Bytes]) -> Reply {

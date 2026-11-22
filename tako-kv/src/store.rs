@@ -54,6 +54,12 @@ const SWEEP_INTERVAL: Duration = Duration::from_millis(250);
 /// Expired keys removed alongside other writes, and by a periodic sweep.
 const SWEEP_WITH_WRITES: usize = 32;
 const SWEEP_ALONE: usize = 10_000;
+/// Bytes of expired keys one sweep copies out of the index at most, so
+/// sweeping large keys never buffers much.
+const SWEEP_BYTES: usize = 1024 * 1024;
+/// Bytes of fields `RENAME` moves at a time, so a large hash is never all
+/// in memory.
+const MOVE_CHUNK: usize = 1024 * 1024;
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -955,6 +961,7 @@ impl<'t> WriteView<'t> {
     /// Removes up to `limit` expired keys. Returns whether more remain.
     fn sweep(&mut self, now: u64, limit: usize) -> Result<bool> {
         let mut due = Vec::new();
+        let mut bytes = 0;
         let mut more = false;
         for item in self.expiry.iter().map_err(storage)? {
             let (id, _) = item.map_err(storage)?;
@@ -963,10 +970,11 @@ impl<'t> WriteView<'t> {
             if when > now {
                 break;
             }
-            if due.len() == limit {
+            if due.len() == limit || bytes >= SWEEP_BYTES {
                 more = true;
                 break;
             }
+            bytes += id.len();
             due.push(id.to_vec());
         }
         for id in due {
@@ -1589,21 +1597,30 @@ fn write(
                 }
                 w.remove(to, &existing)?;
             }
-            let mut fields = Vec::new();
-            if entry.kind == KeyType::Hash {
-                w.each_field(from, 0, &mut |_, field, value| {
-                    fields.push((field.to_vec(), value.to_vec()));
-                    true
-                })?;
-            }
-            w.remove(from, &entry)?;
             let mut moved = entry.clone();
-            if entry.kind == KeyType::Hash {
+            let mut source = entry;
+            if source.kind == KeyType::Hash {
                 moved.set_fields(0, 0);
-                for (field, value) in &fields {
-                    w.set_field(to, &mut moved, field, value)?;
+                // A chunk at a time, each removed from the source as it is
+                // added to the target.
+                loop {
+                    let mut chunk = Vec::new();
+                    let mut bytes = 0;
+                    w.each_field(from, 0, &mut |_, field, value| {
+                        bytes += field.len() + value.len();
+                        chunk.push((field.to_vec(), value.to_vec()));
+                        bytes < MOVE_CHUNK
+                    })?;
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    for (field, value) in &chunk {
+                        w.set_field(to, &mut moved, field, value)?;
+                        w.delete_field(from, &mut source, field)?;
+                    }
                 }
             }
+            w.remove(from, &source)?;
             w.put(to, None, moved)?;
             if *only_new { Reply::Int(1) } else { Reply::Ok }
         }

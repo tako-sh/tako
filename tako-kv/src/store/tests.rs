@@ -269,6 +269,48 @@ async fn sizes_return_to_zero_after_every_kind_of_removal() {
 }
 
 #[tokio::test]
+async fn large_hashes_and_expiring_keys_move_in_bounded_steps() {
+    let f = fixture(1 << 30);
+    // A hash larger than one move chunk is renamed whole, and its bytes
+    // are accounted the same under a name of the same length.
+    let value = "v".repeat(1000);
+    for chunk in 0..30 {
+        let pairs: Vec<String> = (0..100)
+            .map(|i| format!("f{} {value}", chunk * 100 + i))
+            .collect();
+        f.run(&format!("HSET big {}", pairs.join(" "))).await;
+    }
+    let before = f.stats().await;
+    assert_eq!(f.run("RENAME big gib").await, Reply::Ok);
+    let after = f.stats().await;
+    assert_eq!((after.keys, after.bytes), (before.keys, before.bytes));
+    assert_eq!(f.run("HLEN gib").await, Reply::Int(3000));
+    assert_eq!(f.run("HGET gib f2999").await, bulk(&value));
+    assert_eq!(f.run("EXISTS big").await, Reply::Int(0));
+    f.run("DEL gib").await;
+    // Expired keys with long names are swept a bounded number of bytes at
+    // a time, until none are left.
+    let name = "k".repeat(900);
+    for chunk in 0..25 {
+        let pairs: Vec<String> = (0..100)
+            .map(|i| format!("{name}{} v", chunk * 100 + i))
+            .collect();
+        f.run(&format!("MSET {}", pairs.join(" "))).await;
+        for i in 0..100 {
+            f.run(&format!("PEXPIRE {name}{} 1", chunk * 100 + i)).await;
+        }
+    }
+    f.advance(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f.stats().await.keys != 0 {
+        assert!(Instant::now() < deadline, "expired keys were not swept");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let stats = f.stats().await;
+    assert_eq!((stats.expires, stats.bytes), (0, 0));
+}
+
+#[tokio::test]
 async fn full_stores_refuse_growth_but_allow_removal() {
     let f = fixture(4096);
     let value = "x".repeat(500);

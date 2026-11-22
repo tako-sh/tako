@@ -227,6 +227,18 @@ async fn requests_are_limited_before_and_after_authentication() {
     tako_kv::encode_request(&["STRLEN", "k"], &mut send);
     let got = raw(&mut stream, &send, 18).await;
     assert_eq!(String::from_utf8_lossy(&got), "+OK\r\n+OK\r\n:100000\r\n");
+    // A request whose arguments need more than the base allowance, all in
+    // one read, waits for the budget and is then parsed again.
+    let pairs: Vec<String> = (0..5000)
+        .flat_map(|i| [format!("m{i}"), "v".into()])
+        .collect();
+    let mut mset = vec!["MSET".to_owned()];
+    mset.extend(pairs);
+    let mut request = Vec::new();
+    tako_kv::encode_request(&mset, &mut request);
+    tako_kv::encode_request(&["EXISTS", "m0", "m4999"], &mut request);
+    let got = raw(&mut stream, &request, 9).await;
+    assert_eq!(String::from_utf8_lossy(&got), "+OK\r\n:2\r\n");
     // Arguments count against the limit even when they are empty.
     let got = raw(&mut stream, b"*1000000\r\n", 100).await;
     assert_eq!(
@@ -343,6 +355,32 @@ async fn transactions_and_watches_share_the_request_budget() {
     let got = raw(&mut stream, &request, short.len()).await;
     assert_eq!(String::from_utf8_lossy(&got), short);
     assert_eq!(raw(&mut stream, b"WATCH k0 k0 k1\r\n", 5).await, b"+OK\r\n");
+}
+
+#[tokio::test]
+async fn transactions_cap_the_connections_own_replies() {
+    let config = HostConfig {
+        max_reply_bytes: 64 * 1024,
+        ..HostConfig::default()
+    };
+    let (_dir, addr) = host_with(config, &["main"]).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let text = "e".repeat(1000);
+    let mut send = b"AUTH main\r\nMULTI\r\n".to_vec();
+    for _ in 0..200 {
+        tako_kv::encode_request(&["ECHO", text.as_str()], &mut send);
+    }
+    send.extend_from_slice(b"EXEC\r\n");
+    // OK, OK, 200 QUEUED, then the EXEC array.
+    // Read until the server stops sending.
+    let got = raw(&mut stream, &send, 1 << 20).await;
+    let got = String::from_utf8_lossy(&got);
+    let exec = &got[got.find("*200\r\n").expect("an EXEC array of 200")..];
+    // About 64 KiB of echoes fit; the rest become errors.
+    let echoed = exec.matches("$1000\r\n").count();
+    let refused = exec.matches("-ERR reply would exceed 65536 bytes").count();
+    assert!((50..70).contains(&echoed), "{echoed}");
+    assert_eq!(echoed + refused, 200);
 }
 
 #[tokio::test]
