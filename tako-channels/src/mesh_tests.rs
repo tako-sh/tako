@@ -1,3 +1,4 @@
+use crate::test_db::TestDb;
 use crate::*;
 use tokio::sync::broadcast;
 
@@ -8,33 +9,51 @@ fn payload(n: usize) -> ChannelPublishPayload {
     }
 }
 
-fn next_event(publications: &mut broadcast::Receiver<ChannelPublication>) -> ChannelEvent {
-    let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
-        panic!("expected an event")
-    };
-    event
+fn wake(channel: &str) -> ChannelPublication {
+    ChannelPublication::Wake {
+        channel: channel.into(),
+    }
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 #[tokio::test]
 async fn committed_notifications_wake_readers_without_persisting_or_republishing() {
-    let temp = tempfile::tempdir().unwrap();
-    let writer = ChannelStore::open(&temp.path().join("writer.sqlite")).unwrap();
-    let reader = ChannelStore::open(&temp.path().join("reader.sqlite")).unwrap();
+    let db = TestDb::start();
+    let (writer, reader) = (db.open_for("writer").await, db.open_for("reader").await);
     let mut publications = reader.publications();
     let mut changes = reader.changes("events");
-    let durable = writer.append("events", &payload(1)).unwrap();
+    let durable = writer.append_async("events", &payload(1)).await.unwrap();
     reader.notify_committed(&durable, false);
     assert!(changes.has_changed().unwrap());
     changes.borrow_and_update();
     reader.notify_committed(&durable, false);
     assert!(!changes.has_changed().unwrap());
-    assert!(reader.read_after("events", None, 10).unwrap().is_empty());
+    assert!(
+        reader
+            .read_after_async("events", None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let mut live = reader.subscribe_ephemeral("live").unwrap();
     let ephemeral = writer.publish_ephemeral("live", &payload(2)).unwrap();
     reader.notify_committed(&ephemeral, true);
     assert_eq!(*live.recv().await.unwrap(), ephemeral);
-    assert!(reader.read_after("live", None, 10).unwrap().is_empty());
+    assert!(
+        reader
+            .read_after_async("live", None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(matches!(
         publications.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)
@@ -43,35 +62,41 @@ async fn committed_notifications_wake_readers_without_persisting_or_republishing
 
 #[test]
 fn broker_reader_never_creates_or_mutates_a_database() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("reader.sqlite");
-    assert!(ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).is_err());
-    assert!(!path.exists());
-    let empty = rusqlite::Connection::open(&path).unwrap();
-    assert!(ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).is_err());
-    assert_eq!(
-        empty
-            .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    drop(empty);
+    let db = TestDb::start();
+    let schema = || db.query_i64("SELECT COUNT(*) FROM sqlite_schema");
+    let empty = schema();
+    assert!(ChannelStore::open_reader_config(db.config("app")).is_err());
+    assert_eq!(schema(), empty);
 
-    let writer = ChannelStore::open(&path).unwrap();
+    let writer = db.writer();
     let cursor = writer.replay_cursor("events", None).unwrap();
-    let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
-    assert!(reader.sqlite_conn().is_readonly("main").unwrap());
+    let reader = db.reader();
     let changes = reader.changes("events");
     let message = writer.append("events", &payload(1)).unwrap();
-    assert!(changes.has_changed().unwrap());
+    wait_until("the reader did not poll the commit", || {
+        changes.has_changed().unwrap()
+    });
+    let snapshot = || {
+        db.query_i64(
+            "SELECT (SELECT COUNT(*) FROM tako_replay_streams) * 1000
+                + (SELECT COUNT(*) FROM tako_replay_messages)",
+        )
+    };
+    let before = snapshot();
     assert_eq!(
         reader.read_after("events", cursor, 10).unwrap(),
         vec![message]
     );
+    assert!(reader.replay_cursor("unseen", None).is_ok());
     assert!(reader.append("events", &payload(2)).is_err());
+    assert!(reader.close("events").is_err());
     assert!(reader.publish_ephemeral("events", &payload(2)).is_err());
     assert!(reader.invalidate_replay().is_err());
+    assert!(
+        reader
+            .sync_channel("unseen", &ChannelLifecycle::default().auth())
+            .is_err()
+    );
     assert!(
         reader
             .update_presence(
@@ -86,18 +111,20 @@ fn broker_reader_never_creates_or_mutates_a_database() {
             .is_err()
     );
     assert!(reader.remove_presence("events", "connection").is_err());
-    assert_eq!(reader.sqlite_conn().total_changes(), 0);
+    assert_eq!(snapshot(), before);
+    // Another app's reader finds no state of its own and creates none.
+    assert!(ChannelStore::open_reader_config(db.config("other")).is_err());
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_apps"), 1);
 }
 
 #[test]
 fn broker_reader_enforces_expiry_and_replay_fences_without_pruning() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("reader.sqlite");
-    let writer = ChannelStore::open(&path).unwrap();
+    let db = TestDb::start();
+    let writer = db.without_maintenance();
     let cursor = writer.replay_cursor("events", None).unwrap();
     writer.append("events", &payload(1)).unwrap();
-    let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
-    writer.raw_execute("UPDATE channel_messages SET created_at_unix_ms = 1", []);
+    let reader = db.reader();
+    db.execute("UPDATE tako_replay_messages SET created_ms = 1");
     assert!(reader.read_after("events", None, 10).unwrap().is_empty());
     assert!(matches!(
         reader.read_after("events", cursor, 10),
@@ -108,70 +135,48 @@ fn broker_reader_enforces_expiry_and_replay_fences_without_pruning() {
         Err(ChannelError::StaleCursor)
     ));
     let head = reader.replay_cursor("events", None).unwrap();
-    writer.invalidate_replay().unwrap();
+    // A restored or imported database gets a new epoch before it is served.
+    db.execute("UPDATE tako_replay_apps SET epoch = lower(hex(randomblob(16)))");
     assert!(matches!(
         reader.replay_cursor("events", head),
         Err(ChannelError::StaleCursor)
     ));
-    assert_eq!(reader.sqlite_conn().total_changes(), 0);
-}
-
-#[test]
-fn canonical_handles_publish_and_wake_synchronously_for_all_paths() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let one = ChannelStore::open(&path).unwrap();
-    let two = ChannelStore::open(&temp.path().join(".").join("a.sqlite")).unwrap();
-    let mut publications = one.publications();
-    let mut changes = one.changes("events");
-    let untouched = one.changes("other");
-    let durable = two.append("events", &payload(1)).unwrap();
-    assert!(changes.has_changed().unwrap());
-    assert!(!untouched.has_changed().unwrap());
-    changes.borrow_and_update();
-    let first = next_event(&mut publications);
-    assert_eq!(durable.event_id.as_ref(), Some(&first.id));
-    assert_eq!(first.payload, payload(1));
-    assert!(!first.ephemeral);
-    let mut live = one.ephemeral_publications();
-    let ephemeral = two.publish_ephemeral("events", &payload(2)).unwrap();
-    assert!(!changes.has_changed().unwrap());
-    let second = live.try_recv().unwrap();
-    assert!(second.ephemeral);
-    assert_eq!(second.id.sequence, 1);
-    assert_ne!(second.id.origin, first.id.origin);
-    assert_eq!(ephemeral.event_id.as_ref(), Some(&second.id));
-    assert!(publications.try_recv().is_err());
-    assert_eq!(one.read_after("events", None, 10).unwrap(), vec![durable]);
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_messages"), 1);
 }
 
 #[tokio::test]
-async fn separate_databases_ingest_durable_and_ephemeral_without_rebroadcast() {
-    let temp = tempfile::tempdir().unwrap();
-    let a = ChannelStore::open(&temp.path().join("a.sqlite")).unwrap();
-    let b = ChannelStore::open(&temp.path().join("b.sqlite")).unwrap();
+async fn peers_ingest_live_events_without_rebroadcast_and_refuse_durable_ones() {
+    let db = TestDb::start();
+    let (a, b) = (db.open().await, db.open().await);
     let mut outbound = a.publications();
     let mut echoes = b.publications();
-    let durable = a.append("events", &payload(1)).unwrap();
-    let event = next_event(&mut outbound);
-    let wire = serde_json::to_string(&ChannelPublication::Event(event.clone())).unwrap();
+    let durable = a.append_async("events", &payload(1)).await.unwrap();
+    let hint = outbound.try_recv().unwrap();
+    assert_eq!(hint, wake("events"));
+    let wire = serde_json::to_string(&hint).unwrap();
     assert_eq!(
         serde_json::from_str::<ChannelPublication>(&wire).unwrap(),
-        ChannelPublication::Event(event.clone())
+        hint
     );
+    // History is shared: a peer only wakes its readers, and reads the same ids.
     let changes = b.changes("events");
-    assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
+    b.wake("events");
     assert!(changes.has_changed().unwrap());
-    assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Duplicate);
-    assert_eq!(a.ingest_remote(&event).unwrap(), RemoteIngest::Duplicate);
-    let remote = b.read_after("events", None, 10).unwrap();
-    assert_eq!(remote.len(), 1);
-    assert_ne!(remote[0].id, durable.id);
-    assert_eq!(remote[0].event_id, durable.event_id);
-    assert!(matches!(
-        b.replay_cursor("events", durable.id.parse().ok()),
-        Err(ChannelError::StaleCursor)
-    ));
+    assert_eq!(
+        b.read_after_async("events", None, 10).await.unwrap(),
+        vec![durable.clone()]
+    );
+    let event = ChannelEvent {
+        id: ChannelEventId {
+            origin: "remote".into(),
+            sequence: 1,
+        },
+        channel: "events".into(),
+        payload: payload(2),
+        ephemeral: false,
+    };
+    assert!(b.ingest_remote(&event).is_err());
+
     let mut live = b.subscribe_ephemeral("live").unwrap();
     let mut live_events = a.ephemeral_publications();
     let sent = a.publish_ephemeral("live", &payload(2)).unwrap();
@@ -179,7 +184,17 @@ async fn separate_databases_ingest_durable_and_ephemeral_without_rebroadcast() {
     assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     assert_eq!(*live.recv().await.unwrap(), sent);
     assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Duplicate);
-    assert!(b.read_after("live", None, 10).unwrap().is_empty());
+    assert_eq!(a.ingest_remote(&event).unwrap(), RemoteIngest::Duplicate);
+    assert!(
+        b.read_after_async("live", None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        b.read_after_async("events", None, 10).await.unwrap(),
+        vec![durable]
+    );
     assert!(matches!(
         echoes.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)
@@ -187,51 +202,9 @@ async fn separate_databases_ingest_durable_and_ephemeral_without_rebroadcast() {
 }
 
 #[test]
-fn identities_and_dedup_survive_reopen_and_replay_eviction() {
-    let temp = tempfile::tempdir().unwrap();
-    let a_path = temp.path().join("a.sqlite");
-    let b_path = temp.path().join("b.sqlite");
-    let a = ChannelStore::open(&a_path).unwrap();
-    let b = ChannelStore::open_sqlite_with_limits(
-        &b_path,
-        SqliteReplayLimits {
-            max_messages: 1,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let mut events = a.publications();
-    a.append("events", &payload(1)).unwrap();
-    let first = next_event(&mut events);
-    b.ingest_remote(&first).unwrap();
-    let mut live_events = a.ephemeral_publications();
-    a.publish_ephemeral("live", &payload(2)).unwrap();
-    let ephemeral = live_events.try_recv().unwrap();
-    b.ingest_remote(&ephemeral).unwrap();
-    drop(a);
-    drop(b);
-    let a = ChannelStore::open(&a_path).unwrap();
-    let b = ChannelStore::open(&b_path).unwrap();
-    let mut events = a.publications();
-    a.append("events", &payload(3)).unwrap();
-    let third = next_event(&mut events);
-    assert_eq!(third.id.origin, first.id.origin);
-    assert_eq!(third.id.sequence, first.id.sequence + 1);
-    assert_eq!(b.ingest_remote(&third).unwrap(), RemoteIngest::Applied);
-    assert_eq!(b.ingest_remote(&first).unwrap(), RemoteIngest::Duplicate);
-    assert_eq!(b.ingest_remote(&ephemeral).unwrap(), RemoteIngest::Applied);
-    let messages = b.read_after("events", None, 10).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].event_id.as_ref(), Some(&third.id));
-    assert_eq!(
-        b.raw_query_i64("SELECT COUNT(*) FROM channel_message_events", []),
-        1
-    );
-}
-
-#[test]
 fn transport_gaps_are_out_of_band_and_scoped_resets_do_not_publish() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let mut events = store.publications();
     let mut a = store.resets("a");
     let mut b = store.resets("b");
@@ -244,22 +217,17 @@ fn transport_gaps_are_out_of_band_and_scoped_resets_do_not_publish() {
     assert!(b.has_changed().unwrap());
     a.borrow_and_update();
     b.borrow_and_update();
+    // A live event from a peer, even a skipped one, resets nothing.
     let event = ChannelEvent {
         id: ChannelEventId {
-            origin: "remote".into(),
+            origin: "live_remote".into(),
             sequence: 2,
         },
         channel: "a".into(),
         payload: payload(2),
-        ephemeral: false,
-        lifecycle: None,
-        created_at_unix_ms: None,
+        ephemeral: true,
     };
     assert_eq!(store.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
-    assert!(a.has_changed().unwrap());
-    assert!(b.has_changed().unwrap());
-    a.borrow_and_update();
-    b.borrow_and_update();
     assert_eq!(
         store
             .ingest_remote(&ChannelEvent {
@@ -274,23 +242,33 @@ fn transport_gaps_are_out_of_band_and_scoped_resets_do_not_publish() {
     );
     assert!(!a.has_changed().unwrap());
     assert!(!b.has_changed().unwrap());
-    assert_eq!(store.read_after("a", None, 100).unwrap().len(), 1);
+    // Fencing after transport loss keeps the shared history.
+    let message = store.append("a", &payload(3)).unwrap();
+    assert_eq!(events.try_recv().unwrap(), wake("a"));
+    store.invalidate_replay().unwrap();
+    assert!(a.has_changed().unwrap());
+    assert!(b.has_changed().unwrap());
+    assert_eq!(
+        store.read_after("a", None, 100).unwrap(),
+        vec![message.clone()]
+    );
+    assert_eq!(
+        store.replay_cursor("a", message.id.parse().ok()).unwrap(),
+        message.id.parse().ok()
+    );
     assert!(store.read_after("b", None, 100).unwrap().is_empty());
     assert!(events.try_recv().is_err());
 }
 
 #[test]
-fn concurrent_handles_preserve_independent_durable_and_live_orders() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let a = ChannelStore::open(&path).unwrap();
-    let b = ChannelStore::open(&path).unwrap();
-    let reader = ChannelStore::open(&path).unwrap();
-    let mut events = reader.publications();
-    let mut live = reader.ephemeral_publications();
-    let threads: Vec<_> = [a, b]
-        .into_iter()
-        .map(|store| {
+fn concurrent_publishers_preserve_independent_durable_and_live_orders() {
+    let db = TestDb::start();
+    let store = std::sync::Arc::new(db.writer());
+    let mut events = store.publications();
+    let mut live = store.ephemeral_publications();
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let store = store.clone();
             std::thread::spawn(move || {
                 for n in 0..20 {
                     if n % 2 == 0 {
@@ -306,95 +284,37 @@ fn concurrent_handles_preserve_independent_durable_and_live_orders() {
         thread.join().unwrap();
     }
     for sequence in 1..=20 {
-        assert_eq!(next_event(&mut events).id.sequence, sequence);
+        assert_eq!(events.try_recv().unwrap(), wake("events"));
         assert_eq!(live.try_recv().unwrap().id.sequence, sequence);
     }
-    assert_eq!(reader.read_after("events", None, 100).unwrap().len(), 20);
-}
-
-#[test]
-fn failed_publish_or_ingest_does_not_advance_identity_or_dedup() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = ChannelStore::open_sqlite_with_limits(
-        &temp.path().join("a.sqlite"),
-        SqliteReplayLimits {
-            max_bytes: 20,
-            max_bytes_per_stream: 20,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let mut events = store.publications();
-    let oversized = ChannelPublishPayload {
-        r#type: "event".into(),
-        data: serde_json::json!("x".repeat(100)),
-    };
-    assert!(store.append("a", &oversized).is_err());
-    store.append("a", &payload(1)).unwrap();
-    assert_eq!(next_event(&mut events).id.sequence, 1);
-    let mut event = ChannelEvent {
-        id: ChannelEventId {
-            origin: "remote".into(),
-            sequence: 2,
-        },
-        channel: "a".into(),
-        payload: oversized,
-        ephemeral: false,
-        lifecycle: None,
-        created_at_unix_ms: None,
-    };
-    let resets = store.resets("a");
-    assert!(store.ingest_remote(&event).is_err());
-    assert!(!resets.has_changed().unwrap());
-    assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM channel_remote_origins", []),
-        0
-    );
-    event.payload = payload(2);
-    assert_eq!(store.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
-    assert!(resets.has_changed().unwrap());
-    assert!(events.try_recv().is_err());
+    let positions: Vec<i64> = store
+        .read_after("events", None, 100)
+        .unwrap()
+        .iter()
+        .map(|message| message.id.parse::<ReplayCursor>().unwrap().position)
+        .collect();
+    assert_eq!(positions, (1..=20).collect::<Vec<_>>());
 }
 
 #[tokio::test]
 async fn reset_ends_ephemeral_subscription_before_queued_business_events() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let writer = ChannelStore::open(&path).unwrap();
-    let reader = ChannelStore::open(&path).unwrap();
-    let mut reset = reader.subscribe_ephemeral("reset").unwrap();
-    let mut other = reader.subscribe_ephemeral("other").unwrap();
-    writer.publish_ephemeral("reset", &payload(1)).unwrap();
-    writer.publish_ephemeral("other", &payload(2)).unwrap();
-    writer.signal_gap(Some("reset"));
+    let db = TestDb::start();
+    let store = db.open().await;
+    let mut reset = store.subscribe_ephemeral("reset").unwrap();
+    let mut other = store.subscribe_ephemeral("other").unwrap();
+    store.publish_ephemeral("reset", &payload(1)).unwrap();
+    store.publish_ephemeral("other", &payload(2)).unwrap();
+    store.signal_gap(Some("reset"));
     assert!(reset.recv().await.is_none());
     assert!(reset.recv().await.is_none());
     assert_eq!(other.recv().await.unwrap().data, 2);
-    assert_eq!(
-        reader.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
-        0
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn async_appends_and_symlinked_handles_share_the_publication_queue() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let writer = std::sync::Arc::new(ChannelStore::open(&path).unwrap());
-    let alias = temp.path().join("alias.sqlite");
-    std::os::unix::fs::symlink(&path, &alias).unwrap();
-    let reader = ChannelStore::open(&alias).unwrap();
-    let changes = reader.changes("a");
-    let mut events = reader.publications();
-    writer.append_async("a", &payload(1)).await.unwrap();
-    assert!(changes.has_changed().unwrap());
-    assert_eq!(next_event(&mut events).payload, payload(1));
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_messages"), 0);
 }
 
 #[test]
 fn live_publication_overflow_does_not_affect_durable_publications_or_cursors() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let mut events = store.publications();
     let mut live = store.ephemeral_publications();
     let resets = store.resets("a");
@@ -410,35 +330,21 @@ fn live_publication_overflow_does_not_affect_durable_publications_or_cursors() {
         Err(broadcast::error::TryRecvError::Empty)
     ));
     assert!(!resets.has_changed().unwrap());
-    assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
-        0
-    );
-    assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
-        0
-    );
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_messages"), 0);
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
 }
 
 #[test]
-fn postgres_mesh_uses_wake_hints_without_reinserting_remote_events() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!("mesh-wake-test/{}", std::process::id());
-    let writer = ChannelStore::open_postgres(&url, &app).unwrap();
-    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
+fn mesh_uses_wake_hints_without_reinserting_remote_events() {
+    let db = TestDb::start();
+    let writer = db.writer();
+    let reader = db.writer();
     let mut events = writer.publications();
     let mut echoes = reader.publications();
     let after = reader.replay_cursor("a", None).unwrap();
     let changes = reader.changes("a");
     let message = writer.append("a", &payload(1)).unwrap();
-    assert_eq!(
-        events.try_recv().unwrap(),
-        ChannelPublication::Wake {
-            channel: "a".into()
-        }
-    );
+    assert_eq!(events.try_recv().unwrap(), wake("a"));
     reader.wake("a");
     assert!(changes.has_changed().unwrap());
     assert_eq!(reader.read_after("a", after, 100).unwrap(), vec![message]);
@@ -450,8 +356,6 @@ fn postgres_mesh_uses_wake_hints_without_reinserting_remote_events() {
         channel: "a".into(),
         payload: payload(2),
         ephemeral: false,
-        lifecycle: None,
-        created_at_unix_ms: None,
     };
     assert!(reader.ingest_remote(&remote).is_err());
     assert!(echoes.try_recv().is_err());

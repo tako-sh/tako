@@ -204,7 +204,7 @@ An optional `onRecovery(reason)` in Store or hook options reports `"reconnecting
 
 During routine recovery with no other active failure, a result with a valid offline lease remains readable with `status: "offline"`, `isStale: true`, and `error: null`. Without a valid lease, the client hides the stale data and can expose an error. Permission failures, malformed updates, invalid read responses, and expired cached data still need UI handling. HTTP `410` from the data read endpoint is terminal; only subscription replay expiry triggers cursor recovery.
 
-Recovery does not replicate your database or fail over application state. The loader must be able to read the authoritative data on the server that handles the new request. See [channel replay storage](/channels/#deploy-replay-storage) for the SQLite and shared Postgres boundaries.
+Recovery does not replicate your database or fail over application state. The loader must be able to read the authoritative data on the server that handles the new request. See [channel replay storage](/channels/#deploy-replay-storage) for the hosted replay database's boundaries.
 
 ## Opt Into Cached Offline Reads
 
@@ -251,7 +251,7 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 
 `tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. Channel and presence subscriptions are authorized the same way.
 
-The dev daemon keeps notification state in memory. In production, invalidations use the environment's [channel replay backend](/channels/#deploy-replay-storage): a hosted SQLite database or shared Postgres. Servers using hosted replay read the same bounded history from its home. Two apps selecting one database still have separate invalidations. This database stores notifications, not loader results or application records. After a cutover, restore, or missed notification, the client reconnects and reloads the authorized snapshot from your loader.
+The dev daemon keeps notifications in the project's dev replay database, `.tako/data/tako/channels.sqlite`. In production, invalidations use the environment's [channel replay database](/channels/#deploy-replay-storage), a hosted SQLite database. Every server running the app reads the same bounded history from its home. Two apps selecting one database still have separate invalidations. This database stores notifications, not loader results or application records. After a cutover, restore, or missed notification, the client reconnects and reloads the authorized snapshot from your loader.
 
 Use [Channels](/channels/) for application events, [Presence](/presence/) for current membership, and Stores for live data reads with optional offline caching.
 

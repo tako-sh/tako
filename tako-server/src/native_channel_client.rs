@@ -14,7 +14,7 @@ use std::{
 use tako_channels::PresenceMember;
 use tako_channels::{
     ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage, ChannelPublishPayload,
-    ChannelStore, ChannelStoreConfig,
+    ChannelStore,
 };
 use tako_network::AppEnv;
 use tokio::{sync::watch, task::JoinHandle};
@@ -130,11 +130,15 @@ impl Drop for Native {
 }
 
 /// The existing proxy cache owns this wrapper. Tasks never keep the wrapper or reader alive.
+///
+/// Without a native broker (a server outside any native network) the proxy
+/// writes through the app's direct writer handle, which it shares with the
+/// server's SDK publisher. Replay lives in the app's hosted database either
+/// way; presence lives in that handle's memory, as it does in a broker's.
 pub(crate) struct ProxyChannelStore {
     store: Arc<ChannelStore>,
     native: Option<Native>,
     target: ChannelTarget,
-    local_file: Option<crate::channels::LocalChannelFile>,
 }
 impl Deref for ProxyChannelStore {
     type Target = Arc<ChannelStore>;
@@ -144,72 +148,44 @@ impl Deref for ProxyChannelStore {
 }
 impl ProxyChannelStore {
     pub(crate) async fn open(
-        local_path: std::path::PathBuf,
         app: AppEnv,
         target: ChannelTarget,
         native: Option<Client>,
         direct: Arc<DirectChannelStores>,
     ) -> Result<Self, ChannelError> {
         if let Some(link) = native {
-            return Self::open_with_link(local_path, app, target, Arc::new(link)).await;
+            return Self::open_with_link(app, target, Arc::new(link)).await;
         }
         let to_open = target.clone();
-        let (store, local_file) =
-            tokio::task::spawn_blocking(move || direct.open(local_path, &app, &to_open))
-                .await
-                .map_err(|_| ChannelError::Storage("channel store worker failed".into()))??;
+        let store = tokio::task::spawn_blocking(move || direct.open(&app, &to_open))
+            .await
+            .map_err(|_| ChannelError::Storage("channel store worker failed".into()))??;
         Ok(Self {
             store,
-            local_file,
             target,
             native: None,
         })
     }
     async fn open_with_link(
-        local_path: std::path::PathBuf,
         app: AppEnv,
         target: ChannelTarget,
         link: Arc<dyn BrokerLink>,
     ) -> Result<Self, ChannelError> {
-        let config = target.config(local_path, &app);
+        let config = target.config(&app);
         link.register(app.clone(), target.clone())
             .await
             .map_err(|_| unavailable())?;
-        let (store, local_file) = tokio::task::spawn_blocking(move || {
-            let path = match &config {
-                ChannelStoreConfig::Sqlite { path } => Some(path.clone()),
-                _ => None,
-            };
-            let previous_file = path
-                .as_ref()
-                .and_then(|path| crate::channels::LocalChannelFile::capture(path.clone()).ok());
-            let store = ChannelStore::open_reader_config(config)?;
-            if previous_file
-                .as_ref()
-                .is_some_and(|file| !file.is_current())
-            {
-                return Err(ChannelError::Storage(
-                    "channel data changed while opening reader".into(),
-                ));
-            }
-            let local_file = path
-                .map(crate::channels::LocalChannelFile::capture)
-                .transpose()
-                .map_err(|_| ChannelError::Storage("cannot identify channel storage".into()))?;
-            Ok::<_, ChannelError>((store, local_file))
-        })
-        .await
-        .map_err(|_| ChannelError::Storage("channel store worker failed".into()))?
-        .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?;
-        let store = Arc::new(store);
-        Self::subscribe(store, app, target, link, local_file).await
+        let store = tokio::task::spawn_blocking(move || ChannelStore::open_reader_config(config))
+            .await
+            .map_err(|_| ChannelError::Storage("channel store worker failed".into()))?
+            .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?;
+        Self::subscribe(Arc::new(store), app, target, link).await
     }
     async fn subscribe(
         store: Arc<ChannelStore>,
         app: AppEnv,
         target: ChannelTarget,
         link: Arc<dyn BrokerLink>,
-        local_file: Option<crate::channels::LocalChannelFile>,
     ) -> Result<Self, ChannelError> {
         // A subscriber is established before callers can capture replay heads.
         let subscription = link
@@ -224,11 +200,9 @@ impl ProxyChannelStore {
             target.clone(),
             subscription,
             ready,
-            local_file.clone(),
         ));
         Ok(Self {
             store,
-            local_file,
             target,
             native: Some(Native {
                 link,
@@ -253,15 +227,6 @@ impl ProxyChannelStore {
         }
     }
     pub(crate) fn check_backend(&self, target: &ChannelTarget) -> Result<(), ChannelError> {
-        if self
-            .local_file
-            .as_ref()
-            .is_some_and(|file| !file.is_current())
-        {
-            return Err(ChannelError::Storage(
-                "channel data was replaced; reopen reader".into(),
-            ));
-        }
         if self.target != *target {
             return Err(ChannelError::Storage(
                 "channel backend configuration changed; broker re-registration required".into(),
@@ -277,13 +242,6 @@ impl ProxyChannelStore {
         Ok(())
     }
     pub(crate) async fn ensure_ready(&self) -> Result<(), ChannelError> {
-        if self
-            .local_file
-            .as_ref()
-            .is_some_and(|file| !file.is_current())
-        {
-            return Err(unavailable());
-        }
         let Some(native) = &self.native else {
             return Ok(());
         };
@@ -441,14 +399,10 @@ async fn notifications(
     target: ChannelTarget,
     mut subscription: Subscription,
     ready: watch::Sender<Readiness>,
-    local_file: Option<crate::channels::LocalChannelFile>,
 ) {
     let _reset = ResetOnDrop(store.clone());
     loop {
         while let Ok(notification) = subscription.recv().await {
-            if local_file.as_ref().is_some_and(|file| !file.is_current()) {
-                return;
-            }
             let Some(reader) = store.upgrade() else {
                 return;
             };
@@ -470,9 +424,6 @@ async fn notifications(
         let mut delay = FIRST_RETRY;
         loop {
             tokio::time::sleep(delay).await;
-            if local_file.as_ref().is_some_and(|file| !file.is_current()) {
-                return;
-            }
             if store.strong_count() == 0 {
                 return;
             }

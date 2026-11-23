@@ -46,6 +46,11 @@ pub(crate) struct State {
     /// exists while there's real work, and every wake re-spawns it
     /// (picking up whatever code the user just edited, no watcher needed).
     pub(crate) workflows: Option<Arc<tako_workflows::WorkflowManager>>,
+
+    /// The channel stores the proxy and internal socket share. `Some` once
+    /// `main` constructs them; each registration hands its app a replay
+    /// database.
+    pub(crate) channels: Option<crate::dev_channels::DevChannelStore>,
 }
 
 impl State {
@@ -81,6 +86,7 @@ impl State {
             tunnel_lifecycles: std::collections::HashMap::new(),
             internal_socket: None,
             workflows: None,
+            channels: None,
         }
     }
 

@@ -195,7 +195,7 @@ Connected clients receive membership changes within approximately one second. Cl
 
 Presence uses expiring records separate from durable channel replay. It does not replay old joins, leaves, or cursor positions. Use channels for durable live events and your app database for lasting records.
 
-With [hosted SQLite replay](/channels/#deploy-replay-storage), native brokers keep expiring presence leases in memory and exchange them with trusted servers. A database backup or restore does not capture or revive membership. Sharing a replay database does not share presence across apps or environments. When Postgres is the selected **channel** backend, it stores expiring leases separately from replay. Local development keeps presence in memory and authorizes connections through the app, as production does.
+Presence leases live only in memory, never in the [replay database](/channels/#deploy-replay-storage). A server keeps the leases of its own connections; on native networks, brokers exchange them with trusted servers. A database backup or restore does not capture or revive membership, and a server restart drops its members until their clients reconnect. Sharing a replay database does not share presence across apps or environments. Presence, like channels, needs a deployed release that uses channels, stores, or presence. Local development keeps presence in memory and authorizes connections through the app, as production does.
 
 ## Verify
 

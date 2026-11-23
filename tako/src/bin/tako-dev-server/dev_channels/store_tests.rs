@@ -105,7 +105,7 @@ async fn store_public_routes_authorize_load_and_subscribe_without_exposing_boots
         "private-bootstrap-token".into(),
     );
     let target = routes.lookup("app.test", "/").unwrap();
-    let store = DevChannelStore::new();
+    let (store, _database) = super::test_app::registered_as("registered-app").await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {

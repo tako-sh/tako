@@ -12,8 +12,8 @@ use super::{
 use crate::channels::ChannelTarget;
 pub(super) use commands::{Commands, CommandsReceiver, commands};
 use parking_lot::Mutex;
-use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
-use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore, RemoteIngest};
+use std::{collections::BTreeMap, io, sync::Arc};
+use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore};
 use tako_network::{AppEnv, DeviceId};
 use tokio::sync::{broadcast, broadcast::error::TryRecvError, mpsc, oneshot, watch};
 
@@ -121,40 +121,13 @@ async fn run_ordered(
 }
 pub(super) struct Application {
     pub store: Arc<ChannelStore>,
-    local_file: Option<crate::channels::LocalChannelFile>,
     pub(super) target: ChannelTarget,
     publications: broadcast::Receiver<ChannelPublication>,
     pub(super) subscribers: live::Subscribers,
     presence: super::presence::Leases,
     presence_queried: std::collections::BTreeSet<DeviceId>,
-    stream_limit: StreamLimitWarning,
-}
-/// How often an app at its stream limit is reported while peers keep sending
-/// events for new streams.
-const STREAM_LIMIT_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-/// Mesh events dropped because the app is at its stream limit, reported at
-/// most once per interval so a busy peer cannot flood the log.
-#[derive(Default)]
-pub(super) struct StreamLimitWarning {
-    dropped: u64,
-    reported: Option<tokio::time::Instant>,
-}
-impl StreamLimitWarning {
-    /// Count one drop; returns the drops to report when a report is due.
-    pub(super) fn dropped(&mut self, now: tokio::time::Instant) -> Option<u64> {
-        self.dropped += 1;
-        if self
-            .reported
-            .is_some_and(|at| now.duration_since(at) < STREAM_LIMIT_WARNING_INTERVAL)
-        {
-            return None;
-        }
-        self.reported = Some(now);
-        Some(std::mem::take(&mut self.dropped))
-    }
 }
 pub(super) struct Broker {
-    apps_root: PathBuf,
     pub apps: BTreeMap<AppEnv, Application>,
     pub peers: live::Peers,
     live: Arc<Mutex<live::Live>>,
@@ -174,11 +147,10 @@ impl Broker {
             );
         }
     }
-    pub fn new(apps_root: PathBuf, notifications: wire::Budget, local: DeviceId) -> Self {
+    pub fn new(notifications: wire::Budget, local: DeviceId) -> Self {
         let live = Arc::new(Mutex::new(live::Live::default()));
         let peers = live.lock().peers.clone();
         Self {
-            apps_root,
             apps: BTreeMap::new(),
             peers,
             live,
@@ -245,15 +217,7 @@ impl Broker {
         deadline: tokio::time::Instant,
     ) -> io::Result<()> {
         let replacing = match self.apps.get(&app) {
-            Some(existing)
-                if existing.target == target
-                    && existing
-                        .local_file
-                        .as_ref()
-                        .is_none_or(|file| file.is_current()) =>
-            {
-                return Ok(());
-            }
+            Some(existing) if existing.target == target => return Ok(()),
             Some(_) => true,
             None => false,
         };
@@ -261,38 +225,16 @@ impl Broker {
             return Err(error("channel app limit reached"));
         }
         target.validate().map_err(error)?;
-        let path = self
-            .apps_root
-            .join(app.as_str())
-            .join("data/tako/channels.sqlite");
-        let config = target.config(path.clone(), &app);
-        let local = matches!(target, ChannelTarget::Local);
+        let config = target.config(&app);
         let open = tokio::task::spawn_blocking(move || {
-            let previous_file = local
-                .then(|| crate::channels::LocalChannelFile::capture(path.clone()).ok())
-                .flatten();
-            let store = ChannelStore::open_config(config)
-                .map_err(|_| error("cannot open channel storage"))?;
-            if previous_file
-                .as_ref()
-                .is_some_and(|file| !file.is_current())
-            {
-                return Err(error("channel data changed while opening storage"));
-            }
-            let local_file = if local {
-                Some(crate::channels::LocalChannelFile::capture(path)?)
-            } else {
-                None
-            };
-            store
-                .invalidate_replay()
-                .map_err(|_| error("cannot fence channel replay"))?;
-            Ok::<_, io::Error>((Arc::new(store), local_file))
+            ChannelStore::open_config(config)
+                .map(Arc::new)
+                .map_err(|_| error("cannot open channel storage"))
         });
         // Commands run one at a time, so an unresponsive database must not hold
         // the broker past the caller's deadline: the worker finishes or fails on
         // its own, and other applications keep publishing meanwhile.
-        let (store, local_file) = match tokio::time::timeout_at(deadline, open).await {
+        let store = match tokio::time::timeout_at(deadline, open).await {
             Ok(joined) => joined.map_err(|_| error("channel storage worker failed"))??,
             Err(_) => return Err(error("channel storage did not open before the deadline")),
         };
@@ -304,7 +246,6 @@ impl Broker {
             // replay from the previous one.
             let application = self.apps.get_mut(&app).expect("registered application");
             application.store = store;
-            application.local_file = local_file;
             application.target = target;
             application.publications = publications;
             application.presence.clear_remote(&self.local);
@@ -318,13 +259,11 @@ impl Broker {
             app.clone(),
             Application {
                 store,
-                local_file,
                 target,
                 publications,
                 subscribers: Arc::default(),
                 presence: Default::default(),
                 presence_queried: Default::default(),
-                stream_limit: Default::default(),
             },
         );
         self.refresh_live(&app);
@@ -535,111 +474,50 @@ impl Broker {
         });
         complete
     }
-    /// Persistence precedes notification. Failure stops the broker, never silently resumes replay.
+    /// After lost notifications, live subscribers reload from the shared
+    /// history, which keeps everything committed.
     pub async fn fence(&mut self) -> io::Result<()> {
         let apps: Vec<_> = self.apps.keys().cloned().collect();
         for app in apps {
-            self.fence_app(&app).await?;
+            self.fence_app(&app);
             self.fanout(&Frame::Gap { app });
         }
         Ok(())
     }
-    async fn fence_app(&mut self, app: &AppEnv) -> io::Result<()> {
+    fn fence_app(&mut self, app: &AppEnv) {
         if let Some(application) = self.apps.get_mut(app) {
             application.presence.clear_remote(&self.local);
             application.presence_queried.clear();
-            application
-                .store
-                .run(|store| store.invalidate_replay())
-                .await
-                .map_err(|_| error("cannot fence channel replay"))?;
+            application.store.signal_gap(None);
             self.notify(app, Notification::Gap);
         }
-        Ok(())
     }
     pub(super) async fn remote(&mut self, peer: &DeviceId, frame: Frame) -> io::Result<()> {
         match frame {
             Frame::Publication { app, publication } => {
-                if let ChannelPublication::Event(event) = &publication {
-                    if event.ephemeral {
-                        return self.live.lock().remote(&app, event);
-                    }
+                if let ChannelPublication::Event(event) = &publication
+                    && event.ephemeral
+                {
+                    return self.live.lock().remote(&app, event);
                 }
                 let Some(application) = self.apps.get(&app) else {
                     return Ok(());
                 };
-                let notification = match publication {
-                    ChannelPublication::Wake { channel } => {
-                        if !application.target.shared_replay() || !valid_channel(&channel) {
-                            return Ok(());
-                        }
-                        application.store.wake(&channel);
-                        Notification::Wake { channel }
-                    }
-                    ChannelPublication::Event(event) => {
-                        if application.target.shared_replay() {
-                            return Ok(());
-                        }
-                        if !valid_channel(&event.channel) || event.payload.r#type.len() > 1024 {
-                            return Err(error("invalid channel event"));
-                        }
-                        let reset = application.store.resets(&event.channel);
-                        let to_ingest = event.clone();
-                        let result = application
-                            .store
-                            .run(move |store| store.ingest_remote(&to_ingest))
-                            .await
-                            .map_err(|_| error("cannot ingest channel event"))?;
-                        if result == RemoteIngest::Duplicate {
-                            return Ok(());
-                        }
-                        if reset.has_changed().unwrap_or(true) {
-                            self.notify(&app, Notification::Gap);
-                        }
-                        // Acknowledged in sequence, but no message to deliver.
-                        if result == RemoteIngest::Dropped {
-                            return Ok(());
-                        }
-                        if result == RemoteIngest::StreamLimit {
-                            if let Some(application) = self.apps.get_mut(&app)
-                                && let Some(dropped) = application
-                                    .stream_limit
-                                    .dropped(tokio::time::Instant::now())
-                            {
-                                tracing::warn!(
-                                    app = app.as_str(),
-                                    limit = tako_channels::MAX_STREAMS,
-                                    dropped,
-                                    "channel stream limit reached: dropped mesh events for new streams; \
-                                     this server's readers of those streams miss them"
-                                );
-                            }
-                            return Ok(());
-                        }
-                        if event.ephemeral {
-                            Notification::Committed {
-                                ephemeral: true,
-                                message: ChannelMessage {
-                                    id: String::new(),
-                                    event_id: Some(event.id),
-                                    channel: event.channel,
-                                    r#type: event.payload.r#type,
-                                    data: event.payload.data,
-                                },
-                            }
-                        } else {
-                            Notification::Wake {
-                                channel: event.channel,
-                            }
-                        }
-                    }
+                // Durable history is shared: peers only wake its readers.
+                let ChannelPublication::Wake { channel } = publication else {
+                    return Ok(());
                 };
+                if !valid_channel(&channel) {
+                    return Ok(());
+                }
+                application.store.wake(&channel);
+                let notification = Notification::Wake { channel };
                 if !self.notify(&app, notification) {
                     self.fence().await?;
                 }
             }
             Frame::Gap { app } => {
-                self.fence_app(&app).await?;
+                self.fence_app(&app);
             }
             Frame::Presence { app, publication } => {
                 self.remote_presence(peer, &app, publication)?;

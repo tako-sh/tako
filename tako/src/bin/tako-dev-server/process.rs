@@ -821,6 +821,8 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
             }
             crate::databases::release(&config_path).await;
             crate::kv::release(&config_path).await;
+            let channels = state.lock().unwrap().channels.clone();
+            crate::dev_channels::release(channels.as_ref(), &config_path).await;
         }
     }
 }

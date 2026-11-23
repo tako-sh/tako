@@ -1,5 +1,18 @@
 use super::*;
 
+/// A live event as another server's broker sends it.
+fn live_event(sequence: u64) -> ChannelEvent {
+    ChannelEvent {
+        id: ChannelEventId {
+            origin: "live_source".into(),
+            sequence,
+        },
+        channel: "live".into(),
+        payload: payload(sequence as usize),
+        ephemeral: true,
+    }
+}
+
 async fn publish_live(broker: &mut Broker, n: usize) -> ChannelMessage {
     let Reply::Response(Response::Published { message }) = broker
         .local(Request::Publish {
@@ -51,10 +64,19 @@ async fn three_servers_fan_out_without_local_subscribers_and_tolerate_missing_ev
     }
     assert!(echoes.try_recv().is_err());
     assert_eq!(
-        b_store.replay_cursor("events", Some(cursor)).unwrap(),
+        b_store
+            .replay_cursor_async("events", Some(cursor))
+            .await
+            .unwrap(),
         Some(cursor)
     );
-    assert!(b_store.read_after("live", None, 10).unwrap().is_empty());
+    assert!(
+        b_store
+            .read_after_async("live", None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(20), on_b.recv())
             .await
@@ -82,15 +104,20 @@ async fn live_overflow_preserves_peers_and_capacity_for_durable_events_and_contr
     assert_eq!(broker.peers.lock().len(), 1);
     assert_eq!(
         store
-            .replay_cursor("events", before.id.parse().ok())
+            .replay_cursor_async("events", before.id.parse().ok())
+            .await
             .unwrap(),
         before.id.parse().ok()
     );
     let durable = publish(&mut broker, 1).await;
     let frame: Frame = serde_json::from_slice(&outgoing.recv().await.unwrap().bytes).unwrap();
-    assert!(
-        matches!(frame, Frame::Publication { publication: ChannelPublication::Event(event), .. } if !event.ephemeral)
-    );
+    assert!(matches!(
+        frame,
+        Frame::Publication {
+            publication: ChannelPublication::Wake { .. },
+            ..
+        }
+    ));
     let notice: Notice = serde_json::from_slice(&notices.recv().await.unwrap().bytes).unwrap();
     assert!(
         matches!(notice, Notice::Notification { notification: Notification::Committed { message, ephemeral: false } } if message.id == durable.id)
@@ -128,8 +155,6 @@ async fn live_byte_budget_cannot_exhaust_reliable_budget() {
 
 #[tokio::test]
 async fn full_live_inbound_queue_does_not_block_a_later_control_frame() {
-    let source = ChannelStore::open_in_memory().unwrap();
-    let mut events = source.ephemeral_publications();
     let (transport, mut remote) = tokio::io::duplex(32 * 1024);
     let (commands, mut receiver) = broker::commands(1);
     let (sender, outgoing) = wire::queue(Budget::new(MAX_FRAME));
@@ -142,13 +167,12 @@ async fn full_live_inbound_queue_does_not_block_a_later_control_frame() {
         Budget::new(MAX_FRAME),
         outgoing,
     ));
-    for n in 0..3 {
-        source.publish_ephemeral("live", &payload(n)).unwrap();
+    for n in 1..=3 {
         wire::write(
             &mut remote,
             &Frame::Publication {
                 app: app(),
-                publication: ChannelPublication::Event(events.try_recv().unwrap()),
+                publication: ChannelPublication::Event(live_event(n)),
             },
         )
         .await
@@ -190,13 +214,8 @@ async fn request(commands: broker::Commands, request: Request) -> Response {
 
 #[tokio::test]
 async fn live_ipc_publication_progresses_while_durable_storage_is_locked() {
-    let (temp, broker) = new_broker().await;
-    let mut db = rusqlite::Connection::open(
-        temp.path()
-            .join(app().as_str())
-            .join("data/tako/channels.sqlite"),
-    )
-    .unwrap();
+    let (replay, broker) = new_broker().await;
+    let mut db = replay.sql();
     let transaction = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
@@ -247,8 +266,6 @@ async fn obsolete_connection_cannot_deliver_into_a_reconnected_peer_session() {
         .store
         .subscribe_ephemeral("live")
         .unwrap();
-    let source = ChannelStore::open_in_memory().unwrap();
-    let mut events = source.ephemeral_publications();
     let (old, _old_rx) = wire::queue(Budget::new(MAX_FRAME));
     let (new, _new_rx) = wire::queue(Budget::new(MAX_FRAME));
     let current = new.session();
@@ -258,10 +275,9 @@ async fn obsolete_connection_cannot_deliver_into_a_reconnected_peer_session() {
     let (shutdown, stopping) = watch::channel(false);
     let actor = tokio::spawn(broker::run(broker, receiver, control, stopping));
     for (n, session) in [(1, old.session()), (2, current)] {
-        source.publish_ephemeral("live", &payload(n)).unwrap();
         let frame = Frame::Publication {
             app: app(),
-            publication: ChannelPublication::Event(events.try_recv().unwrap()),
+            publication: ChannelPublication::Event(live_event(n)),
         };
         let (mut tx, mut rx) = tokio::io::duplex(8192);
         wire::write(&mut tx, &frame).await.unwrap();

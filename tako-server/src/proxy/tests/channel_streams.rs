@@ -73,7 +73,13 @@ async fn chat_app() -> (u16, Arc<parking_lot::Mutex<Vec<Value>>>) {
     (port, authorized)
 }
 
-fn proxy_for_chat(root: &std::path::Path, app_port: u16) -> Arc<TakoProxy> {
+fn proxy_for_chat(
+    root: &std::path::Path,
+    app_port: u16,
+) -> (
+    Arc<TakoProxy>,
+    Arc<crate::channels::test_replay::TestReplay>,
+) {
     let manager = Arc::new(AppManager::new(root.into()));
     let app = manager.register_app(AppConfig {
         name: "chat-app".into(),
@@ -89,7 +95,7 @@ fn proxy_for_chat(root: &std::path::Path, app_port: u16) -> Arc<TakoProxy> {
     lb.register_app(app);
     let mut routes = RouteTable::default();
     routes.set_app_routes("chat-app".into(), vec!["chat.example".into()]);
-    Arc::new(TakoProxy::new(
+    let proxy = Arc::new(TakoProxy::new(
         lb,
         Arc::new(RwLock::new(routes)),
         ProxyConfig {
@@ -98,7 +104,34 @@ fn proxy_for_chat(root: &std::path::Path, app_port: u16) -> Arc<TakoProxy> {
         },
         Arc::new(ColdStartManager::new(ColdStartConfig::default())),
         CloudflareIpRanges::default(),
-    ))
+    ));
+    // The app's deployed `@channels` binding.
+    let replay = Arc::new(crate::channels::test_replay::TestReplay::start(
+        "chat-app/production",
+    ));
+    let target = replay.target();
+    proxy.set_channel_target_resolver(Arc::new(move |_| Ok(target.clone())));
+    (proxy, replay)
+}
+
+/// Publish as the server's SDK publisher does, through the handle it shares
+/// with the proxy.
+async fn publish(
+    proxy: &TakoProxy,
+    replay: &crate::channels::test_replay::TestReplay,
+    publication: tako_channels::TrustedPublication,
+) -> tako_channels::ChannelMessage {
+    let (stores, target) = (proxy.direct_channel_stores.clone(), replay.target());
+    let app = crate::native_channel_client::app_scope("chat-app").unwrap();
+    tokio::task::spawn_blocking(move || {
+        stores
+            .open(&app, &target)
+            .unwrap()
+            .publish_trusted(&publication)
+            .unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 /// Serve every connection through the proxy's request filter.
@@ -173,8 +206,8 @@ fn messages(response: &str) -> Vec<Value> {
 async fn sse_subscribers_receive_only_the_stream_their_params_select() {
     let temp = TempDir::new().unwrap();
     let (app_port, authorized) = chat_app().await;
-    let proxy = proxy_for_chat(temp.path(), app_port);
-    let addr = serve(proxy).await;
+    let (proxy, replay) = proxy_for_chat(temp.path(), app_port);
+    let addr = serve(proxy.clone()).await;
 
     let invalid = read_all(get(addr, "room=one").await).await;
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
@@ -186,11 +219,6 @@ async fn sse_subscribers_receive_only_the_stream_their_params_select() {
     for head in &heads {
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
     }
-    let store = tako_channels::ChannelStore::open(&crate::channels::app_channels_db_path(
-        temp.path(),
-        "chat-app",
-    ))
-    .unwrap();
     let publish = |params: Value, data: i64| {
         let publication = tako_channels::TrustedPublication::parse(
             "chat",
@@ -198,18 +226,16 @@ async fn sse_subscribers_receive_only_the_stream_their_params_select() {
             json!({"type": "msg", "data": data}),
         )
         .unwrap();
-        store.publish_trusted(&publication).unwrap()
+        publish(&proxy, &replay, publication)
     };
-    publish(json!({"room": 2}), 2);
-    let first = publish(json!({"room": 1.0}), 1);
-    publish(json!({}), 0);
+    publish(json!({"room": 2}), 2).await;
+    let first = publish(json!({"room": 1.0}), 1).await;
+    publish(json!({}), 0).await;
 
     let (one, two) = (read_all(one).await, read_all(two).await);
     assert_eq!(
         messages(&one),
-        vec![
-            json!({"id": first.id, "eventId": first.event_id, "channel": "chat", "type": "msg", "data": 1})
-        ],
+        vec![json!({"id": first.id, "channel": "chat", "type": "msg", "data": 1})],
         "{one}"
     );
     assert_eq!(messages(&two).len(), 1, "{two}");
@@ -234,20 +260,15 @@ async fn sse_subscribers_receive_only_the_stream_their_params_select() {
 async fn sse_cursors_from_one_binding_reset_on_another() {
     let temp = TempDir::new().unwrap();
     let (app_port, _) = chat_app().await;
-    let proxy = proxy_for_chat(temp.path(), app_port);
-    let addr = serve(proxy).await;
-    let store = tako_channels::ChannelStore::open(&crate::channels::app_channels_db_path(
-        temp.path(),
-        "chat-app",
-    ))
-    .unwrap();
+    let (proxy, replay) = proxy_for_chat(temp.path(), app_port);
+    let addr = serve(proxy.clone()).await;
     let publication = tako_channels::TrustedPublication::parse(
         "chat",
         &json!({"room": 1}),
         json!({"type": "msg", "data": 1}),
     )
     .unwrap();
-    let message = store.publish_trusted(&publication).unwrap();
+    let message = publish(&proxy, &replay, publication).await;
     for (query, resumes) in [("room=1", true), ("room=2", false)] {
         let mut client = TcpStream::connect(addr).await.unwrap();
         client
@@ -273,7 +294,7 @@ async fn sse_cursors_from_one_binding_reset_on_another() {
 async fn undeclared_params_are_rejected_before_they_start_a_stream() {
     let temp = TempDir::new().unwrap();
     let (app_port, authorized) = chat_app().await;
-    let proxy = proxy_for_chat(temp.path(), app_port);
+    let (proxy, replay) = proxy_for_chat(temp.path(), app_port);
     let addr = serve(proxy).await;
 
     for (channel, query) in [
@@ -292,18 +313,16 @@ async fn undeclared_params_are_rejected_before_they_start_a_stream() {
         authorized.lock().is_empty(),
         "rejected before authorization"
     );
+    // No table yet means no stream either.
     let streams = || {
-        rusqlite::Connection::open(crate::channels::app_channels_db_path(
-            temp.path(),
-            "chat-app",
-        ))
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM channel_metadata WHERE channel LIKE 'tako.stream:%'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap()
+        replay
+            .sql()
+            .query_row(
+                "SELECT COUNT(*) FROM tako_replay_streams WHERE channel LIKE 'tako.stream:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
     };
     assert_eq!(streams(), 0, "no stream bookkeeping for rejected params");
 

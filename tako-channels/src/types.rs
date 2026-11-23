@@ -324,6 +324,13 @@ pub enum ChannelError {
         crate::store::MAX_STREAMS
     )]
     StreamLimit,
+    /// The app has no replay database binding: no deployed release of it
+    /// uses channels.
+    #[error(
+        "channels are not provisioned for this app: deploy a release that uses channels, \
+         stores or presence"
+    )]
+    NotProvisioned,
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -344,7 +351,9 @@ impl ChannelError {
             Self::NotDefined | Self::Undeclared { .. } => Some(ErrorCode::ChannelUnknown),
             Self::ParamsInvalid(_) => Some(ErrorCode::ChannelParamsInvalid),
             Self::BadRequest(_) => Some(ErrorCode::InvalidRequest),
-            Self::StreamLimit | Self::AuthUnavailable => Some(ErrorCode::Unavailable),
+            Self::StreamLimit | Self::AuthUnavailable | Self::NotProvisioned => {
+                Some(ErrorCode::Unavailable)
+            }
             Self::InvalidPath
             | Self::Unsupported
             | Self::Unauthorized
@@ -361,11 +370,5 @@ impl From<ChannelError> for tako_core::SocketError {
             code: error.socket_code(),
             message: error.to_string(),
         }
-    }
-}
-
-impl From<rusqlite::Error> for ChannelError {
-    fn from(e: rusqlite::Error) -> Self {
-        ChannelError::Storage(e.to_string())
     }
 }

@@ -1,4 +1,6 @@
-//! Channel support for `tako dev`, backed by in-memory `tako-channels` stores.
+//! Channel support for `tako dev`. Replay lives in each project's dev
+//! database, `.tako/data/tako/channels.sqlite`, which the daemon serves with
+//! its other local databases; presence stays in the daemon's memory.
 //!
 //! Subscribe and connect are authorized by the running app exactly as in
 //! production (`tako-server/src/proxy/service/channels.rs`): the proxy has
@@ -22,8 +24,8 @@ use tako_channels::live_store::{
 use tako_channels::params::ParamsError;
 use tako_channels::{
     ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelOperation, ChannelStore,
-    ChannelStream, ChannelTransport, ReplayFrom, TrustedPublication, parse_channel_route,
-    parse_message_id_cursor, parse_replay_from, parse_ws_last_message_id,
+    ChannelStoreConfig, ChannelStream, ChannelTransport, ReplayFrom, TrustedPublication,
+    parse_channel_route, parse_message_id_cursor, parse_replay_from, parse_ws_last_message_id,
 };
 
 /// The dev proxy listens only on HTTPS, so a cookie-authenticated socket's
@@ -31,49 +33,146 @@ use tako_channels::{
 const DEV_PROXY_IS_HTTPS: bool = true;
 const INTERNAL_TOKEN_HEADER: &str = "x-tako-internal-token";
 
-#[derive(Clone)]
+/// The project's dev replay database, relative to its directory.
+const REPLAY_FILE: &str = ".tako/data/tako/channels.sqlite";
+
+/// The daemon's channel stores, keyed by the app id channel requests and
+/// internal-socket publishes name. Each registered app gets its replay
+/// binding at registration; its store opens on first use.
+#[derive(Clone, Default)]
 pub struct DevChannelStore {
-    stores: Arc<Mutex<HashMap<String, Arc<ChannelStore>>>>,
+    apps: Arc<Mutex<HashMap<String, DevApp>>>,
+}
+
+struct DevApp {
+    /// The registration whose binding this is.
+    scope: String,
+    connection: tako_core::DatabaseConnection,
+    store: Option<Arc<ChannelStore>>,
+}
+
+fn store_key(app_id: &str) -> String {
+    let app_id = app_id.trim();
+    let app_id = if app_id.is_empty() { "app" } else { app_id };
+    tako_core::deployment_app_id_filename(app_id)
 }
 
 impl DevChannelStore {
     pub fn new() -> Self {
-        Self {
-            stores: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::default()
     }
 
-    fn store_for_app(&self, app_id: &str) -> Arc<ChannelStore> {
-        let app_id = app_id.trim();
-        let app_id = if app_id.is_empty() { "app" } else { app_id };
-        let key = tako_core::deployment_app_id_filename(app_id);
-
-        if let Some(store) = self.stores.lock().unwrap().get(&key) {
-            return store.clone();
+    /// Hand `app_id` its replay binding. A registration renamed since keeps
+    /// one entry, under its new name.
+    fn provision(&self, scope: &str, app_id: &str, connection: tako_core::DatabaseConnection) {
+        let key = store_key(app_id);
+        let mut apps = self.apps.lock().unwrap();
+        apps.retain(|other, app| {
+            let renamed = app.scope == scope && *other != key;
+            if renamed && let Some(store) = &app.store {
+                store.signal_gap(None);
+            }
+            !renamed
+        });
+        if apps
+            .get(&key)
+            .is_some_and(|app| app.connection == connection && app.scope == scope)
+        {
+            return;
         }
-
-        let mut stores = self.stores.lock().unwrap();
-        if let Some(store) = stores.get(&key) {
-            return store.clone();
+        if let Some(store) = apps.get(&key).and_then(|app| app.store.as_ref()) {
+            store.signal_gap(None);
         }
+        apps.insert(
+            key,
+            DevApp {
+                scope: scope.into(),
+                connection,
+                store: None,
+            },
+        );
+    }
 
-        let store = Arc::new(ChannelStore::open_in_memory().unwrap_or_else(|e| {
-            panic!("failed to open in-memory dev channel store for {app_id}: {e}")
-        }));
-        stores.insert(key, store.clone());
-        store
+    /// Forget the registration's store. Its live subscribers reload.
+    fn release(&self, scope: &str) {
+        self.apps.lock().unwrap().retain(|_, app| {
+            if app.scope == scope
+                && let Some(store) = &app.store
+            {
+                store.signal_gap(None);
+            }
+            app.scope != scope
+        });
+    }
+
+    /// The app's replay store. Blocking: the first call opens the database.
+    fn store_for_app(&self, app_id: &str) -> std::result::Result<Arc<ChannelStore>, ChannelError> {
+        let key = store_key(app_id);
+        let mut apps = self.apps.lock().unwrap();
+        let app = apps.get_mut(&key).ok_or(ChannelError::NotProvisioned)?;
+        if let Some(store) = &app.store {
+            return Ok(store.clone());
+        }
+        let config = ChannelStoreConfig::hosted(
+            &app.connection.url,
+            &app.connection.auth_token,
+            key.as_str(),
+        );
+        let store = Arc::new(ChannelStore::open_config(config)?);
+        app.store = Some(store.clone());
+        Ok(store)
     }
 
     /// Apply a server-side publication from the internal socket's
     /// `Command::ChannelPublish` path (channel `.publish()` from app or
-    /// workflow code) to the stream its params select.
+    /// workflow code) to the stream its params select. Blocking.
     pub fn publish(
         &self,
         app_id: &str,
         publication: &TrustedPublication,
-    ) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
-        self.store_for_app(app_id).publish_trusted(publication)
+    ) -> std::result::Result<tako_channels::ChannelMessage, ChannelError> {
+        self.store_for_app(app_id)?.publish_trusted(publication)
     }
+}
+
+/// The host scope of a registration's channel replay binding.
+fn replay_scope(config_path: &str) -> String {
+    format!("{config_path}#channels")
+}
+
+/// The project's replay database, as the binding the dev host serves.
+fn replay_bindings(project_dir: &str) -> HashMap<String, String> {
+    let file = std::path::Path::new(project_dir).join(REPLAY_FILE);
+    HashMap::from([(
+        tako_core::CHANNEL_REPLAY_BINDING.to_string(),
+        file.display().to_string(),
+    )])
+}
+
+/// Serve the project's dev replay database to the app registered at
+/// `config_path`, creating the file on first use.
+pub(crate) async fn provision(
+    channels: &DevChannelStore,
+    config_path: &str,
+    project_dir: &str,
+    app_id: &str,
+) -> std::result::Result<(), String> {
+    let scope = replay_scope(config_path);
+    let connection = crate::databases::connect(&scope, &replay_bindings(project_dir))
+        .await?
+        .remove(tako_core::CHANNEL_REPLAY_BINDING)
+        .ok_or("the channel replay binding was not served")?;
+    channels.provision(&scope, app_id, connection);
+    Ok(())
+}
+
+/// Stop serving the replay database of the app registered at `config_path`.
+pub(crate) async fn release(channels: Option<&DevChannelStore>, config_path: &str) {
+    let scope = replay_scope(config_path);
+    if let Some(channels) = channels {
+        channels.release(&scope);
+    }
+    crate::databases::release(&scope).await;
 }
 
 /// Bind an internal-socket publish or close to its stream. A close appends
@@ -110,7 +209,10 @@ pub async fn try_handle(
             internal_token_header: INTERNAL_TOKEN_HEADER,
             internal_token: context.token.clone(),
         };
-        let store = store_for(dev_store, &target.channel_store_key).await?;
+        let store = match store_for(dev_store, &target.channel_store_key).await {
+            Ok(store) => store,
+            Err(error) => return write_channel_error(session, target, error).await,
+        };
         let writer = Arc::new(tako_channels::LocalChannelWriter::new(store.clone()));
         return tako_channels::shared::serve(
             session,
@@ -284,7 +386,10 @@ async fn serve_websocket(
     requested: ReplayFrom,
     auth: DevSocketAuth,
 ) -> Result<bool> {
-    let store = store_for(dev_store, &target.channel_store_key).await?;
+    let store = match store_for(dev_store, &target.channel_store_key).await {
+        Ok(store) => store,
+        Err(error) => return write_channel_error(session, target, error).await,
+    };
     let header =
         match tako_channels::websocket::build_websocket_upgrade_response(session.req_header()) {
             Ok(header) => header,
@@ -314,14 +419,16 @@ async fn serve_websocket(
     tako_channels::websocket::serve(session, &store, stream, requested, auth, params, reader).await
 }
 
-async fn store_for(dev_store: &DevChannelStore, app_id: &str) -> Result<Arc<ChannelStore>> {
+/// The app's store, opened off the async executor: the hosted client blocks.
+async fn store_for(
+    dev_store: &DevChannelStore,
+    app_id: &str,
+) -> std::result::Result<Arc<ChannelStore>, ChannelError> {
     let dev_store = dev_store.clone();
     let app_id = app_id.to_owned();
     tokio::task::spawn_blocking(move || dev_store.store_for_app(&app_id))
         .await
-        .map_err(|error| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
-        })
+        .map_err(|error| ChannelError::Storage(error.to_string()))?
 }
 
 /// Production's status and body for a failed channel request. When the app
@@ -340,13 +447,23 @@ async fn write_channel_error(
         ChannelError::Storage(message) => tracing::error!("dev channel storage error: {message}"),
         _ => {}
     }
-    let (status, mut body) = tako_channels::authorize::error_response(&error);
-    if matches!(error, ChannelError::AuthUnavailable) {
-        body = serde_json::json!({
-            "error": "Channel authorization unavailable: the app did not answer its channel registry or authorize endpoint"
-        });
-    }
+    let (status, body) = error_response(&error);
     write_json(session, status, &body.to_string()).await
+}
+
+/// Production's status and body, with dev's own explanations.
+fn error_response(error: &ChannelError) -> (u16, serde_json::Value) {
+    let (status, body) = tako_channels::authorize::error_response(error);
+    let explained = match error {
+        ChannelError::AuthUnavailable => {
+            "Channel authorization unavailable: the app did not answer its channel registry or authorize endpoint"
+        }
+        ChannelError::NotProvisioned => {
+            "Channels unavailable: the app is not registered with the dev server"
+        }
+        _ => return (status, body),
+    };
+    (status, serde_json::json!({ "error": explained }))
 }
 
 /// Stores use app authorization even in local dev, including schema coercion
@@ -423,7 +540,10 @@ pub async fn try_handle_store(
             Err(error) => write_store_error(session, error).await,
         };
     }
-    let store = store_for(dev_store, &target.channel_store_key).await?;
+    let store = match store_for(dev_store, &target.channel_store_key).await {
+        Ok(store) => store,
+        Err(error) => return write_channel_error(session, target, error).await,
+    };
     serve_store_events(session, &store, &store_scope(&channel, &params), &auth).await
 }
 
@@ -455,7 +575,13 @@ async fn serve_sse(
     from_start: bool,
     auth: ChannelAuthResponse,
 ) -> Result<bool> {
-    let store = store_for(dev_store, app_id).await?;
+    let store = match store_for(dev_store, app_id).await {
+        Ok(store) => store,
+        Err(error) => {
+            let (status, body) = error_response(&error);
+            return write_json(session, status, &body.to_string()).await;
+        }
+    };
     let ephemeral = if auth.ephemeral {
         Some(store.subscribe_ephemeral(stream.key()).map_err(|e| {
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
@@ -587,7 +713,7 @@ mod tests {
         assert!(parse_channel_route("/_tako/channels/").is_err());
     }
 
-    /// Replay ids are opaque SQLite cursors scoped to the store epoch and
+    /// Replay ids are opaque cursors scoped to the database epoch and
     /// stream; only the trailing position is comparable across stores.
     fn position(id: &str) -> i64 {
         id.parse::<tako_channels::ReplayCursor>().unwrap();
@@ -595,74 +721,140 @@ mod tests {
     }
 
     #[test]
-    fn publish_and_read_via_store() {
-        let dev_store = DevChannelStore::new();
-        let store = dev_store.store_for_app("demo");
+    fn registrations_serve_the_projects_dev_replay_database() {
+        assert_eq!(replay_scope("/p/tako.toml"), "/p/tako.toml#channels");
+        assert_eq!(
+            replay_bindings("/p"),
+            HashMap::from([(
+                "@channels".to_string(),
+                "/p/.tako/data/tako/channels.sqlite".to_string()
+            )])
+        );
+    }
 
-        // Sync the channel first.
-        store.sync_channel("test", &lifecycle()).unwrap();
-
-        let msg = store
-            .append(
-                "test",
-                &ChannelPublishPayload {
-                    r#type: "message".to_string(),
-                    data: serde_json::json!({"text": "hello"}),
-                },
-            )
+    #[tokio::test]
+    async fn publish_and_read_via_store() {
+        let (dev_store, _server) = test_app::registered_as("demo").await;
+        let store = store_for(&dev_store, "demo").await.unwrap();
+        store
+            .sync_channel_async("test", &lifecycle())
+            .await
             .unwrap();
-
+        let payload = ChannelPublishPayload {
+            r#type: "message".to_string(),
+            data: serde_json::json!({"text": "hello"}),
+        };
+        let msg = store.append_async("test", &payload).await.unwrap();
         assert_eq!(position(&msg.id), 1);
         assert_eq!(msg.channel, "test");
 
-        let messages = store.read_after("test", None, 100).unwrap();
+        let messages = store.read_after_async("test", None, 100).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].data, serde_json::json!({"text": "hello"}));
     }
 
-    #[test]
-    fn publish_increments_ids() {
-        let dev_store = DevChannelStore::new();
-        let store = dev_store.store_for_app("demo");
-
-        store.sync_channel("ch", &lifecycle()).unwrap();
-
+    #[tokio::test]
+    async fn publish_increments_ids() {
+        let (dev_store, _server) = test_app::registered_as("demo").await;
+        let store = store_for(&dev_store, "demo").await.unwrap();
+        store.sync_channel_async("ch", &lifecycle()).await.unwrap();
         let p = ChannelPublishPayload {
             r#type: "message".to_string(),
             data: serde_json::json!(null),
         };
-        assert_eq!(position(&store.append("ch", &p).unwrap().id), 1);
-        assert_eq!(position(&store.append("ch", &p).unwrap().id), 2);
-        assert_eq!(position(&store.append("ch", &p).unwrap().id), 3);
+        for id in 1..=3 {
+            assert_eq!(
+                position(&store.append_async("ch", &p).await.unwrap().id),
+                id
+            );
+        }
     }
 
-    #[test]
-    fn dev_channel_store_keeps_apps_in_separate_dbs() {
+    #[tokio::test]
+    async fn dev_channel_store_keeps_apps_in_separate_histories() {
+        let server = tako_db::testing::TestServer::start();
+        let database = server.database("/p/one.toml#channels");
         let dev_store = DevChannelStore::new();
+        // Two registrations of one project share its database file.
+        for (scope, app) in [
+            ("/p/one.toml#channels", "app/one"),
+            ("/p/two.toml#channels", "app/two"),
+        ] {
+            let token = server.bind(scope, &database.id);
+            dev_store.provision(scope, app, test_app::connection(&server, token));
+        }
         let payload = serde_json::json!({"type": "message", "data": {"text": "hello"}});
-
         let publication =
             TrustedPublication::parse("chat", &serde_json::Value::Null, payload).unwrap();
-        let first = dev_store.publish("app/one", &publication).unwrap();
-        let second = dev_store.publish("app/two", &publication).unwrap();
+        let first = test_app::publish(&dev_store, "app/one", publication.clone())
+            .await
+            .unwrap();
+        let second = test_app::publish(&dev_store, "app/two", publication)
+            .await
+            .unwrap();
 
         assert_eq!(position(&first.id), 1);
         assert_eq!(position(&second.id), 1);
-        assert_eq!(
-            dev_store
-                .store_for_app("app/one")
-                .read_after("chat", None, 100)
-                .unwrap()
-                .len(),
-            1,
+        for app in ["app/one", "app/two"] {
+            assert_eq!(test_app::read(&dev_store, app, "chat").await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn released_and_renamed_registrations_keep_one_store() {
+        let server = tako_db::testing::TestServer::start();
+        let scope = "/p/tako.toml#channels";
+        let database = server.database(scope);
+        let connection = test_app::connection(&server, database.token);
+        let dev_store = DevChannelStore::new();
+        let publication = TrustedPublication::parse(
+            "chat",
+            &serde_json::Value::Null,
+            serde_json::json!({"type": "message", "data": 1}),
+        )
+        .unwrap();
+        assert!(matches!(
+            test_app::publish(&dev_store, "demo", publication.clone()).await,
+            Err(ChannelError::NotProvisioned)
+        ));
+        dev_store.provision(scope, "demo", connection.clone());
+        let store = store_for(&dev_store, "demo").await.unwrap();
+        let mut gap = store.resets("chat");
+        test_app::publish(&dev_store, "demo", publication.clone())
+            .await
+            .unwrap();
+        // Registering again keeps the open store.
+        dev_store.provision(scope, "demo", connection.clone());
+        assert!(Arc::ptr_eq(
+            &store,
+            &store_for(&dev_store, "demo").await.unwrap()
+        ));
+        assert!(!gap.has_changed().unwrap());
+        // A renamed registration keeps one store, under its new name.
+        dev_store.provision(scope, "renamed", connection);
+        assert!(gap.has_changed().unwrap());
+        gap.borrow_and_update();
+        assert!(matches!(
+            store_for(&dev_store, "demo").await,
+            Err(ChannelError::NotProvisioned)
+        ));
+        assert!(
+            test_app::read(&dev_store, "renamed", "chat")
+                .await
+                .is_empty()
         );
-        assert_eq!(
-            dev_store
-                .store_for_app("app/two")
-                .read_after("chat", None, 100)
+        dev_store.release(scope);
+        assert!(matches!(
+            test_app::publish(&dev_store, "renamed", publication).await,
+            Err(ChannelError::NotProvisioned)
+        ));
+        let (status, body) = error_response(&ChannelError::NotProvisioned);
+        assert_eq!(status, 503);
+        assert!(
+            body["error"]
+                .as_str()
                 .unwrap()
-                .len(),
-            1,
+                .contains("not registered with the dev server")
         );
     }
 }

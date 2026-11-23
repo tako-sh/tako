@@ -62,23 +62,18 @@ impl ChannelWriter for LocalChannelWriter {
             .await
     }
 
+    // Presence lives in the store's memory: no database work to move off the executor.
     async fn update_presence(
         &self,
         channel: &str,
         member: &PresenceMember,
     ) -> Result<(), ChannelError> {
-        let channel = channel.to_owned();
-        let member = member.clone();
         self.0
-            .run(move |store| store.update_presence(&channel, &member, crate::store::now_unix_ms()))
-            .await
+            .update_presence(channel, member, crate::store::now_unix_ms())
     }
 
     async fn presence(&self, channel: &str) -> Result<Vec<PresenceMember>, ChannelError> {
-        let channel = channel.to_owned();
-        self.0
-            .run(move |store| store.presence(&channel, crate::store::now_unix_ms()))
-            .await
+        self.0.presence(channel, crate::store::now_unix_ms())
     }
 
     async fn remove_presence(
@@ -86,10 +81,6 @@ impl ChannelWriter for LocalChannelWriter {
         channel: &str,
         connection_id: &str,
     ) -> Result<(), ChannelError> {
-        let channel = channel.to_owned();
-        let connection_id = connection_id.to_owned();
-        self.0
-            .run(move |store| store.remove_presence(&channel, &connection_id))
-            .await
+        self.0.remove_presence(channel, connection_id)
     }
 }

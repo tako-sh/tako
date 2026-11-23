@@ -1,7 +1,7 @@
 //! Live delivery is independent of replay storage and its failure handling.
 use super::*;
 use parking_lot::Mutex;
-use tako_channels::{ChannelEvent, ChannelPublishPayload};
+use tako_channels::{ChannelEvent, ChannelPublishPayload, RemoteIngest};
 
 pub(super) type Peers = Arc<Mutex<BTreeMap<DeviceId, wire::Sender>>>;
 pub(super) type Subscribers = Arc<Mutex<Vec<wire::Sender>>>;
@@ -87,8 +87,6 @@ impl Live {
             channel: channel.into(),
             payload: payload.clone(),
             ephemeral: true,
-            lifecycle: None,
-            created_at_unix_ms: None,
         };
         if let Ok(bytes) = wire::encode(&Frame::Publication {
             app: app.clone(),

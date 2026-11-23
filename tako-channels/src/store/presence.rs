@@ -1,15 +1,38 @@
-use super::postgres::DATABASE_NOW_MS;
-use super::{ChannelStore, ChannelStoreBackend};
+//! Presence leases live only in this handle's memory: they are never written
+//! to the replay database, so a backup or restore cannot capture or revive
+//! membership.
+use super::ChannelStore;
 use crate::{ChannelError, PresenceMember};
+use std::collections::BTreeMap;
 
 pub(super) const LEASE_MS: i64 = 45_000;
+const MAX_DATA_BYTES: usize = 16_384;
+/// Expired leases are invisible at once; sweeping them is only memory upkeep.
+const SWEEP_INTERVAL_MS: i64 = 1_000;
 
-fn storage_error(error: impl std::fmt::Display) -> ChannelError {
-    ChannelError::Storage(error.to_string())
+struct Lease {
+    member: PresenceMember,
+    expires_at: i64,
 }
 
-fn hosted_presence_error() -> ChannelError {
-    ChannelError::Storage("presence with hosted channel storage requires the native broker".into())
+#[derive(Default)]
+pub(super) struct Leases {
+    /// Channel, then connection: snapshots list members by connection ID.
+    channels: BTreeMap<String, BTreeMap<String, Lease>>,
+    next_sweep: i64,
+}
+
+impl Leases {
+    fn sweep(&mut self, now: i64) {
+        if now < self.next_sweep {
+            return;
+        }
+        self.next_sweep = now.saturating_add(SWEEP_INTERVAL_MS);
+        self.channels.retain(|_, members| {
+            members.retain(|_, lease| lease.expires_at > now);
+            !members.is_empty()
+        });
+    }
 }
 
 impl ChannelStore {
@@ -20,73 +43,45 @@ impl ChannelStore {
         now: i64,
     ) -> Result<(), ChannelError> {
         self.ensure_writable()?;
-        let data = serde_json::to_string(&member.data).map_err(storage_error)?;
-        if data.len() > 16_384 {
+        let data = serde_json::to_string(&member.data)
+            .map_err(|error| ChannelError::BadRequest(error.to_string()))?;
+        if data.len() > MAX_DATA_BYTES {
             return Err(ChannelError::BadRequest(
                 "Presence data must be at most 16 KiB".into(),
             ));
         }
-        let encoded = serde_json::to_string(member).map_err(storage_error)?;
-        match self.backend.as_ref() {
-            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
-            ChannelStoreBackend::Sqlite(store) => {
-                store.conn.lock().execute(
-                    "INSERT INTO presence (channel, connection_id, member_json, expires_at) VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(channel, connection_id) DO UPDATE SET member_json = excluded.member_json, expires_at = excluded.expires_at",
-                    rusqlite::params![channel, member.connection_id, encoded, now.saturating_add(LEASE_MS)],
-                ).map_err(storage_error)?;
-            }
-            ChannelStoreBackend::Postgres(store) => {
-                store.client()?.execute(&format!(
-                    "INSERT INTO {}.presence (app_id, channel, connection_id, member_json, expires_at) VALUES ($1, $2, $3, $4, {DATABASE_NOW_MS} + {LEASE_MS})
-                     ON CONFLICT(app_id, channel, connection_id) DO UPDATE SET member_json = excluded.member_json, expires_at = excluded.expires_at", store.schema),
-                    &[&store.app_id, &channel, &member.connection_id, &encoded],
-                ).map_err(storage_error)?;
-            }
-        }
+        let mut leases = self.presence.lock();
+        leases.sweep(now);
+        leases.channels.entry(channel.into()).or_default().insert(
+            member.connection_id.clone(),
+            Lease {
+                member: member.clone(),
+                expires_at: now.saturating_add(LEASE_MS),
+            },
+        );
         Ok(())
     }
 
     pub fn presence(&self, channel: &str, now: i64) -> Result<Vec<PresenceMember>, ChannelError> {
-        let rows: Vec<String> = match self.backend.as_ref() {
-            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
-            ChannelStoreBackend::Sqlite(store) => {
-                let conn = store.conn.lock();
-                let mut stmt = conn.prepare_cached(
-                    "SELECT member_json FROM presence WHERE channel = ?1 AND expires_at > ?2 ORDER BY connection_id"
-                ).map_err(storage_error)?;
-                stmt.query_map(rusqlite::params![channel, now], |row| row.get(0))
-                    .map_err(storage_error)?.collect::<Result<Vec<_>, _>>().map_err(storage_error)?
-            }
-            ChannelStoreBackend::Postgres(store) => {
-                store.client()?.query(&format!(
-                    "SELECT member_json FROM {}.presence WHERE app_id = $1 AND channel = $2 AND expires_at > {DATABASE_NOW_MS} ORDER BY connection_id", store.schema),
-                    &[&store.app_id, &channel],
-                ).map_err(storage_error)?.into_iter().map(|row| row.get(0)).collect()
-            }
-        };
-        rows.into_iter()
-            .map(|row| serde_json::from_str(&row).map_err(storage_error))
-            .collect()
+        Ok(self
+            .presence
+            .lock()
+            .channels
+            .get(channel)
+            .into_iter()
+            .flat_map(|members| members.values())
+            .filter(|lease| lease.expires_at > now)
+            .map(|lease| lease.member.clone())
+            .collect())
     }
 
     pub fn remove_presence(&self, channel: &str, connection_id: &str) -> Result<(), ChannelError> {
         self.ensure_writable()?;
-        match self.backend.as_ref() {
-            ChannelStoreBackend::Hosted(_) => return Err(hosted_presence_error()),
-            ChannelStoreBackend::Sqlite(store) => {
-                store
-                    .conn
-                    .lock()
-                    .execute(
-                        "DELETE FROM presence WHERE channel = ?1 AND connection_id = ?2",
-                        [channel, connection_id],
-                    )
-                    .map_err(storage_error)?;
-            }
-            ChannelStoreBackend::Postgres(store) => {
-                store.client()?.execute(&format!("DELETE FROM {}.presence WHERE app_id = $1 AND channel = $2 AND connection_id = $3", store.schema),
-                    &[&store.app_id, &channel, &connection_id]).map_err(storage_error)?;
+        let mut leases = self.presence.lock();
+        if let Some(members) = leases.channels.get_mut(channel) {
+            members.remove(connection_id);
+            if members.is_empty() {
+                leases.channels.remove(channel);
             }
         }
         Ok(())

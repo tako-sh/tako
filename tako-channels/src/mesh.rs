@@ -1,12 +1,7 @@
 use crate::{ChannelPublishPayload, ephemeral::EphemeralHub};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    fmt,
-    path::PathBuf,
-    sync::{Arc, OnceLock, Weak},
-};
+use std::{collections::HashMap, fmt, sync::Arc};
 use tokio::sync::{broadcast, watch};
 
 /// Identity allocated by the origin, independent of each peer's replay position.
@@ -28,19 +23,11 @@ pub struct ChannelEvent {
     pub channel: String,
     pub payload: ChannelPublishPayload,
     pub ephemeral: bool,
-    /// The lifecycle the origin's stream had after this durable event, so a
-    /// peer retains the stream, and its close marker, as long as the origin.
-    /// A peer without one keeps the stream's current lifecycle.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lifecycle: Option<crate::ChannelLifecycle>,
-    /// When the origin stored this durable event, in Unix milliseconds. Peers
-    /// stamp their copy with it, so a message, and a close marker, expire at
-    /// the same moment on every node whenever each one prunes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at_unix_ms: Option<i64>,
 }
 
-/// Transport authenticates and app-scopes these publications before remote ingest.
+/// Transport authenticates and app-scopes these publications before remote
+/// ingest. Peers share durable history through the replay database, so a
+/// durable commit travels as a wake hint; only live events travel whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChannelPublication {
@@ -52,13 +39,6 @@ pub enum ChannelPublication {
 pub enum RemoteIngest {
     Applied,
     Duplicate,
-    /// Acknowledged in sequence but not stored: the stream was already
-    /// closed. Nothing to deliver.
-    Dropped,
-    /// Acknowledged in sequence but not stored: the event would start a new
-    /// stream and the app is at [`crate::MAX_STREAMS`]. This node's readers
-    /// of that stream never receive it; the caller reports it.
-    StreamLimit,
 }
 
 pub(crate) type StreamChanges = HashMap<String, watch::Sender<Option<i64>>>;
@@ -100,21 +80,6 @@ impl Default for DeliveryState {
 }
 
 impl DeliveryState {
-    pub(crate) fn for_path(path: PathBuf) -> Arc<Self> {
-        static STATES: OnceLock<Mutex<HashMap<PathBuf, Weak<DeliveryState>>>> = OnceLock::new();
-        let mut states = STATES.get_or_init(Default::default).lock();
-        states.retain(|_, state| state.strong_count() > 0);
-        if let Some(state) = states.get(&path).and_then(Weak::upgrade) {
-            return state;
-        }
-        let state = Arc::new(Self {
-            ephemeral: EphemeralHub::for_path(path.clone()),
-            ..Self::default()
-        });
-        states.insert(path, Arc::downgrade(&state));
-        state
-    }
-
     pub(crate) fn signal_gap(&self, channel: Option<&str>) {
         let mut resets = self.resets.lock();
         resets.retain(|_, sender| sender.receiver_count() > 0);

@@ -70,7 +70,7 @@ async fn appends_delete_their_own_expired_history_and_leave_other_streams_and_ap
         // A quiet stream's expired row is already invisible; maintenance deletes it.
         assert_eq!(rows("one", "b"), 1);
         assert!(app.read_after("b", None, 10).unwrap().is_empty());
-        app.prune(0).unwrap();
+        app.prune().unwrap();
         assert_eq!(rows("one", "b"), 0);
         // Another app's identical stream keeps its own history.
         assert_eq!(other.read_after("a", None, 10).unwrap(), [other_event]);
@@ -142,7 +142,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             )
             .unwrap();
         assert_eq!(old, (1, 60_000));
-        app.prune(i64::MIN).unwrap(); // Only database time counts.
+        app.prune().unwrap();
         assert_eq!(
             sql.query_row("SELECT stream_count FROM tako_replay_apps", [], |r| r
                 .get::<_, i64>(0))
@@ -150,7 +150,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             0
         );
         assert!(app.publish("room", &event("reopened"), None).unwrap().1);
-        app.prune(i64::MAX).unwrap();
+        app.prune().unwrap();
         assert_eq!(app.read_after("room", None, 10).unwrap().len(), 1);
     })
     .await;
@@ -313,7 +313,7 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
         // Maintenance recovers an idle writer, and readers never create state.
         db.sql().execute_batch(RESET).unwrap();
         assert!(HostedChannelStore::open(&db.url, &db.token, "one", true).is_err());
-        app.prune(0).unwrap();
+        app.prune().unwrap();
         db.open("one", true);
     })
     .await;

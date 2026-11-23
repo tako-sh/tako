@@ -19,23 +19,24 @@ async fn subscription_uses_the_granted_mode_before_first_publish() {
         },
     )
     .await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     let mut response = reqwest::get(format!("http://{endpoint}/_tako/channels/sse/progress"))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let message = dev_store
-        .publish(
-            &app_id,
-            &TrustedPublication::parse(
-                "progress",
-                &serde_json::Value::Null,
-                json!({"type": "progress", "data": 42, "lifecycle": {"ephemeral": true}}),
-            )
-            .unwrap(),
+    let message = test_app::publish(
+        &dev_store,
+        &app_id,
+        TrustedPublication::parse(
+            "progress",
+            &serde_json::Value::Null,
+            json!({"type": "progress", "data": 42, "lifecycle": {"ephemeral": true}}),
         )
-        .unwrap();
+        .unwrap(),
+    )
+    .await
+    .unwrap();
     assert!(message.id.is_empty());
     let chunk = tokio::time::timeout(Duration::from_secs(1), response.chunk())
         .await
@@ -55,10 +56,8 @@ async fn subscription_uses_the_granted_mode_before_first_publish() {
     assert_eq!(delivered["data"], 42);
     assert_eq!(delivered["eventId"]["sequence"], 1);
     assert!(
-        dev_store
-            .store_for_app(&app_id)
-            .read_after("progress", None, 100)
-            .unwrap()
+        test_app::read(&dev_store, &app_id, "progress")
+            .await
             .is_empty()
     );
     assert_eq!(calls.lock().unwrap()[0]["operation"], "subscribe");

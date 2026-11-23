@@ -34,10 +34,7 @@ pub use routing::{
     ReplayFrom, parse_channel_route, parse_message_id_cursor, parse_replay_from,
     parse_ws_last_message_id,
 };
-pub use store::{
-    ChannelStore, ChannelStoreConfig, MAX_STREAMS, POSTGRES_CHANNELS_SCHEMA, SqliteReplayLimits,
-    channels_db_path,
-};
+pub use store::{ChannelStore, ChannelStoreConfig, MAX_STREAMS};
 pub use types::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelAuthVerifyRequest, ChannelDefinitionMeta,
     ChannelError, ChannelHeaderValue, ChannelLifecycle, ChannelMessage, ChannelOperation,
@@ -53,6 +50,9 @@ pub const TAKO_PUBLIC_BASE_PATH: &str = "/_tako";
 pub const CHANNELS_BASE_PATH: &str = "/_tako/channels/";
 pub const INTERNAL_CHANNEL_AUTH_PATH: &str = "/channels/authorize";
 pub const INTERNAL_CHANNEL_REGISTRY_PATH: &str = "/channels/registry";
+
+#[cfg(test)]
+mod test_db;
 
 #[cfg(test)]
 mod tests;

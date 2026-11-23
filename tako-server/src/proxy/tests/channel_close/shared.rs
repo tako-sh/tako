@@ -160,9 +160,11 @@ async fn credential_rotation_reconnects_shared_socket_and_refreshes_credentials(
     let proxy = proxy_for_feed(temp.path(), feed_app().await);
     let resolutions = Arc::new(AtomicUsize::new(0));
     let calls = resolutions.clone();
-    proxy.set_channel_target_resolver(Arc::new(move |_| {
+    // The fixture's resolver owns the app's database: keep it alive.
+    let previous = proxy.channel_target.read().clone().unwrap();
+    proxy.set_channel_target_resolver(Arc::new(move |app| {
         calls.fetch_add(1, Ordering::SeqCst);
-        Ok(crate::channels::ChannelTarget::Local)
+        previous(app)
     }));
     let addr = serve(proxy.clone()).await;
     let mut client = connect(addr).await;
@@ -194,12 +196,13 @@ async fn credential_rotation_during_handshake_invalidates_the_captured_store() {
     let temp = TempDir::new().unwrap();
     let proxy = proxy_for_feed(temp.path(), feed_app().await);
     let generation = proxy.channel_credentials_generation.clone();
-    proxy.set_channel_target_resolver(Arc::new(move |_| {
+    let previous = proxy.channel_target.read().clone().unwrap();
+    proxy.set_channel_target_resolver(Arc::new(move |app| {
         // Simulate a deployment landing while the initial credentials resolve.
         generation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .ok();
-        Ok(crate::channels::ChannelTarget::Local)
+        previous(app)
     }));
     let addr = serve(proxy).await;
     let mut client = connect(addr).await;
@@ -212,26 +215,39 @@ async fn credential_rotation_during_handshake_invalidates_the_captured_store() {
 }
 
 #[tokio::test]
-async fn replaced_reader_reconnects_shared_socket_and_replays_from_the_new_store() {
+async fn replaced_database_reconnects_shared_socket_and_replays_from_the_new_store() {
     let temp = TempDir::new().unwrap();
     let proxy = proxy_for_feed(temp.path(), feed_app().await);
-    let addr = serve(proxy).await;
+    let addr = serve(proxy.clone()).await;
     let mut client = connect(addr).await;
     subscribe(&mut client, "layout").await;
     assert_eq!(control(&mut client).await["type"], "subscribed");
 
-    let path = crate::channels::app_channels_db_path(temp.path(), "feed-app");
-    let directory = path.parent().unwrap();
-    std::fs::rename(directory, temp.path().join("previous-data")).unwrap();
-    std::fs::create_dir_all(directory).unwrap();
-    let store = tako_channels::ChannelStore::open(&path).unwrap();
+    // A deploy binds the app to another database, and another server's
+    // writer publishes there first.
+    let replaced = crate::channels::test_replay::TestReplay::start("feed-app/production");
+    let target = replaced.target();
+    let config = target.config(&crate::native_channel_client::app_scope("feed-app").unwrap());
+    let previous = proxy.channel_target.read().clone().unwrap();
+    proxy.set_channel_target_resolver(Arc::new(move |_| {
+        let _databases = (&previous, &replaced);
+        Ok(target.clone())
+    }));
+    proxy
+        .channel_credentials_generation
+        .fetch_add(1, Ordering::AcqRel);
+    let store = tokio::task::spawn_blocking(move || {
+        Arc::new(tako_channels::ChannelStore::open_config(config).unwrap())
+    })
+    .await
+    .unwrap();
     let publication = tako_channels::TrustedPublication::parse(
         "feed",
         &json!({"id":1}),
         json!({"type":"token", "data":"new backend"}),
     )
     .unwrap();
-    store.publish_trusted(&publication).unwrap();
+    super::publish_trusted(&store, publication).await.unwrap();
 
     subscribe(&mut client, "page").await;
     reconnect_required(&mut client, "page").await;

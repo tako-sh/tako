@@ -99,6 +99,17 @@ impl SharedAppResolver {
     }
 }
 
+/// Why an app's channel store could not be opened, logged with the app.
+fn channel_store_error(app_name: &str, error: ChannelError) -> ChannelError {
+    match &error {
+        ChannelError::NotProvisioned => {
+            tracing::warn!(app = %app_name, "channel request for an app without channels");
+        }
+        _ => tracing::error!("channel store unavailable for {app_name}: {error}"),
+    }
+    error
+}
+
 impl TakoProxy {
     async fn write_json_response(
         &self,
@@ -297,7 +308,7 @@ impl TakoProxy {
                 Ok(store) => store,
                 Err(error) => {
                     return self
-                        .write_channel_error(session, ChannelError::Storage(error.to_string()))
+                        .write_channel_error(session, channel_store_error(app_name, error))
                         .await;
                 }
             };
@@ -410,22 +421,12 @@ impl TakoProxy {
             let store = match self.channel_store_for_app(app_name).await {
                 Ok(store) => store,
                 Err(error) => {
-                    tracing::error!("channel store unavailable for {app_name}: {error}");
                     ctx.observation.set_handler_result("error");
                     return self
-                        .write_channel_error(
-                            session,
-                            ChannelError::Storage(format!("open store: {error}")),
-                        )
+                        .write_channel_error(session, channel_store_error(app_name, error))
                         .await;
                 }
             };
-
-            if meta.lifecycle.ephemeral
-                && let Err(error) = store.ensure_ephemeral_supported()
-            {
-                return self.write_channel_error(session, error).await;
-            }
 
             if use_first_frame_auth {
                 let Some(endpoint) = instance.endpoint() else {
@@ -543,13 +544,9 @@ impl TakoProxy {
         let store = match self.channel_store_for_app(app_name).await {
             Ok(store) => store,
             Err(error) => {
-                tracing::error!("channel store unavailable for {app_name}: {error}");
                 ctx.observation.set_handler_result("error");
                 return self
-                    .write_channel_error(
-                        session,
-                        ChannelError::Storage(format!("open store: {error}")),
-                    )
+                    .write_channel_error(session, channel_store_error(app_name, error))
                     .await;
             }
         };

@@ -11,6 +11,7 @@ struct Fixture {
     store: Arc<ChannelStore>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     app: Arc<tokio::sync::RwLock<AppAuthorizer>>,
+    _db: crate::test_db::TestDb,
 }
 
 #[async_trait::async_trait]
@@ -82,7 +83,8 @@ impl Fixture {
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+        let db = crate::test_db::TestDb::start();
+        let store = db.open().await;
         let server_store = store.clone();
         let app = Arc::new(tokio::sync::RwLock::new(AppAuthorizer {
             endpoint,
@@ -115,6 +117,7 @@ impl Fixture {
             store,
             tasks: vec![task, app_task],
             app,
+            _db: db,
         }
     }
     async fn connect(&self) -> Client {
@@ -123,16 +126,17 @@ impl Fixture {
             .unwrap()
             .0
     }
-    fn publish(&self, name: &str, room: &str, data: Value) -> crate::ChannelMessage {
+    async fn publish(&self, name: &str, room: &str, data: Value) -> crate::ChannelMessage {
         let stream = crate::ChannelStream::new(name, &json!({"room":room}));
         self.store
-            .append(
+            .append_async(
                 stream.key(),
                 &crate::ChannelPublishPayload {
                     r#type: "message".into(),
                     data,
                 },
             )
+            .await
             .unwrap()
     }
 }
@@ -205,19 +209,23 @@ async fn data(client: &mut Client, id: &str) -> Value {
 #[tokio::test]
 async fn shared_replay_is_scoped_and_terminal_close_keeps_other_subscriptions_alive() {
     let fixture = Fixture::start().await;
-    let old = fixture.publish("news", "a", json!("old"));
-    fixture.publish("news", "b", json!("other"));
+    let old = fixture.publish("news", "a", json!("old")).await;
+    fixture.publish("news", "b", json!("other")).await;
     let mut client = fixture.connect().await;
     send(&mut client, subscribe("a", "news", "a")).await;
     assert_eq!(data(&mut client, "a").await["id"], old.id);
     send(&mut client, subscribe("b", "news", "b")).await;
     assert_eq!(data(&mut client, "b").await["data"], "other");
     let closed = crate::TrustedPublication::close("news", &json!({"room":"a"}), None).unwrap();
-    fixture.store.publish_trusted(&closed).unwrap();
+    fixture
+        .store
+        .run(move |store| store.publish_trusted(&closed))
+        .await
+        .unwrap();
     let close = frame(&mut client).await;
     assert_eq!(close["id"], "a");
     assert_eq!(close["code"], 4200);
-    fixture.publish("news", "b", json!("still live"));
+    fixture.publish("news", "b", json!("still live")).await;
     assert_eq!(data(&mut client, "b").await["data"], "still live");
     send(&mut client, json!({"type":"unsubscribe","id":"b"})).await;
     assert_eq!(frame(&mut client).await["type"], "unsubscribed");
@@ -266,7 +274,7 @@ async fn registry_and_auth_must_both_allow_websocket_subscriptions() {
     }
     send(&mut client, subscribe("allowed", "news", "a")).await;
     assert_eq!(frame(&mut client).await["type"], "subscribed");
-    fixture.publish("news", "a", json!("still live"));
+    fixture.publish("news", "a", json!("still live")).await;
     assert_eq!(data(&mut client, "allowed").await["data"], "still live");
 }
 
@@ -297,7 +305,7 @@ async fn unsubscribe_removes_presence_without_closing_the_shared_socket() {
     })
     .await
     .unwrap();
-    fixture.publish("news", "a", json!("still connected"));
+    fixture.publish("news", "a", json!("still connected")).await;
     send(&mut client, subscribe("next-page", "news", "a")).await;
     assert_eq!(
         data(&mut client, "next-page").await["data"],
@@ -309,15 +317,17 @@ async fn unsubscribe_removes_presence_without_closing_the_shared_socket() {
 async fn large_utf8_events_are_chunked_and_oversized_events_close_only_their_subscription() {
     let fixture = Fixture::start().await;
     let large = "🦑".repeat(50_000);
-    fixture.publish("news", "a", json!(large));
+    fixture.publish("news", "a", json!(large)).await;
     let mut client = fixture.connect().await;
     send(&mut client, subscribe("a", "news", "a")).await;
     assert_eq!(data(&mut client, "a").await["data"], large);
-    fixture.publish("news", "a", json!("x".repeat(MAX_MESSAGE_BYTES)));
+    fixture
+        .publish("news", "a", json!("x".repeat(MAX_MESSAGE_BYTES)))
+        .await;
     let closed = frame(&mut client).await;
     assert_eq!(closed["id"], "a");
     assert_eq!(closed["code"], 1009);
-    fixture.publish("news", "b", json!(1));
+    fixture.publish("news", "b", json!(1)).await;
     send(&mut client, subscribe("b", "news", "b")).await;
     assert_eq!(data(&mut client, "b").await["data"], 1);
 }
@@ -333,7 +343,7 @@ async fn subscribed_means_live_delivery_is_ready_without_a_replay_cursor() {
         request.as_object_mut().unwrap().remove("from");
         send(&mut client, request).await;
         assert_eq!(frame(&mut client).await["type"], "subscribed");
-        fixture.publish("news", &id, json!(index));
+        fixture.publish("news", &id, json!(index)).await;
         assert_eq!(data(&mut client, &id).await["data"], index);
         send(&mut client, json!({"type":"unsubscribe", "id":id})).await;
         assert_eq!(frame(&mut client).await["type"], "unsubscribed");
@@ -387,7 +397,9 @@ async fn new_subscriptions_resolve_the_current_deployment_on_an_existing_socket(
         frame(&mut client).await,
         json!({"type":"subscribed", "id":"page"})
     );
-    fixture.publish("news", "a", json!("layout survives deployment"));
+    fixture
+        .publish("news", "a", json!("layout survives deployment"))
+        .await;
     assert_eq!(
         data(&mut client, "layout").await["data"],
         "layout survives deployment"
@@ -397,8 +409,8 @@ async fn new_subscriptions_resolve_the_current_deployment_on_an_existing_socket(
 #[tokio::test]
 async fn cancelled_subscription_ids_can_be_reused_without_stale_replay() {
     let fixture = Fixture::start().await;
-    fixture.publish("news", "old", json!("stale"));
-    fixture.publish("news", "new", json!("current"));
+    fixture.publish("news", "old", json!("stale")).await;
+    fixture.publish("news", "new", json!("current")).await;
     let mut client = fixture.connect().await;
     // Put cancellation in the same physical read as subscribe, while auth is
     // still pending, and immediately reuse the logical ID for another scope.

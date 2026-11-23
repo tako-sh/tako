@@ -24,7 +24,7 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
         "maxConnectionLifetimeMs": 2000,
     }]))
     .await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     let subscribe =
         |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/sse/chat?{query}"));
@@ -37,19 +37,18 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
     let mut two = subscribe("room=2").await.unwrap();
     assert_eq!(one.status(), 200);
     assert_eq!(two.status(), 200);
-    let publish = |params: serde_json::Value, data: i64| {
-        dev_store
-            .publish(
-                &app_id,
-                &TrustedPublication::parse("chat", &params, json!({"type": "msg", "data": data}))
-                    .unwrap(),
-            )
+    let publish = async |params: serde_json::Value, data: i64| {
+        let publication =
+            TrustedPublication::parse("chat", &params, json!({"type": "msg", "data": data}))
+                .unwrap();
+        test_app::publish(&dev_store, &app_id, publication)
+            .await
             .unwrap()
     };
     // `1.0` from a typed publisher and `1` from the query name one stream.
-    let published = publish(json!({"room": 1.0}), 1);
+    let published = publish(json!({"room": 1.0}), 1).await;
     assert_eq!(published.channel, "chat");
-    publish(json!({"room": 2}), 2);
+    publish(json!({"room": 2}), 2).await;
     for (response, expected) in [(&mut one, 1), (&mut two, 2)] {
         let chunk = tokio::time::timeout(Duration::from_secs(2), response.chunk())
             .await
@@ -67,13 +66,7 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
         assert_eq!(message["data"], expected, "{frame}");
     }
     // Nothing was published to the unparameterized stream.
-    assert!(
-        dev_store
-            .store_for_app(&app_id)
-            .read_after("chat", None, 10)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(test_app::read(&dev_store, &app_id, "chat").await.is_empty());
 }
 
 #[tokio::test]
@@ -92,10 +85,10 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         "maxConnectionLifetimeMs": 3000,
     }]))
     .await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     // The internal socket's close command, as main.rs applies it.
-    let write = |write: tako_workflows::ChannelWrite| {
+    let write = async |write: tako_workflows::ChannelWrite| {
         let publication = trusted_publication(tako_workflows::ChannelPublishRequest {
             app: &app_id,
             channel: "feed",
@@ -103,24 +96,25 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
             build: None,
             write,
         })?;
-        dev_store.publish(&app_id, &publication)
+        test_app::publish(&dev_store, &app_id, publication).await
     };
     let token =
         |data: &str| tako_workflows::ChannelWrite::Publish(json!({"type": "token", "data": data}));
-    let first = write(token("hel")).unwrap();
-    write(token("lo")).unwrap();
+    let first = write(token("hel")).await.unwrap();
+    write(token("lo")).await.unwrap();
     let close = || tako_workflows::ChannelWrite::Close { lifecycle: None };
-    let marker = write(close()).unwrap();
+    let marker = write(close()).await.unwrap();
     assert_eq!(marker.channel, "feed");
-    assert_eq!(write(close()).unwrap().id, marker.id);
+    assert_eq!(write(close()).await.unwrap().id, marker.id);
     assert!(matches!(
-        write(token("late")),
+        write(token("late")).await,
         Err(ChannelError::StreamClosed)
     ));
     assert!(matches!(
         write(tako_workflows::ChannelWrite::Close {
             lifecycle: Some(json!({"ephemeral": true}))
-        }),
+        })
+        .await,
         Err(ChannelError::BadRequest(_))
     ));
 
@@ -211,7 +205,7 @@ async fn undeclared_params_are_rejected_as_in_production() {
         |_| (200, json!({"ok": true, "maxConnectionLifetimeMs": 500})),
     )
     .await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, _) = test_app::dev_proxy(app_port, &dev_store).await;
     let subscribe =
         |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/sse/open?{query}"));

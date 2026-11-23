@@ -225,6 +225,9 @@ pub fn error_response(error: &ChannelError) -> (u16, serde_json::Value) {
         ChannelError::Unsupported => (400, "Channel transport is not enabled"),
         ChannelError::InvalidPath => (404, "Not found"),
         ChannelError::AuthUnavailable => (503, "Service Unavailable"),
+        ChannelError::NotProvisioned => {
+            return (503, serde_json::json!({ "error": error.to_string() }));
+        }
         ChannelError::StreamLimit | ChannelError::Storage(_) => (500, "Internal Server Error"),
     };
     (status, serde_json::json!({ "error": message }))

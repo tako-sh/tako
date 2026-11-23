@@ -74,7 +74,7 @@ fn cursor(
     head: i64,
     requested: Option<ReplayCursor>,
 ) -> Result<ReplayCursor, ChannelError> {
-    let head_cursor = ReplayCursor::sqlite(epoch, channel, head);
+    let head_cursor = ReplayCursor::scoped(epoch, channel, head);
     if let Some(c) = requested {
         if c.scope != head_cursor.scope || !(floor..=head).contains(&c.position) {
             return Err(ChannelError::StaleCursor);
@@ -93,7 +93,7 @@ fn message(
     data_json: &str,
 ) -> Result<ChannelMessage, ChannelError> {
     Ok(ChannelMessage {
-        id: ReplayCursor::sqlite(epoch, channel, id).to_string(),
+        id: ReplayCursor::scoped(epoch, channel, id).to_string(),
         event_id: None,
         channel: channel.into(),
         r#type,
@@ -283,7 +283,7 @@ impl HostedChannelStore {
             let (id,): (i64,) = one(inserted)?;
             return Ok((
                 ChannelMessage {
-                    id: ReplayCursor::sqlite(epoch, channel, id).to_string(),
+                    id: ReplayCursor::scoped(epoch, channel, id).to_string(),
                     channel: channel.into(),
                     event_id: None,
                     r#type: payload.r#type.clone(),
@@ -415,7 +415,7 @@ impl HostedChannelStore {
                     kind.ok_or_else(invalid_result)?,
                     &data.ok_or_else(invalid_result)?,
                 )?);
-                last = Some(ReplayCursor::sqlite(epoch, channel, id));
+                last = Some(ReplayCursor::scoped(epoch, channel, id));
             }
             if count < take
                 || messages.len() == limit as usize
@@ -456,12 +456,14 @@ impl HostedChannelStore {
         Ok((heads, self.epoch_replaced(current)))
     }
 
-    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
+    /// Deletes expired history and releases idle streams. Only database time
+    /// counts, so servers with skewed clocks agree on what has expired.
+    pub(super) fn prune(&self) -> Result<(), ChannelError> {
         self.writable()?;
-        self.recovering(|| self.prune_once(now))
+        self.recovering(|| self.prune_once())
     }
 
-    fn prune_once(&self, _now: i64) -> Result<(), ChannelError> {
+    fn prune_once(&self) -> Result<(), ChannelError> {
         let mut range = self.prune_range.lock();
         let (after, through) = *range;
         let idle = format!(

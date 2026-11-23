@@ -45,16 +45,6 @@ impl Broker {
             .presence
             .check(&self.local, &channel, &member, allowance)?;
         let now = now_ms();
-        let pg = application.target.postgres_presence();
-        if pg {
-            let channel = channel.clone();
-            let member = member.clone();
-            application
-                .store
-                .run(move |store| store.update_presence(&channel, &member, now))
-                .await
-                .map_err(|_| error("presence database update failed"))?;
-        }
         application.presence.update(
             self.local.clone(),
             channel.clone(),
@@ -63,20 +53,18 @@ impl Broker {
             now.saturating_add(presence::LEASE_MS),
             bytes,
         );
-        if !pg {
-            let sequence = application.presence.next_sequence()?;
-            let publication = Publication::Update {
-                channel,
-                member,
-                expires_at_ms: now.saturating_add(presence::LEASE_MS),
-                sequence,
-            };
-            if !self.fanout(&Frame::Presence {
-                app: app.clone(),
-                publication,
-            }) {
-                self.fence().await?;
-            }
+        let sequence = application.presence.next_sequence()?;
+        let publication = Publication::Update {
+            channel,
+            member,
+            expires_at_ms: now.saturating_add(presence::LEASE_MS),
+            sequence,
+        };
+        if !self.fanout(&Frame::Presence {
+            app: app.clone(),
+            publication,
+        }) {
+            self.fence().await?;
         }
         Ok(())
     }
@@ -93,43 +81,19 @@ impl Broker {
             .apps
             .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
-        if !application.target.postgres_presence() {
-            for (peer, sender) in self.peers.lock().iter() {
-                if !application.presence_queried.contains(peer)
-                    && sender
-                        .send(&Frame::Presence {
-                            app: app.clone(),
-                            publication: Publication::Sync,
-                        })
-                        .is_ok()
-                {
-                    application.presence_queried.insert(peer.clone());
-                }
+        for (peer, sender) in self.peers.lock().iter() {
+            if !application.presence_queried.contains(peer)
+                && sender
+                    .send(&Frame::Presence {
+                        app: app.clone(),
+                        publication: Publication::Sync,
+                    })
+                    .is_ok()
+            {
+                application.presence_queried.insert(peer.clone());
             }
         }
-        let members = if application.target.postgres_presence() {
-            let now = now_ms();
-            let rows = application
-                .store
-                .run(move |store| store.presence(&channel, now))
-                .await
-                .map_err(|_| error("presence database read failed"))?;
-            rows.into_iter()
-                .filter(|member| {
-                    // PG is authoritative, but a revoked/disconnected server is not a live origin.
-                    let Some((origin, _)) = member.connection_id.split_once(':') else {
-                        return false;
-                    };
-                    origin.parse::<DeviceId>().ok().is_some_and(|origin| {
-                        (origin == self.local || self.peers.lock().contains_key(&origin))
-                            && presence::validate_owned_id(&origin, &member.connection_id).is_ok()
-                    })
-                })
-                .map(|member| presence::project_member(&self.local, member))
-                .collect()
-        } else {
-            application.presence.snapshot(&channel, &self.local)
-        };
+        let members = application.presence.snapshot(&channel, &self.local);
         // Do not truncate a snapshot and falsely report that members left.
         if serde_json::to_vec(&members)
             .map_err(|_| error("invalid presence snapshot"))?
@@ -152,31 +116,19 @@ impl Broker {
             .apps
             .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
-        let pg = application.target.postgres_presence();
-        if pg {
-            let channel = channel.clone();
-            let id = connection_id.clone();
-            application
-                .store
-                .run(move |store| store.remove_presence(&channel, &id))
-                .await
-                .map_err(|_| error("presence database cleanup failed"))?;
-        }
         application
             .presence
             .leave(&self.local, &channel, &connection_id);
-        if !pg {
-            let sequence = application.presence.next_sequence()?;
-            if !self.fanout(&Frame::Presence {
-                app: app.clone(),
-                publication: Publication::Leave {
-                    channel,
-                    connection_id,
-                    sequence,
-                },
-            }) {
-                self.fence().await?;
-            }
+        let sequence = application.presence.next_sequence()?;
+        if !self.fanout(&Frame::Presence {
+            app: app.clone(),
+            publication: Publication::Leave {
+                channel,
+                connection_id,
+                sequence,
+            },
+        }) {
+            self.fence().await?;
         }
         Ok(())
     }
@@ -193,9 +145,6 @@ impl Broker {
         let Some(application) = self.apps.get_mut(app) else {
             return Ok(());
         };
-        if application.target.postgres_presence() {
-            return Ok(());
-        }
         let publication = match publication {
             Publication::Sync => {
                 let snapshot = application.presence.local_snapshot(&self.local);

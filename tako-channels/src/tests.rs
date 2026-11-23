@@ -1,32 +1,33 @@
 use super::*;
+use crate::test_db::TestDb;
+
+fn event(data: serde_json::Value) -> ChannelPublishPayload {
+    ChannelPublishPayload {
+        r#type: "event".into(),
+        data,
+    }
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
 
 #[test]
 fn replay_expires_without_subscribers_or_further_publishes() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let auth: ChannelAuthResponse = serde_json::from_value(serde_json::json!({
         "ok": true, "replayWindowMs": 20
     }))
     .unwrap();
     store.sync_channel("idle", &auth).unwrap();
-    let first = store
-        .append(
-            "idle",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: serde_json::json!(1),
-            },
-        )
-        .unwrap();
-    let last = store
-        .append(
-            "idle",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: serde_json::json!(2),
-            },
-        )
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let first = store.append("idle", &event(1.into())).unwrap();
+    let last = store.append("idle", &event(2.into())).unwrap();
+    db.age(1_000);
     assert!(store.read_after("idle", None, 100).unwrap().is_empty());
     assert!(matches!(
         store.replay_cursor("idle", first.id.parse().ok()),
@@ -205,25 +206,15 @@ fn channel_def_meta_serializes_params_schema_inline() {
 
 #[test]
 fn channel_store_appends_and_reads_messages() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
-
+    let db = TestDb::start();
+    let store = db.writer();
     let first = store
-        .append(
-            "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "hi" }),
-            },
-        )
+        .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
         .unwrap();
     let second = store
         .append(
             "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "there" }),
-            },
+            &event(serde_json::json!({ "text": "there" })),
         )
         .unwrap();
 
@@ -238,86 +229,12 @@ fn channel_store_appends_and_reads_messages() {
     assert_eq!(messages[0].data, serde_json::json!({ "text": "there" }));
 }
 
+/// Writers on several servers share one ordered history, and its retention.
 #[test]
-fn channel_store_config_names_postgres_schema() {
-    assert_eq!(POSTGRES_CHANNELS_SCHEMA, "tako_channels");
-    assert_eq!(
-        ChannelStoreConfig::postgres("postgres://example", "chat-app/production").clone(),
-        ChannelStoreConfig::Postgres {
-            url: "postgres://example".to_string(),
-            schema: "tako_channels".to_string(),
-            app_id: "chat-app/production".to_string(),
-        },
-    );
-}
-
-#[test]
-fn postgres_channel_store_round_trips_when_url_is_set() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app_id = format!(
-        "channel-test/{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let store = ChannelStore::open_postgres(&url, &app_id).unwrap();
-
-    store
-        .sync_channel(
-            "chat",
-            &ChannelAuthResponse {
-                ok: true,
-                subject: None,
-                transport: None,
-                ephemeral: false,
-                replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
-                inactivity_ttl_ms: 0,
-                keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
-                max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
-            },
-        )
-        .unwrap();
-    let first = store
-        .append(
-            "chat",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "hello" }),
-            },
-        )
-        .unwrap();
-    let second = store
-        .append(
-            "chat",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "there" }),
-            },
-        )
-        .unwrap();
-
-    let messages = store
-        .read_after("chat", first.id.parse::<ReplayCursor>().ok(), 100)
-        .unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].id, second.id);
-    assert_eq!(messages[0].data, serde_json::json!({ "text": "there" }));
-}
-
-#[test]
-fn postgres_concurrent_publishers_share_changes_order_and_retention() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!("concurrent-channel-test/{}", std::process::id());
-    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
-    let writers: Vec<_> = (0..2)
-        .map(|_| ChannelStore::open_postgres(&url, &app).unwrap())
-        .collect();
+fn concurrent_publishers_share_changes_order_and_retention() {
+    let db = TestDb::start();
+    let writers: Vec<_> = (0..2).map(|_| db.writer()).collect();
+    let reader = db.reader();
     let mut changes = reader.changes("events");
     let initial = reader.replay_cursor("events", None).unwrap();
     let handles: Vec<_> = writers
@@ -327,15 +244,10 @@ fn postgres_concurrent_publishers_share_changes_order_and_retention() {
             std::thread::spawn(move || {
                 for index in 0..100 {
                     store
-                        .append(
-                            "events",
-                            &ChannelPublishPayload {
-                                r#type: "event".into(),
-                                data: serde_json::json!([writer, index]),
-                            },
-                        )
+                        .append("events", &event(serde_json::json!([writer, index])))
                         .unwrap();
                 }
+                store
             })
         })
         .collect();
@@ -355,37 +267,22 @@ fn postgres_concurrent_publishers_share_changes_order_and_retention() {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    for handle in handles {
-        handle.join().unwrap();
-    }
-    while !changes.has_changed().unwrap() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    let writer = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .next()
+        .unwrap();
+    wait_until("the reader was not notified", || {
+        changes.has_changed().unwrap()
+    });
     changes.borrow_and_update();
     drop(changes);
     let auth: ChannelAuthResponse =
         serde_json::from_value(serde_json::json!({ "ok": true, "replayWindowMs": 20 })).unwrap();
-    reader.sync_channel("expires", &auth).unwrap();
-    let expired = reader
-        .append(
-            "expires",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: serde_json::json!(1),
-            },
-        )
-        .unwrap();
-    let latest = reader
-        .append(
-            "expires",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: serde_json::json!(2),
-            },
-        )
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    writer.sync_channel("expires", &auth).unwrap();
+    let expired = writer.append("expires", &event(1.into())).unwrap();
+    let latest = writer.append("expires", &event(2.into())).unwrap();
+    db.age(1_000);
     assert!(reader.read_after("expires", None, 100).unwrap().is_empty());
     assert!(matches!(
         reader.replay_cursor("expires", expired.id.parse().ok()),
@@ -401,9 +298,8 @@ fn postgres_concurrent_publishers_share_changes_order_and_retention() {
 
 #[test]
 fn channel_store_append_updates_channel_activity() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
-
+    let db = TestDb::start();
+    let store = db.writer();
     store
         .sync_channel(
             "chat:room-123",
@@ -419,59 +315,37 @@ fn channel_store_append_updates_channel_activity() {
             },
         )
         .unwrap();
-    let before = store.raw_query_i64(
-        "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
-        ("chat:room-123",),
-    );
-
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    let message = store
-        .append(
-            "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "hi" }),
-            },
+    let activity = "SELECT activity_ms FROM tako_replay_streams WHERE channel = 'chat:room-123'";
+    db.age(1_000);
+    let before = db.query_i64(activity);
+    store
+        .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
+        .unwrap();
+    let persisted: String = db
+        .sql()
+        .query_row(
+            "SELECT data_json FROM tako_replay_messages WHERE channel = 'chat:room-123'",
+            [],
+            |row| row.get(0),
         )
         .unwrap();
-
-    let after = store.raw_query_i64(
-        "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
-        ("chat:room-123",),
-    );
-    let persisted = store.raw_query_string(
-        "SELECT data_json FROM channel_messages WHERE id = ?1",
-        (message.id.parse::<ReplayCursor>().unwrap().position,),
-    );
-
-    assert!(after >= before);
+    assert!(db.query_i64(activity) >= before + 1_000);
     assert_eq!(persisted, r#"{"text":"hi"}"#);
 }
 
 #[test]
 fn channel_store_defaults_missing_cursor_to_latest_message() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
-
+    let db = TestDb::start();
+    let store = db.writer();
     store
-        .append(
-            "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "hi" }),
-            },
-        )
+        .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
         .unwrap();
     store
         .append(
             "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "there" }),
-            },
+            &event(serde_json::json!({ "text": "there" })),
         )
         .unwrap();
-
     assert_eq!(
         store
             .replay_cursor("chat:room-123", None)
@@ -483,78 +357,57 @@ fn channel_store_defaults_missing_cursor_to_latest_message() {
 
 #[test]
 fn channel_store_rejects_stale_cursors() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite");
-    let store = ChannelStore::open(&db_path).unwrap();
-
-    store
-        .append(
-            "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "hi" }),
-            },
-        )
+    let db = TestDb::start();
+    let store = db.writer();
+    let first = store
+        .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
         .unwrap();
     store
         .append(
             "chat:room-123",
-            &ChannelPublishPayload {
-                r#type: "message".to_string(),
-                data: serde_json::json!({ "text": "there" }),
-            },
+            &event(serde_json::json!({ "text": "there" })),
         )
         .unwrap();
-    store.raw_execute("DELETE FROM channel_messages WHERE id = 1", ());
-
+    let start = ReplayCursor {
+        position: 0,
+        ..first.id.parse::<ReplayCursor>().unwrap()
+    };
+    assert_eq!(
+        store.replay_cursor("chat:room-123", Some(start)).unwrap(),
+        Some(start)
+    );
+    db.execute("DELETE FROM tako_replay_messages WHERE id = 1");
     assert!(matches!(
-        store.replay_cursor("chat:room-123", Some(ReplayCursor::unscoped(0))),
+        store.replay_cursor("chat:room-123", Some(start)),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert!(matches!(
+        store.replay_cursor("chat:room-123", Some(ReplayCursor::unscoped(1))),
         Err(ChannelError::StaleCursor)
     ));
 }
 
 #[test]
-fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
-
-    store
-        .sync_channel(
-            "chat:room-123",
-            &ChannelAuthResponse {
-                ok: true,
-                subject: None,
-                transport: None,
-                ephemeral: false,
-                replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
-                inactivity_ttl_ms: 1,
-                keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
-                max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
-            },
-        )
-        .unwrap();
-    let payload = ChannelPublishPayload {
-        r#type: "event".into(),
-        data: serde_json::json!(1),
+fn channel_store_persists_lifecycle_and_expires_inactive_channels() {
+    let db = TestDb::start();
+    let store = db.writer();
+    let auth = |inactivity_ttl_ms, transport| ChannelAuthResponse {
+        ok: true,
+        subject: None,
+        transport,
+        ephemeral: false,
+        replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
+        inactivity_ttl_ms,
+        keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
+        max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
     };
+    store.sync_channel("chat:room-123", &auth(1, None)).unwrap();
+    let payload = event(1.into());
     store.append("chat:room-123", &payload).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    db.age(1_200);
     store
-        .sync_channel(
-            "chat:room-456",
-            &ChannelAuthResponse {
-                ok: true,
-                subject: None,
-                transport: Some(ChannelTransport::Ws),
-                ephemeral: false,
-                replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
-                inactivity_ttl_ms: 0,
-                keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
-                max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
-            },
-        )
+        .sync_channel("chat:room-456", &auth(0, Some(ChannelTransport::Ws)))
         .unwrap();
-
     store.append("chat:room-456", &payload).unwrap();
     assert!(
         store
@@ -568,44 +421,33 @@ fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
     );
     // Publishing again uses the known lifecycle even after inactivity eviction.
     store.append("chat:room-123", &payload).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    db.age(1_200);
     assert!(
         store
             .read_after("chat:room-123", None, 100)
             .unwrap()
             .is_empty()
     );
+    assert_eq!(
+        store.read_after("chat:room-456", None, 100).unwrap().len(),
+        1
+    );
 }
 
 #[test]
 fn subscribers_observe_external_writers_and_recover_batched_replay() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let path = temp.path().join("channels.sqlite");
-    let reader = ChannelStore::open(&path).unwrap();
-    let writer = ChannelStore::open(&path).unwrap();
+    let db = TestDb::start();
+    let writer = db.writer();
+    let reader = db.reader();
     let mut subscribers: Vec<_> = (0..32).map(|_| reader.changes("chat")).collect();
     for index in 0..150 {
-        writer
-            .append(
-                "chat",
-                &ChannelPublishPayload {
-                    r#type: "event".into(),
-                    data: serde_json::json!(index),
-                },
-            )
-            .unwrap();
+        writer.append("chat", &event(index.into())).unwrap();
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while subscribers
-        .iter()
-        .any(|subscriber| !subscriber.has_changed().unwrap())
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "subscribers did not observe external publishes"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until("subscribers did not observe external publishes", || {
+        subscribers
+            .iter()
+            .all(|subscriber| subscriber.has_changed().unwrap())
+    });
     for subscriber in &mut subscribers {
         subscriber.borrow_and_update();
     }
@@ -621,19 +463,12 @@ fn subscribers_observe_external_writers_and_recover_batched_replay() {
 
 #[test]
 fn committed_local_publications_notify_before_returning() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let mut active = store.changes("active");
     let quiet = store.changes("quiet");
     for value in 0..20 {
-        let message = store
-            .append(
-                "active",
-                &ChannelPublishPayload {
-                    r#type: "event".into(),
-                    data: value.into(),
-                },
-            )
-            .unwrap();
+        let message = store.append("active", &event(value.into())).unwrap();
         assert!(active.has_changed().unwrap());
         assert_eq!(
             *active.borrow_and_update(),
@@ -645,80 +480,41 @@ fn committed_local_publications_notify_before_returning() {
 
 #[test]
 fn failed_append_neither_notifies_nor_leaves_replay() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let changes = store.changes("events");
-    store.raw_execute(
-        "CREATE TRIGGER reject_publish BEFORE INSERT ON channel_messages
+    let mut publications = store.publications();
+    db.execute(
+        "CREATE TRIGGER reject_publish BEFORE INSERT ON tako_replay_messages
          BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
-        (),
     );
-    assert!(
-        store
-            .append(
-                "events",
-                &ChannelPublishPayload {
-                    r#type: "event".into(),
-                    data: 1.into(),
-                }
-            )
-            .is_err()
-    );
+    assert!(store.append("events", &event(1.into())).is_err());
     assert!(!changes.has_changed().unwrap());
+    assert!(publications.try_recv().is_err());
     assert!(store.read_after("events", None, 100).unwrap().is_empty());
 }
 
 #[test]
 fn external_publications_only_wake_subscribers_to_the_changed_stream() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let path = temp.path().join("channels.sqlite");
-    let reader = ChannelStore::open(&path).unwrap();
-    let writer = ChannelStore::open(&path).unwrap();
-    assert_scoped_notifications(reader, writer);
-}
-
-#[test]
-fn postgres_publications_only_wake_subscribers_to_the_changed_stream() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!("scoped-notification-test/{}", std::process::id());
-    let schema = format!("scoped_notifications_{}", std::process::id());
-    assert_scoped_notifications(
-        ChannelStore::open_postgres_with_schema(&url, &schema, &app).unwrap(),
-        ChannelStore::open_postgres_with_schema(&url, &schema, &app).unwrap(),
-    );
-}
-
-fn assert_scoped_notifications(reader: ChannelStore, writer: ChannelStore) {
+    let db = TestDb::start();
+    let writer = db.writer();
+    let reader = db.reader();
     let mut active = reader.changes("active");
     let mut quiet = reader.changes("quiet");
-    let payload = ChannelPublishPayload {
-        r#type: "event".into(),
-        data: serde_json::json!({}),
-    };
+    let payload = event(serde_json::json!({}));
     writer.append("active", &payload).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !active.has_changed().unwrap() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "active stream was not notified"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until("active stream was not notified", || {
+        active.has_changed().unwrap()
+    });
     assert!(
         !quiet.has_changed().unwrap(),
         "unrelated stream was notified"
     );
     active.borrow_and_update();
     writer.append("quiet", &payload).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !quiet.has_changed().unwrap() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "quiet stream's publication was missed"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until("quiet stream's publication was missed", || {
+        quiet.has_changed().unwrap()
+    });
     quiet.borrow_and_update();
     assert!(
         !active.has_changed().unwrap(),
@@ -728,143 +524,13 @@ fn assert_scoped_notifications(reader: ChannelStore, writer: ChannelStore) {
 
 #[test]
 fn channel_store_reopen_preserves_existing_messages() {
-    // Guards the invariant that data persists to disk: opening the same
-    // path again (e.g. after a process restart) must see the prior rows.
-    let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite");
-
-    {
-        let store = ChannelStore::open(&db_path).unwrap();
-        store
-            .append(
-                "chat:room-123",
-                &ChannelPublishPayload {
-                    r#type: "message".to_string(),
-                    data: serde_json::json!({ "text": "hi" }),
-                },
-            )
-            .unwrap();
-    }
-
-    let reopened = ChannelStore::open(&db_path).unwrap();
+    // A restarted server opens the same history again.
+    let db = TestDb::start();
+    db.writer()
+        .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
+        .unwrap();
+    let reopened = db.writer();
     let messages = reopened.read_after("chat:room-123", None, 100).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].data, serde_json::json!({ "text": "hi" }));
-}
-
-fn test_payload(text: &str) -> ChannelPublishPayload {
-    ChannelPublishPayload {
-        r#type: "message".to_string(),
-        data: serde_json::json!({ "text": text }),
-    }
-}
-
-fn test_auth() -> ChannelAuthResponse {
-    ChannelAuthResponse {
-        ok: true,
-        subject: None,
-        transport: None,
-        ephemeral: false,
-        replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
-        inactivity_ttl_ms: 0,
-        keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
-        max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
-    }
-}
-
-/// Child half of `channel_store_supports_two_processes_writing_interleaved`.
-/// No-ops unless spawned by the parent test with the DB path in the env.
-#[test]
-fn multiprocess_child_writer() {
-    let Ok(path) = std::env::var("TAKO_TEST_MULTIPROCESS_DB") else {
-        return;
-    };
-    let store = ChannelStore::open(std::path::Path::new(&path)).unwrap();
-    // The parent's 10 rows must be visible to this process.
-    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 10);
-    for i in 0..10 {
-        store
-            .append("mp", &test_payload(&format!("child-{i}")))
-            .unwrap();
-    }
-}
-
-/// During a zero-downtime reload, both server processes can write to the same
-/// channel database. Every write must remain visible and persisted.
-#[test]
-fn channel_store_supports_two_processes_writing_interleaved() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite");
-    let store = ChannelStore::open(&db_path).unwrap();
-    store.sync_channel("mp", &test_auth()).unwrap();
-    for i in 0..10 {
-        store
-            .append("mp", &test_payload(&format!("parent-{i}")))
-            .unwrap();
-    }
-
-    // Spawn a second process against the same DB while we hold it open.
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["tests::multiprocess_child_writer", "--exact", "--nocapture"])
-        .env("TAKO_TEST_MULTIPROCESS_DB", db_path.to_str().unwrap())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "child writer process failed: stdout={stdout}; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // The child's writes must be visible here, and this process must still
-    // be able to write after the child exits.
-    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 20);
-    store.append("mp", &test_payload("parent-after")).unwrap();
-    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 21);
-}
-
-/// A write issued while another connection holds a live read cursor must
-/// either persist or fail.
-#[test]
-fn write_with_live_read_cursor_persists() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite");
-    let store = ChannelStore::open(&db_path).unwrap();
-    for i in 0..5 {
-        store
-            .append("cursor", &test_payload(&format!("m-{i}")))
-            .unwrap();
-    }
-
-    let reader = tako_sqlite::open_local(&db_path).unwrap();
-    let mut stmt = reader.prepare("SELECT id FROM channel_messages").unwrap();
-    let mut rows = stmt.query([]).unwrap();
-    let _first = rows.next().unwrap();
-    let write_result = store.append("cursor", &test_payload("live"));
-    drop(rows);
-    drop(stmt);
-    drop(reader);
-
-    let count = store.raw_query_i64(
-        "SELECT COUNT(*) FROM channel_messages WHERE channel = 'cursor'",
-        [],
-    );
-    match write_result {
-        Ok(_) => assert_eq!(count, 6, "write returned Ok but did not persist"),
-        Err(_) => assert_eq!(count, 5, "write failed loudly; nothing should persist"),
-    }
-}
-
-#[test]
-fn postgres_rejects_ephemeral_delivery_when_configured() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let store = ChannelStore::open_postgres(&url, "ephemeral-rejection/test").unwrap();
-    assert!(
-        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
-    );
-    assert!(
-        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
-    );
 }
