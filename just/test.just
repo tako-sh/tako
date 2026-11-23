@@ -26,6 +26,11 @@ workspace:
 database:
     cargo test --locked -p tako-database
 
+# Continuous database backups: capture, upload, restore, and retention.
+terse:
+    cargo test --locked -p tako-backup
+    cargo test --locked --manifest-path vendor/terse-litestream/Cargo.toml
+
 # Reproduce a storage history workload; omit the seed to run the built-in corpus.
 histories seed="":
     #!/usr/bin/env bash

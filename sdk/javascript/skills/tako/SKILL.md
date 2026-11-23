@@ -254,9 +254,11 @@ validation.
   `tako.databases.<binding>`), not in the data directory, which is plain files
   and not captured. Database commands need administrator permission;
   `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
-  removes the database with its snapshots, so confirm the database and the
-  environments that bind it first, and take `tako sqlite backup` before risky
-  changes. Schema changes go in `migrations/` SQL files, applied on deploy.
+  removes the database with its backups, so confirm the database and the
+  environments that bind it first. With backup storage, databases are backed
+  up continuously: `tako sqlite backups` lists restore points and the window
+  that `tako sqlite restore <name> --at <time>` reaches, and every restore,
+  import, and reset records a `before restore` point that undoes it. Schema changes go in `migrations/` SQL files, applied on deploy.
 
 ## Channels, presence, stores, and workflows
 

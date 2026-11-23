@@ -24,7 +24,7 @@ use crate::ServerState;
 use crate::instances::{AppConfig, AppLaunch};
 use crate::state_store::{AppDatabase, DatabaseSecrets, StoredDatabase};
 
-pub(crate) mod snapshots;
+pub(crate) mod backups;
 mod transfer;
 
 /// Scope suffix of the temporary bindings a release command receives.
@@ -43,9 +43,11 @@ pub(crate) struct Databases {
     started: std::sync::atomic::AtomicBool,
     /// Listener and scheduler tasks, stopped when this process hands over.
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
-    pub(crate) backups: Mutex<HashMap<String, snapshots::BackupState>>,
-    /// Disk space held for snapshot copies in progress.
-    pub(crate) snapshot_space: snapshots::SnapshotSpace,
+    pub(crate) backups: Mutex<HashMap<String, backups::BackupState>>,
+    /// Each database's continuous capture.
+    pub(crate) slots: backups::Slots,
+    /// Disk space held for restores, resets, and transfers in progress.
+    pub(crate) snapshot_space: backups::SnapshotSpace,
     /// The binding sets last applied to each scope, so a periodic refresh
     /// re-resolves homes without dropping a rollout's second set.
     applied: Mutex<HashMap<String, Vec<HashMap<String, AppDatabase>>>>,
@@ -118,7 +120,8 @@ impl Databases {
             started: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             backups: Mutex::new(HashMap::new()),
-            snapshot_space: snapshots::SnapshotSpace::default(),
+            slots: Default::default(),
+            snapshot_space: backups::SnapshotSpace::default(),
             applied: Mutex::new(HashMap::new()),
             transfers: Mutex::new(transfer::Transfers::default()),
             locks: Mutex::new(HashMap::new()),
@@ -191,7 +194,7 @@ impl Databases {
             .clone()
     }
 
-    fn server_id(&self) -> Option<String> {
+    pub(crate) fn server_id(&self) -> Option<String> {
         self.server_id.read().clone()
     }
 
@@ -592,7 +595,7 @@ impl ServerState {
         let reaper = databases.host.spawn_reaper();
         databases.tasks.lock().push(reaper.abort_handle());
         self.spawn_database_peer_listener();
-        let scheduler = snapshots::spawn_scheduler(self.clone());
+        let scheduler = backups::spawn_scheduler(self.clone());
         databases.tasks.lock().push(scheduler.abort_handle());
         Ok(())
     }
@@ -600,11 +603,13 @@ impl ServerState {
     /// Stops serving databases before this process exits, for example when
     /// a reloaded process has taken over: closes the listeners, so new
     /// connections reach the successor (which knows every current token),
-    /// stops snapshots, and releases streams and file locks.
+    /// uploads what capture still has and stops it, and releases streams and
+    /// file locks.
     pub(crate) async fn stop_databases(&self) {
         for task in self.databases.tasks.lock().drain(..) {
             task.abort();
         }
+        backups::stop_all(self).await;
         self.databases.host.close_all().await;
     }
 
@@ -707,12 +712,16 @@ impl ServerState {
                 self.snapshot_database_command(&name, reason, app.as_deref())
                     .await
             }
-            Command::ListDatabaseSnapshots { name } => snapshots::list_command(self, &name).await,
+            Command::ListDatabaseSnapshots { name } => backups::list_command(self, &name).await,
             Command::RestoreDatabase {
                 name,
                 snapshot,
+                at_unix_ms,
                 backup_key_base64,
-            } => snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await,
+            } => match restore_target(snapshot.as_deref(), at_unix_ms) {
+                Ok(target) => backups::restore(self, &name, target, backup_key_base64).await,
+                Err(error) => Err(error),
+            },
             Command::QueryDatabase { name, sql } => self.query_database(&name, sql).await,
             Command::MigrateDatabase {
                 name,
@@ -919,6 +928,8 @@ impl ServerState {
         // An open import file would otherwise keep its disk space, and take
         // more chunks, after its directory is removed.
         transfer::cancel(self, id);
+        // Capture holds the file and its spool, which go with the directory.
+        backups::forget(self, id, false).await?;
         // The files go before the record, so a delete that fails here can be
         // run again: it still finds the database, and its snapshots.
         let dir = self.databases.database_dir(id);
@@ -946,7 +957,7 @@ impl ServerState {
             // A copy left by an unfinished move may still hold the
             // snapshots, which would keep the database's own copy from
             // taking any.
-            if let Err(error) = snapshots::release_holder(self, &stored).await {
+            if let Err(error) = backups::release_holder(self, &stored).await {
                 warnings.push(error);
             }
             return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
@@ -954,7 +965,7 @@ impl ServerState {
         // Deleting the snapshots deletes them for every copy of this
         // generation, also one that a move left holding them, and fences the
         // prefix so none publishes again; removing only a copy keeps them.
-        match snapshots::delete_all(&stored).await {
+        match backups::delete_all(&stored).await {
             Ok(0) => {}
             Ok(count) => {
                 tracing::info!(database = %stored.name, objects = count, "Deleted database snapshots");
@@ -1028,7 +1039,7 @@ impl ServerState {
             size_bytes,
             bindings: bindings.into_iter().collect(),
             remote_grants,
-            backup: snapshots::status(self, stored),
+            backup: backups::status(self, stored),
         })
     }
 
@@ -1041,8 +1052,7 @@ impl ServerState {
         if let Some(backup) = &backup {
             validate_backup_storage(backup)?;
         }
-        // Waits for a snapshot in flight, which uploads to the destination
-        // it started with.
+        // Waits for a restore or a transfer in progress.
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
         let stored = self.hosted_database(id)?;
@@ -1059,14 +1069,9 @@ impl ServerState {
             .set_database_secrets(id, &secrets)
             .map_err(|e| format!("store backup configuration: {e}"))?;
         if moved {
-            // The cached status describes the previous destination, and the
-            // new one needs a snapshot even if the database is idle.
-            self.databases.backups.lock().remove(id);
-            if secrets.backup.is_some()
-                && let Ok(database) = DatabaseId::parse(id)
-            {
-                self.databases.host.mark_changed(&database);
-            }
+            // The history starts over at the new destination, with a full
+            // image on the next tick; the previous one keeps what it has.
+            backups::forget(self, id, true).await?;
         }
         let updated = self.hosted_database(id)?;
         Ok(serde_json::to_value(self.database_info(&updated)?).expect("info serializes"))
@@ -1147,32 +1152,36 @@ impl ServerState {
         reason: tako_core::SnapshotReason,
         app: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        use tako_core::SnapshotReason;
         let stored = self.hosted_database(id)?;
-        // App deployers may snapshot only databases their app already uses;
-        // administrators send no app.
+        // App deployers may record restore points only for databases their
+        // app already uses; administrators send no app.
         if let Some(app) = app {
             if !self.app_uses_database(app, id) {
                 return Err(format!("{app} does not use database {}.", stored.name));
             }
-            // Deploys take only the release snapshot, which is skipped for an
-            // unchanged database; other snapshots need administration.
-            if reason != tako_core::SnapshotReason::Release {
+            // Deploys record only the point before a release command; full
+            // images need administration.
+            if reason != SnapshotReason::Release {
                 return Err(
-                    "App deployers may take only the snapshot before a release command.".into(),
+                    "App deployers may record only the restore point before a release command."
+                        .into(),
                 );
             }
         }
-        // Before a release, an unchanged database needs no new snapshot, and
-        // a database without backups is not an error.
-        let release = reason == tako_core::SnapshotReason::Release;
-        if release && stored.secrets.backup.is_none() {
+        // A database without backups is not an error before a release.
+        if reason == SnapshotReason::Release && stored.secrets.backup.is_none() {
             return Ok(serde_json::json!({"skipped": "backups are not configured"}));
         }
-        let only_if_changed = release;
-        match snapshots::take(self, &stored, reason, only_if_changed).await? {
-            Some(snapshot) => Ok(serde_json::json!({ "snapshot": snapshot })),
-            None => Ok(serde_json::json!({"skipped": "no changes since the last snapshot"})),
-        }
+        let snapshot = match reason {
+            SnapshotReason::Manual | SnapshotReason::Scheduled => {
+                backups::full_snapshot(self, &stored, reason).await?
+            }
+            SnapshotReason::Release | SnapshotReason::Migration | SnapshotReason::Restore => {
+                backups::mark(self, &stored, reason).await?
+            }
+        };
+        Ok(serde_json::json!({ "snapshot": snapshot }))
     }
 
     async fn migrate_database(
@@ -1211,11 +1220,11 @@ impl ServerState {
         if dry_run || plan.pending.is_empty() {
             return Ok(serde_json::to_value(report(plan)).expect("report serializes"));
         }
-        // A copy of what the migrations change, when backups are configured.
+        // Names what the migrations change, when backups are configured.
         if stored.secrets.backup.is_some() {
-            snapshots::take(self, &stored, tako_core::SnapshotReason::Migration, true)
+            backups::mark(self, &stored, tako_core::SnapshotReason::Migration)
                 .await
-                .map_err(|e| format!("Snapshot {} before migrations: {e}", stored.name))?;
+                .map_err(|e| format!("Back up {} before migrations: {e}", stored.name))?;
         }
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
@@ -1265,7 +1274,7 @@ impl ServerState {
             .snapshot_space
             .reserve(estimate, available, "the reset")
             .map_err(|error| format!("Cannot reset {id}: {error}."))?;
-        let work = snapshots::fresh_work_dir(self, id, "reset")?;
+        let work = backups::fresh_work_dir(self, id, "reset")?;
         let empty = work.path.join("empty.sqlite");
         let create = empty.clone();
         let migrations: Vec<tako_database::Migration> = migrations
@@ -1292,7 +1301,7 @@ impl ServerState {
         .await
         .map_err(|e| e.to_string())??;
         let mut warnings =
-            snapshots::replace(self, &stored, empty, "database is being reset").await?;
+            backups::replace(self, &stored, empty, "database is being reset").await?;
         drop(work);
         let applied = match report {
             Some(report) => {
@@ -1338,6 +1347,26 @@ fn json_value(value: tako_database::Value) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         tako_database::Value::Text(value) => value.into(),
         tako_database::Value::Blob(value) => serde_json::json!({"base64": BASE64.encode(value)}),
+    }
+}
+
+/// What a `RestoreDatabase` command selects.
+fn restore_target(
+    snapshot: Option<&str>,
+    at_unix_ms: Option<i64>,
+) -> Result<tako_backup::Target, String> {
+    match (snapshot, at_unix_ms) {
+        (Some(_), Some(_)) => Err("Restore either a restore point or a time, not both.".into()),
+        (Some(snapshot), None) => snapshot
+            .parse::<u64>()
+            .ok()
+            .filter(|txid| *txid > 0)
+            .map(tako_backup::Target::Txid)
+            .ok_or_else(|| {
+                format!("Restore point {snapshot} is not one `tako sqlite backups` lists.")
+            }),
+        (None, Some(at)) => Ok(tako_backup::Target::Time(at)),
+        (None, None) => Ok(tako_backup::Target::Latest),
     }
 }
 

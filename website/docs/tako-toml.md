@@ -197,7 +197,7 @@ databases = { main = "main" }
 [envs.development]
 databases = { main = "main" }
 
-# Optional: snapshot this database to another storage than backup.storage.
+# Optional: back this database up to another storage than backup.storage.
 [databases.main]
 backup = "private_backups"
 ```
@@ -208,7 +208,7 @@ backup = "private_backups"
 
 | Field    | Purpose                                                                                                                     |
 | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `backup` | Private S3 storage resource that receives the database's encrypted snapshots, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database has no snapshots; removing them and deploying stops them. |
+| `backup` | Private S3 storage resource that receives the database's encrypted continuous backups, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database is not backed up; removing them and deploying stops its backups. |
 
 `id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot expose app SQL bindings. See [Databases](/databases/).
 
@@ -234,7 +234,7 @@ endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 ```
 
-`backup` enables manual full app-directory archives (`tako backup now`) for the environment. Its storage also receives snapshots of the hosted databases the environment binds, unless `[databases.<name>].backup` names another. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
+`backup` enables manual full app-directory archives (`tako backup now`) for the environment. Its storage also receives the continuous backups of the hosted databases the environment binds, unless `[databases.<name>].backup` names another. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
 
 Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
 

@@ -113,11 +113,13 @@ impl std::fmt::Debug for DatabaseConnection {
     }
 }
 
-/// Why a snapshot was taken.
+/// Why a restore point was recorded.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotReason {
+    /// A full image captured on its own: daily, or when capture started.
     Scheduled,
+    /// A full image `tako sqlite backup` asked for.
     Manual,
     /// Before a deploy's release command.
     Release,
@@ -148,18 +150,21 @@ pub struct DatabaseMigrationReport {
     pub warnings: Vec<String>,
 }
 
-/// One uploaded snapshot of a database.
+/// A restore point of a database: a full image, or a named transaction in
+/// its continuous backup.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseSnapshot {
+    /// The transaction it restores, which `RestoreDatabase` accepts.
     pub id: String,
     pub created_at_unix_secs: u64,
     pub reason: SnapshotReason,
-    /// Size of the database file the snapshot restores.
-    pub database_bytes: u64,
-    /// Size of the uploaded, compressed and encrypted object.
+    /// A full image, which restores on its own and is kept beyond the
+    /// seven days of continuous history.
+    #[serde(default)]
+    pub full: bool,
+    /// Size of the uploaded, encrypted full image.
+    #[serde(default)]
     pub stored_bytes: u64,
-    /// SHA-256 of the database file, hex encoded.
-    pub sha256: String,
 }
 
 /// Backup state of one database.
@@ -171,8 +176,12 @@ pub struct DatabaseBackupStatus {
     /// storages to read the database's snapshots.
     #[serde(default)]
     pub destination: Option<BackupDestination>,
+    /// The newest full image this server captured.
     #[serde(default)]
     pub last_snapshot: Option<DatabaseSnapshot>,
+    /// When everything captured so far was last confirmed uploaded.
+    #[serde(default)]
+    pub replicated_at_unix_secs: Option<u64>,
     #[serde(default)]
     pub last_attempt_unix_secs: Option<u64>,
     #[serde(default)]

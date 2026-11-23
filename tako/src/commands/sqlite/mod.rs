@@ -26,6 +26,8 @@ mod transfer;
 
 use target::{Home, resolve_home};
 
+mod at;
+
 #[derive(Args)]
 pub struct SqliteArgs {
     #[command(subcommand)]
@@ -65,32 +67,36 @@ pub enum SqliteCommands {
     #[command(subcommand)]
     Migration(MigrationCommands),
 
-    /// Take a snapshot now
+    /// Capture a full snapshot now
     Backup {
         /// Database name
         name: String,
     },
 
-    /// List a database's snapshots
+    /// List a database's restore points and the time it can be restored to
     Backups {
         /// Database name
         name: String,
     },
 
-    /// Replace a database with one of its snapshots
+    /// Replace a database with its backed-up state
+    #[command(group(
+        clap::ArgGroup::new("point")
+            .required(true)
+            .args(["latest", "snapshot", "at"])
+    ))]
     Restore {
         /// Database name
         name: String,
-        /// Restore the newest snapshot
-        #[arg(
-            long,
-            conflicts_with = "snapshot",
-            required_unless_present = "snapshot"
-        )]
+        /// Restore the newest backed-up state
+        #[arg(long)]
         latest: bool,
-        /// Snapshot ID from `tako sqlite backups`
+        /// Restore point ID from `tako sqlite backups`
         #[arg(long)]
         snapshot: Option<String>,
+        /// Restore the state at this time: `2026-11-23 10:15` (local time), RFC 3339, or an age such as `15m`, `2h` or `1d`
+        #[arg(long, value_name = "TIME")]
+        at: Option<String>,
         /// Recover onto another server, which becomes the database's server
         #[arg(long)]
         server: Option<String>,
@@ -133,7 +139,7 @@ pub enum SqliteCommands {
         yes: bool,
     },
 
-    /// Delete a database and its snapshots
+    /// Delete a database and its backups
     #[command(visible_alias = "rm")]
     Delete {
         /// Database name
@@ -640,11 +646,21 @@ async fn run_async(
             name,
             latest: _,
             snapshot,
+            at,
             server,
             yes,
         } => {
+            let at = at
+                .map(|at| {
+                    at::parse_at(
+                        &at,
+                        time::OffsetDateTime::now_utc(),
+                        crate::commands::backups::local_offset(),
+                    )
+                })
+                .transpose()?;
             let ctx = Context::load(config_path, network).await?;
-            restore(&ctx, &name, snapshot, server.as_deref(), yes).await
+            restore(&ctx, &name, snapshot, at, server.as_deref(), yes).await
         }
         SqliteCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
@@ -652,7 +668,7 @@ async fn run_async(
             let (_, home) = ctx.database(&name)?;
             confirm(
                 &format!("Replace {name} with {}?", file.display()),
-                "Apps' requests to the database pause while it is replaced. A snapshot of the current contents is taken first when backups are configured.",
+                "Apps' requests to the database pause while it is replaced. When backups are configured, the current contents are backed up first and named with a restore point.",
                 yes,
             )?;
             if output::is_dry_run() {
@@ -1002,14 +1018,21 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
         match &info.backup {
             None => output::info("Backups not configured"),
             Some(backup) => {
-                let last = backup
+                let replicated = backup
+                    .replicated_at_unix_secs
+                    .map(|at| format!("backed up through {}", format_time(at)))
+                    .unwrap_or_else(|| "not backed up yet".into());
+                let full = backup
                     .last_snapshot
                     .as_ref()
-                    .map(|s| format!("last snapshot {}", format_time(s.created_at_unix_secs)))
-                    .unwrap_or_else(|| "no snapshots yet".into());
-                output::info(&format!("Backups to {} · {last}", backup.bucket));
+                    .map(|s| format!(" · full snapshot {}", format_time(s.created_at_unix_secs)))
+                    .unwrap_or_default();
+                output::info(&format!(
+                    "Continuous backups to {} · {replicated}{full}",
+                    backup.bucket
+                ));
                 if let Some(error) = &backup.last_error {
-                    output::warning(&format!("Last snapshot failed: {error}"));
+                    output::warning(&format!("Last backup failed: {error}"));
                 }
             }
         }
@@ -1022,14 +1045,14 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     let (_, home) = ctx.database(name)?;
     if output::is_dry_run() {
         return dry_run(
-            &format!("Snapshot {name}"),
+            &format!("Full snapshot of {name}"),
             serde_json::json!({"database": name}),
         );
     }
-    let _t = output::timed(&format!("Snapshot {name}"));
+    let _t = output::timed(&format!("Full snapshot of {name}"));
     let value: serde_json::Value = output::with_spinner_async(
-        &format!("Snapshotting {name}"),
-        &format!("Uploaded a snapshot of {name}"),
+        &format!("Capturing a full snapshot of {name}"),
+        &format!("Uploaded a full snapshot of {name}"),
         async {
             send(
                 &home,
@@ -1051,9 +1074,10 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     }
     if let Ok(snapshot) = serde_json::from_value::<DatabaseSnapshot>(value["snapshot"].clone()) {
         output::hint(&format!(
-            "Snapshot {} · {}",
+            "Snapshot {} · {} · restore it with `tako sqlite restore {name} --snapshot {}`",
             snapshot.id,
-            output::format_size(snapshot.database_bytes)
+            output::format_size(snapshot.stored_bytes),
+            snapshot.id
         ));
     }
     Ok(())
@@ -1070,29 +1094,52 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
     )
     .await?;
     let snapshots: Vec<DatabaseSnapshot> = serde_json::from_value(value["snapshots"].clone())?;
+    let windows = value["windows"].as_array().cloned().unwrap_or_default();
     if output::is_json() {
-        return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "database": name, "snapshots": snapshots}),
-        );
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "sqlite",
+            "database": name,
+            "windows": windows,
+            "snapshots": snapshots,
+        }));
     }
-    if snapshots.is_empty() {
-        output::info(&format!("{name} has no snapshots yet."));
+    if snapshots.is_empty() && windows.is_empty() {
+        output::info(&format!("{name} has no backups yet."));
         return Ok(());
     }
-    output::section(&format!("Snapshots of {name}"));
+    // The newest window holds the current history; older ones end where the
+    // database moved or was replaced from elsewhere.
+    if let Some(current) = windows.last() {
+        let time = |key: &str| format_time(current[key].as_i64().unwrap_or(0).max(0) as u64 / 1000);
+        output::section(&format!("Point-in-time restore of {name}"));
+        output::bullet(&format!(
+            "Any moment from {} to {} (`tako sqlite restore {name} --at <time>`)",
+            time("from_unix_ms"),
+            time("to_unix_ms")
+        ));
+    }
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    output::section(&format!("Restore points of {name}"));
     for snapshot in &snapshots {
         let reason = match snapshot.reason {
-            SnapshotReason::Scheduled => "scheduled",
-            SnapshotReason::Manual => "manual",
+            SnapshotReason::Scheduled => "full snapshot",
+            SnapshotReason::Manual => "manual full snapshot",
             SnapshotReason::Release => "before release",
             SnapshotReason::Restore => "before restore",
             SnapshotReason::Migration => "before migrations",
         };
+        let size = if snapshot.full && snapshot.stored_bytes > 0 {
+            format!(" · {}", output::format_size(snapshot.stored_bytes))
+        } else {
+            String::new()
+        };
         output::bullet(&format!(
-            "{} · {} · {} · {reason}",
+            "{} · {} · {reason}{size}",
             snapshot.id,
             format_time(snapshot.created_at_unix_secs),
-            output::format_size(snapshot.database_bytes)
         ));
     }
     Ok(())
@@ -1102,20 +1149,25 @@ async fn restore(
     ctx: &Context,
     name: &str,
     snapshot: Option<String>,
+    at_unix_ms: Option<i64>,
     server: Option<&str>,
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let record = ctx.record(name)?;
     // A home server removed from the network is gone: recovery restores the
-    // database onto another server from its snapshots.
+    // database onto another server from its backups.
     let home = ctx.home(&record.server).ok();
     let requested = server.map(|server| ctx.home(server)).transpose()?;
     let (target, moving) = restore_target(name, home.as_ref(), requested)?;
     let home_name = home
         .as_ref()
         .map_or("its removed server", |home| home.name.as_str());
-    let which = snapshot.as_deref().unwrap_or("the newest snapshot");
+    let which = match (&snapshot, at_unix_ms) {
+        (Some(snapshot), _) => format!("restore point {snapshot}"),
+        (None, Some(at)) => format!("its state at {}", format_time(at.max(0) as u64 / 1000)),
+        (None, None) => "its newest backed-up state".to_owned(),
+    };
     if moving {
         output::warning(&format!(
             "{name} moves to {}. Deploy every app that binds it afterwards.",
@@ -1124,7 +1176,7 @@ async fn restore(
     }
     confirm(
         &format!("Restore {name} from {which} on {}?", target.name),
-        "Apps' requests to the database pause while it is replaced. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible.",
+        "Apps' requests to the database pause while it is replaced. Writes after that point are replaced; the current contents are backed up first and named with a restore point, so the restore can be undone.",
         yes,
     )?;
     if output::is_dry_run() {
@@ -1139,7 +1191,7 @@ async fn restore(
     // restored data, so it stays.
     let mut created = false;
     if moving {
-        // Ask the current server where the snapshots are; it may be gone.
+        // Ask the current server where the backups are; it may be gone.
         let source = match &home {
             Some(home) => send::<serde_json::Value>(
                 home,
@@ -1213,6 +1265,7 @@ async fn restore(
                 Command::RestoreDatabase {
                     name: name.to_owned(),
                     snapshot: snapshot.clone(),
+                    at_unix_ms,
                     backup_key_base64: Some(backup_key.clone()),
                 },
             )
@@ -1225,7 +1278,7 @@ async fn restore(
         Ok(value) => value,
         Err(error) => {
             // Remove the empty copy, so the recovery can be retried. Its
-            // snapshots are the database's, which it was restoring from.
+            // backups are the database's, which it was restoring from.
             if created
                 && let Err(cleanup) = send::<serde_json::Value>(
                     &target,
@@ -1257,11 +1310,11 @@ async fn restore(
             server: target.device_id.clone(),
             ..record
         };
-        // The target now holds the snapshots, so the old copy takes none;
+        // The target now holds the backups, so the old copy uploads none;
         // running the command again finishes the move.
         if let Err(error) = ctx.publish(&moved, None) {
             return Err(format!(
-                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
+                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} uploads no backups.",
                 target.name, target.name, target.name
             )
             .into());
@@ -1273,8 +1326,8 @@ async fn restore(
             ));
             return finish_restore(&value);
         };
-        // The old copy, when its server is still up, would keep taking
-        // snapshots into the same place and pruning the new copy's.
+        // The old copy, when its server is still up, would keep backing up
+        // into the same place and pruning the new copy's history.
         let stopped = send::<DatabaseInfo>(
             &home,
             Command::ConfigureDatabaseBackup {
@@ -1285,12 +1338,12 @@ async fn restore(
         .await;
         if stopped.is_ok() {
             output::hint(&format!(
-                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
+                "The old copy of {name} stays on {} and no longer backs up. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
                 home.name, home.name
             ));
         } else {
             output::hint(&format!(
-                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako sqlite delete {name} --server {}`.",
+                "{} could not be reached. Its old copy of {name} stops uploading backups once it sees the move; remove it later with `tako sqlite delete {name} --server {}`.",
                 home.name, home.name
             ));
         }
@@ -1327,6 +1380,16 @@ fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::E
         return output::json_result(
             serde_json::json!({"ok": true, "command": "sqlite", "result": value}),
         );
+    }
+    if let (Some(name), Some(transaction), Some(at)) = (
+        value["name"].as_str(),
+        value["restored"]["transaction"].as_u64(),
+        value["restored"]["captured_at_unix_ms"].as_i64(),
+    ) {
+        output::hint(&format!(
+            "{name} now has its state of {} (transaction {transaction}).",
+            format_time(at.max(0) as u64 / 1000)
+        ));
     }
     Ok(())
 }

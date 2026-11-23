@@ -1094,6 +1094,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
 name = "crc-fast"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3363,6 +3378,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lz4_flex"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a027efd2ad3c4dbb4123b5c018e3efbe7f6236da7c7612f122dad030f5d2de5"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3419,6 +3443,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memmap2"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memoffset"
@@ -6577,6 +6610,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tako-backup"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "futures",
+ "memmap2",
+ "object_store",
+ "openssl",
+ "rusqlite",
+ "tako-storage",
+ "tempfile",
+ "terse-litestream",
+ "terse-ltx",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "tako-cache"
 version = "0.0.0"
 dependencies = [
@@ -6871,6 +6924,7 @@ dependencies = [
  "sha2 0.11.0",
  "socket2 0.6.5",
  "ssh-key 0.6.7",
+ "tako-backup",
  "tako-cache",
  "tako-channels",
  "tako-compose",
@@ -6994,6 +7048,26 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terse-litestream"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "crc",
+ "rusqlite",
+ "tempfile",
+ "terse-ltx",
+]
+
+[[package]]
+name = "terse-ltx"
+version = "0.1.0"
+source = "git+https://github.com/TerseAI/terse-ltx?rev=fdc27e08f09a532b8f0b8d72971de4b2772ef86b#fdc27e08f09a532b8f0b8d72971de4b2772ef86b"
+dependencies = [
+ "crc",
+ "lz4_flex",
 ]
 
 [[package]]
@@ -7447,6 +7521,12 @@ dependencies = [
  "sha1",
  "thiserror 2.0.20",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typed-path"

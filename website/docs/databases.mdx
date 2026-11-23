@@ -1,9 +1,9 @@
 ---
 title: Databases
-description: "Create Tako-hosted SQLite databases on a network server, bind them to apps, migrate them, query them with libSQL drivers, and back them up with encrypted snapshots."
+description: "Create Tako-hosted SQLite databases on a network server, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
 ---
 
-A Tako database is a SQLite database that `tako-server` hosts on one server of a [native network](/networks/). Apps do not open the file. They reach it over the libSQL HTTP protocol (Hrana over HTTP, JSON encoding) with a per-binding token, so existing libSQL drivers work unchanged, the same code runs under `tako dev`, and Tako can snapshot, restore, and move the file without coordinating with app processes. Apps on every server of the network can use it.
+A Tako database is a SQLite database that `tako-server` hosts on one server of a [native network](/networks/). Apps do not open the file. They reach it over the libSQL HTTP protocol (Hrana over HTTP, JSON encoding) with a per-binding token, so existing libSQL drivers work unchanged, the same code runs under `tako dev`, and Tako can back up, restore, and move the file without coordinating with app processes. Apps on every server of the network can use it.
 
 Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR` remain plain file directories; Tako does not discover, capture, or back up SQLite files placed there.
 
@@ -135,13 +135,13 @@ Any number works as a prefix, up to 18 digits; files run in numeric order, so da
 
 Tako applies pending migrations:
 
-- on `tako deploy`, on the database's server, after the snapshot before the release command and before the release command and rollout. A failing migration stops the deploy before any new instance starts. The previous release keeps serving while migrations run, so keep them compatible with it (add a column before code depends on it; drop it in a later deploy).
+- on `tako deploy`, on the database's server, after the restore point before the release command and before the release command and rollout. A failing migration stops the deploy before any new instance starts. The previous release keeps serving while migrations run, so keep them compatible with it (add a column before code depends on it; drop it in a later deploy).
 - in `tako dev` (before the app starts, on each reload, and whenever a file in `migrations/` is added or saved, without restarting the app) and `tako run`, on the local file.
 - on `tako sqlite migration apply [<database>]`. `migration list [<database>]` shows what is pending without applying it. Both act on every database the project binds by default; `--local` acts on the development files.
 
-Each file runs in one `BEGIN IMMEDIATE` transaction together with its record in the database's `_tako_migrations` table (`app`, `name`, `sha256`, `applied_at`), so a failing file leaves nothing behind and the files before it stay applied. A file that contains `BEGIN`, `COMMIT`, `END`, or `ROLLBACK` is refused before that statement runs, and nothing in it is committed; `SAVEPOINT` and `RELEASE` work inside the file's transaction. Foreign keys are not enforced while a file runs, so it can rebuild a table that others reference ([SQLite's 12 steps](https://sqlite.org/lang_altertable.html#otheralter)), but `PRAGMA foreign_key_check` must pass before it commits. Statements have the same 30-second limit and restrictions as app queries. When backups are configured and something is pending, the server snapshots the database first (reason `migration`). The previous release keeps serving meanwhile, so, as with any snapshot, its writes after the snapshot are not in it.
+Each file runs in one `BEGIN IMMEDIATE` transaction together with its record in the database's `_tako_migrations` table (`app`, `name`, `sha256`, `applied_at`), so a failing file leaves nothing behind and the files before it stay applied. A file that contains `BEGIN`, `COMMIT`, `END`, or `ROLLBACK` is refused before that statement runs, and nothing in it is committed; `SAVEPOINT` and `RELEASE` work inside the file's transaction. Foreign keys are not enforced while a file runs, so it can rebuild a table that others reference ([SQLite's 12 steps](https://sqlite.org/lang_altertable.html#otheralter)), but `PRAGMA foreign_key_check` must pass before it commits. Statements have the same 30-second limit and restrictions as app queries. When backups are configured and something is pending, the server first uploads everything captured so far and records a restore point (reason `migration`) that names the state before the migrations. The previous release keeps serving meanwhile, so restoring that point also undoes its writes after it.
 
-An applied migration must not change: a file whose contents differ from what was applied stops the deploy (or `tako dev`); restore it and put the change in a new file. A file that was applied and then deleted produces a warning. To squash old migrations once every database has them, replace them with one file that is safe to run again, numbered after them: databases that have the old files run it without changes, and new ones get their schema from it. A new file numbered below the latest applied one runs, with a warning. There are no down migrations; write a new migration that undoes the change, or [restore a snapshot](#back-up-and-restore).
+An applied migration must not change: a file whose contents differ from what was applied stops the deploy (or `tako dev`); restore it and put the change in a new file. A file that was applied and then deleted produces a warning. To squash old migrations once every database has them, replace them with one file that is safe to run again, numbered after them: databases that have the old files run it without changes, and new ones get their schema from it. A new file numbered below the latest applied one runs, with a warning. There are no down migrations; write a new migration that undoes the change, or [restore the point before it](#back-up-and-restore).
 
 History is kept per app: apps that share a database each track their own migrations, so both can have a `0001_initial.sql`. Prefer letting one app own a shared database's schema. Within one app, a database bound under two binding names takes its migrations from one folder: two folders with different files for the same database are an error.
 
@@ -178,13 +178,13 @@ tako sqlite shell main "SELECT count(*) FROM users" --json
 tako sqlite shell main
 ```
 
-`status` reports the size, the app environments using the database on its server (`bindings`), those granted from other servers (`remote_grants`), and backup state: destination, last snapshot, last attempt, and last error. Without a name it reports the databases this project uses in the selected network, including channel replay.
+`status` reports the size, the app environments using the database on its server (`bindings`), those granted from other servers (`remote_grants`), and backup state: destination, when everything captured was last confirmed uploaded (`replicated_at_unix_secs`), the newest full snapshot, the last attempt, and the last error. Without a name it reports the databases this project uses in the selected network, including channel replay.
 
 `shell` runs SQL with a full-access connection. With SQL as an argument it runs that statement and exits; with `--json` it prints `columns`, `rows`, `affected_row_count`, and `truncated`. Results stop at 1,000 rows and 8 MiB; use `export` for more. Each statement commits on its own: `BEGIN` is rejected rather than silently leaving later statements outside a transaction, so run multi-statement changes from a migration or a script. Without SQL it reads statements from standard input; an interactive terminal also accepts `.tables`, `.schema [table]`, and `.quit`. The shell has the same restrictions as apps.
 
 ## Back up and restore
 
-Snapshots go to a private S3-compatible storage resource (no `public_base_url`): the `backup.storage` of the environment that binds the database, or `[databases.<name>].backup` when set:
+Backups go to a private S3-compatible storage resource (no `public_base_url`): the `backup.storage` of the environment that binds the database, or `[databases.<name>].backup` when set:
 
 ```toml
 [envs.production]
@@ -207,31 +207,41 @@ tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by a full client sends the destination and credentials to the database's server; removing the backup storage and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. Snapshots already in the earlier storage stay there (retention and `delete` reach only the current one); remove `_tako/databases/<name>/` from it yourself once you no longer need them. A new database has no snapshots until such a deploy. Without a backup storage, Tako takes no snapshots and a lost server loses the database. Environments that bind the same database should use the same storage, since each full client's deploy sets it.
+A deploy by a full client sends the destination and credentials to the database's server. Removing the backup storage and deploying stops backups. Moving to another storage starts a new history there, beginning with a full snapshot; the history in the earlier storage stays there (retention and `delete` reach only the current one), so remove `_tako/databases/<name>/` from it yourself once you no longer need it. A new database is not backed up until such a deploy. Without a backup storage, a lost server loses the database. Environments that bind the same database should use the same storage, since each full client's deploy sets it.
 
-The server then takes snapshots:
+### Continuous backups
 
-- every hour while the database changes; an unchanged database uploads nothing,
-- before a deploy's release command, when the database changed since the last snapshot,
-- before migrations, when any are pending,
-- before a restore, import, or reset replaces the database,
-- on demand with `tako sqlite backup <name>`.
+The server backs the database up continuously, with an embedded port of [Litestream](https://litestream.io): every 10 seconds it captures the transactions committed since the last capture from SQLite's write-ahead log and uploads them. An idle database makes no requests. Losing the server loses at most the writes of the last few seconds, plus anything storage did not accept while it was failing. Any moment of the last 7 days can be restored, as of the newest capture before it: captures are at most 10 seconds apart while the database changes.
 
-A snapshot is a consistent copy (`VACUUM INTO`) that passes `PRAGMA integrity_check`, compressed with zstd and encrypted with AES-256-GCM using the database's own key. The key is generated at `create` and kept in the encrypted network state, readable only by full clients. Objects are written under `_tako/databases/<name>/<generation>/snapshots/`, where the generation is a random ID chosen at `create`, so a database created again under an earlier one's name never sees its snapshots. The manifest is written last, so only complete snapshots are listed; data left without a manifest by an interrupted upload is deleted after 24 hours. A failed snapshot is retried after five minutes.
+- **Full snapshots** restore on their own. The server captures one when backups start (after the server starts, a restore, import, or reset, or a new destination), once a day while the database changes, and on demand with `tako sqlite backup <name>`.
+- **Restore points** name a transaction: the state before a deploy's release command, before pending migrations, and before a restore, import, or reset replaces the database. Every full snapshot is a restore point too.
+- **Retention** keeps the last 7 days of history in full. Older history is removed, except for the full snapshots it keeps longer: all of those from the last 24 hours, and the newest of each of the last 7 days and of each of the last 4 weeks. A restore point is removed with the history it names.
 
-Retention keeps every snapshot of the last 24 hours (so a release or manual snapshot survives the hourly ones after it), then the newest of each day for 7 days and of each week for 4 weeks. Recovery is to a snapshot, not to an arbitrary point in time: up to an hour of writes can be lost with the server.
+Uploads are encrypted with AES-256-GCM using the database's own key, which also authenticates each object's name, so an object cannot be swapped for another. The key is generated at `create` and kept in the encrypted network state, readable only by full clients, and on the database's server. Pages are compressed with LZ4. Objects are written under `_tako/databases/<name>/<generation>/` (`ltx/` for history, `points/` for restore points), where the generation is a random ID chosen at `create`, so a database created again under an earlier one's name never sees its backups. A full snapshot is uploaded as one object, so on S3 and R2 a database can be backed up up to about 5 GiB.
+
+When storage fails, the server keeps capturing on its own disk and retries with backoff, at most 15 minutes apart, uploading everything once storage accepts it again; `tako sqlite status` shows the last error. Stopping or upgrading the server uploads what is left first, for up to 20 seconds, and the rest when it starts again. A database that changes all the time makes about 8,600 uploads a day and one full snapshot a day.
+
+Capture keeps two small control tables in the database, `_litestream_seq` and `_litestream_lock`. Leave them alone, and expect schema tools to list them.
+
+### Restore
 
 ```bash
-tako sqlite backups main --json
+tako sqlite backups main
+tako sqlite restore main --at "2026-11-23 10:15"
+tako sqlite restore main --at 15m
+tako sqlite restore main --snapshot <id>
 tako sqlite restore main --latest
-tako sqlite restore main --snapshot <snapshot-id>
 ```
 
-A restore checks that the server has room, downloads the snapshot, and verifies its checksum and integrity before anything changes, then pauses the database, copies exactly the contents it replaces, and swaps the snapshot in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. The replaced contents are uploaded as a snapshot with reason `restore` and kept beside the database as `previous.sqlite` until the next replacement. Writes since the restored snapshot are lost.
+`backups` lists the window of time the database can be restored to and its restore points, newest first, with their IDs; `--json` prints `windows` (`from_unix_ms`, `to_unix_ms`, `from_transaction`, `to_transaction`) and `snapshots` (`id`, `created_at_unix_secs`, `reason`, `full`, `stored_bytes`). A restore takes exactly one of:
 
-`--latest` restores the newest snapshot that is not one of these `restore` safety copies, so repeating a restore does not undo it. To go back to the contents a restore replaced, pass its `--snapshot` ID.
+- `--at <time>`: the newest transaction captured at or before that time, given as a local time (`2026-11-23 10:15` or `2026-11-23 10:15:30`), an RFC 3339 time (`2026-11-23T10:15:00Z`), or an age (`90s`, `15m`, `2h`, `1d`).
+- `--snapshot <id>`: a restore point from `backups`.
+- `--latest`: the newest transaction uploaded, which recovers a lost or damaged copy.
 
-Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no snapshot. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
+A restore checks that the server has room, downloads only what it needs (the newest full snapshot at or before the target, then the transactions after it), verifies every checksum and the restored file's integrity before anything changes, then pauses the database and swaps it in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. Before the swap, the server captures and uploads exactly the contents it replaces and records them as a restore point with reason `restore`, so restoring that point's `--snapshot` ID undoes the restore; the replaced file is also kept beside the database as `previous.sqlite` until the next replacement. The restored state then continues the history: `--latest` and later times include it.
+
+Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no backup. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
 
 ### Import and export
 
@@ -240,7 +250,7 @@ tako sqlite export main ./main.sqlite
 tako sqlite import main ./main.sqlite
 ```
 
-`export` downloads a consistent copy without pausing apps and refuses to overwrite an existing file. `import` replaces the database with a local SQLite file after verifying it on the server; a snapshot of the current contents is taken first when backups are configured. Only the main file is uploaded: stop writers and checkpoint the file (`PRAGMA wal_checkpoint(TRUNCATE)`) before importing a database that uses WAL. Imports are limited to 64 GiB. An import or export in progress is held by the server process, so a restart or upgrade of the server ends it; run the command again.
+`export` downloads a consistent copy without pausing apps and refuses to overwrite an existing file. `import` replaces the database with a local SQLite file after verifying it on the server; when backups are configured, the current contents are backed up first and named with a restore point (reason `restore`). Only the main file is uploaded: stop writers and checkpoint the file (`PRAGMA wal_checkpoint(TRUNCATE)`) before importing a database that uses WAL. Imports are limited to 64 GiB. An import or export in progress is held by the server process, so a restart or upgrade of the server ends it; run the command again.
 
 To move an app from a SQLite file in its data directory, create a hosted database, copy the file to your machine during a write freeze, import it, bind the database, and deploy the code that uses `tako.databases`.
 
@@ -251,15 +261,15 @@ tako sqlite restore main --latest --server edge-b
 tako deploy --env production
 ```
 
-With `--server`, Tako creates the database on `edge-b` from its snapshot and records `edge-b` as its server in the network; `tako.toml` does not change. It reads snapshots from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
+With `--server`, Tako creates the database on `edge-b` from its backups and records `edge-b` as its server in the network; `tako.toml` does not change. `--latest` restores everything the old server uploaded, so at most its last few seconds of writes are lost; `--at` and `--snapshot` work too. It reads the backups from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
 
-When the old server is still running, its copy stays, and Tako stops its snapshots so it cannot prune the new copy's. An old server that was unreachable during the move stops publishing snapshots on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Once every app is deployed, remove the old copy:
+When the old server is still running, its copy stays, and Tako stops its backups so it cannot prune the new copy's history. An old server that was unreachable during the move stops uploading on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Until it notices, anything it still uploads stays apart from the new copy's history, which starts far above it, so a restore never mixes the two. Once every app is deployed, remove the old copy:
 
 ```bash
 tako sqlite delete main --server edge-a
 ```
 
-That deletes only the copy on `edge-a`; the database, its network record, and its snapshots stay. If `edge-a` holds an earlier database of the same name instead (one deleted from the network while `edge-a` was unreachable), the command says so before deleting it, together with that database's snapshots. If the recovery itself fails, Tako removes the new copy on `edge-b` without touching the snapshots. If the move stops after the restore (for example, the network record could not be published), run the same command again: it finds its copy on `edge-b`, restores it again, and finishes the move. If that second restore fails, the copy on `edge-b` stays as it was, so the command can be run again. To abandon the move instead, remove that copy with `tako sqlite delete main --server edge-b`, which gives the snapshots back to the copy the network still names; `tako sqlite delete main` also removes such leftover copies from every reachable server of the network.
+That deletes only the copy on `edge-a`; the database, its network record, and its backups stay. If `edge-a` holds an earlier database of the same name instead (one deleted from the network while `edge-a` was unreachable), the command says so before deleting it, together with that database's backups. If the recovery itself fails, Tako removes the new copy on `edge-b` without touching the backups. If the move stops after the restore (for example, the network record could not be published), run the same command again: it finds its copy on `edge-b`, restores it again, and finishes the move. If that second restore fails, the copy on `edge-b` stays as it was, so the command can be run again. To abandon the move instead, remove that copy with `tako sqlite delete main --server edge-b`, which gives the backups back to the copy the network still names; `tako sqlite delete main` also removes such leftover copies from every reachable server of the network.
 
 ## Reset a database
 
@@ -268,7 +278,7 @@ tako sqlite reset main
 tako sqlite reset main --local
 ```
 
-`reset` replaces the database with an empty one that already has the project's migrations applied: they run on the new file before it replaces the old one, so apps never see the database without its schema, and a failing migration leaves it unchanged. On a server it pauses requests like a restore and, when backups are configured, first uploads a snapshot of the contents it replaces (reason `restore`), so `tako sqlite restore main --snapshot <id>` undoes it. It asks for confirmation (`--yes` skips it) and refuses a database the `production` environment binds unless `--force` is passed. With `--local` it empties the development file, which `tako dev` may keep serving, and applies the development migrations.
+`reset` replaces the database with an empty one that already has the project's migrations applied: they run on the new file before it replaces the old one, so apps never see the database without its schema, and a failing migration leaves it unchanged. On a server it pauses requests like a restore and, when backups are configured, first backs up the contents it replaces and names them with a restore point (reason `restore`), so `tako sqlite restore main --snapshot <id>` undoes it. It asks for confirmation (`--yes` skips it) and refuses a database the `production` environment binds unless `--force` is passed. With `--local` it empties the development file, which `tako dev` may keep serving, and applies the development migrations.
 
 ## Delete a database
 
@@ -276,7 +286,7 @@ tako sqlite reset main --local
 tako sqlite delete main
 ```
 
-`delete` (alias `rm`) removes the file from its server, every snapshot of it from its current backup storage, its records in the network state, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. A small `holder` marker stays under the snapshot prefix, so that a copy on a server the delete could not reach publishes no snapshots when it comes back. When backup storage cannot be reached the database is still deleted, and a warning names the snapshot prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm. Imports and exports of the database still in progress end with it.
+`delete` (alias `rm`) removes the file from its server, its backups from its current backup storage, its records in the network state, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. A small `holder` marker stays under the database's prefix, so that a copy on a server the delete could not reach uploads nothing when it comes back. When backup storage cannot be reached the database is still deleted, and a warning names the prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm. Imports and exports of the database still in progress end with it.
 
 ## Apps on other servers
 
@@ -294,13 +304,13 @@ Each remote query adds a private-network round trip, so place a database on the 
 - Requests are limited to 32 MiB and 65,536 statements and batch steps, and a request's body must arrive within 30 seconds (otherwise `408`); a request that waits 30 seconds for one of the database's 32 request slots, or for room in the server's 256 MiB of buffered requests and cursor output, gets `503`, as does a pipeline whose results find no room left in that buffer (results stay counted until the response is sent); a connection that sends no request for 30 seconds, or stops reading its response for 30 seconds, is closed, and a server holds at most 1,024 connections per listener; responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
 - App SQL bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them; their SDK-enabled services can use hosted replay through the channel runtime.
 - A deploy client cannot change an environment's database bindings; a full client must deploy the change.
-- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by full clients.
+- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys), record the restore point before their own release, and apply their own app's migrations; backup keys are readable only by full clients.
 - `create` refuses a name the network already has. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
 
 ## Verify
 
-1. Run `tako sqlite status <name> --json` and confirm the server, `bindings` or `remote_grants`, and `backup.last_snapshot`.
+1. Run `tako sqlite status <name> --json` and confirm the server, `bindings` or `remote_grants`, and that `backup.replicated_at_unix_secs` is recent and `backup.last_error` is empty.
 2. Run `tako sqlite migration list` and confirm nothing is pending after a deploy.
 3. Run `tako sqlite shell <name> "SELECT count(*) FROM <table>" --json` to check known rows.
-4. Take a snapshot with `tako sqlite backup <name>` and list it with `tako sqlite backups <name>`.
-5. Before depending on backups, restore a snapshot into a staging database or export one and open it locally.
+4. Run `tako sqlite backups <name> --json` and confirm a window that ends within the last minute, and the restore point of the last deploy.
+5. Before depending on backups, practice on a staging database: insert a row, wait 10 seconds, run `tako sqlite restore <name> --at <a time before the insert>`, confirm the row is gone, then restore the `restore` point it recorded to get it back.

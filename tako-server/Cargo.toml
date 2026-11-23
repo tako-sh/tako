@@ -62,6 +62,7 @@ tar = "0.4"
 flate2.workspace = true
 zstd = "0.14"
 nanoid = "0.5"
+tako-backup = { path = "../tako-backup" }
 bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["http1", "server", "client"] }

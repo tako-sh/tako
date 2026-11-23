@@ -132,7 +132,7 @@ release = ""
 
 The release command runs once on the leader server after extract and production install but before rolling update. Followers wait for the leader result. If the command fails, times out, or exits by signal, deploy aborts on every server and leaves the old release serving.
 
-The command runs with the same env as new HTTP instances, plus freshly decrypted secrets as env vars. When the environment binds [hosted databases](/databases/), the command also receives temporary bindings to them in `TAKO_BOOTSTRAP_DATA`, so a migration script reads `tako.databases.<binding>` like the app. They are revoked when the command finishes. Before the command runs, Tako snapshots each bound database that changed and has backups configured, then applies the project's [migrations](/databases/#migrations). The hard timeout is 10 minutes.
+The command runs with the same env as new HTTP instances, plus freshly decrypted secrets as env vars. When the environment binds [hosted databases](/databases/), the command also receives temporary bindings to them in `TAKO_BOOTSTRAP_DATA`, so a migration script reads `tako.databases.<binding>` like the app. They are revoked when the command finishes. Before the command runs, Tako uploads what each bound database with backups configured has captured and records a restore point before the release, then applies the project's [migrations](/databases/#migrations). The hard timeout is 10 minutes.
 
 Release commands, production installs, and container builds retain the last 64 KiB of each output stream for diagnostics. Output is drained throughout execution, including when a command writes binary data.
 

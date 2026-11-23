@@ -12,7 +12,7 @@ The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Ru
 | Need                                    | Use                                      | Boundary                                                                      |
 | --------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
 | Files uploaded or downloaded by clients | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
-| Relational app data                     | A [hosted database](/databases/)         | Bound by name; snapshots go to private S3 storage.                            |
+| Relational app data                     | A [hosted database](/databases/)         | Bound by name; backed up continuously to private S3 storage.                  |
 | App-owned local files                   | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
 | Recover the deployed app data tree      | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
 | Disposable computed JSON                | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
@@ -21,7 +21,7 @@ A storage binding does not provision a database. Use a [hosted database](/databa
 
 ## App-owned local files
 
-Resolve a file inside the persistent app data directory. Fail when the directory is unavailable instead of silently writing into the release directory. The directory holds plain files: Tako does not capture or snapshot databases placed in it, so prefer a [hosted database](/databases/) for SQLite.
+Resolve a file inside the persistent app data directory. Fail when the directory is unavailable instead of silently writing into the release directory. The directory holds plain files: Tako does not capture or back up databases placed in it, so prefer a [hosted database](/databases/) for SQLite.
 
 <CodeGroup>
 

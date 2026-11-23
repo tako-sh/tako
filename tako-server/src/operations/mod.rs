@@ -7,10 +7,7 @@ pub(crate) enum Caller {
     Full,
     Deploy,
 }
-pub(crate) use backup::{
-    METADATA_TIMEOUT, backup_store, decrypt_backup_file, download_object, encrypt_backup_file,
-    put_json_object, upload_file, with_deadline,
-};
+pub(crate) use backup::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
 pub(crate) use backup::{
     ManualBackupState, RecoveryMode, measure_database_tree, recover_interrupted_restores,
     run_restore_worker, snapshot_data_tree, snapshot_database_tree, sweep_backup_work_dirs,
