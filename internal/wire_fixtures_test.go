@@ -23,7 +23,7 @@ func TestBootstrapFixtureParses(t *testing.T) {
 			"main": {URL: "http://127.0.0.1:9845", AuthToken: "token-example"},
 		},
 		KV: map[string]KVConnection{
-			"sessions": {URL: "redis://:kv-token-example@127.0.0.1:9846"},
+			"sessions": {Token: "kv-token-example"},
 		},
 	}
 	if !reflect.DeepEqual(bootstrap, want) {

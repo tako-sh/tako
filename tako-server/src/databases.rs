@@ -564,12 +564,7 @@ pub(crate) fn kv_connections(
     bindings
         .iter()
         .filter(|(_, binding)| binding.binding.engine == DatabaseEngine::Kv)
-        .map(|(name, binding)| {
-            (
-                name.clone(),
-                KvConnection::new(&binding.token),
-            )
-        })
+        .map(|(name, binding)| (name.clone(), KvConnection::new(&binding.token)))
         .collect()
 }
 

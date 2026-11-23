@@ -134,7 +134,16 @@ async fn run_async(
                 );
             }
             let ttl_ms = ttl.map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX));
-            query(&ctx, &name, KvRequest::Put { key: key.clone(), json, ttl_ms }).await?;
+            query(
+                &ctx,
+                &name,
+                KvRequest::Put {
+                    key: key.clone(),
+                    json,
+                    ttl_ms,
+                },
+            )
+            .await?;
             if output::is_json() {
                 return output::json_result(
                     serde_json::json!({"ok": true, "command": "kv put", "key": key}),

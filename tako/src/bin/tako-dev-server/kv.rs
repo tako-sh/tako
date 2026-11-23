@@ -232,13 +232,23 @@ mod tests {
             Response::Ok { .. }
         ));
         // A registration cannot use another's token.
-        assert!(send("/b/tako.toml", &first["auth"], get("k")).await.error_message().is_some());
+        assert!(
+            send("/b/tako.toml", &first["auth"], get("k"))
+                .await
+                .error_message()
+                .is_some()
+        );
 
         let again = connect("/a/tako.toml", &bindings).await.unwrap();
         assert_eq!(again["auth"].token, first["auth"].token);
 
         release("/a/tako.toml").await;
-        assert!(send("/a/tako.toml", &first["auth"], get("k")).await.error_message().is_some());
+        assert!(
+            send("/a/tako.toml", &first["auth"], get("k"))
+                .await
+                .error_message()
+                .is_some()
+        );
         assert!(
             matches!(
                 send("/b/tako.toml", &other["auth"], get("k")).await,
@@ -284,7 +294,10 @@ mod tests {
         );
         assert!(is_open(&kept).await);
         assert!(
-            matches!(send("/d/tako.toml", &first["a"], put("k")).await, Response::Ok { .. }),
+            matches!(
+                send("/d/tako.toml", &first["a"], put("k")).await,
+                Response::Ok { .. }
+            ),
             "the previous binding still works"
         );
         release("/d/tako.toml").await;

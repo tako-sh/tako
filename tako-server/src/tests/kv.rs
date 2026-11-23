@@ -142,7 +142,10 @@ async fn kv_stores_are_created_queried_and_deleted() {
     assert!(!state.databases.database_path("sessions").exists());
 
     put(&state, "sessions", "challenge:1", r#""abc""#, Some(60_000)).await;
-    assert_eq!(get(&state, "sessions", "challenge:1").await, json!(r#""abc""#));
+    assert_eq!(
+        get(&state, "sessions", "challenge:1").await,
+        json!(r#""abc""#)
+    );
     assert_eq!(get(&state, "sessions", "missing").await, Value::Null);
     let invalid = query(
         &state,
@@ -154,7 +157,10 @@ async fn kv_stores_are_created_queried_and_deleted() {
         },
     )
     .await;
-    assert_eq!(invalid.error_code(), Some(tako_core::ErrorCode::InvalidRequest));
+    assert_eq!(
+        invalid.error_code(),
+        Some(tako_core::ErrorCode::InvalidRequest)
+    );
     query(
         &state,
         "sessions",
@@ -321,33 +327,59 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         json: r#""v""#.into(),
         ttl_ms: None,
     };
-    call(&state, "web/production", &token, request).await.unwrap();
+    call(&state, "web/production", &token, request)
+        .await
+        .unwrap();
     assert_eq!(
-        call(&state, "web/production", &token, KvRequest::Get { key: "k".into() })
-            .await
-            .unwrap(),
+        call(
+            &state,
+            "web/production",
+            &token,
+            KvRequest::Get { key: "k".into() }
+        )
+        .await
+        .unwrap(),
         json!(r#""v""#)
     );
     // The token is the environment's: another app cannot use it, and the
     // SQLite binding's token is not a KV credential.
     assert!(
-        call(&state, "other/production", &token, KvRequest::Get { key: "k".into() })
-            .await
-            .is_err()
+        call(
+            &state,
+            "other/production",
+            &token,
+            KvRequest::Get { key: "k".into() }
+        )
+        .await
+        .is_err()
     );
     let sqlite_token = bindings["main"].token.clone();
     assert!(
-        call(&state, "web/production", &sqlite_token, KvRequest::Get { key: "k".into() })
-            .await
-            .is_err()
+        call(
+            &state,
+            "web/production",
+            &sqlite_token,
+            KvRequest::Get { key: "k".into() }
+        )
+        .await
+        .is_err()
     );
 
     // Removing the environment's bindings ends its access.
     state.databases.remove_bindings("web/production");
-    let error = call(&state, "web/production", &token, KvRequest::Get { key: "k".into() })
-        .await
-        .unwrap_err();
-    assert!(error.message.contains("binding changed"), "{}", error.message);
+    let error = call(
+        &state,
+        "web/production",
+        &token,
+        KvRequest::Get { key: "k".into() },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.message.contains("binding changed"),
+        "{}",
+        error.message
+    );
 }
 
 #[tokio::test]
@@ -380,13 +412,19 @@ async fn grants_reach_the_kv_peer_listener() {
     assert_eq!(get(&state, "sessions", "relayed").await, json!("\"yes\""));
     let refused = forward(address, request("sessions", "wrong")).await;
     assert!(
-        refused["message"].as_str().unwrap().contains("refused this app"),
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("refused this app"),
         "{refused}"
     );
     // The grant also names the SQLite database, which no KV store serves.
     let unserved = forward(address, request("main", &key)).await;
     assert!(
-        unserved["message"].as_str().unwrap().contains("not serving the KV store"),
+        unserved["message"]
+            .as_str()
+            .unwrap()
+            .contains("not serving the KV store"),
         "{unserved}"
     );
     // Deleting the store revokes it from the grant.
@@ -401,7 +439,10 @@ async fn grants_reach_the_kv_peer_listener() {
     .await;
     let revoked = forward(address, request("sessions", &key)).await;
     assert!(
-        revoked["message"].as_str().unwrap().contains("refused this app"),
+        revoked["message"]
+            .as_str()
+            .unwrap()
+            .contains("refused this app"),
         "{revoked}"
     );
 }

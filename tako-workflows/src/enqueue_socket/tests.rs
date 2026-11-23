@@ -84,8 +84,14 @@ fn kv_requests_reach_the_kv_handler_with_the_callers_token() {
         )
     };
     assert!(send("web/production", Some(&kv)).error_message().is_some());
-    assert_eq!(send("web/staging", Some(&kv)).data(), Some(&serde_json::json!("1")));
-    assert_eq!(send("web/staging", None).error_code(), Some(ErrorCode::Unavailable));
+    assert_eq!(
+        send("web/staging", Some(&kv)).data(),
+        Some(&serde_json::json!("1"))
+    );
+    assert_eq!(
+        send("web/staging", None).error_code(),
+        Some(ErrorCode::Unavailable)
+    );
 }
 
 #[test]
@@ -1432,7 +1438,16 @@ fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
                 id: id.clone(),
             },
         ] {
-            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, None, None, cmd);
+            let response = handle_command(
+                &lookup,
+                None,
+                Some(&auth),
+                Some(1000),
+                None,
+                None,
+                None,
+                cmd,
+            );
             assert!(
                 response
                     .error_message()

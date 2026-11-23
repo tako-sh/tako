@@ -9,6 +9,7 @@ use serde::Deserialize;
 #[cfg(all(test, unix, feature = "axum"))]
 mod axum_shutdown_tests;
 pub mod error;
+mod kv;
 pub mod network;
 pub mod presence;
 #[cfg(feature = "axum")]
@@ -20,7 +21,8 @@ pub mod stores;
 mod stores_http;
 #[cfg(all(test, unix))]
 mod wire_fixtures;
-pub use error::{ErrorCode, Rejected};
+pub use error::{ErrorCode, KvRejected, Rejected};
+pub use kv::Kv;
 pub use presence::{
     PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
     PresenceSnapshot, PresenceVerifyInput,
@@ -85,50 +87,6 @@ impl fmt::Debug for Database {
             .field("auth_token", &"[REDACTED]")
             .finish()
     }
-}
-
-/// A connection to a Tako-hosted KV store bound to the app in `tako.toml`
-/// (`[envs.<env>].kv`). Tako serves it over the Redis protocol next to the
-/// app, and [`Kv::url`] carries the binding's token as its password, so
-/// Redis clients connect with the URL as is:
-///
-/// ```no_run
-/// let sessions = tako::kv("sessions").expect("a KV store bound as sessions");
-/// // let client = redis::Client::open(sessions.url())?;
-/// # let _ = sessions;
-/// ```
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-pub struct Kv {
-    url: String,
-}
-
-impl Kv {
-    /// The `redis://` endpoint of the store. Its password is the token that
-    /// authorizes this app's binding, so treat it as a secret.
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-}
-
-impl fmt::Debug for Kv {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Kv")
-            .field("url", &redacted_kv_url(&self.url))
-            .finish()
-    }
-}
-
-/// `redis://:<token>@host:port` as `redis://:[REDACTED]@host:port`. Cuts at
-/// the last `@` so a password that contains one never leaks a part of it.
-fn redacted_kv_url(url: &str) -> String {
-    let Some(at) = url.rfind('@') else {
-        return "[REDACTED]".into();
-    };
-    let scheme = match url.find("://") {
-        Some(end) if end < at => &url[..end + 3],
-        _ => "",
-    };
-    format!("{scheme}:[REDACTED]@{}", &url[at + 1..])
 }
 
 impl fmt::Debug for Bootstrap {
@@ -662,7 +620,7 @@ mod tests {
     #[test]
     fn bootstrap_debug_redacts_credentials() {
         let bootstrap = parse_bootstrap_data(
-            r#"{"token":"tok-value","secrets":{"API_KEY":"secret-value"},"storages":{"media":{"secret_access_key":"storage-value"}},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"db-value"}},"kv":{"sessions":{"url":"redis://:kv-value@127.0.0.1:9846"}}}"#,
+            r#"{"token":"tok-value","secrets":{"API_KEY":"secret-value"},"storages":{"media":{"secret_access_key":"storage-value"}},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"db-value"}},"kv":{"sessions":{"token":"kv-value"}}}"#,
         )
         .unwrap();
         let debug = format!("{bootstrap:?}");
@@ -701,29 +659,17 @@ mod tests {
     #[test]
     fn parses_kv_bindings() {
         let bootstrap = parse_bootstrap_data(
-            r#"{"token":"tok","secrets":{},"kv":{"sessions":{"url":"redis://:secret@127.0.0.1:9846"}}}"#,
+            r#"{"token":"tok","secrets":{},"kv":{"sessions":{"token":"secret"}}}"#,
         )
         .unwrap();
         let sessions = bootstrap.kv("sessions").unwrap();
-        assert_eq!(sessions.url(), "redis://:secret@127.0.0.1:9846");
-        assert_eq!(
-            format!("{sessions:?}"),
-            r#"Kv { url: "redis://:[REDACTED]@127.0.0.1:9846" }"#
-        );
+        assert_eq!(sessions, &Kv::new("secret"));
+        assert!(!format!("{sessions:?}").contains("secret"));
         assert!(bootstrap.kv("other").is_none());
         assert_eq!(bootstrap.kv_stores().len(), 1);
 
         let err = parse_bootstrap_data(r#"{"token":"tok","secrets":{},"kv":[]}"#).unwrap_err();
         assert_eq!(err, BootstrapError::InvalidEnvelope);
-    }
-
-    #[test]
-    fn redacts_unexpected_kv_urls() {
-        assert_eq!(redacted_kv_url("tok-odd"), "[REDACTED]");
-        assert_eq!(
-            redacted_kv_url("redis://:a@b@host:1"),
-            "redis://:[REDACTED]@host:1"
-        );
     }
 
     #[test]

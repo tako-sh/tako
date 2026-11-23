@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"tako.sh/internal"
 )
 
 const wireFixtureDir = "test-support/wire"
@@ -199,6 +201,54 @@ func TestStoreInvalidationMatchesWireFixture(t *testing.T) {
 	socket.expect("channel_publish-store_invalidate-build", socket.take())
 }
 
+func TestKVCommandsMatchWireFixtures(t *testing.T) {
+	previous := bootstrap
+	t.Cleanup(func() { bootstrap = previous })
+	bootstrap = &internal.Bootstrap{KV: map[string]internal.KVConnection{"sessions": {Token: "kv-token-example"}}}
+	socket := startWireSocket(t)
+	ctx := context.Background()
+	sessions, ok := GetKV("sessions")
+	if !ok {
+		t.Fatal("GetKV(sessions) must find the binding")
+	}
+
+	if err := sessions.Put(ctx, "session:1", map[string]string{"user": "u1"}, WithTTL(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-put", socket.take())
+	if err := sessions.Put(ctx, "settings", 1); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-put-no-ttl", socket.take())
+
+	// JSON null is a value; a null reply means the key is not set.
+	socket.reply("replies/cache-hit-null.json")
+	value := map[string]string{"kept": "yes"}
+	found, err := sessions.Get(ctx, "session:1", &value)
+	if err != nil || !found || value != nil {
+		t.Fatalf("a stored null parsed as %v, %v, %v", value, found, err)
+	}
+	socket.expect("kv-get", socket.take())
+	socket.reply("replies/ok-null.json")
+	value = map[string]string{"kept": "yes"}
+	found, err = sessions.Get(ctx, "session:1", &value)
+	if err != nil || found || value["kept"] != "yes" {
+		t.Fatalf("a missing key parsed as %v, %v, %v", value, found, err)
+	}
+	socket.expect("kv-get", socket.take())
+
+	if err := sessions.Delete(ctx, "session:1"); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-delete", socket.take())
+
+	socket.reply("replies/error-kv_store_full.json")
+	if err := sessions.Put(ctx, "session:1", 1); !errors.Is(err, ErrKVStoreFull) {
+		t.Fatalf("a full store must match ErrKVStoreFull: %v", err)
+	}
+	socket.take()
+}
+
 func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {
 	sentinels := map[string]error{
 		"error.json":                        nil,
@@ -210,11 +260,12 @@ func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {
 		"error-channel_params_invalid.json": ErrChannelParamsInvalid,
 		"error-channel_closed.json":         ErrChannelClosed,
 		"error-signal_inbox_full.json":      ErrSignalInboxFull,
+		"error-kv_store_full.json":          ErrKVStoreFull,
 		"error-unavailable.json":            ErrUnavailable,
 	}
 	all := []error{
 		ErrRunNotOwned, ErrRunIDConflict, ErrInvalidRequest, ErrChannelUnknown,
-		ErrChannelParamsInvalid, ErrChannelClosed, ErrSignalInboxFull, ErrUnavailable,
+		ErrChannelParamsInvalid, ErrChannelClosed, ErrSignalInboxFull, ErrKVStoreFull, ErrUnavailable,
 	}
 	entries, err := os.ReadDir(filepath.Join(wireFixtureDir, "replies"))
 	if err != nil {

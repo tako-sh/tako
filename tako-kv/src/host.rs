@@ -162,8 +162,10 @@ pub struct KvError {
 }
 
 pub(crate) const NOT_SERVED: &str = "This server is not serving the KV store right now; retry.";
-const REBOUND: &str = "This app's KV binding changed or was removed; the app's processes restart with the new one.";
-pub(crate) const REFUSED: &str = "The KV store's server refused this app. Deploy the environment with full access to grant it.";
+const REBOUND: &str =
+    "This app's KV binding changed or was removed; the app's processes restart with the new one.";
+pub(crate) const REFUSED: &str =
+    "The KV store's server refused this app. Deploy the environment with full access to grant it.";
 
 impl KvError {
     pub fn new(code: Option<ErrorCode>, message: impl Into<String>) -> Self {
@@ -412,7 +414,9 @@ impl KvHost {
     }
 
     fn serve(&self, id: &StoreId, request: KvRequest) -> Result<serde_json::Value, KvError> {
-        let store = self.store(id).ok_or_else(|| KvError::unavailable(NOT_SERVED))?;
+        let store = self
+            .store(id)
+            .ok_or_else(|| KvError::unavailable(NOT_SERVED))?;
         match request {
             KvRequest::Get { key } => Ok(reply(store.get(&key)?)),
             KvRequest::Put { key, json, ttl_ms } => {

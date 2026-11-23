@@ -101,7 +101,9 @@ async fn serve_connection(host: KvHost, stream: tokio::net::TcpStream) {
                     .unwrap_or_else(|_| Err(KvError::unavailable(NOT_SERVED)))
                     .map_or_else(KvError::into_response, Response::ok)
             }
-            Err(error) => KvError::invalid(format!("malformed KV request: {error}")).into_response(),
+            Err(error) => {
+                KvError::invalid(format!("malformed KV request: {error}")).into_response()
+            }
         };
         let mut line = serde_json::to_vec(&response).expect("responses serialize");
         line.push(b'\n');
@@ -155,14 +157,16 @@ impl PeerPool {
         // A kept connection may have been closed by the other side while
         // idle; the request is sent again on a new one. Every operation can
         // be repeated safely.
-        let reply = match pooled.map(|mut connection| exchange(&mut connection, &line).map(|r| (r, connection))) {
+        let reply = match pooled
+            .map(|mut connection| exchange(&mut connection, &line).map(|r| (r, connection)))
+        {
             Some(Ok(done)) => done,
             _ => {
                 let mut connection = self
                     .connect(upstream)
                     .map_err(|error| unreachable(upstream, error))?;
-                let reply =
-                    exchange(&mut connection, &line).map_err(|error| unreachable(upstream, error))?;
+                let reply = exchange(&mut connection, &line)
+                    .map_err(|error| unreachable(upstream, error))?;
                 (reply, connection)
             }
         };

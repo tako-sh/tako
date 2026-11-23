@@ -44,14 +44,18 @@ pub const KV_MAX_VALUE_BYTES: usize = 256 * 1024;
 pub enum KvRequest {
     /// Replies with the value's JSON text, or null when the key is missing
     /// or expired.
-    Get { key: String },
+    Get {
+        key: String,
+    },
     Put {
         key: String,
         json: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ttl_ms: Option<u64>,
     },
-    Delete { key: String },
+    Delete {
+        key: String,
+    },
 }
 
 impl KvRequest {
@@ -76,7 +80,10 @@ impl KvRequest {
         }
         if let Self::Put { json, ttl_ms, .. } = self {
             if json.len() > KV_MAX_VALUE_BYTES {
-                return Err(format!("KV value exceeds {} KiB.", KV_MAX_VALUE_BYTES / 1024));
+                return Err(format!(
+                    "KV value exceeds {} KiB.",
+                    KV_MAX_VALUE_BYTES / 1024
+                ));
             }
             if serde_json::from_str::<serde::de::IgnoredAny>(json).is_err() {
                 return Err("KV value must be JSON.".into());

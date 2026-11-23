@@ -57,7 +57,9 @@ fn apps_reach_their_own_bindings_only() {
         assert_eq!(error.code, Some(ErrorCode::Unavailable));
     }
     // Invalid requests are refused before anything runs.
-    let error = host.call("shop/production", "token", put("k", "not json")).unwrap_err();
+    let error = host
+        .call("shop/production", "token", put("k", "not json"))
+        .unwrap_err();
     assert_eq!(error.code, Some(ErrorCode::InvalidRequest));
     let error = host
         .call("shop/production", "token", get(&"k".repeat(1025)))
@@ -66,7 +68,10 @@ fn apps_reach_their_own_bindings_only() {
     // Revoking the binding ends access.
     host.set_bindings("shop/production", Vec::new());
     assert!(host.call("shop/production", "token", get("k")).is_err());
-    assert_eq!(host.admin(&sessions, get("k")).unwrap(), serde_json::json!(r#"{"a":1}"#));
+    assert_eq!(
+        host.admin(&sessions, get("k")).unwrap(),
+        serde_json::json!(r#"{"a":1}"#)
+    );
 }
 
 #[test]
@@ -77,7 +82,8 @@ fn full_stores_report_their_own_code() {
         ..HostConfig::default()
     });
     let id = StoreId::parse("small").unwrap();
-    host.register(id.clone(), dir.path().join("small.redb")).unwrap();
+    host.register(id.clone(), dir.path().join("small.redb"))
+        .unwrap();
     let error = host
         .admin(&id, put("k", &format!("\"{}\"", "x".repeat(100))))
         .unwrap_err();
@@ -91,7 +97,8 @@ fn full_stores_report_their_own_code() {
 async fn other_servers_forward_with_their_grant() {
     let (dir, home) = host();
     let id = StoreId::parse("sessions").unwrap();
-    home.register(id.clone(), dir.path().join("sessions.redb")).unwrap();
+    home.register(id.clone(), dir.path().join("sessions.redb"))
+        .unwrap();
     home.set_remote_grants("shop/production", BTreeSet::from([id.clone()]), "grant-key");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream = listener.local_addr().unwrap();
@@ -118,25 +125,36 @@ async fn other_servers_forward_with_their_grant() {
         move |request: KvRequest| {
             let edge = edge.clone();
             async move {
-                tokio::task::spawn_blocking(move || edge.call("shop/production", "edge-token", request))
-                    .await
-                    .unwrap()
+                tokio::task::spawn_blocking(move || {
+                    edge.call("shop/production", "edge-token", request)
+                })
+                .await
+                .unwrap()
             }
         }
     };
     call(put("challenge", r#""xyz""#)).await.unwrap();
-    assert_eq!(call(get("challenge")).await.unwrap(), serde_json::json!(r#""xyz""#));
+    assert_eq!(
+        call(get("challenge")).await.unwrap(),
+        serde_json::json!(r#""xyz""#)
+    );
     // Reused connections keep working, and the data lives on the home server.
     for _ in 0..20 {
         call(get("challenge")).await.unwrap();
     }
-    assert_eq!(home.admin(&id, get("challenge")).unwrap(), serde_json::json!(r#""xyz""#));
+    assert_eq!(
+        home.admin(&id, get("challenge")).unwrap(),
+        serde_json::json!(r#""xyz""#)
+    );
     call(KvRequest::Delete {
         key: "challenge".into(),
     })
     .await
     .unwrap();
-    assert_eq!(call(get("challenge")).await.unwrap(), serde_json::Value::Null);
+    assert_eq!(
+        call(get("challenge")).await.unwrap(),
+        serde_json::Value::Null
+    );
 
     // A wrong grant key, or a store outside the grant, is refused.
     edge.set_bindings("shop/production#release", bind("wrong"));

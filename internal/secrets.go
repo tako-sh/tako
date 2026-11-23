@@ -33,10 +33,10 @@ type DatabaseConnection struct {
 	AuthToken string `json:"authToken"`
 }
 
-// KVConnection is one KV store binding: a redis:// URL whose password is the
-// token that authorizes the binding.
+// KVConnection is one KV store binding: the token that authorizes it, which
+// the SDK sends with each request through the internal socket.
 type KVConnection struct {
-	URL string `json:"url"`
+	Token string `json:"token"`
 }
 
 // BootstrapFromRuntime reads the bootstrap envelope from the current process.

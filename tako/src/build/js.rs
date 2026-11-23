@@ -268,7 +268,7 @@ fn build_kv_block(names: &[String]) -> String {
         return "  /**\n   * Project-specific KV store bindings from `tako.toml`.\n   *\n   * No KV stores are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoKv {}\n\n".to_string();
     }
     let mut out = String::from(
-        "  /**\n   * Project-specific KV store bindings from `tako.toml`.\n   *\n   * Each binding is `{ url }`, a `redis://` URL for any Redis client, such as\n   * `new RedisClient(url)` from `bun` or `new Redis(url)` from `ioredis`.\n   */\n  export interface TakoKv {\n",
+        "  /**\n   * Project-specific KV store bindings from `tako.toml`.\n   *\n   * Each binding stores JSON values: `get(key)`, `put(key, value, { ttl })`\n   * with an optional TTL in milliseconds, and `delete(key)`.\n   */\n  export interface TakoKv {\n",
     );
     for name in names {
         out.push_str(&format!(

@@ -99,7 +99,10 @@ fn full_stores_refuse_only_writes_that_would_grow_them() {
     f.put("a", &value, None).unwrap();
     f.put("b", &value, None).unwrap();
     assert_eq!(f.store.stats().unwrap().bytes, limit);
-    assert!(matches!(f.put("c", "1", None), Err(StoreError::Full { .. })));
+    assert!(matches!(
+        f.put("c", "1", None),
+        Err(StoreError::Full { .. })
+    ));
     assert!(matches!(
         f.put("a", &format!("\"{}\"", "x".repeat(99)), None),
         Err(StoreError::Full { .. })
@@ -213,7 +216,10 @@ fn replaced_generations_are_freed_in_the_background() {
             assert_eq!(generation, 1);
             break;
         }
-        assert!(Instant::now() < deadline, "the old generation was not freed");
+        assert!(
+            Instant::now() < deadline,
+            "the old generation was not freed"
+        );
         drop(txn);
         std::thread::sleep(Duration::from_millis(50));
     }

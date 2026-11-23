@@ -121,7 +121,10 @@ fn open_entries<'t>(
         .map_err(storage)
 }
 
-fn open_index(txn: &redb::WriteTransaction, generation: u64) -> Result<Table<'_, &'static [u8], ()>> {
+fn open_index(
+    txn: &redb::WriteTransaction,
+    generation: u64,
+) -> Result<Table<'_, &'static [u8], ()>> {
     txn.open_table(IndexTable::new(&table_name(EXPIRY, generation)))
         .map_err(storage)
 }
@@ -489,7 +492,14 @@ impl<'t> WriteView<'t> {
         Ok(())
     }
 
-    fn put(&mut self, key: &str, json: &[u8], expires_at: u64, max_bytes: u64, now: u64) -> Result<()> {
+    fn put(
+        &mut self,
+        key: &str,
+        json: &[u8],
+        expires_at: u64,
+        max_bytes: u64,
+        now: u64,
+    ) -> Result<()> {
         let old = self.load(key, now)?;
         let added = weight(key, json.len());
         let freed = old.map_or(0, |(_, len)| weight(key, len));
@@ -584,7 +594,9 @@ impl<'t> WriteView<'t> {
                 };
                 let (key, value) = item.map_err(storage)?;
                 budget.0 -= 1;
-                budget.1 = budget.1.saturating_sub(key.value().len() + value.value().len());
+                budget.1 = budget
+                    .1
+                    .saturating_sub(key.value().len() + value.value().len());
             }
             removed.close().map_err(storage)?;
             table.is_empty().map_err(storage)?
@@ -768,7 +780,9 @@ fn apply(
                 }
                 Work::Delete { key } => Ok(Outcome::Deleted(w.delete(key, now)?)),
                 // Runs in a batch of its own, so its errors fail only it.
-                Work::Replace { path } => Ok(Outcome::Replaced(w.replace(path, config.max_bytes, now)?)),
+                Work::Replace { path } => {
+                    Ok(Outcome::Replaced(w.replace(path, config.max_bytes, now)?))
+                }
             });
         }
         let (expired, trash) = if sweep {

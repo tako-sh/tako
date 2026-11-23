@@ -294,12 +294,13 @@ impl LocalDatabases {
         let environment = environment.to_owned();
         let app = format!("local/{environment}");
         let kv: Option<tako_workflows::KvFn> = self.kv.clone().map(|host| {
-            let kv: tako_workflows::KvFn = Arc::new(move |app, token, request| {
-                match host.call(app, token, request) {
-                    Ok(value) => tako_core::Response::ok(value),
-                    Err(error) => error.into_response(),
-                }
-            });
+            let kv: tako_workflows::KvFn =
+                Arc::new(
+                    move |app, token, request| match host.call(app, token, request) {
+                        Ok(value) => tako_core::Response::ok(value),
+                        Err(error) => error.into_response(),
+                    },
+                );
             kv
         });
         let handle = spawn_with_options(
@@ -442,8 +443,7 @@ const LOCAL_KV_SCOPE: &str = "local/development";
 fn open_kv(
     project_dir: &Path,
     kv: &BTreeMap<String, String>,
-) -> Result<(Option<tako_kv::KvHost>, HashMap<String, KvConnection>), Box<dyn std::error::Error>>
-{
+) -> Result<(Option<tako_kv::KvHost>, HashMap<String, KvConnection>), Box<dyn std::error::Error>> {
     if kv.is_empty() {
         return Ok((None, HashMap::new()));
     }
@@ -644,7 +644,11 @@ route = "empty.test"
         };
         host.call(LOCAL_KV_SCOPE, token, put).unwrap();
         let got = host
-            .call(LOCAL_KV_SCOPE, token, tako_core::KvRequest::Get { key: "k".into() })
+            .call(
+                LOCAL_KV_SCOPE,
+                token,
+                tako_core::KvRequest::Get { key: "k".into() },
+            )
             .unwrap();
         assert_eq!(got, serde_json::json!(r#""v""#));
     }

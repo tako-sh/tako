@@ -130,14 +130,12 @@ export const databases = loadDatabases<TakoDatabases>();
 
 /**
  * Tako-hosted KV stores, typed by project-specific `tako.d.ts` declarations.
- * Each is `{ url }`, a `redis://` URL that Redis clients accept as is:
+ * Each stores JSON values, with an optional TTL in milliseconds:
  *
  * ```ts
- * import { RedisClient } from "bun";
- * import Redis from "ioredis";
- *
- * const sessions = new RedisClient(tako.kv.sessions.url);
- * const cache = new Redis(tako.kv.cache.url);
+ * await tako.kv.sessions.put("session:42", { user: "u1" }, { ttl: 86_400_000 });
+ * const session = await tako.kv.sessions.get<{ user: string }>("session:42");
+ * await tako.kv.sessions.delete("session:42");
  * ```
  */
 export const kv = loadKv<TakoKv>();
@@ -203,7 +201,7 @@ export type {
   TakoStorageBinding,
 } from "./storage";
 export type { TakoDatabase, TakoDatabaseBag } from "./database";
-export type { TakoKvBag, TakoKvStore } from "./kv";
+export type { KvPutOptions, TakoKvBag, TakoKvStore } from "./kv";
 
 /**
  * Extract the payload type from a workflow definition.

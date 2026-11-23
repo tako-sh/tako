@@ -140,7 +140,8 @@ impl Reader {
             let (key, _, json) = entry?;
             let request = tako_core::KvRequest::Put {
                 key,
-                json: String::from_utf8(json).map_err(|_| invalid("An export value is not UTF-8 JSON."))?,
+                json: String::from_utf8(json)
+                    .map_err(|_| invalid("An export value is not UTF-8 JSON."))?,
                 ttl_ms: None,
             };
             request

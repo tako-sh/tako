@@ -1,10 +1,12 @@
 package tako
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"tako.sh/internal"
 )
@@ -16,16 +18,16 @@ func TestGetKVReadsBootstrapBindings(t *testing.T) {
 		Token:   "tok",
 		Secrets: map[string]string{},
 		KV: map[string]internal.KVConnection{
-			"sessions": {URL: "redis://:secret-token@127.0.0.1:9846"},
-			"cache":    {URL: "redis://:other@127.0.0.1:9846"},
+			"sessions": {Token: "secret-token"},
+			"cache":    {Token: "other"},
 		},
 	}
 
 	sessions, ok := GetKV("sessions")
-	if !ok || sessions.URL != "redis://:secret-token@127.0.0.1:9846" {
+	if !ok || sessions.Name() != "sessions" {
 		t.Fatalf("GetKV(sessions) = %v, %v", sessions, ok)
 	}
-	encoded, err := json.Marshal(map[string]KV{"sessions": sessions})
+	encoded, err := json.Marshal(map[string]*KV{"sessions": sessions})
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
@@ -34,7 +36,7 @@ func TestGetKVReadsBootstrapBindings(t *testing.T) {
 			t.Fatalf("formatted KV store leaks its token: %s", text)
 		}
 	}
-	if string(encoded) != `{"sessions":{"url":"redis://:[REDACTED]@127.0.0.1:9846"}}` {
+	if string(encoded) != `{"sessions":{"kv":"sessions"}}` {
 		t.Fatalf("encoded KV store = %s", encoded)
 	}
 	if _, ok := GetKV("missing"); ok {
@@ -45,14 +47,51 @@ func TestGetKVReadsBootstrapBindings(t *testing.T) {
 	}
 }
 
-func TestKVRedactsUnexpectedURLs(t *testing.T) {
-	for raw, want := range map[string]string{
-		"tok-odd":             "[REDACTED]",
-		"redis://:a@b@host:1": "redis://:[REDACTED]@host:1",
-	} {
-		if got := redactKVURL(raw); got != want {
-			t.Fatalf("redactKVURL(%q) = %q, want %q", raw, got, want)
-		}
+func TestKVRejectsInvalidRequestsBeforeSending(t *testing.T) {
+	socket := startWireSocket(t)
+	ctx := context.Background()
+	store := &KV{name: "sessions", token: "t"}
+	var value any
+	if _, err := store.Get(ctx, "", &value); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("an empty key must be rejected: %v", err)
+	}
+	if err := store.Delete(ctx, strings.Repeat("k", 1025)); err == nil || !strings.Contains(err.Error(), "1 KiB") {
+		t.Fatalf("a long key must be rejected: %v", err)
+	}
+	if err := store.Put(ctx, "k", strings.Repeat("x", 256*1024)); err == nil || !strings.Contains(err.Error(), "256 KiB") {
+		t.Fatalf("a large value must be rejected: %v", err)
+	}
+	if err := store.Put(ctx, "k", func() {}); err == nil {
+		t.Fatal("a value JSON cannot encode must be rejected")
+	}
+	if err := store.Put(ctx, "k", 1, WithTTL(-time.Second)); err == nil {
+		t.Fatal("a negative TTL must be rejected")
+	}
+	socket.mu.Lock()
+	defer socket.mu.Unlock()
+	if len(socket.received) != 0 {
+		t.Fatalf("invalid requests were sent: %d", len(socket.received))
+	}
+}
+
+func TestKVRoundsTTLsUpToWholeMilliseconds(t *testing.T) {
+	socket := startWireSocket(t)
+	store := &KV{name: "sessions", token: "t"}
+	if err := store.Put(context.Background(), "k", 1, WithTTL(1500*time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := socket.take()["ttl_ms"]; got != float64(2) {
+		t.Fatalf("ttl_ms = %v", got)
+	}
+}
+
+func TestKVRequiresTheRuntime(t *testing.T) {
+	t.Setenv("TAKO_INTERNAL_SOCKET", "")
+	t.Setenv("TAKO_APP_NAME", "")
+	store := &KV{name: "sessions", token: "t"}
+	var value any
+	if _, err := store.Get(context.Background(), "k", &value); err == nil {
+		t.Fatal("KV stores need the internal socket")
 	}
 }
 
