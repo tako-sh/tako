@@ -1286,7 +1286,7 @@ if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
   # Go fixtures use the SDK, which registers channels at runtime, so a
   # multi-member network needs an explicit replay placement.
-  printf '\n[envs.production.channels]\ndatabase = "channel-replay"\n' >> "$PROJECT_DIR/tako.toml"
+  printf '\n[envs.production.channels]\ndb = "channel-replay"\n' >> "$PROJECT_DIR/tako.toml"
   # Copy the Go SDK source (go.mod + *.go + internal/) so the fixture's replace directive resolves.
   mkdir -p "$JS_WORKSPACE_DIR/internal"
   cp "$WORKSPACE/go.mod" "$WORKSPACE/"*.go "$JS_WORKSPACE_DIR/"
