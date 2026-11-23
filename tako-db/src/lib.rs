@@ -6,12 +6,16 @@
 //! binding token; apps on other servers reach it through their own server,
 //! which forwards the request over the private network.
 
+#[cfg(feature = "client")]
+pub mod client;
 mod engine;
 mod exec;
 mod host;
 pub mod http;
 pub mod migrate;
 pub mod proto;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use engine::{
     EngineConfig, Synchronous, replace_database, reset_database_file, verify_database,

@@ -25,7 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 # both must parse to the same f64 or they select different streams.
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 tako-core = { path = "../tako-core" }
-tako-db = { path = "../tako-db" }
+tako-db = { path = "../tako-db", features = ["client"] }
 tako-sqlite = { path = "../tako-sqlite" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
@@ -33,6 +33,7 @@ tracing = "0.1"
 rusqlite.workspace = true
 
 [dev-dependencies]
+tako-db = { path = "../tako-db", features = ["testing"] }
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 tempfile = "=3.27.0"

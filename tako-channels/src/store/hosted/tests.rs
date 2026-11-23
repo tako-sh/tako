@@ -1,7 +1,7 @@
 use super::*;
 use crate::stream::close_payload;
 use std::path::PathBuf;
-use tako_db::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
+use tako_db::testing::TestServer;
 
 struct Db {
     url: String,
@@ -21,32 +21,15 @@ impl Db {
 
 // Run the production SQL and result decoder through the real authenticated host.
 async fn with_database(test: impl FnOnce(Db) + Send + 'static) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("database.sqlite");
-    DatabaseHost::create_file(&path).unwrap();
-    let db = DatabaseId::generate();
-    let host = DatabaseHost::new(Default::default());
-    host.register(db.clone(), path.clone()).unwrap();
-    let token = generate_token();
-    host.set_bindings(
-        "test#channels",
-        vec![Binding {
-            database: db,
-            token_hash: hash_token(&token),
-            home: Home::Local,
-        }],
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(tako_db::http::serve(
-        host,
-        listener,
-        tako_db::http::Access::Apps,
-    ));
-    tokio::task::spawn_blocking(move || test(Db { url, token, path }))
-        .await
-        .unwrap();
-    server.abort();
+    let server = TestServer::start();
+    let database = server.database("test#channels");
+    let db = Db {
+        url: server.url.clone(),
+        token: database.token,
+        path: database.path,
+    };
+    tokio::task::spawn_blocking(move || test(db)).await.unwrap();
+    drop(server);
 }
 
 fn event(data: &str) -> ChannelPublishPayload {

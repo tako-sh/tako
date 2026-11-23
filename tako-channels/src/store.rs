@@ -1,5 +1,4 @@
 mod hosted;
-mod hosted_sql;
 mod postgres;
 mod presence;
 mod sqlite;

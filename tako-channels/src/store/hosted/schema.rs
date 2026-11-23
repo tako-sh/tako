@@ -59,12 +59,12 @@ const TABLES: &[&str] = &[
 pub(super) fn init() -> Vec<Statement> {
     let mut statements: Vec<_> = TABLES
         .iter()
-        .map(|sql| Statement::new(sql, vec![]))
+        .map(|sql| Statement::new(*sql, vec![]))
         .collect();
     // Each channel's replay window is its only retention. Creation times are
     // nondecreasing within a stream, so the age index seeks the last expired
     // row however many rows are expired or retained.
-    statements.push(Statement::new(&format!(
+    statements.push(Statement::new(format!(
         "CREATE VIEW IF NOT EXISTS tako_replay_bounds AS
          SELECT s.app, s.channel, s.head, s.marker,
              MAX(s.floor, CASE WHEN s.inactivity_ms > 0 AND s.activity_ms < {NOW} - s.inactivity_ms
@@ -78,7 +78,7 @@ pub(super) fn init() -> Vec<Statement> {
     // An append also deletes its own stream's expired history, so storage
     // follows publish rate times window however fast an app publishes.
     // Maintenance catches up on streams that stop receiving appends.
-    statements.push(Statement::new(&format!(
+    statements.push(Statement::new(format!(
         "CREATE TRIGGER IF NOT EXISTS tako_replay_message_added AFTER INSERT ON tako_replay_messages BEGIN
             UPDATE tako_replay_apps SET seq = NEW.id, message_count = message_count + 1,
                 message_bytes = message_bytes + NEW.bytes WHERE app = NEW.app;

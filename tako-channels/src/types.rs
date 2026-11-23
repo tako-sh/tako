@@ -328,6 +328,12 @@ pub enum ChannelError {
     Storage(String),
 }
 
+impl From<tako_db::client::ClientError> for ChannelError {
+    fn from(error: tako_db::client::ClientError) -> Self {
+        Self::Storage(format!("hosted channel replay: {error}"))
+    }
+}
+
 impl ChannelError {
     /// The internal-socket code a publish or close failing with this error
     /// replies with. Failures an SDK has no reason to branch on have none.
