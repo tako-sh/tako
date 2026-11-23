@@ -1967,12 +1967,24 @@ fn prepare_runtime_state(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     }
     let workflows = has_columns(
         "tako_workflow_runs",
-        &["status", "worker_id", "lease_until"],
+        &[
+            "status",
+            "worker_id",
+            "lease_until",
+            "attempts",
+            "max_attempts",
+        ],
     )?;
     if workflows {
+        // No worker from before may write a running run again. One with
+        // attempts left waits for a new claim; one without keeps an expired
+        // lease and no owner, so the next reclaim ends it as dead and wakes
+        // its waiters, as it does for a lost worker.
         db.execute(
             "UPDATE main.tako_workflow_runs
-             SET status = 'pending', worker_id = NULL, lease_until = NULL
+             SET status = CASE WHEN attempts >= max_attempts THEN 'running' ELSE 'pending' END,
+                 lease_until = CASE WHEN attempts >= max_attempts THEN 0 ELSE NULL END,
+                 worker_id = NULL
              WHERE status = 'running'",
             [],
         )?;

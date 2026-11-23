@@ -243,6 +243,66 @@ async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
 }
 
 #[tokio::test]
+async fn restoring_releases_running_workflows_within_their_attempt_limits() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("workflow-leases")).await;
+    query(
+        &state,
+        ID,
+        "CREATE TABLE tako_workflow_runs(id TEXT PRIMARY KEY, status TEXT NOT NULL,
+             worker_id TEXT, lease_until INTEGER, attempts INTEGER NOT NULL,
+             max_attempts INTEGER NOT NULL)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_runs VALUES
+             ('retry', 'running', 'old-claim', 9999999999999, 1, 3),
+             ('spent', 'running', 'old-claim', 9999999999999, 3, 3),
+             ('done', 'succeeded', NULL, NULL, 1, 3)",
+    )
+    .await;
+    let snapshot = ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: Some(snapshot["snapshot"]["id"].as_str().unwrap().into()),
+            at_unix_ms: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    let rows = query(
+        &state,
+        ID,
+        "SELECT id, status, worker_id, lease_until FROM tako_workflow_runs ORDER BY id",
+    )
+    .await["rows"]
+        .clone();
+    // A run with attempts left is claimable again; one without keeps an
+    // expired, ownerless lease for the reclaim to end; no old claim survives.
+    assert_eq!(
+        rows,
+        json!([
+            ["done", "succeeded", null, null],
+            ["retry", "pending", null, null],
+            ["spent", "running", null, 0],
+        ])
+    );
+}
+
+#[tokio::test]
 async fn committed_replay_bindings_survive_restart_without_authorizing_application_sql() {
     use hyper::StatusCode;
     use tako_core::{CHANNEL_REPLAY_BINDING, DatabaseBinding, channel_replay_grant_scope};
