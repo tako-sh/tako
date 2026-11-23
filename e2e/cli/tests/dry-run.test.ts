@@ -125,7 +125,7 @@ describe("deploy --dry-run", () => {
     await setupProject({ servers: { east: { host: "10.0.0.1" }, west: { host: "10.0.0.2" } } });
     const path = join(tempDir, "tako.toml");
     const config = (await readFile(path, "utf8")).replace('["east", "west"]', '["east"]');
-    await writeFile(path, config + '[envs.production.channels]\ndatabase = "chat-replay"\n');
+    await writeFile(path, config + '[envs.production.channels]\ndb = "chat-replay"\n');
     const { term, exitCode } = await run(["--dry-run", "deploy"], {
       cwd: tempDir,
       cols: 400,
