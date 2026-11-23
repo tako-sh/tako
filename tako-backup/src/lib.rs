@@ -6,9 +6,10 @@
 //!
 //! Remote layout under a replica's prefix:
 //!
-//! - `ltx/<level>/<min>-<max>.ltx`: encrypted LTX segments, with 16-digit
-//!   hexadecimal transaction IDs. Level 9 holds full images (bases) that
-//!   start at transaction 1; level 0 holds one capture each.
+//! - `ltx/<level>/<min>-<max>-<captured>.ltx`: encrypted LTX segments, with
+//!   16-digit hexadecimal transaction IDs and the capture time from the
+//!   segment's header, in Unix milliseconds. Level 9 holds full images
+//!   (bases) that start at transaction 1; level 0 holds one capture each.
 //! - `points/<unix-ms>-<txid>-<reason>`: empty markers that name a captured
 //!   transaction, such as the one before a deploy.
 
@@ -186,6 +187,9 @@ pub struct Stored {
     pub segment: Segment,
     /// Size of the encrypted object.
     pub size: u64,
+    /// When the segment was captured, in Unix milliseconds: its header's
+    /// time, which its object name carries, so a listing dates it.
+    pub captured_at_ms: i64,
     /// When the object was written, in Unix milliseconds.
     pub uploaded_at_ms: i64,
 }
@@ -330,12 +334,21 @@ impl Replica {
         &self.prefix
     }
 
-    fn segment_key(&self, segment: &Segment) -> ObjectPath {
+    /// `ltx/<level>/<min>-<max>-<captured ms>.ltx`. The name is
+    /// authenticated with the contents, so a renamed object fails to
+    /// decrypt.
+    fn segment_key(&self, segment: &Segment, captured_at_ms: i64) -> ObjectPath {
+        let name = segment.filename();
+        let stem = name.strip_suffix(".ltx").unwrap_or(&name);
         self.prefix
             .clone()
             .join("ltx")
             .join(segment.level.to_string())
-            .join(segment.filename())
+            .join(format!("{stem}-{captured_at_ms}.ltx"))
+    }
+
+    fn key(&self, stored: &Stored) -> ObjectPath {
+        self.segment_key(&stored.segment, stored.captured_at_ms)
     }
 
     fn point_key(&self, point: &Point) -> ObjectPath {
@@ -443,7 +456,6 @@ impl Replica {
     }
 
     async fn upload_segment(&self, spool: &FileStore, segment: &Segment) -> Result<()> {
-        let key = self.segment_key(segment);
         let bytes = {
             let path = spool.path(segment);
             tokio::task::spawn_blocking(move || -> Result<Bytes> {
@@ -458,6 +470,16 @@ impl Replica {
             })
             .await??
         };
+        let captured_at_ms = terse_ltx::Decoder::new(std::io::Cursor::new(&bytes[..]))
+            .with_context(|| format!("read the header of segment {}", segment.filename()))?
+            .header()
+            .timestamp;
+        ensure!(
+            captured_at_ms >= 0,
+            "segment {} has a capture time before 1970",
+            segment.filename()
+        );
+        let key = self.segment_key(segment, captured_at_ms);
         let stored = if bytes.len() as u64 > self.multipart_threshold {
             // A multipart write cannot be create-only, so an existing object
             // is looked for first. Two owners never write one key (see
@@ -516,12 +538,14 @@ impl Replica {
         let mut segments = Vec::new();
         while let Some(object) = objects.try_next().await? {
             // Other objects under the prefix are not this replica's.
-            let Some(segment) = parse_segment(&self.prefix, &object.location) else {
+            let Some((segment, captured_at_ms)) = parse_segment(&self.prefix, &object.location)
+            else {
                 continue;
             };
             segments.push(Stored {
                 segment,
                 size: object.size,
+                captured_at_ms,
                 uploaded_at_ms: object.last_modified.timestamp_millis(),
             });
         }
@@ -565,14 +589,9 @@ impl Replica {
         Ok(points)
     }
 
-    /// The transaction a target selects, which is restorable. `points` give
-    /// full images their capture times (see [`Self::captured_at`]).
-    pub async fn resolve(
-        &self,
-        segments: &[Stored],
-        points: &[Point],
-        target: Target,
-    ) -> Result<u64> {
+    /// The transaction a target selects, which is restorable. Times are
+    /// the segments' capture times, which the listing carries.
+    pub fn resolve(segments: &[Stored], target: Target) -> Result<u64> {
         let windows = windows(segments);
         match target {
             Target::Latest => Ok(windows.last().context("no backups yet")?.last().txid()),
@@ -585,54 +604,17 @@ impl Replica {
             }
             Target::Time(at) => {
                 for window in windows.iter().rev() {
-                    if let Some(txid) = self.newest_at(window, points, at).await? {
+                    if let Some(txid) = newest_at(window, at) {
                         return Ok(txid);
                     }
                 }
                 let first = windows.first().context("no backups yet")?.first();
                 Err(TooEarly {
-                    earliest_ms: captured_base(first, points),
+                    earliest_ms: first.captured_at_ms,
                 }
                 .into())
             }
         }
-    }
-
-    /// The newest transaction of `window` captured at or before `at`.
-    async fn newest_at(&self, window: &Window, points: &[Point], at: i64) -> Result<Option<u64>> {
-        let members = &window.members;
-        if self.captured_at(&members[0], points).await? > at {
-            return Ok(None);
-        }
-        // Capture times grow with transactions; find the last one at or
-        // before `at` in O(log n) reads.
-        let (mut low, mut high) = (0, members.len() - 1);
-        while low < high {
-            let middle = low + (high - low).div_ceil(2);
-            if self.captured_at(&members[middle], points).await? <= at {
-                low = middle;
-            } else {
-                high = middle - 1;
-            }
-        }
-        Ok(Some(members[low].txid()))
-    }
-
-    /// When a segment was captured. A capture's own header records it. A
-    /// full image is not read for it: the point that names it records its
-    /// capture time, and without one its upload time stands in.
-    pub async fn captured_at(&self, stored: &Stored, points: &[Point]) -> Result<i64> {
-        if stored.is_base() {
-            return Ok(captured_base(stored, points));
-        }
-        let bytes = self
-            .store
-            .get_opts(&self.segment_key(&stored.segment), GetOptions::default())
-            .await?
-            .bytes()
-            .await?;
-        let decoder = terse_ltx::Decoder::new(std::io::Cursor::new(bytes))?;
-        Ok(decoder.header().timestamp)
     }
 
     /// The segments a restore of `txid` downloads, in order.
@@ -668,14 +650,17 @@ impl Replica {
     /// and returns the size of the database they restore.
     pub async fn download(&self, plan: &[Stored], scratch: &Path) -> Result<u64> {
         let spool = FileStore::with_durability(scratch, Durability::Scratch);
-        let segments: Vec<Segment> = plan.iter().map(|stored| stored.segment).collect();
+        let segments: Vec<(Segment, ObjectPath)> = plan
+            .iter()
+            .map(|stored| (stored.segment, self.key(stored)))
+            .collect();
         stream::iter(segments)
-            .map(|segment| {
+            .map(|(segment, key)| {
                 let spool = spool.clone();
                 async move {
                     let bytes = self
                         .store
-                        .get_opts(&self.segment_key(&segment), GetOptions::default())
+                        .get_opts(&key, GetOptions::default())
                         .await?
                         .bytes()
                         .await?;
@@ -714,15 +699,21 @@ impl Replica {
     }
 
     /// Deletes segments, such as ones uploaded after this server lost the
-    /// database.
+    /// database. The listing names their objects.
     pub async fn remove(&self, segments: &[Segment]) -> Result<()> {
         if segments.is_empty() {
             return Ok(());
         }
-        let paths: Vec<ObjectPath> = segments
+        let paths: Vec<ObjectPath> = self
+            .segments()
+            .await?
             .iter()
-            .map(|segment| self.segment_key(segment))
+            .filter(|stored| segments.contains(&stored.segment))
+            .map(|stored| self.key(stored))
             .collect();
+        if paths.is_empty() {
+            return Ok(());
+        }
         let count = paths.len();
         let mut deletions = self
             .raw
@@ -805,10 +796,8 @@ impl Replica {
             .iter()
             .map(|point| self.point_key(point))
             .collect();
-        let segment_paths: Vec<ObjectPath> = obsolete
-            .iter()
-            .map(|stored| self.segment_key(&stored.segment))
-            .collect();
+        let segment_paths: Vec<ObjectPath> =
+            obsolete.iter().map(|stored| self.key(stored)).collect();
         for paths in [point_paths, segment_paths] {
             if paths.is_empty() {
                 continue;
@@ -847,13 +836,15 @@ impl std::fmt::Display for TooEarly {
 
 impl std::error::Error for TooEarly {}
 
-fn captured_base(stored: &Stored, points: &[Point]) -> i64 {
-    points
-        .iter()
-        .filter(|point| point.txid == stored.txid())
-        .map(|point| point.created_at_ms)
-        .min()
-        .unwrap_or(stored.uploaded_at_ms)
+/// The newest transaction of `window` captured at or before `at`.
+fn newest_at(window: &Window, at: i64) -> Option<u64> {
+    // Capture times grow with transactions.
+    let captured = window
+        .members
+        .partition_point(|stored| stored.captured_at_ms <= at);
+    captured
+        .checked_sub(1)
+        .map(|last| window.members[last].txid())
 }
 
 /// A listing, for planning a restore before downloading.
@@ -920,23 +911,30 @@ fn trim(spool: &FileStore) -> Result<()> {
     Ok(())
 }
 
-fn parse_segment(prefix: &ObjectPath, key: &ObjectPath) -> Option<Segment> {
+/// A segment and its capture time, from its object name (see
+/// [`Replica::segment_key`]).
+fn parse_segment(prefix: &ObjectPath, key: &ObjectPath) -> Option<(Segment, i64)> {
     let relative = key.as_ref().strip_prefix(&format!("{prefix}/ltx/"))?;
     let (level, name) = relative.split_once('/')?;
     let stem = name.strip_suffix(".ltx")?;
-    if stem.len() != 33 || stem.as_bytes()[16] != b'-' {
+    let (range, captured) = (stem.get(..33)?, stem.get(33..)?.strip_prefix('-')?);
+    if range.as_bytes()[16] != b'-'
+        || captured.is_empty()
+        || !captured.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     let level: u8 = level.parse().ok()?;
     if level != 0 && level != 9 {
         return None;
     }
-    Segment::new(
+    let segment = Segment::new(
         level,
-        u64::from_str_radix(stem.get(..16)?, 16).ok()?,
-        u64::from_str_radix(stem.get(17..)?, 16).ok()?,
+        u64::from_str_radix(range.get(..16)?, 16).ok()?,
+        u64::from_str_radix(range.get(17..)?, 16).ok()?,
     )
-    .ok()
+    .ok()?;
+    Some((segment, captured.parse().ok()?))
 }
 
 fn parse_point(name: &str) -> Option<Point> {
@@ -969,8 +967,50 @@ mod tests {
         Stored {
             segment: Segment::new(level, min, max).unwrap(),
             size: 1,
+            captured_at_ms: at,
             uploaded_at_ms: at,
         }
+    }
+
+    #[test]
+    fn segment_names_carry_the_capture_time() {
+        let prefix = ObjectPath::from("db/1");
+        let key =
+            ObjectPath::from("db/1/ltx/0/0000000000000002-0000000000000003-1732345678901.ltx");
+        assert_eq!(
+            parse_segment(&prefix, &key),
+            Some((Segment::new(0, 2, 3).unwrap(), 1_732_345_678_901))
+        );
+        for name in [
+            "db/1/ltx/0/0000000000000002-0000000000000003.ltx",
+            "db/1/ltx/0/0000000000000002-0000000000000003-.ltx",
+            "db/1/ltx/0/0000000000000002-0000000000000003-12a.ltx",
+            "db/1/ltx/3/0000000000000002-0000000000000003-1.ltx",
+        ] {
+            assert_eq!(
+                parse_segment(&prefix, &ObjectPath::from(name)),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_selects_the_newest_transaction_captured_by_then() {
+        let segments = [
+            stored(9, 1, 1, 10),
+            stored(0, 2, 2, 20),
+            stored(0, 3, 3, 30),
+        ];
+        let resolve = |at| Replica::resolve(&segments, Target::Time(at));
+        assert_eq!(resolve(25).unwrap(), 2);
+        assert_eq!(resolve(30).unwrap(), 3);
+        assert_eq!(resolve(10).unwrap(), 1);
+        let early = resolve(9).unwrap_err();
+        assert_eq!(
+            early.downcast_ref::<TooEarly>(),
+            Some(&TooEarly { earliest_ms: 10 })
+        );
     }
 
     #[test]

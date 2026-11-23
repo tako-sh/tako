@@ -48,8 +48,7 @@ fn verify(path: &Path, expected: i64) -> Result<()> {
 
 async fn restore(replica: &Replica, target: Target, output: &Path) -> Result<u64> {
     let segments = replica.segments().await?;
-    let points = replica.points().await?;
-    let txid = replica.resolve(&segments, &points, target).await?;
+    let txid = Replica::resolve(&segments, target)?;
     let scratch = tempfile::tempdir()?;
     replica
         .restore(&segments, txid, output, scratch.path())
@@ -215,10 +214,7 @@ async fn a_time_restores_the_newest_capture_at_or_before_it() -> Result<()> {
         verify(&output, rows)?;
     }
     let segments = replica.segments().await?;
-    let error = replica
-        .resolve(&segments, &[], Target::Time(0))
-        .await
-        .unwrap_err();
+    let error = Replica::resolve(&segments, Target::Time(0)).unwrap_err();
     assert!(
         error.downcast_ref::<tako_backup::TooEarly>().is_some(),
         "{error}"
@@ -244,15 +240,16 @@ async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result
     capture.sync()?;
     let between = chrono_millis();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    // Storage is back; the point that names the base keeps its capture time.
+    // Storage is back. No restore point names the base, as after a crash
+    // before it was recorded: the base's name carries its capture time.
     replica.upload(&spool).await?;
-    replica
-        .put_point(&Point {
-            created_at_ms: base_at,
-            txid: base,
-            reason: "scheduled".into(),
-        })
-        .await?;
+    assert!(replica.points().await?.is_empty());
+    let segments = replica.segments().await?;
+    let stored = segments
+        .iter()
+        .find(|stored| stored.txid() == base)
+        .unwrap();
+    assert!(stored.captured_at_ms <= base_at && stored.uploaded_at_ms > between);
     let output = dir.path().join("between.sqlite");
     restore(&replica, Target::Time(between), &output).await?;
     verify(&output, 6)?;
@@ -367,7 +364,12 @@ async fn a_conflicting_remote_object_is_not_overwritten_or_acknowledged() -> Res
     let mut capture = Capture::open(&database, &spool, 0)?;
     let txid = capture.snapshot()?;
     // Another writer took this transaction's key.
-    let key = ObjectPath::from(format!("{PREFIX}/ltx/9/{:016x}-{:016x}.ltx", 1, txid));
+    let key = ObjectPath::from(format!(
+        "{PREFIX}/ltx/9/{:016x}-{:016x}-{}.ltx",
+        1,
+        txid,
+        capture.captured_at(txid)?
+    ));
     let sealed = {
         let inner = Arc::new(object_store::memory::InMemory::new());
         let store = tako_backup::encryption::EncryptedStore::new(
@@ -412,7 +414,10 @@ async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Resu
         .iter()
         .find(|stored| stored.txid() == first)
         .unwrap();
-    let path = ObjectPath::from(format!("{PREFIX}/ltx/0/{}", middle.segment.filename()));
+    let path = ObjectPath::from(format!(
+        "{PREFIX}/ltx/0/{:016x}-{:016x}-{}.ltx",
+        middle.segment.min_txid, middle.segment.max_txid, middle.captured_at_ms
+    ));
 
     // Corrupt: authentication fails.
     remote
@@ -429,7 +434,7 @@ async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Resu
     // Missing: the chain has a gap, so the latest is no longer restorable.
     remote.delete(&path).await?;
     let segments = replica.segments().await?;
-    let latest = replica.resolve(&segments, &[], Target::Latest).await?;
+    let latest = Replica::resolve(&segments, Target::Latest)?;
     assert!(latest < first, "only the base before the gap restores");
     Ok(())
 }

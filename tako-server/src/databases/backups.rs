@@ -36,8 +36,6 @@ const IDLE_SYNC: Duration = Duration::from_secs(60);
 /// Longest an upload of pending captures may take before it is retried,
 /// beyond the time its size needs (see `upload_timeout`).
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// Longest a restore may take to find the transaction a time selects.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// How often retention runs for a database.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long stopping waits for each database's final upload.
@@ -126,26 +124,77 @@ struct Holder {
 /// history when it comes back.
 const DELETED_HOLDER: &str = "(deleted)";
 
+/// The holder a given-up claim leaves. It names no server and bars none,
+/// like a prefix without a holder. A claim is given up by replacing it
+/// conditionally: a delete could remove a newer claim made after the read.
+const UNCLAIMED_HOLDER: &str = "(none)";
+
+/// A holder object as read: the server it names, if any, and the object's
+/// version, for a write that must not replace a newer claim.
+struct Claim {
+    server: Option<String>,
+    version: object_store::UpdateVersion,
+}
+
 async fn read_holder(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
 ) -> Result<Option<String>, String> {
     let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    let bytes = with_deadline(METADATA_TIMEOUT, async {
-        match remote.get(&key).await {
-            Ok(object) => object
-                .bytes()
-                .await
-                .map(Some)
-                .map_err(|e| format!("read the database's holder: {e}")),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(error) => Err(format!("read the database's holder: {error}")),
+    Ok(read_claim(remote, &key)
+        .await?
+        .and_then(|claim| claim.server))
+}
+
+async fn read_claim(remote: &dyn ObjectStore, key: &ObjectPath) -> Result<Option<Claim>, String> {
+    with_deadline(METADATA_TIMEOUT, async {
+        let object = match remote.get(key).await {
+            Ok(object) => object,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(format!("read the database's holder: {error}")),
+        };
+        let version = object_store::UpdateVersion {
+            e_tag: object.meta.e_tag.clone(),
+            version: object.meta.version.clone(),
+        };
+        let bytes = object
+            .bytes()
+            .await
+            .map_err(|e| format!("read the database's holder: {e}"))?;
+        let server = serde_json::from_slice::<Holder>(&bytes)
+            .ok()
+            .map(|holder| holder.server)
+            .filter(|server| server != UNCLAIMED_HOLDER);
+        Ok(Some(Claim { server, version }))
+    })
+    .await
+}
+
+/// Replaces `claim` with a holder naming `server`, or none, unless the
+/// holder changed since `claim` was read. Returns whether it replaced it.
+async fn replace_claim(
+    remote: &dyn ObjectStore,
+    key: &ObjectPath,
+    claim: Claim,
+    server: Option<&str>,
+) -> Result<bool, String> {
+    let holder = Holder {
+        server: server.unwrap_or(UNCLAIMED_HOLDER).to_owned(),
+        since_unix_secs: now_unix_secs(),
+    };
+    let body = serde_json::to_vec(&holder).map_err(|e| e.to_string())?;
+    let options = object_store::PutOptions {
+        mode: object_store::PutMode::Update(claim.version),
+        ..Default::default()
+    };
+    with_deadline(METADATA_TIMEOUT, async {
+        match remote.put_opts(key, body.into(), options).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::Precondition { .. }) => Ok(false),
+            Err(error) => Err(format!("record the database's holder: {error}")),
         }
     })
-    .await?;
-    Ok(bytes
-        .and_then(|bytes| serde_json::from_slice::<Holder>(&bytes).ok())
-        .map(|holder| holder.server))
+    .await
 }
 
 /// Why this server may not upload a database's backups.
@@ -209,8 +258,23 @@ fn unrestored_marker(state: &ServerState, name: &str) -> PathBuf {
 }
 
 pub(crate) fn mark_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
-    std::fs::write(unrestored_marker(state, name), b"")
+    write_durably(&unrestored_marker(state, name), b"")
         .map_err(|e| format!("mark the new copy of {name}: {e}"))
+}
+
+/// Writes `bytes` to `path` through a synced temporary file renamed over
+/// it, then syncs the directory, so a crash leaves the old contents or the
+/// new ones, never a truncated file.
+fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the path has no directory"))?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    std::fs::File::open(dir)?.sync_all()
 }
 
 /// Marks a copy that found another server holding its database, or the
@@ -247,17 +311,18 @@ pub(crate) async fn release_holder(
         return Ok(());
     };
     let remote = store(backup)?;
-    if read_holder(remote.as_ref(), stored).await?.as_deref() != Some(own.as_str()) {
+    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
+    let Some(claim) = read_claim(remote.as_ref(), &key).await? else {
+        return Ok(());
+    };
+    if claim.server.as_deref() != Some(own.as_str()) {
         return Ok(());
     }
-    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    with_deadline(METADATA_TIMEOUT, async {
-        match remote.delete(&key).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(error) => Err(format!("release the backups of {}: {error}", stored.name)),
-        }
-    })
-    .await
+    // A newer claim from another server stands.
+    replace_claim(remote.as_ref(), &key, claim, None)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("release the backups of {}: {e}", stored.name))
 }
 
 async fn claim_holder(
@@ -582,7 +647,7 @@ fn remember_spool(
         destination: tako_core::BackupDestination::of(backup),
     };
     let bytes = serde_json::to_vec(&owner).map_err(|e| e.to_string())?;
-    std::fs::write(spool.join("owner.json"), bytes)
+    write_durably(&spool.join("owner.json"), &bytes)
         .map_err(|e| format!("record the spool's destination: {e}"))
 }
 
@@ -653,23 +718,6 @@ async fn upload(
     let spool = spool_dir(state, &stored.name);
     let pending = tako_backup::Replica::pending(&spool).map_err(|e| e.to_string())?;
     let open = slot.open.as_mut().ok_or("capture is not open")?;
-    // A full image captured before a restart lost the point that dates it;
-    // its header still has the time.
-    for base in pending.iter().filter(|segment| segment.min_txid == 1) {
-        if open.points.iter().any(|point| point.txid == base.max_txid) {
-            continue;
-        }
-        match open.capture.captured_at(base.max_txid) {
-            Ok(created_at_ms) => open.points.push(Point {
-                created_at_ms,
-                txid: base.max_txid,
-                reason: reason_name(SnapshotReason::Scheduled).into(),
-            }),
-            Err(error) => {
-                tracing::debug!(database = %stored.name, error = %format!("{error:#}"), "Could not date a full image");
-            }
-        }
-    }
     if pending.is_empty() && open.points.is_empty() {
         return Ok(());
     }
@@ -776,7 +824,7 @@ fn refuse(
     refused: Refused,
 ) -> String {
     if refused.fenced() {
-        if let Err(error) = std::fs::write(fenced_marker(state, &stored.name), b"") {
+        if let Err(error) = write_durably(&fenced_marker(state, &stored.name), b"") {
             tracing::warn!(database = %stored.name, %error, "Could not record that this copy no longer backs up");
         }
         // Dropping capture captures nothing more.
@@ -1240,20 +1288,20 @@ pub(crate) async fn list_command(
     })
     .await?;
     // Captures can be uploaded long after they were captured, when storage
-    // was unavailable: the bounds are the times `restore --at` goes by. A
-    // window starts at a base, which is uploaded as soon as it is captured.
-    let mut windows = Vec::new();
-    for window in tako_backup::windows(&segments) {
-        let (first, last) = (window.first(), window.last());
-        let from_unix_ms = captured_at(&replica, first, &points).await;
-        let to_unix_ms = captured_at(&replica, last, &points).await;
-        windows.push(serde_json::json!({
-            "from_transaction": first.txid(),
-            "to_transaction": last.txid(),
-            "from_unix_ms": from_unix_ms,
-            "to_unix_ms": to_unix_ms,
-        }));
-    }
+    // was unavailable: the bounds are the capture times `restore --at` goes
+    // by.
+    let windows: Vec<serde_json::Value> = tako_backup::windows(&segments)
+        .iter()
+        .map(|window| {
+            let (first, last) = (window.first(), window.last());
+            serde_json::json!({
+                "from_transaction": first.txid(),
+                "to_transaction": last.txid(),
+                "from_unix_ms": first.captured_at_ms,
+                "to_unix_ms": last.captured_at_ms,
+            })
+        })
+        .collect();
     let mut snapshots = snapshots(&segments, &points);
     snapshots.sort_by(|a, b| {
         (b.created_at_unix_secs, b.id.parse::<u64>().unwrap_or(0))
@@ -1264,18 +1312,6 @@ pub(crate) async fn list_command(
         "windows": windows,
         "snapshots": snapshots,
     }))
-}
-
-/// When a segment was captured, or else when it was uploaded.
-async fn captured_at(replica: &Replica, stored: &Stored, points: &[Point]) -> i64 {
-    let read = with_deadline(METADATA_TIMEOUT, async {
-        replica
-            .captured_at(stored, points)
-            .await
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await;
-    read.unwrap_or(stored.uploaded_at_ms)
 }
 
 /// A Unix-millisecond time in UTC, for messages.
@@ -1337,7 +1373,7 @@ fn snapshots(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
         // Captured when capture started.
         snapshots.push(DatabaseSnapshot {
             id: txid.to_string(),
-            created_at_unix_secs: u64::try_from(base.uploaded_at_ms / 1000).unwrap_or_default(),
+            created_at_unix_secs: u64::try_from(base.captured_at_ms / 1000).unwrap_or_default(),
             reason: SnapshotReason::Scheduled,
             full: true,
             stored_bytes: base.size,
@@ -1494,11 +1530,11 @@ pub(crate) async fn restore(
         && previous != own
     {
         // Another server may have restored the database meanwhile; its
-        // claim stands.
-        // Only a claim this server can still see as its own is given back.
-        let current = read_holder(remote.as_ref(), &stored).await;
-        match &current {
-            Ok(current) if current.as_deref() == own.as_deref() => {}
+        // claim stands. Only a claim this server reads as its own is given
+        // back, and only while it is unchanged since that read.
+        let key = ObjectPath::parse(holder_key(&stored)).map_err(|e| e.to_string())?;
+        let claim = match read_claim(remote.as_ref(), &key).await {
+            Ok(Some(claim)) if claim.server.as_deref() == own.as_deref() => claim,
             Ok(_) => return restored,
             Err(read) => {
                 return Err(format!(
@@ -1506,19 +1542,8 @@ pub(crate) async fn restore(
                     stored.name, stored.name
                 ));
             }
-        }
-        let given_back = match &previous {
-            Some(holder) => claim_holder(remote.as_ref(), &stored, holder).await,
-            None => match ObjectPath::parse(holder_key(&stored)) {
-                Ok(key) => {
-                    with_deadline(METADATA_TIMEOUT, async {
-                        remote.delete(&key).await.map_err(|e| e.to_string())
-                    })
-                    .await
-                }
-                Err(e) => Err(e.to_string()),
-            },
         };
+        let given_back = replace_claim(remote.as_ref(), &key, claim, previous.as_deref()).await;
         if let Err(revert) = given_back {
             return Err(format!(
                 "{error} (and the database's previous holder could not be recorded again: {revert})"
@@ -1536,39 +1561,26 @@ async fn restore_from(
     target: Target,
     moved: bool,
 ) -> Result<serde_json::Value, String> {
-    let (segments, points) = with_deadline(METADATA_TIMEOUT, async {
-        let segments = replica
+    let segments = with_deadline(METADATA_TIMEOUT, async {
+        replica
             .segments()
             .await
-            .map_err(|e| format!("list backups: {e:#}"))?;
-        let points = replica
-            .points()
-            .await
-            .map_err(|e| format!("list backups: {e:#}"))?;
-        Ok((segments, points))
+            .map_err(|e| format!("list backups: {e:#}"))
     })
     .await?;
-    let resolved = with_deadline(RESOLVE_TIMEOUT, async {
-        replica
-            .resolve(&segments, &points, target)
-            .await
-            .map_err(
-                |error| match error.downcast_ref::<tako_backup::TooEarly>() {
-                    Some(early) => format!(
-                        "{error}; the earliest restorable time is {}",
-                        format_ms(early.earliest_ms)
-                    ),
-                    None => format!("{error:#}"),
-                },
-            )
-    })
-    .await;
-    let txid = resolved.map_err(|e| format!("Cannot restore {}: {e}.", stored.name))?;
+    let txid = Replica::resolve(&segments, target)
+        .map_err(
+            |error| match error.downcast_ref::<tako_backup::TooEarly>() {
+                Some(early) => format!(
+                    "{error}; the earliest restorable time is {}",
+                    format_ms(early.earliest_ms)
+                ),
+                None => format!("{error:#}"),
+            },
+        )
+        .map_err(|e| format!("Cannot restore {}: {e}.", stored.name))?;
     let plan = Replica::plan(&segments, txid).map_err(|e| format!("{e:#}"))?;
-    let captured_at_ms = match plan.last() {
-        Some(last) => captured_at(replica, last, &points).await,
-        None => 0,
-    };
+    let captured_at_ms = plan.last().map_or(0, |last| last.captured_at_ms);
     // The downloads and their decrypted forms first; then the restored file,
     // which compressed pages can make far larger, once its size is known.
     // The segments stay on disk for the restore, where the free space
@@ -1916,4 +1928,41 @@ pub(crate) fn sha256_file(path: &Path) -> Result<(String, u64), String> {
         hasher.update(&buffer[..read]);
     }
     Ok((hex::encode(hasher.finalize()), total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn holder_named(remote: &dyn ObjectStore, key: &ObjectPath) -> Option<String> {
+        read_claim(remote, key).await.unwrap().unwrap().server
+    }
+
+    #[tokio::test]
+    async fn a_claim_is_given_back_only_while_it_is_unchanged() {
+        let remote = object_store::memory::InMemory::new();
+        let key = ObjectPath::from("_tako/databases/main/1/holder");
+        let claim = |server: &str| {
+            serde_json::to_vec(&Holder {
+                server: server.into(),
+                since_unix_secs: 0,
+            })
+            .unwrap()
+        };
+        remote.put(&key, claim("server-a").into()).await.unwrap();
+
+        // Another server claims after this one read its own claim.
+        let read = read_claim(&remote, &key).await.unwrap().unwrap();
+        remote.put(&key, claim("server-b").into()).await.unwrap();
+        assert!(!replace_claim(&remote, &key, read, None).await.unwrap());
+        assert_eq!(
+            holder_named(&remote, &key).await.as_deref(),
+            Some("server-b")
+        );
+
+        // Unchanged, the claim is given up, and the holder names no server.
+        let read = read_claim(&remote, &key).await.unwrap().unwrap();
+        assert!(replace_claim(&remote, &key, read, None).await.unwrap());
+        assert_eq!(holder_named(&remote, &key).await, None);
+    }
 }

@@ -1606,14 +1606,14 @@ async fn a_failed_move_leaves_the_old_copy_snapshotting() {
         },
     )
     .await;
-    // The claim was given back, so the old copy still snapshots.
+    // The claim was given back: the holder names no server, so the old copy
+    // still snapshots.
     let store = crate::databases::backups::test_store("unfenced-bucket").unwrap();
     let holder =
         object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}/holder"));
-    assert!(matches!(
-        store.get(&holder).await,
-        Err(object_store::Error::NotFound { .. })
-    ));
+    let holder: serde_json::Value =
+        serde_json::from_slice(&store.get(&holder).await.unwrap().bytes().await.unwrap()).unwrap();
+    assert_eq!(holder["server"], "(none)");
     query(&old, ID, "INSERT INTO items VALUES ('later')").await;
     ok(&old, snapshot()).await;
 }

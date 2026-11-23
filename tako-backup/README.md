@@ -17,8 +17,9 @@ any captured transaction, and applies retention.
 
 Under a database's prefix (`_tako/databases/<name>/<generation>/`):
 
-- `ltx/<level>/<min>-<max>.ltx`: encrypted segments. Level 9 holds full
-  images (bases) from transaction 1; level 0 holds one capture each.
+- `ltx/<level>/<min>-<max>-<captured>.ltx`: encrypted segments, named with
+  the capture time from their header (Unix ms). Level 9 holds full images
+  (bases) from transaction 1; level 0 holds one capture each.
 - `points/<unix-ms>-<txid>-<reason>`: empty markers naming a transaction,
   such as the one before a deploy or a manual snapshot.
 
@@ -45,9 +46,9 @@ history and a fenced one stops uploading.
   database moved away from) never shares a transaction ID with it, so no
   restore chain mixes the two.
 - A restore targets the latest transaction, a transaction ID, or a time: the
-  newest capture at or before it, found by binary search over capture
-  headers. It downloads only the segments it needs, verifies their checksums,
-  and never replaces an existing file.
+  newest capture at or before it, found from the capture times in the
+  listing without downloading anything. It downloads only the segments it
+  needs, verifies their checksums, and never replaces an existing file.
 - Retention keeps every transaction of the last **seven days**: from the newest
   base captured before then, everything stays. Older bases the caller keeps
   (long-term full snapshots) stay with their points; the rest is deleted,
