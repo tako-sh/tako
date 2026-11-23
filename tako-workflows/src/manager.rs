@@ -467,7 +467,9 @@ impl WorkflowManager {
         let store_config = self.workflow_store_config(app);
         let db_path = match &store_config {
             WorkflowStoreConfig::Sqlite { path } => path.clone(),
-            WorkflowStoreConfig::Postgres { .. } => self.workflows_db_path(app),
+            WorkflowStoreConfig::Postgres { .. } | WorkflowStoreConfig::Hosted { .. } => {
+                self.workflows_db_path(app)
+            }
         };
         let prepared = self
             .prepare(
@@ -828,7 +830,10 @@ impl WorkflowManager {
     fn store_kind(&self, app: &str) -> WorkflowStoreKind {
         match self.workflow_store_config(app) {
             WorkflowStoreConfig::Sqlite { .. } => WorkflowStoreKind::Sqlite,
-            WorkflowStoreConfig::Postgres { .. } => WorkflowStoreKind::Postgres,
+            // TODO(hosted): WorkflowStoreKind is removed with the old backends.
+            WorkflowStoreConfig::Postgres { .. } | WorkflowStoreConfig::Hosted { .. } => {
+                WorkflowStoreKind::Postgres
+            }
         }
     }
 

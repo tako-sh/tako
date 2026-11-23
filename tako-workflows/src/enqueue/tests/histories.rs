@@ -3,10 +3,39 @@ use super::*;
 #[path = "../../../../test-support/history.rs"]
 mod history;
 
-fn lifecycle_history(seed: u64) -> Vec<String> {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("workflows.sqlite");
-    let mut db = RunsDb::open(&path).unwrap();
+/// A durable store that a history reopens after every transition, as a
+/// restarted server would.
+enum Durable {
+    Sqlite(tempfile::TempDir),
+    Hosted(Box<HostedFixture>),
+}
+
+impl Durable {
+    fn sqlite() -> Self {
+        Self::Sqlite(tempfile::tempdir().unwrap())
+    }
+
+    fn open(&self) -> RunsDb {
+        match self {
+            Self::Sqlite(dir) => RunsDb::open(&dir.path().join("workflows.sqlite")).unwrap(),
+            Self::Hosted(fixture) => fixture.open("app"),
+        }
+    }
+
+    /// Checkpoints must survive a host crash, not just a process exit.
+    fn assert_durable(&self, db: &RunsDb) {
+        if let Self::Sqlite(_) = self {
+            assert_eq!(
+                db.raw_query_values("PRAGMA synchronous", ()),
+                vec![Value::Integer(2)]
+            );
+        }
+    }
+}
+
+fn lifecycle_history(seed: u64, store: fn() -> Durable) -> Vec<String> {
+    let store = store();
+    let mut db = store.open();
     let mut random = history::Seed(seed);
     let mut trace = Vec::new();
     for turn in 0..12 {
@@ -43,18 +72,18 @@ fn lifecycle_history(seed: u64) -> Vec<String> {
         match transition {
             0 => {
                 // Expiry is injected into persisted state; no wall-clock sleeps.
-                db.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [&id]);
+                db.test_execute(
+                    "UPDATE {runs} SET lease_until=0 WHERE id=?1",
+                    vec![id.as_str().into()],
+                );
                 assert_eq!(db.reclaim_expired().unwrap(), 1);
             }
             1 => db.fail(&id, "old", "retry", Some(0), false).unwrap(),
             _ => db.defer(&id, "old", Some(0)).unwrap(),
         }
         drop(db);
-        db = RunsDb::open(&path).unwrap();
-        assert_eq!(
-            db.raw_query_values("PRAGMA synchronous", ()),
-            vec![Value::Integer(2)]
-        );
+        db = store.open();
+        store.assert_durable(&db);
         let run = db.claim("new", &["work".into()], 60_000).unwrap().unwrap();
         assert_eq!(run.id, id);
         assert_eq!(run.step_state["saved"], payload);
@@ -118,18 +147,28 @@ fn lifecycle_history(seed: u64) -> Vec<String> {
     trace
 }
 
-#[test]
-fn workflow_lifecycle_histories_are_reproducible() {
+fn assert_histories_are_reproducible(store: fn() -> Durable) {
     for seed in history::seeds() {
-        let first = std::panic::catch_unwind(|| lifecycle_history(seed)).unwrap_or_else(|error| {
-            panic!("workflow history failed: seed={seed}, error={error:?}")
-        });
+        let first =
+            std::panic::catch_unwind(|| lifecycle_history(seed, store)).unwrap_or_else(|error| {
+                panic!("workflow history failed: seed={seed}, error={error:?}")
+            });
         assert_eq!(
             first,
-            lifecycle_history(seed),
+            lifecycle_history(seed, store),
             "seed={seed}: logical trace changed"
         );
     }
+}
+
+#[test]
+fn workflow_lifecycle_histories_are_reproducible() {
+    assert_histories_are_reproducible(Durable::sqlite);
+}
+
+#[test]
+fn hosted_workflow_lifecycle_histories_are_reproducible() {
+    assert_histories_are_reproducible(|| Durable::Hosted(Box::new(HostedFixture::start())));
 }
 
 #[test]

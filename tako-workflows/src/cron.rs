@@ -331,9 +331,15 @@ fn spawn_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enqueue::HostedFixture;
 
-    fn db() -> Arc<RunsDb> {
-        Arc::new(RunsDb::open_in_memory().unwrap())
+    /// The SQLite and hosted stores, each with what keeps it served.
+    fn stores() -> Vec<(Arc<RunsDb>, Option<HostedFixture>)> {
+        let fixture = HostedFixture::start();
+        vec![
+            (Arc::new(RunsDb::open_in_memory().unwrap()), None),
+            (Arc::new(fixture.open("app")), Some(fixture)),
+        ]
     }
 
     #[test]
@@ -364,164 +370,171 @@ mod tests {
 
     #[test]
     fn cleanup_respects_retention_and_forever() {
-        let db = db();
-        let run = db
-            .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
-            .unwrap();
-        db.claim("worker", &["work".into()], 30_000).unwrap();
-        db.complete(&run.id, "worker", &serde_json::Value::Null)
-            .unwrap();
-        db.raw_execute(
-            "UPDATE runs SET finished_at = 1 WHERE id = ?1",
-            [run.id.as_str()],
-        );
-        let now = chrono::Utc::now().timestamp_millis();
-        let mut next_cleanup_at = 0;
+        for (db, _served) in stores() {
+            let run = db
+                .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+            db.claim("worker", &["work".into()], 30_000).unwrap();
+            db.complete(&run.id, "worker", &serde_json::Value::Null)
+                .unwrap();
+            db.test_execute(
+                "UPDATE {runs} SET finished_at = 1 WHERE id = ?1",
+                vec![run.id.as_str().into()],
+            );
+            let now = chrono::Utc::now().timestamp_millis();
+            let mut next_cleanup_at = 0;
 
-        prune_if_due(&db, now, None, &mut next_cleanup_at);
-        assert_eq!(next_cleanup_at, 0);
-        assert_eq!(
-            db.raw_query_values("SELECT COUNT(*) FROM runs", ()),
-            vec![rusqlite::types::Value::Integer(1)]
-        );
+            prune_if_due(&db, now, None, &mut next_cleanup_at);
+            assert_eq!(next_cleanup_at, 0);
+            assert_eq!(
+                db.test_query_row("SELECT COUNT(*) FROM {runs}", vec![]),
+                vec![serde_json::json!(1)]
+            );
 
-        prune_if_due(
-            &db,
-            now,
-            Some(crate::DEFAULT_RETENTION_MS),
-            &mut next_cleanup_at,
-        );
-        assert!(next_cleanup_at > now);
-        assert_eq!(
-            db.raw_query_values("SELECT COUNT(*) FROM runs", ()),
-            vec![rusqlite::types::Value::Integer(0)]
-        );
+            prune_if_due(
+                &db,
+                now,
+                Some(crate::DEFAULT_RETENTION_MS),
+                &mut next_cleanup_at,
+            );
+            assert!(next_cleanup_at > now);
+            assert_eq!(
+                db.test_query_row("SELECT COUNT(*) FROM {runs}", vec![]),
+                vec![serde_json::json!(0)]
+            );
+        }
     }
 
     #[test]
     fn register_schedules_inserts_rows() {
-        let db = db();
-        register_schedules(
-            &db,
-            &[
-                ScheduleSpec {
-                    name: "a".into(),
-                    cron: "0 */5 * * * *".into(),
-                    max_attempts: None,
-                },
-                ScheduleSpec {
-                    name: "b".into(),
-                    cron: "0 0 * * * *".into(),
-                    max_attempts: None,
-                },
-            ],
-        )
-        .unwrap();
+        for (db, _served) in stores() {
+            register_schedules(
+                &db,
+                &[
+                    ScheduleSpec {
+                        name: "a".into(),
+                        cron: "0 */5 * * * *".into(),
+                        max_attempts: None,
+                    },
+                    ScheduleSpec {
+                        name: "b".into(),
+                        cron: "0 0 * * * *".into(),
+                        max_attempts: None,
+                    },
+                ],
+            )
+            .unwrap();
 
-        let schedules = list_schedules(&db).unwrap();
-        assert_eq!(schedules.len(), 2);
+            let schedules = list_schedules(&db).unwrap();
+            assert_eq!(schedules.len(), 2);
+        }
     }
 
     #[test]
     fn register_schedules_is_idempotent_on_repeat_call() {
-        let db = db();
-        let s = ScheduleSpec {
-            name: "a".into(),
-            cron: "0 */5 * * * *".into(),
-            max_attempts: None,
-        };
-        register_schedules(&db, std::slice::from_ref(&s)).unwrap();
-        register_schedules(&db, std::slice::from_ref(&s)).unwrap();
-        assert_eq!(list_schedules(&db).unwrap().len(), 1);
+        for (db, _served) in stores() {
+            let s = ScheduleSpec {
+                name: "a".into(),
+                cron: "0 */5 * * * *".into(),
+                max_attempts: None,
+            };
+            register_schedules(&db, std::slice::from_ref(&s)).unwrap();
+            register_schedules(&db, std::slice::from_ref(&s)).unwrap();
+            assert_eq!(list_schedules(&db).unwrap().len(), 1);
+        }
     }
 
     #[test]
     fn register_schedules_removes_schedules_not_in_new_list() {
-        let db = db();
-        register_schedules(
-            &db,
-            &[
-                ScheduleSpec {
+        for (db, _served) in stores() {
+            register_schedules(
+                &db,
+                &[
+                    ScheduleSpec {
+                        name: "keep".into(),
+                        cron: "0 */5 * * * *".into(),
+                        max_attempts: None,
+                    },
+                    ScheduleSpec {
+                        name: "drop".into(),
+                        cron: "0 0 * * * *".into(),
+                        max_attempts: None,
+                    },
+                ],
+            )
+            .unwrap();
+            register_schedules(
+                &db,
+                &[ScheduleSpec {
                     name: "keep".into(),
                     cron: "0 */5 * * * *".into(),
                     max_attempts: None,
-                },
-                ScheduleSpec {
-                    name: "drop".into(),
-                    cron: "0 0 * * * *".into(),
-                    max_attempts: None,
-                },
-            ],
-        )
-        .unwrap();
-        register_schedules(
-            &db,
-            &[ScheduleSpec {
-                name: "keep".into(),
-                cron: "0 */5 * * * *".into(),
-                max_attempts: None,
-            }],
-        )
-        .unwrap();
-        let rows = list_schedules(&db).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, "keep");
+                }],
+            )
+            .unwrap();
+            let rows = list_schedules(&db).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].name, "keep");
+        }
     }
 
     #[test]
     fn register_schedules_rejects_invalid_cron() {
-        let db = db();
-        let err = register_schedules(
-            &db,
-            &[ScheduleSpec {
-                name: "a".into(),
-                cron: "not a cron".into(),
-                max_attempts: None,
-            }],
-        )
-        .unwrap_err();
-        assert!(format!("{err}").to_lowercase().contains("invalid"));
+        for (db, _served) in stores() {
+            let err = register_schedules(
+                &db,
+                &[ScheduleSpec {
+                    name: "a".into(),
+                    cron: "not a cron".into(),
+                    max_attempts: None,
+                }],
+            )
+            .unwrap_err();
+            assert!(format!("{err}").to_lowercase().contains("invalid"));
+        }
     }
 
     #[test]
     fn tick_enqueues_due_schedules() {
-        let db = db();
-        register_schedules(
-            &db,
-            &[ScheduleSpec {
-                name: "every-sec".into(),
-                cron: "* * * * * *".into(),
-                max_attempts: None,
-            }],
-        )
-        .unwrap();
+        for (db, _served) in stores() {
+            register_schedules(
+                &db,
+                &[ScheduleSpec {
+                    name: "every-sec".into(),
+                    cron: "* * * * * *".into(),
+                    max_attempts: None,
+                }],
+            )
+            .unwrap();
 
-        let now_ms = chrono::Utc::now().timestamp_millis() + 60_000;
-        let count = tick_once(&db, now_ms).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(db.pending_count().unwrap(), 1);
+            let now_ms = chrono::Utc::now().timestamp_millis() + 60_000;
+            let count = tick_once(&db, now_ms).unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(db.pending_count().unwrap(), 1);
+        }
     }
 
     #[test]
     fn tick_is_idempotent_within_same_bucket() {
-        let db = db();
-        register_schedules(
-            &db,
-            &[ScheduleSpec {
-                name: "min".into(),
-                cron: "0 * * * * *".into(), // every minute boundary
-                max_attempts: None,
-            }],
-        )
-        .unwrap();
+        for (db, _served) in stores() {
+            register_schedules(
+                &db,
+                &[ScheduleSpec {
+                    name: "min".into(),
+                    cron: "0 * * * * *".into(), // every minute boundary
+                    max_attempts: None,
+                }],
+            )
+            .unwrap();
 
-        let now_ms = chrono::Utc::now().timestamp_millis() + 120_000;
-        let first = tick_once(&db, now_ms).unwrap();
-        let second = tick_once(&db, now_ms).unwrap();
-        assert!(first >= 1);
-        // Second tick shouldn't enqueue again for the same bucket — the
-        // id dedup catches it and last_run_at was advanced.
-        assert_eq!(second, 0);
+            let now_ms = chrono::Utc::now().timestamp_millis() + 120_000;
+            let first = tick_once(&db, now_ms).unwrap();
+            let second = tick_once(&db, now_ms).unwrap();
+            assert!(first >= 1);
+            // Second tick shouldn't enqueue again for the same bucket — the
+            // id dedup catches it and last_run_at was advanced.
+            assert_eq!(second, 0);
+        }
     }
 
     #[test]
@@ -529,131 +542,141 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tako_core::EnqueueOpts;
 
-        let db = db();
-        let r = db
-            .enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-            .unwrap();
-        // Simulate a worker that claimed the run and then died — lease is
-        // in the past, run is still `running`.
-        db.claim("dead-worker", &["w".into()], 30_000).unwrap();
-        db.raw_execute(
-            "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
-            (chrono::Utc::now().timestamp_millis() - 1_000, r.id.as_str()),
-        );
+        for (db, _served) in stores() {
+            let r = db
+                .enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+            // Simulate a worker that claimed the run and then died — lease is
+            // in the past, run is still `running`.
+            db.claim("dead-worker", &["w".into()], 30_000).unwrap();
+            db.test_execute(
+                "UPDATE {runs} SET lease_until = ?1 WHERE id = ?2",
+                vec![
+                    (chrono::Utc::now().timestamp_millis() - 1_000).into(),
+                    r.id.as_str().into(),
+                ],
+            );
 
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let w = wakes.clone();
-        let on_enqueue = move || {
-            w.fetch_add(1, Ordering::SeqCst);
-        };
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let w = wakes.clone();
+            let on_enqueue = move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            };
 
-        tick_and_reclaim(
-            &db,
-            chrono::Utc::now().timestamp_millis(),
-            &on_enqueue,
-            None,
-        );
+            tick_and_reclaim(
+                &db,
+                chrono::Utc::now().timestamp_millis(),
+                &on_enqueue,
+                None,
+            );
 
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "wake should fire on reclaim"
-        );
-        let next = db.claim("new-worker", &["w".into()], 30_000).unwrap();
-        assert_eq!(
-            next.map(|r| r.id),
-            Some(r.id),
-            "reclaimed run should be claimable"
-        );
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "wake should fire on reclaim"
+            );
+            let next = db.claim("new-worker", &["w".into()], 30_000).unwrap();
+            assert_eq!(
+                next.map(|r| r.id),
+                Some(r.id),
+                "reclaimed run should be claimable"
+            );
+        }
     }
 
     #[test]
     fn tick_and_reclaim_releases_only_the_expired_claim() {
-        let db = db();
-        for _ in 0..2 {
-            db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+        for (db, _served) in stores() {
+            for _ in 0..2 {
+                db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+                    .unwrap();
+            }
+            let limiter = crate::in_flight::InFlightLimiter::new(2);
+            let expired = limiter
+                .claim(&db, "worker", &["w".into()], 60_000)
+                .unwrap()
                 .unwrap();
-        }
-        let limiter = crate::in_flight::InFlightLimiter::new(2);
-        let expired = limiter
-            .claim(&db, "worker", &["w".into()], 60_000)
-            .unwrap()
-            .unwrap();
-        let active = limiter
-            .claim(&db, "worker", &["w".into()], 60_000)
-            .unwrap()
-            .unwrap();
-        db.raw_execute(
-            "UPDATE runs SET lease_until = 0 WHERE id = ?1",
-            [&expired.id],
-        );
+            let active = limiter
+                .claim(&db, "worker", &["w".into()], 60_000)
+                .unwrap()
+                .unwrap();
+            db.test_execute(
+                "UPDATE {runs} SET lease_until = 0 WHERE id = ?1",
+                vec![expired.id.as_str().into()],
+            );
 
-        tick_and_reclaim(
-            &db,
-            chrono::Utc::now().timestamp_millis(),
-            &|| {},
-            Some(&limiter),
-        );
-        assert_eq!(limiter.count("worker"), 1);
-        db.heartbeat(&active.id, &active.worker_id, 60_000).unwrap();
-        let reclaimed = limiter
-            .claim(&db, "worker", &["w".into()], 60_000)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reclaimed.id, expired.id);
-        assert_ne!(reclaimed.worker_id, expired.worker_id);
-        limiter.release_claim(&expired.worker_id);
-        assert_eq!(limiter.count("worker"), 2);
+            tick_and_reclaim(
+                &db,
+                chrono::Utc::now().timestamp_millis(),
+                &|| {},
+                Some(&limiter),
+            );
+            assert_eq!(limiter.count("worker"), 1);
+            db.heartbeat(&active.id, &active.worker_id, 60_000).unwrap();
+            let reclaimed = limiter
+                .claim(&db, "worker", &["w".into()], 60_000)
+                .unwrap()
+                .unwrap();
+            assert_eq!(reclaimed.id, expired.id);
+            assert_ne!(reclaimed.worker_id, expired.worker_id);
+            limiter.release_claim(&expired.worker_id);
+            assert_eq!(limiter.count("worker"), 2);
+        }
     }
 
     #[test]
     fn tick_and_reclaim_frees_the_slot_of_a_run_that_died() {
-        let db = db();
-        db.enqueue(
-            "w",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                max_attempts: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let limiter = crate::in_flight::InFlightLimiter::new(1);
-        let lost = limiter
-            .claim(&db, "worker", &["w".into()], 60_000)
-            .unwrap()
+        for (db, _served) in stores() {
+            db.enqueue(
+                "w",
+                &serde_json::json!({}),
+                &EnqueueOpts {
+                    max_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        db.raw_execute("UPDATE runs SET lease_until = 0 WHERE id = ?1", [&lost.id]);
+            let limiter = crate::in_flight::InFlightLimiter::new(1);
+            let lost = limiter
+                .claim(&db, "worker", &["w".into()], 60_000)
+                .unwrap()
+                .unwrap();
+            db.test_execute(
+                "UPDATE {runs} SET lease_until = 0 WHERE id = ?1",
+                vec![lost.id.as_str().into()],
+            );
 
-        tick_and_reclaim(
-            &db,
-            chrono::Utc::now().timestamp_millis(),
-            &|| {},
-            Some(&limiter),
-        );
-        assert_eq!(db.result("w", &lost.id).unwrap().unwrap().status, "dead");
-        assert_eq!(limiter.count("worker"), 0);
-        assert!(!db.has_runnable_work().unwrap());
+            tick_and_reclaim(
+                &db,
+                chrono::Utc::now().timestamp_millis(),
+                &|| {},
+                Some(&limiter),
+            );
+            assert_eq!(db.result("w", &lost.id).unwrap().unwrap().status, "dead");
+            assert_eq!(limiter.count("worker"), 0);
+            assert!(!db.has_runnable_work().unwrap());
+        }
     }
 
     #[test]
     fn tick_and_reclaim_does_not_wake_when_nothing_to_do() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let db = db();
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let w = wakes.clone();
-        let on_enqueue = move || {
-            w.fetch_add(1, Ordering::SeqCst);
-        };
+        for (db, _served) in stores() {
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let w = wakes.clone();
+            let on_enqueue = move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            };
 
-        tick_and_reclaim(
-            &db,
-            chrono::Utc::now().timestamp_millis(),
-            &on_enqueue,
-            None,
-        );
+            tick_and_reclaim(
+                &db,
+                chrono::Utc::now().timestamp_millis(),
+                &on_enqueue,
+                None,
+            );
 
-        assert_eq!(wakes.load(Ordering::SeqCst), 0);
+            assert_eq!(wakes.load(Ordering::SeqCst), 0);
+        }
     }
 }

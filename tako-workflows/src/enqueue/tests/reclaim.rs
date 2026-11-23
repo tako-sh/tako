@@ -1,21 +1,35 @@
 use super::*;
 
-/// A store under test. SQLite always runs; Postgres runs when
-/// `TAKO_TEST_POSTGRES_URL` is set, in its own schema.
+/// A store under test. SQLite and the hosted store always run; Postgres
+/// runs when `TAKO_TEST_POSTGRES_URL` is set, in its own schema.
 pub(super) struct Store {
     pub(super) db: RunsDb,
-    postgres: Option<(postgres::Client, String)>,
+    backend: Backend,
+}
+
+enum Backend {
+    Sqlite,
+    Hosted(HostedFixture),
+    Postgres(postgres::Client, String),
 }
 
 impl Store {
-    fn sqlite() -> Self {
+    pub(super) fn sqlite() -> Self {
         Self {
             db: RunsDb::open_in_memory().unwrap(),
-            postgres: None,
+            backend: Backend::Sqlite,
         }
     }
 
-    fn postgres(prefix: &str) -> Option<Self> {
+    pub(super) fn hosted() -> Self {
+        let fixture = HostedFixture::start();
+        Self {
+            db: fixture.open("app"),
+            backend: Backend::Hosted(fixture),
+        }
+    }
+
+    pub(super) fn postgres(prefix: &str) -> Option<Self> {
         let url = std::env::var("TAKO_TEST_POSTGRES_URL").ok()?;
         let schema = format!(
             "{prefix}_{}",
@@ -30,44 +44,65 @@ impl Store {
         let client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         Some(Self {
             db,
-            postgres: Some((client, schema)),
+            backend: Backend::Postgres(client, schema),
         })
     }
 
-    /// Another app's view of the same Postgres schema.
+    /// Another app's view of the same shared store, or a second server's
+    /// handle when `app_id` is this store's own app (`"app"`).
     pub(super) fn other_app(&self, app_id: &str) -> Option<RunsDb> {
-        let (_, schema) = self.postgres.as_ref()?;
-        Some(
-            RunsDb::open_config(WorkflowStoreConfig::Postgres {
-                url: std::env::var("TAKO_TEST_POSTGRES_URL").unwrap(),
-                schema: schema.clone(),
-                app_id: app_id.into(),
+        match &self.backend {
+            Backend::Sqlite => None,
+            Backend::Hosted(fixture) => Some(fixture.open(app_id)),
+            Backend::Postgres(_, schema) => Some(
+                RunsDb::open_config(WorkflowStoreConfig::Postgres {
+                    url: std::env::var("TAKO_TEST_POSTGRES_URL").unwrap(),
+                    schema: schema.clone(),
+                    app_id: app_id.into(),
+                })
+                .unwrap(),
+            ),
+        }
+    }
+
+    /// Raw SQL against every app in the store. `{runs}`, `{steps}`, ...
+    /// name its tables and `?N` its arguments (strings, integers or null).
+    pub(super) fn execute(&mut self, sql: &str, args: &[serde_json::Value]) {
+        let Backend::Postgres(client, schema) = &mut self.backend else {
+            return self.db.test_execute(sql, args.to_vec());
+        };
+        let mut sql = ["runs", "steps", "event_waiters", "run_inbox", "schedules"]
+            .into_iter()
+            .fold(sql.to_string(), |sql, table| {
+                sql.replace(&format!("{{{table}}}"), &format!("{schema}.{table}"))
+            });
+        for index in (1..=args.len()).rev() {
+            sql = sql.replace(&format!("?{index}"), &format!("${index}"));
+        }
+        let params: Vec<Box<dyn postgres::types::ToSql + Sync>> = args
+            .iter()
+            .map(|arg| -> Box<dyn postgres::types::ToSql + Sync> {
+                match arg {
+                    serde_json::Value::String(text) => Box::new(text.clone()),
+                    serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap()),
+                    serde_json::Value::Null => Box::new(None::<i64>),
+                    other => panic!("unsupported test argument {other}"),
+                }
             })
-            .unwrap(),
-        )
+            .collect();
+        let params: Vec<_> = params.iter().map(|param| param.as_ref()).collect();
+        client.execute(&sql, &params).unwrap();
     }
 
     /// Expiry is injected into persisted state; no wall-clock sleeps.
     pub(super) fn expire_lease(&mut self, id: &str) {
-        match &mut self.postgres {
-            None => self
-                .db
-                .raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id]),
-            Some((client, schema)) => {
-                client
-                    .execute(
-                        &format!("UPDATE {schema}.runs SET lease_until=0 WHERE id=$1"),
-                        &[&id],
-                    )
-                    .unwrap();
-            }
-        }
+        self.execute("UPDATE {runs} SET lease_until=0 WHERE id=?1", &[id.into()]);
     }
 }
 
 impl Drop for Store {
     fn drop(&mut self) {
-        if let Some((client, schema)) = &mut self.postgres {
+        if let Backend::Postgres(client, schema) = &mut self.backend {
             let _ = client.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"));
         }
     }
@@ -76,6 +111,7 @@ impl Drop for Store {
 /// Run `test` against every available backend.
 pub(super) fn each_store(prefix: &str, test: impl Fn(&mut Store)) {
     test(&mut Store::sqlite());
+    test(&mut Store::hosted());
     if let Some(mut store) = Store::postgres(prefix) {
         test(&mut store);
     }
@@ -250,30 +286,31 @@ fn one_reclaim_pass_requeues_and_kills_by_remaining_budget() {
     });
 }
 
+/// Apps sharing a store each reclaim only their own runs.
 #[test]
-fn postgres_reclaim_only_ends_runs_of_its_own_app() {
-    let Some(mut store) = Store::postgres("reclaim_scope") else {
-        return;
-    };
-    let other = store.other_app("other").unwrap();
-    let options = EnqueueOpts {
-        id: Some("shared-id".into()),
-        ..budget(1)
-    };
-    for db in [&store.db, &other] {
-        db.enqueue("work", &serde_json::json!({}), &options)
-            .unwrap();
-        claim(db, "worker");
-    }
-    // Expires the run with this ID in both apps.
-    store.expire_lease("shared-id");
+fn shared_stores_reclaim_only_runs_of_their_own_app() {
+    let stores = [Some(Store::hosted()), Store::postgres("reclaim_scope")];
+    for mut store in stores.into_iter().flatten() {
+        let other = store.other_app("other").unwrap();
+        let options = EnqueueOpts {
+            id: Some("shared-id".into()),
+            ..budget(1)
+        };
+        for db in [&store.db, &other] {
+            db.enqueue("work", &serde_json::json!({}), &options)
+                .unwrap();
+            claim(db, "worker");
+        }
+        // Expires the run with this ID in both apps.
+        store.expire_lease("shared-id");
 
-    assert_eq!(store.db.reclaim_expired().unwrap(), 1);
-    assert_eq!(status(&store.db, "shared-id"), "dead");
-    assert_eq!(status(&other, "shared-id"), "running");
-    assert_eq!(
-        other.reclaim_expired_with_workers().unwrap(),
-        vec!["worker"]
-    );
-    assert_eq!(status(&other, "shared-id"), "dead");
+        assert_eq!(store.db.reclaim_expired().unwrap(), 1);
+        assert_eq!(status(&store.db, "shared-id"), "dead");
+        assert_eq!(status(&other, "shared-id"), "running");
+        assert_eq!(
+            other.reclaim_expired_with_workers().unwrap(),
+            vec!["worker"]
+        );
+        assert_eq!(status(&other, "shared-id"), "dead");
+    }
 }

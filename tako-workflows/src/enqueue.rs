@@ -4,9 +4,13 @@
 //!   - `runs` - one row per run; tracks status, attempts, lease.
 //!   - `steps` - append-only memoization of completed step results.
 //!
+//! Backends: a local SQLite file, Postgres, or a Tako-hosted database
+//! ([`WorkflowStoreConfig::Hosted`]) shared by every server of the app.
+//!
 //! Operations are synchronous; call from `tokio::task::spawn_blocking` when
 //! invoking from async contexts.
 
+mod hosted;
 pub(crate) mod operator;
 mod sqlite;
 
@@ -23,6 +27,9 @@ use tako_core::{
 pub use operator::{CancelledRun, OPERATOR_CANCEL_REASON};
 
 use super::postgres_store::PostgresRunsDb;
+use hosted::HostedRunsDb;
+#[cfg(test)]
+pub(crate) use hosted::testing::HostedFixture;
 use sqlite::SqliteRunsDb;
 
 pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
@@ -31,7 +38,7 @@ pub const DEFAULT_RETENTION_MS: i64 = 184 * 24 * 60 * 60 * 1000;
 
 pub use tako_core::RunResult;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum WorkflowStoreConfig {
     Sqlite {
         path: PathBuf,
@@ -41,6 +48,35 @@ pub enum WorkflowStoreConfig {
         schema: String,
         app_id: String,
     },
+    /// A Tako-hosted database, reached through this server's local endpoint
+    /// (`http://127.0.0.1:<port>`) with the binding's token. Every table is
+    /// scoped by `app_id`, so several apps can share one database.
+    Hosted {
+        url: String,
+        token: String,
+        app_id: String,
+    },
+}
+
+/// Leaves out connection URLs and tokens, which can carry credentials.
+impl std::fmt::Debug for WorkflowStoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite { path } => f.debug_struct("Sqlite").field("path", path).finish(),
+            Self::Postgres { schema, app_id, .. } => f
+                .debug_struct("Postgres")
+                .field("url", &"<redacted>")
+                .field("schema", schema)
+                .field("app_id", app_id)
+                .finish(),
+            Self::Hosted { app_id, .. } => f
+                .debug_struct("Hosted")
+                .field("url", &"<redacted>")
+                .field("token", &"<redacted>")
+                .field("app_id", app_id)
+                .finish(),
+        }
+    }
 }
 
 impl WorkflowStoreConfig {
@@ -52,6 +88,18 @@ impl WorkflowStoreConfig {
         Self::Postgres {
             url: url.into(),
             schema: POSTGRES_WORKFLOWS_SCHEMA.to_string(),
+            app_id: app_id.into(),
+        }
+    }
+
+    pub fn hosted(
+        url: impl Into<String>,
+        token: impl Into<String>,
+        app_id: impl Into<String>,
+    ) -> Self {
+        Self::Hosted {
+            url: url.into(),
+            token: token.into(),
             app_id: app_id.into(),
         }
     }
@@ -76,6 +124,10 @@ pub enum RunsDbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("postgres error: {0}")]
     Postgres(#[from] postgres::Error),
+    /// Carries SQLite's error name, never the statement's message, which
+    /// can contain app data.
+    #[error("workflow store error: {0}")]
+    Hosted(#[from] tako_db::client::ClientError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
@@ -129,6 +181,7 @@ impl RunsDbError {
             )
             .then_some(ErrorCode::Unavailable),
             Self::Postgres(error) => postgres_unavailable(error).then_some(ErrorCode::Unavailable),
+            Self::Hosted(error) => error.is_unavailable().then_some(ErrorCode::Unavailable),
             Self::Json(_)
             | Self::Storage(_)
             | Self::UnsupportedBackend(_)
@@ -181,6 +234,7 @@ struct ScheduleRegistration {
 enum RunsDbBackend {
     Sqlite(SqliteRunsDb),
     Postgres(Box<PostgresRunsDb>),
+    Hosted(HostedRunsDb),
 }
 
 impl RunsDb {
@@ -198,7 +252,28 @@ impl RunsDb {
                     &url, &schema, &app_id,
                 )?)),
             }),
+            WorkflowStoreConfig::Hosted { url, token, app_id } => Ok(Self {
+                schedules: Default::default(),
+                monitoring: Default::default(),
+                backend: RunsDbBackend::Hosted(HostedRunsDb::open(&url, &token, &app_id)?),
+            }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_hosted_with_clock(
+        url: &str,
+        token: &str,
+        app_id: &str,
+        clock: fn() -> i64,
+    ) -> Result<Self, RunsDbError> {
+        Ok(Self {
+            schedules: Default::default(),
+            monitoring: Default::default(),
+            backend: RunsDbBackend::Hosted(HostedRunsDb::open_with_clock(
+                url, token, app_id, clock,
+            )?),
+        })
     }
 
     pub fn open(path: &Path) -> Result<Self, RunsDbError> {
@@ -240,6 +315,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.enqueue(name, payload, opts),
             RunsDbBackend::Postgres(db) => db.enqueue(name, payload, opts),
+            RunsDbBackend::Hosted(db) => db.enqueue(name, payload, opts),
         }
     }
 
@@ -248,8 +324,8 @@ impl RunsDb {
     pub(crate) fn raw_execute(&self, sql: &str, params: impl rusqlite::Params) {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.raw_execute(sql, params),
-            RunsDbBackend::Postgres(_) => {
-                panic!("sqlite connection requested for postgres workflow store")
+            RunsDbBackend::Postgres(_) | RunsDbBackend::Hosted(_) => {
+                panic!("sqlite connection requested for a shared workflow store")
             }
         }
     }
@@ -262,9 +338,82 @@ impl RunsDb {
     ) -> Vec<rusqlite::types::Value> {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.raw_query_values(sql, params),
-            RunsDbBackend::Postgres(_) => {
-                panic!("sqlite connection requested for postgres workflow store")
+            RunsDbBackend::Postgres(_) | RunsDbBackend::Hosted(_) => {
+                panic!("sqlite connection requested for a shared workflow store")
             }
+        }
+    }
+
+    /// Test-only SQL against the SQLite or hosted backend. `{runs}`,
+    /// `{steps}`, `{event_waiters}`, `{run_inbox}` and `{schedules}` name
+    /// the backend's tables; arguments are JSON scalars. A hosted statement
+    /// reaches every app in its database.
+    #[cfg(test)]
+    pub(crate) fn test_execute(&self, sql: &str, args: Vec<serde_json::Value>) {
+        self.test_rows(sql, args, false);
+    }
+
+    /// Like [`Self::test_execute`], for a query returning one row.
+    #[cfg(test)]
+    pub(crate) fn test_query_row(
+        &self,
+        sql: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let mut rows = self.test_rows(sql, args, true);
+        assert_eq!(rows.len(), 1, "{sql}");
+        rows.pop().unwrap()
+    }
+
+    #[cfg(test)]
+    fn test_rows(
+        &self,
+        sql: &str,
+        args: Vec<serde_json::Value>,
+        query: bool,
+    ) -> Vec<Vec<serde_json::Value>> {
+        use rusqlite::types::Value as Sql;
+        use serde_json::Value as Json;
+        let tables = |prefix: &str| {
+            ["runs", "steps", "event_waiters", "run_inbox", "schedules"]
+                .into_iter()
+                .fold(sql.to_string(), |sql, table| {
+                    sql.replace(&format!("{{{table}}}"), &format!("{prefix}{table}"))
+                })
+        };
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => {
+                let sql = tables("");
+                let params = rusqlite::params_from_iter(args.into_iter().map(|arg| {
+                    match arg {
+                        Json::Null => Sql::Null,
+                        Json::Bool(b) => Sql::Integer(b.into()),
+                        Json::Number(n) => n
+                            .as_i64()
+                            .map_or(Sql::Real(n.as_f64().unwrap()), Sql::Integer),
+                        Json::String(s) => Sql::Text(s),
+                        other => panic!("unsupported test argument {other}"),
+                    }
+                }));
+                if !query {
+                    db.raw_execute(&sql, params);
+                    return Vec::new();
+                }
+                let row = db
+                    .raw_query_values(&sql, params)
+                    .into_iter()
+                    .map(|value| match value {
+                        Sql::Null => Json::Null,
+                        Sql::Integer(i) => i.into(),
+                        Sql::Real(f) => f.into(),
+                        Sql::Text(s) => s.into(),
+                        Sql::Blob(_) => panic!("unexpected blob"),
+                    })
+                    .collect();
+                vec![row]
+            }
+            RunsDbBackend::Hosted(db) => db.test_rows(&tables("tako_workflow_"), args),
+            RunsDbBackend::Postgres(_) => panic!("no test SQL hook for postgres"),
         }
     }
 
@@ -285,6 +434,7 @@ impl RunsDb {
         let result = match &self.backend {
             RunsDbBackend::Sqlite(db) => db.claim(worker_id, names, lease_ms),
             RunsDbBackend::Postgres(db) => db.claim(worker_id, names, lease_ms),
+            RunsDbBackend::Hosted(db) => db.claim(worker_id, names, lease_ms),
         };
         if let Some(started) = started {
             let outcome = match &result {
@@ -310,6 +460,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.heartbeat(id, worker_id, lease_ms),
             RunsDbBackend::Postgres(db) => db.heartbeat(id, worker_id, lease_ms),
+            RunsDbBackend::Hosted(db) => db.heartbeat(id, worker_id, lease_ms),
         }
     }
 
@@ -328,6 +479,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.save_step(run_id, worker_id, step_name, result),
             RunsDbBackend::Postgres(db) => db.save_step(run_id, worker_id, step_name, result),
+            RunsDbBackend::Hosted(db) => db.save_step(run_id, worker_id, step_name, result),
         }
     }
 
@@ -335,6 +487,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.result(name, id),
             RunsDbBackend::Postgres(db) => db.result(name, id),
+            RunsDbBackend::Hosted(db) => db.result(name, id),
         }
     }
 
@@ -347,6 +500,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.complete(id, worker_id, result),
             RunsDbBackend::Postgres(db) => db.complete(id, worker_id, result),
+            RunsDbBackend::Hosted(db) => db.complete(id, worker_id, result),
         }
     }
 
@@ -357,6 +511,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.prune_finished_before(cutoff_ms, limit),
             RunsDbBackend::Postgres(db) => db.prune_finished_before(cutoff_ms, limit),
+            RunsDbBackend::Hosted(db) => db.prune_finished_before(cutoff_ms, limit),
         }
     }
 
@@ -369,6 +524,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.cancel(id, worker_id, reason),
             RunsDbBackend::Postgres(db) => db.cancel(id, worker_id, reason),
+            RunsDbBackend::Hosted(db) => db.cancel(id, worker_id, reason),
         }
     }
 
@@ -383,6 +539,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.fail(id, worker_id, error, next_run_at_ms, finalize),
             RunsDbBackend::Postgres(db) => db.fail(id, worker_id, error, next_run_at_ms, finalize),
+            RunsDbBackend::Hosted(db) => db.fail(id, worker_id, error, next_run_at_ms, finalize),
         }
     }
 
@@ -398,6 +555,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.defer(id, worker_id, wake_at_ms),
             RunsDbBackend::Postgres(db) => db.defer(id, worker_id, wake_at_ms),
+            RunsDbBackend::Hosted(db) => db.defer(id, worker_id, wake_at_ms),
         }
     }
 
@@ -423,6 +581,7 @@ impl RunsDb {
         let reclaimed = match &self.backend {
             RunsDbBackend::Sqlite(db) => db.reclaim_expired(),
             RunsDbBackend::Postgres(db) => db.reclaim_expired(),
+            RunsDbBackend::Hosted(db) => db.reclaim_expired(),
         }?;
         // No worker is left to report these runs, so the server does.
         for run_id in &reclaimed.dead {
@@ -440,6 +599,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.in_flight_by_worker(),
             RunsDbBackend::Postgres(db) => db.in_flight_by_worker(),
+            RunsDbBackend::Hosted(db) => db.in_flight_by_worker(),
         }
     }
 
@@ -463,6 +623,9 @@ impl RunsDb {
                 db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
             }
             RunsDbBackend::Postgres(db) => {
+                db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
+            }
+            RunsDbBackend::Hosted(db) => {
                 db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
             }
         }
@@ -502,6 +665,14 @@ impl RunsDb {
                 target_id,
                 timeout_at_ms,
             ),
+            RunsDbBackend::Hosted(db) => db.wait_for_run(
+                run_id,
+                worker_id,
+                step_name,
+                target_name,
+                target_id,
+                timeout_at_ms,
+            ),
         }
     }
 
@@ -520,6 +691,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.signal(event_name, payload),
             RunsDbBackend::Postgres(db) => db.signal(event_name, payload),
+            RunsDbBackend::Hosted(db) => db.signal(event_name, payload),
         }
     }
 
@@ -541,6 +713,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.signal_run(run_id, event_name, payload),
             RunsDbBackend::Postgres(db) => db.signal_run(run_id, event_name, payload),
+            RunsDbBackend::Hosted(db) => db.signal_run(run_id, event_name, payload),
         }
     }
 
@@ -548,6 +721,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.pending_count(),
             RunsDbBackend::Postgres(db) => db.pending_count(),
+            RunsDbBackend::Hosted(db) => db.pending_count(),
         }
     }
 
@@ -558,6 +732,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.has_runnable_work(),
             RunsDbBackend::Postgres(db) => db.has_runnable_work(),
+            RunsDbBackend::Hosted(db) => db.has_runnable_work(),
         }
     }
 
@@ -565,6 +740,9 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(_) => WorkflowStoreKind::Sqlite,
             RunsDbBackend::Postgres(_) => WorkflowStoreKind::Postgres,
+            // TODO(hosted): WorkflowStoreKind is removed with the old backends.
+            // A hosted store is shared by every server, like Postgres.
+            RunsDbBackend::Hosted(_) => WorkflowStoreKind::Postgres,
         }
     }
 
@@ -581,6 +759,7 @@ impl RunsDb {
         let rows = match &self.backend {
             RunsDbBackend::Sqlite(db) => db.list_runs(status, name, fetch),
             RunsDbBackend::Postgres(db) => db.list_runs(status, name, fetch),
+            RunsDbBackend::Hosted(db) => db.list_runs(status, name, fetch),
         }?;
         operator::summary_page(rows, limit as usize)
     }
@@ -592,6 +771,7 @@ impl RunsDb {
         let record = match &self.backend {
             RunsDbBackend::Sqlite(db) => db.get_run(id, limit),
             RunsDbBackend::Postgres(db) => db.get_run(id, limit),
+            RunsDbBackend::Hosted(db) => db.get_run(id, limit),
         }?;
         record.map(operator::RunRecord::into_detail).transpose()
     }
@@ -604,6 +784,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.retry_run(id),
             RunsDbBackend::Postgres(db) => db.retry_run(id),
+            RunsDbBackend::Hosted(db) => db.retry_run(id),
         }
     }
 
@@ -614,6 +795,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.cancel_run(id),
             RunsDbBackend::Postgres(db) => db.cancel_run(id),
+            RunsDbBackend::Hosted(db) => db.cancel_run(id),
         }
     }
 
@@ -628,6 +810,11 @@ impl RunsDb {
                 Some(db.next_schedule_revision()?)
             }
             (RunsDbBackend::Postgres(_), ScheduleActivation::Recover(revision)) => revision,
+            // Shared by several servers too: the same revisions as Postgres.
+            (RunsDbBackend::Hosted(db), ScheduleActivation::Deploy) => {
+                Some(db.next_schedule_revision()?)
+            }
+            (RunsDbBackend::Hosted(_), ScheduleActivation::Recover(revision)) => revision,
             (RunsDbBackend::Sqlite(_), _) => None,
         };
         self.schedules.build = build.filter(|build| !build.is_empty());
@@ -668,6 +855,11 @@ impl RunsDb {
                 self.schedules.build.as_deref(),
                 self.schedules.revision,
             ),
+            RunsDbBackend::Hosted(db) => db.replace_schedules(
+                schedules,
+                self.schedules.build.as_deref(),
+                self.schedules.revision,
+            ),
         }
     }
 
@@ -675,6 +867,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.list_schedules(),
             RunsDbBackend::Postgres(db) => db.list_schedules(),
+            RunsDbBackend::Hosted(db) => db.list_schedules(),
         }
     }
 
@@ -682,6 +875,7 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.set_schedule_last_run_at(name, ts),
             RunsDbBackend::Postgres(db) => db.set_schedule_last_run_at(name, ts),
+            RunsDbBackend::Hosted(db) => db.set_schedule_last_run_at(name, ts),
         }
     }
 }

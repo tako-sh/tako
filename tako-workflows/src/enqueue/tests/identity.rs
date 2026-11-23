@@ -1,3 +1,4 @@
+use super::reclaim::each_store;
 use super::*;
 
 fn identified(id: &str) -> EnqueueOpts {
@@ -9,138 +10,155 @@ fn identified(id: &str) -> EnqueueOpts {
 
 #[test]
 fn supplied_id_is_the_run_id() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let run = db
-        .enqueue(
-            "pay",
-            &serde_json::json!({"amount": 100}),
-            &identified("invoice:123"),
-        )
-        .unwrap();
-    assert_eq!(run.id, "invoice:123");
-    assert_eq!(
-        db.claim("worker", &["pay".into()], 30_000)
-            .unwrap()
-            .unwrap()
-            .id,
-        run.id
-    );
+    each_store("identity_supplied", |store| {
+        let db = &store.db;
+        let run = db
+            .enqueue(
+                "pay",
+                &serde_json::json!({"amount": 100}),
+                &identified("invoice:123"),
+            )
+            .unwrap();
+        assert_eq!(run.id, "invoice:123");
+        assert_eq!(
+            db.claim("worker", &["pay".into()], 30_000)
+                .unwrap()
+                .unwrap()
+                .id,
+            run.id
+        );
+    });
 }
 
 #[test]
 fn retained_ids_deduplicate_in_every_status() {
-    for status in ["pending", "running", "succeeded", "cancelled", "dead"] {
-        let db = RunsDb::open_in_memory().unwrap();
-        let options = identified("invoice:123");
+    each_store("identity_statuses", |store| {
         let payload = serde_json::json!({"amount": 100});
-        let first = db.enqueue("pay", &payload, &options).unwrap();
-        db.raw_execute(
-            "UPDATE runs SET status = ?1 WHERE id = ?2",
-            (status, first.id.as_str()),
-        );
-        let duplicate = db.enqueue("pay", &payload, &options).unwrap();
-        assert!(duplicate.deduplicated, "status: {status}");
-        assert_eq!(duplicate.id, first.id);
-        assert_eq!(
-            db.raw_query_values(
-                "SELECT status FROM runs WHERE id = ?1",
-                (first.id.as_str(),)
-            ),
-            vec![Value::Text(status.into())]
-        );
-    }
+        for status in ["pending", "running", "succeeded", "cancelled", "dead"] {
+            let options = identified(&format!("invoice:{status}"));
+            let first = store.db.enqueue("pay", &payload, &options).unwrap();
+            store.execute(
+                "UPDATE {runs} SET status = ?1 WHERE id = ?2",
+                &[status.into(), first.id.as_str().into()],
+            );
+            let duplicate = store.db.enqueue("pay", &payload, &options).unwrap();
+            assert!(duplicate.deduplicated, "status: {status}");
+            assert_eq!(duplicate.id, first.id);
+            assert_eq!(
+                store.db.result("pay", &first.id).unwrap().unwrap().status,
+                status
+            );
+        }
+    });
 }
 
 #[test]
 fn supplied_id_rejects_a_different_payload_or_workflow() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let options = identified("invoice:123");
-    let payload = serde_json::json!({"amount": 100});
-    db.enqueue("pay", &payload, &options).unwrap();
-    for (name, payload) in [
-        ("pay", serde_json::json!({"amount": 200})),
-        ("refund", payload),
-    ] {
-        let error = db.enqueue(name, &payload, &options).unwrap_err();
-        assert!(
-            error.to_string().contains("different workflow or payload"),
-            "{error}"
-        );
-    }
+    each_store("identity_conflict", |store| {
+        let db = &store.db;
+        let options = identified("invoice:123");
+        let payload = serde_json::json!({"amount": 100});
+        db.enqueue("pay", &payload, &options).unwrap();
+        for (name, payload) in [
+            ("pay", serde_json::json!({"amount": 200})),
+            ("refund", payload),
+        ] {
+            let error = db.enqueue(name, &payload, &options).unwrap_err();
+            assert!(matches!(error, RunsDbError::IdConflict { .. }), "{error}");
+            assert!(
+                error.to_string().contains("different workflow or payload"),
+                "{error}"
+            );
+        }
+    });
 }
 
 #[test]
 fn payload_object_order_does_not_change_identity() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let options = identified("invoice:123");
-    let first = serde_json::from_str(r#"{"amount":100,"currency":"JPY"}"#).unwrap();
-    let reordered = serde_json::from_str(r#"{"currency":"JPY","amount":100}"#).unwrap();
-    db.enqueue("pay", &first, &options).unwrap();
-    assert!(
-        db.enqueue("pay", &reordered, &options)
-            .unwrap()
-            .deduplicated
-    );
+    each_store("identity_order", |store| {
+        let db = &store.db;
+        let options = identified("invoice:123");
+        let first = serde_json::from_str(r#"{"amount":100,"currency":"JPY"}"#).unwrap();
+        let reordered = serde_json::from_str(r#"{"currency":"JPY","amount":100}"#).unwrap();
+        db.enqueue("pay", &first, &options).unwrap();
+        assert!(
+            db.enqueue("pay", &reordered, &options)
+                .unwrap()
+                .deduplicated
+        );
+    });
 }
 
 #[test]
 fn pruning_a_finished_run_releases_its_id_and_steps() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let options = identified("invoice:123");
-    let first = db
-        .enqueue("pay", &serde_json::json!({"amount": 100}), &options)
-        .unwrap();
-    db.claim("worker", &["pay".into()], 30_000)
-        .unwrap()
-        .unwrap();
-    db.save_step(&first.id, "worker", "charge", &serde_json::json!("receipt"))
-        .unwrap();
-    db.complete(&first.id, "worker", &serde_json::Value::Null)
-        .unwrap();
-    assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
-    let second = db
-        .enqueue("pay", &serde_json::json!({"amount": 200}), &options)
-        .unwrap();
-    assert_eq!(second.id, "invoice:123");
-    assert!(!second.deduplicated);
-    let run = db
-        .claim("worker", &["pay".into()], 30_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.step_state, serde_json::json!({}));
+    each_store("identity_prune", |store| {
+        let db = &store.db;
+        let options = identified("invoice:123");
+        let first = db
+            .enqueue("pay", &serde_json::json!({"amount": 100}), &options)
+            .unwrap();
+        db.claim("worker", &["pay".into()], 30_000)
+            .unwrap()
+            .unwrap();
+        db.save_step(&first.id, "worker", "charge", &serde_json::json!("receipt"))
+            .unwrap();
+        db.complete(&first.id, "worker", &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
+        let second = db
+            .enqueue("pay", &serde_json::json!({"amount": 200}), &options)
+            .unwrap();
+        assert_eq!(second.id, "invoice:123");
+        assert!(!second.deduplicated);
+        let run = db
+            .claim("worker", &["pay".into()], 30_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.step_state, serde_json::json!({}));
+    });
 }
 
 #[test]
 fn default_retention_keeps_six_month_old_runs() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let run = db.enqueue("pay", &serde_json::json!({}), &opts()).unwrap();
-    db.claim("worker", &["pay".into()], 30_000)
-        .unwrap()
-        .unwrap();
-    db.complete(&run.id, "worker", &serde_json::Value::Null)
-        .unwrap();
-    let now = now_ms();
-    db.raw_execute(
-        "UPDATE runs SET finished_at = ?1 WHERE id = ?2",
-        (now - 183 * 24 * 60 * 60 * 1000, run.id.as_str()),
-    );
-    assert_eq!(
-        db.prune_finished_before(now - DEFAULT_RETENTION_MS, 100)
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        db.prune_finished_before(now - DEFAULT_RETENTION_MS + 2 * 24 * 60 * 60 * 1000, 100)
-            .unwrap(),
-        1
-    );
+    each_store("identity_retention", |store| {
+        let run = store
+            .db
+            .enqueue("pay", &serde_json::json!({}), &opts())
+            .unwrap();
+        store
+            .db
+            .claim("worker", &["pay".into()], 30_000)
+            .unwrap()
+            .unwrap();
+        store
+            .db
+            .complete(&run.id, "worker", &serde_json::Value::Null)
+            .unwrap();
+        let now = now_ms();
+        store.execute(
+            "UPDATE {runs} SET finished_at = ?1 WHERE id = ?2",
+            &[
+                (now - 183 * 24 * 60 * 60 * 1000).into(),
+                run.id.as_str().into(),
+            ],
+        );
+        let db = &store.db;
+        assert_eq!(
+            db.prune_finished_before(now - DEFAULT_RETENTION_MS, 100)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.prune_finished_before(now - DEFAULT_RETENTION_MS + 2 * 24 * 60 * 60 * 1000, 100)
+                .unwrap(),
+            1
+        );
+    });
 }
 
-#[test]
-fn simultaneous_enqueues_create_one_run() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("workflows.sqlite");
-    let stores: Vec<_> = (0..8).map(|_| RunsDb::open(&path).unwrap()).collect();
+/// Eight handles (connections, or servers) to one store enqueue the same ID
+/// at once: exactly one creates the run.
+fn assert_simultaneous_enqueues_create_one_run(stores: Vec<RunsDb>) {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(stores.len()));
     let threads: Vec<_> = stores
         .into_iter()
@@ -162,21 +180,38 @@ fn simultaneous_enqueues_create_one_run() {
 }
 
 #[test]
-fn supplied_ids_must_fit_the_storage_contract() {
-    let db = RunsDb::open_in_memory().unwrap();
-    for id in [String::new(), "x".repeat(256), "bad\0id".into()] {
-        assert!(matches!(
-            db.enqueue("pay", &serde_json::json!({}), &identified(&id)),
-            Err(RunsDbError::InvalidId)
-        ));
-    }
-    let longest = "x".repeat(255);
-    assert_eq!(
-        db.enqueue("pay", &serde_json::json!({}), &identified(&longest))
-            .unwrap()
-            .id,
-        longest
+fn simultaneous_enqueues_create_one_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workflows.sqlite");
+    assert_simultaneous_enqueues_create_one_run(
+        (0..8).map(|_| RunsDb::open(&path).unwrap()).collect(),
     );
+}
+
+#[test]
+fn simultaneous_hosted_enqueues_create_one_run() {
+    let fixture = HostedFixture::start();
+    assert_simultaneous_enqueues_create_one_run((0..8).map(|_| fixture.open("app")).collect());
+}
+
+#[test]
+fn supplied_ids_must_fit_the_storage_contract() {
+    each_store("identity_contract", |store| {
+        let db = &store.db;
+        for id in [String::new(), "x".repeat(256), "bad\0id".into()] {
+            assert!(matches!(
+                db.enqueue("pay", &serde_json::json!({}), &identified(&id)),
+                Err(RunsDbError::InvalidId)
+            ));
+        }
+        let longest = "x".repeat(255);
+        assert_eq!(
+            db.enqueue("pay", &serde_json::json!({}), &identified(&longest))
+                .unwrap()
+                .id,
+            longest
+        );
+    });
 }
 
 #[test]

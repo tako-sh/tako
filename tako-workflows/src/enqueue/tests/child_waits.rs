@@ -1,14 +1,14 @@
 //! A run waiting on another run's outcome (a parent on its child): woken by
 //! every transition that finishes the child, never missed in a race. Every
-//! contract runs against SQLite and, when `TAKO_TEST_POSTGRES_URL` is set,
-//! Postgres.
+//! contract runs against SQLite, the hosted store and, when
+//! `TAKO_TEST_POSTGRES_URL` is set, Postgres.
 
 use super::*;
 use tako_core::ErrorCode;
 
 type Open<'a> = &'a dyn Fn() -> RunsDb;
 
-macro_rules! both_stores {
+macro_rules! every_store {
     ($($name:ident),* $(,)?) => {
         mod sqlite_store {
             use super::RunsDb;
@@ -18,6 +18,15 @@ macro_rules! both_stores {
                     let dir = tempfile::tempdir().unwrap();
                     let path = dir.path().join("runs.sqlite");
                     super::$name(&|| RunsDb::open(&path).unwrap());
+                }
+            )*
+        }
+        mod hosted_store {
+            $(
+                #[test]
+                fn $name() {
+                    let fixture = crate::enqueue::HostedFixture::start();
+                    super::$name(&|| fixture.open("app"));
                 }
             )*
         }
@@ -37,7 +46,7 @@ macro_rules! both_stores {
     };
 }
 
-both_stores!(
+every_store!(
     a_parent_is_woken_with_the_outcome_when_its_child_succeeds,
     every_finishing_transition_wakes_the_parent,
     a_child_retry_does_not_wake_the_parent,

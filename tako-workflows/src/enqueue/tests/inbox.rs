@@ -1,6 +1,7 @@
 //! Signals addressed to one run: delivery, buffering, consumption, limits.
-//! Every contract runs against SQLite and, when `TAKO_TEST_POSTGRES_URL` is
-//! set, Postgres. `open` returns a fresh handle (connection) to one store.
+//! Every contract runs against SQLite, the hosted store and, when
+//! `TAKO_TEST_POSTGRES_URL` is set, Postgres. `open` returns a fresh handle
+//! (connection) to one store.
 
 use super::*;
 use tako_core::{
@@ -9,7 +10,7 @@ use tako_core::{
 
 type Open<'a> = &'a dyn Fn() -> RunsDb;
 
-macro_rules! both_stores {
+macro_rules! every_store {
     ($($name:ident),* $(,)?) => {
         mod sqlite_store {
             use super::RunsDb;
@@ -19,6 +20,15 @@ macro_rules! both_stores {
                     let dir = tempfile::tempdir().unwrap();
                     let path = dir.path().join("runs.sqlite");
                     super::$name(&|| RunsDb::open(&path).unwrap());
+                }
+            )*
+        }
+        mod hosted_store {
+            $(
+                #[test]
+                fn $name() {
+                    let fixture = crate::enqueue::HostedFixture::start();
+                    super::$name(&|| fixture.open("app"));
                 }
             )*
         }
@@ -38,7 +48,7 @@ macro_rules! both_stores {
     };
 }
 
-both_stores!(
+every_store!(
     a_signal_sent_before_the_wait_is_consumed_by_it,
     a_waiting_run_is_woken_at_once,
     a_signal_sent_while_the_run_executes_is_not_lost,
