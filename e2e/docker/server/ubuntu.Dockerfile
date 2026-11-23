@@ -4,7 +4,16 @@ FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# An Ubuntu mirror close to the builder, such as GitHub runners' Azure one;
+# without it, packages come from archive.ubuntu.com.
+ARG APT_MIRROR=
+
 RUN --mount=type=secret,id=proxy_ca,mode=0444 \
+  if [ -n "$APT_MIRROR" ]; then \
+    sed -i -e "s|http://archive.ubuntu.com/ubuntu|$APT_MIRROR|g" \
+      -e "s|http://security.ubuntu.com/ubuntu|$APT_MIRROR|g" \
+      /etc/apt/sources.list.d/ubuntu.sources; \
+  fi; \
   if [ -s /run/secrets/proxy_ca ]; then \
     export SSL_CERT_FILE=/run/secrets/proxy_ca CURL_CA_BUNDLE=/run/secrets/proxy_ca NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; \
     printf 'Acquire::https::CaInfo "/run/secrets/proxy_ca";\n' > /tmp/e2e-apt.conf; \

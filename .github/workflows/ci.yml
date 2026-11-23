@@ -38,7 +38,10 @@ jobs:
 
       - name: Verify fixture sudo account
         run: |
-          docker build -f e2e/docker/server/${{ matrix.os }}.Dockerfile -t tako-host-fixture .
+          # The Azure mirror next to GitHub's runners; archive.ubuntu.com
+          # can be too slow for the fixture's packages within the timeout.
+          docker build --build-arg APT_MIRROR=http://azure.archive.ubuntu.com/ubuntu \
+            -f e2e/docker/server/${{ matrix.os }}.Dockerfile -t tako-host-fixture .
           if ! docker run --rm --privileged tako-host-fixture sh -ec '
             su -s /bin/sh tako -c "sudo -n -l"
           '; then
@@ -589,6 +592,9 @@ jobs:
     env:
       DOCKER_BUILDKIT: "1"
       COMPOSE_DOCKER_CLI_BUILD: "1"
+      # The Azure Ubuntu mirror next to GitHub's runners, for the server
+      # image's packages.
+      APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
