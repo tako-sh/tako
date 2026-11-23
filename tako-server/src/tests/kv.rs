@@ -640,3 +640,39 @@ async fn kv_stores_reopen_with_their_data_after_a_restart() {
     let status = ok(&state, Command::DatabaseStatus { name: None }).await;
     assert_eq!(status["databases"][0]["engine"], "kv");
 }
+
+#[tokio::test]
+async fn kv_stores_snapshot_again_when_their_backup_destination_moves() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    ok(
+        &state,
+        Command::CreateDatabase {
+            name: "moving".into(),
+            engine: DatabaseEngine::Kv,
+            generation: GENERATION.into(),
+            backup_key_base64: BASE64.encode([7u8; 32]),
+            backup: Some(backup("kv-moving-old")),
+        },
+    )
+    .await;
+    put(&state, "moving", "k", "1", None).await;
+    let release = || Command::SnapshotDatabase {
+        name: "moving".into(),
+        reason: tako_core::SnapshotReason::Release,
+        app: None,
+    };
+    assert!(ok(&state, release()).await["snapshot"].is_object());
+    assert!(ok(&state, release()).await["skipped"].is_string());
+    // The new destination has no snapshot yet, though the store is idle.
+    ok(
+        &state,
+        Command::ConfigureDatabaseBackup {
+            name: "moving".into(),
+            backup: Some(backup("kv-moving-new")),
+        },
+    )
+    .await;
+    let moved = ok(&state, release()).await;
+    assert!(moved["snapshot"].is_object(), "{moved}");
+}

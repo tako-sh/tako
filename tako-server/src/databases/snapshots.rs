@@ -1173,7 +1173,11 @@ fn orphaned_data(objects: &[(ObjectPath, i64)], now: i64) -> Vec<ObjectPath> {
         .iter()
         .filter(|(key, modified)| {
             key.filename()
-                .and_then(|name| name.strip_suffix(".sqlite.zst.enc"))
+                .and_then(|name| {
+                    // Either engine's data: SQLite copies or KV exports.
+                    name.strip_suffix(".sqlite.zst.enc")
+                        .or_else(|| name.strip_suffix(".redb.zst.enc"))
+                })
                 .is_some_and(|id| !manifests.contains(id))
                 && now.saturating_sub(*modified) >= ORPHAN_AGE_SECS
         })
@@ -1473,19 +1477,21 @@ async fn replace_kv_locked(
             stored.name
         ));
     }
-    let changed = state.databases.kv.has_changes(&id);
     let previous = state
         .databases
         .database_dir(&stored.name)
         .join("previous.redb");
-    {
+    // Whether the replaced contents need a backup is read in the store's
+    // writer as it exports them, so a write racing the replace counts.
+    let changed = {
         let kv = state.databases.kv.clone();
         let previous = previous.clone();
         tokio::task::spawn_blocking(move || kv.import(&id, &replacement, Some(&previous)))
             .await
             .map_err(|e| e.to_string())?
-            .map_err(|e| format!("replace KV store {}: {e}", stored.name))?;
-    }
+            .map_err(|e| format!("replace KV store {}: {e}", stored.name))?
+            .previous_changed
+    };
     let mut warnings = Vec::new();
     let Some(backup) = stored.secrets.backup.clone().filter(|_| changed) else {
         return Ok(warnings);
@@ -1741,10 +1747,14 @@ mod tests {
             (key("4-d.json"), 0),
             // Something else written under the prefix.
             (key("notes.txt"), 0),
+            // A KV store's data, with and without its manifest.
+            (key("5-e.redb.zst.enc"), now - 2 * day),
+            (key("6-f.redb.zst.enc"), 0),
+            (key("6-f.json"), 0),
         ];
         assert_eq!(
             orphaned_data(&objects, now),
-            vec![key("2-b.sqlite.zst.enc")]
+            vec![key("2-b.sqlite.zst.enc"), key("5-e.redb.zst.enc")]
         );
     }
 

@@ -18,4 +18,4 @@ pub use host::{
     hash_token,
 };
 pub use peer::serve_peers;
-pub use store::{Clock, KEY_OVERHEAD, Stats, StoreError, system_clock};
+pub use store::{Clock, KEY_OVERHEAD, Replaced, Stats, StoreError, system_clock};

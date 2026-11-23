@@ -160,7 +160,7 @@ fn exports_round_trip_into_another_store_and_skip_expired_keys() {
     let other = fixture(1 << 30);
     other.put("old", "1", None).unwrap();
     other.advance(5_000);
-    let imported = other.store.replace_from(&export, None).unwrap();
+    let imported = other.store.replace_from(&export, None).unwrap().stats;
     // `short` expired before the import; `old` was replaced.
     assert_eq!(imported.keys, 2_501);
     assert_eq!(other.get("old"), None);
@@ -253,12 +253,25 @@ fn snapshots_track_changes_and_replaces_keep_what_they_replace() {
 
     // Restoring the snapshot exports the exact contents it replaces.
     let previous = f.dir.path().join("previous.redb");
-    f.store.replace_from(&snapshot, Some(&previous)).unwrap();
+    let replaced = f.store.replace_from(&snapshot, Some(&previous)).unwrap();
+    assert!(
+        replaced.previous_changed,
+        "`new` was written after the snapshot"
+    );
     assert!(f.store.has_changes());
     assert_eq!(f.get("new"), None);
     assert_eq!(f.get("kept").as_deref(), Some("1"));
     let other = fixture(1 << 30);
-    other.store.replace_from(&previous, None).unwrap();
+    other
+        .store
+        .snapshot_to(&other.dir.path().join("s.redb"))
+        .unwrap();
+    // Unchanged since its snapshot, so its contents need no backup copy.
+    let replaced = other
+        .store
+        .replace_from(&previous, Some(&other.dir.path().join("p.redb")))
+        .unwrap();
+    assert!(!replaced.previous_changed);
     assert_eq!(other.get("new").as_deref(), Some("2"));
     assert_eq!(other.get("kept").as_deref(), Some("1"));
 }

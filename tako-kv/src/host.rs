@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use tako_core::{ErrorCode, KvRequest, Response};
 
 use crate::peer::{PeerPool, PeerRequest};
-use crate::store::{Clock, Stats, Store, StoreConfig, StoreError, system_clock};
+use crate::store::{Clock, Replaced, Stats, Store, StoreConfig, StoreError, system_clock};
 
 /// A store's identifier: its name, unique within a network.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -489,7 +489,7 @@ impl KvHost {
         id: &StoreId,
         path: &Path,
         previous: Option<&Path>,
-    ) -> Result<Stats, HostError> {
+    ) -> Result<Replaced, HostError> {
         let store = self
             .store(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;

@@ -157,6 +157,16 @@ fn read_stats<T: ReadableTable<&'static str, u64>>(meta: &T) -> Result<Stats> {
     })
 }
 
+/// The result of [`Store::replace_from`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replaced {
+    /// Totals of the new contents.
+    pub stats: Stats,
+    /// Whether the replaced contents differed from the last snapshot, read
+    /// with no write in between, so a backup of them is needed.
+    pub previous_changed: bool,
+}
+
 /// What a key is charged.
 pub(crate) fn weight(key: &str, json_len: usize) -> u64 {
     KEY_OVERHEAD + key.len() as u64 + json_len as u64
@@ -215,7 +225,7 @@ enum Work {
 enum Outcome {
     Done,
     Deleted(bool),
-    Replaced(Stats),
+    Replaced(Replaced),
 }
 
 struct Job {
@@ -378,14 +388,14 @@ impl Store {
     /// one transaction: readers see the old contents or the new ones.
     /// Entries already expired are skipped. With `previous`, the contents
     /// being replaced are exported there first, with no write in between.
-    pub fn replace_from(&self, path: &Path, previous: Option<&Path>) -> Result<Stats> {
+    pub fn replace_from(&self, path: &Path, previous: Option<&Path>) -> Result<Replaced> {
         // Checked before queueing, so a bad file never holds up writes.
         export::Reader::open(path)?.check()?;
         match self.submit(Work::Replace {
             path: path.to_owned(),
             previous: previous.map(Path::to_owned),
         })? {
-            Outcome::Replaced(stats) => Ok(stats),
+            Outcome::Replaced(replaced) => Ok(replaced),
             _ => Err(StoreError::Storage("unexpected reply to a replace".into())),
         }
     }
@@ -756,7 +766,7 @@ fn writer(
         let (works, replies): (Vec<_>, Vec<_>) =
             batch.into_iter().map(|job| (job.work, job.reply)).unzip();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply(&db, &works, sweep, &config)
+            apply(&db, &works, sweep, &config, &changed)
         }))
         .unwrap_or_else(|_| Err(StoreError::Storage("internal error".into())));
         match result {
@@ -822,6 +832,7 @@ fn apply(
     works: &[Work],
     sweep: bool,
     config: &StoreConfig,
+    changed: &AtomicBool,
 ) -> Result<(Vec<Result<Outcome>>, bool)> {
     let txn = db.begin_write().map_err(storage)?;
     let now = (config.clock)();
@@ -841,11 +852,16 @@ fn apply(
                 // Runs in a batch of its own, so its errors fail only it.
                 Work::Replace { path, previous } => {
                     // Nothing else writes meanwhile, so the last commit is
-                    // exactly what the replace removes.
+                    // exactly what the replace removes. Every write before
+                    // it already set the flag, as this thread commits them.
+                    let previous_changed = changed.load(Ordering::Relaxed);
                     if let Some(previous) = previous {
                         export_database(db, previous, now)?;
                     }
-                    Ok(Outcome::Replaced(w.replace(path, config.max_bytes, now)?))
+                    Ok(Outcome::Replaced(Replaced {
+                        stats: w.replace(path, config.max_bytes, now)?,
+                        previous_changed,
+                    }))
                 }
             });
         }

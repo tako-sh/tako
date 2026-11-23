@@ -1260,10 +1260,8 @@ impl ServerState {
             // The cached status describes the previous destination, and the
             // new one needs a snapshot even if the database is idle.
             self.databases.backups.lock().remove(id);
-            if secrets.backup.is_some()
-                && let Ok(database) = DatabaseId::parse(id)
-            {
-                self.databases.host.mark_changed(&database);
+            if secrets.backup.is_some() {
+                snapshots::mark_changed(self, &stored);
             }
         }
         let updated = self.hosted_database(id)?;
