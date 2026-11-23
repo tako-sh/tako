@@ -264,6 +264,37 @@ async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn large_segments_upload_in_parts_and_restore() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let database = dir.path().join("app.sqlite");
+    let spool = dir.path().join("spool");
+    let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
+    // Every segment counts as large here, in parts of 1 KiB.
+    let replica = replica(remote.clone())?.with_multipart(0, 1024);
+    let mut writer = Process::start("writer", &database, &spool)?;
+    writer.request(&inserts(1, 200))?;
+    let mut capture = Capture::open(&database, &spool, 0)?;
+    capture.snapshot()?;
+    writer.request(&inserts(201, 210))?;
+    capture.sync()?;
+    remote.calls.lose_ack.store(true, Ordering::SeqCst);
+    assert!(replica.upload(&spool).await.is_err());
+    // The retry finds the first segment written and compares it.
+    replica.upload(&spool).await?;
+    assert!(Replica::uploaded(&spool)?);
+    assert!(
+        remote.calls.puts.load(Ordering::SeqCst) > 2,
+        "the segments went up in parts"
+    );
+    drop(capture);
+    drop(writer);
+    let output = dir.path().join("out.sqlite");
+    restore(&replica, Target::Latest, &output).await?;
+    verify(&output, 210)?;
+    Ok(())
+}
+
 fn chrono_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

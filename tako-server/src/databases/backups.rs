@@ -33,7 +33,8 @@ const HOUSEKEEPING_TICKS: u64 = 6;
 const CONCURRENCY: usize = 8;
 /// Without known changes, capture still looks at the database this often.
 const IDLE_SYNC: Duration = Duration::from_secs(60);
-/// Longest an upload of pending captures may take before it is retried.
+/// Longest an upload of pending captures may take before it is retried,
+/// beyond the time its size needs (see `upload_timeout`).
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Longest a restore may take to find the transaction a time selects.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -678,7 +679,7 @@ async fn upload(
     if let Err(refused) = checked {
         return Err(refuse(state, stored, slot, refused));
     }
-    let uploading = with_deadline(UPLOAD_TIMEOUT, async {
+    let uploading = with_deadline(upload_timeout(&spool, &pending), async {
         replica
             .upload(&spool)
             .await
@@ -751,6 +752,18 @@ async fn upload(
         slot.open.as_mut().expect("still open").checked = true;
     }
     Ok(())
+}
+
+/// How long an upload of `pending` may take: [`UPLOAD_TIMEOUT`], plus time
+/// for its bytes at 4 MiB/s, so a large full image is not cut off.
+fn upload_timeout(spool: &Path, pending: &[tako_backup::Segment]) -> Duration {
+    let store = tako_backup::Spool::new(spool);
+    let bytes: u64 = pending
+        .iter()
+        .filter_map(|segment| std::fs::metadata(store.path(segment)).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    UPLOAD_TIMEOUT + Duration::from_secs(bytes / (4 << 20))
 }
 
 /// Stops capture of a fenced copy, which would otherwise keep filling its

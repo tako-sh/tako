@@ -25,13 +25,15 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt, stream};
-use object_store::{GetOptions, ObjectStore, PutMode, PutOptions, path::Path as ObjectPath};
+use object_store::{
+    GetOptions, ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path as ObjectPath,
+};
 use tempfile::NamedTempFile;
 use terse_litestream::{Database, Durability, FileStore, Options, SegmentWriter};
 
 pub mod encryption;
 pub use anyhow;
-pub use terse_litestream::{ReplicaStore, Segment};
+pub use terse_litestream::{FileStore as Spool, ReplicaStore, Segment};
 
 /// How often a changed database is captured and uploaded. Idle databases
 /// make no remote requests.
@@ -51,6 +53,12 @@ pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const OWNER_JUMP: u64 = 1 << 32;
 /// Segments downloaded at once by a restore.
 const DOWNLOADS: usize = 8;
+/// Segments larger than this are uploaded in parts: single requests are
+/// limited to 5 GiB on S3 and R2.
+pub const MULTIPART_THRESHOLD: u64 = 1 << 30;
+/// The size of each part of a multipart upload; 10,000 parts of it reach
+/// 640 GiB.
+pub const PART_BYTES: usize = 64 << 20;
 
 /// One capture owner for an existing SQLite database in WAL mode. Run its
 /// methods on a blocking worker.
@@ -284,8 +292,11 @@ pub struct Pruned {
 pub struct Replica {
     /// Encrypts segments; markers go to `raw`.
     store: Arc<dyn ObjectStore>,
+    encrypted: Arc<encryption::EncryptedStore>,
     raw: Arc<dyn ObjectStore>,
     prefix: ObjectPath,
+    multipart_threshold: u64,
+    part_bytes: usize,
 }
 
 impl Replica {
@@ -293,12 +304,26 @@ impl Replica {
     /// every segment, so a segment cannot be substituted from elsewhere.
     pub fn new(raw: Arc<dyn ObjectStore>, prefix: &str, key: encryption::Key) -> Result<Self> {
         let prefix = ObjectPath::parse(prefix)?;
-        let store: Arc<dyn ObjectStore> = Arc::new(encryption::EncryptedStore::new(
+        let encrypted = Arc::new(encryption::EncryptedStore::new(
             raw.clone(),
             vec![key],
             prefix.to_string(),
         )?);
-        Ok(Self { store, raw, prefix })
+        Ok(Self {
+            store: encrypted.clone(),
+            encrypted,
+            raw,
+            prefix,
+            multipart_threshold: MULTIPART_THRESHOLD,
+            part_bytes: PART_BYTES,
+        })
+    }
+
+    /// Uploads segments larger than `threshold` in parts of `part_bytes`.
+    pub fn with_multipart(mut self, threshold: u64, part_bytes: usize) -> Self {
+        self.multipart_threshold = threshold;
+        self.part_bytes = part_bytes;
+        self
     }
 
     pub fn prefix(&self) -> &ObjectPath {
@@ -433,16 +458,35 @@ impl Replica {
             })
             .await??
         };
-        let options = PutOptions {
-            mode: PutMode::Create,
-            ..Default::default()
+        let stored = if bytes.len() as u64 > self.multipart_threshold {
+            // A multipart write cannot be create-only, so an existing object
+            // is looked for first. Two owners never write one key (see
+            // `OWNER_JUMP` and the callers' holder checks); this catches a
+            // retry after a lost acknowledgement.
+            match self.raw.head(&key).await {
+                Ok(_) => Err(object_store::Error::AlreadyExists {
+                    path: key.to_string(),
+                    source: "the segment was uploaded before".into(),
+                }),
+                Err(object_store::Error::NotFound { .. }) => self
+                    .encrypted
+                    .put_sealed_in_parts(&key, bytes.clone().into(), self.part_bytes)
+                    .await
+                    .map(|_| ()),
+                Err(error) => Err(error),
+            }
+        } else {
+            let options = PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            };
+            self.store
+                .put_opts(&key, bytes.clone().into(), options)
+                .await
+                .map(|_| ())
         };
-        match self
-            .store
-            .put_opts(&key, bytes.clone().into(), options)
-            .await
-        {
-            Ok(_) => {}
+        match stored {
+            Ok(()) => {}
             Err(object_store::Error::AlreadyExists { .. }) => {
                 let existing = self
                     .store

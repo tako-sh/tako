@@ -164,7 +164,7 @@ A fresh deploy creates no full-directory backup.
 
 Manual archives require temporary space for the snapshot, compressed archive, and encrypted archive, plus a disk reserve. They are not a transactionally consistent snapshot across multiple databases or arbitrary files being modified concurrently. Coordinate app writes when that consistency is required. Application processes outside Tako's supervision must stop before a restore.
 
-A database restore needs free space for about three times what it downloads plus 256 MiB on the server's data disk, counting the space other restores and transfers in progress on that server still hold. Until storage accepts them, captures wait on the server's disk. The server uploads for up to eight databases at once, so one whose storage is slow does not hold up the others. A failed upload is retried with backoff, at most 15 minutes apart, and reported by `tako sqlite status`. A full snapshot is uploaded as one object, which limits a database to about 5 GiB on S3 and R2.
+A database restore needs free space for about three times what it downloads plus 256 MiB on the server's data disk, counting the space other restores and transfers in progress on that server still hold. Until storage accepts them, captures wait on the server's disk. The server uploads for up to eight databases at once, giving each upload time for its size, so one whose storage is slow does not hold up the others. A failed upload is retried with backoff, at most 15 minutes apart, and reported by `tako sqlite status`.
 
 ## Verify recovery
 

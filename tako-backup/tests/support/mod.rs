@@ -172,7 +172,11 @@ impl ObjectStore for Remote {
         options: PutMultipartOptions,
     ) -> StoreResult<Box<dyn MultipartUpload>> {
         self.calls.puts.fetch_add(1, Ordering::SeqCst);
-        self.inner.put_multipart_opts(path, options).await
+        let inner = self.inner.put_multipart_opts(path, options).await?;
+        Ok(Box::new(Upload {
+            inner,
+            calls: Arc::clone(&self.calls),
+        }))
     }
 
     fn delete_stream(
@@ -199,5 +203,32 @@ impl ObjectStore for Remote {
         options: CopyOptions,
     ) -> StoreResult<()> {
         self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// Counts parts and can lose the acknowledgement of a completed upload.
+#[derive(Debug)]
+struct Upload {
+    inner: Box<dyn MultipartUpload>,
+    calls: Arc<Calls>,
+}
+
+#[async_trait]
+impl MultipartUpload for Upload {
+    fn put_part(&mut self, data: PutPayload) -> object_store::UploadPart {
+        self.calls.puts.fetch_add(1, Ordering::SeqCst);
+        self.inner.put_part(data)
+    }
+
+    async fn complete(&mut self) -> StoreResult<PutResult> {
+        let result = self.inner.complete().await?;
+        if fault(&self.calls.lose_ack) {
+            return Err(upload_error());
+        }
+        Ok(result)
+    }
+
+    async fn abort(&mut self) -> StoreResult<()> {
+        self.inner.abort().await
     }
 }

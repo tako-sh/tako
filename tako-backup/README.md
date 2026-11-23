@@ -24,7 +24,11 @@ Under a database's prefix (`_tako/databases/<name>/<generation>/`):
 
 Segments are created only where none exists. An existing object is
 downloaded and compared before it is accepted, so a lost acknowledgement is
-retried safely and a conflicting writer is detected.
+retried safely and a conflicting writer is detected. Segments over 1 GiB go
+up in 64 MiB parts, since single requests are limited to 5 GiB. A multipart
+write cannot be conditional, so for those an existing object is looked for
+first; two owners never write one key, because a new owner starts above the
+history and a fenced one stops uploading.
 
 ## Behavior
 

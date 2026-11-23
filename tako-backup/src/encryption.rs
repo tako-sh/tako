@@ -201,6 +201,48 @@ pub struct EncryptedStore {
 }
 
 impl EncryptedStore {
+    /// Seals `payload` like a PUT does, then uploads it in parts of
+    /// `part_bytes`, for objects too large for one request. Multipart
+    /// writes cannot be made conditional here, so unlike `put_opts` with
+    /// [`PutMode::Create`](object_store::PutMode::Create) this replaces an
+    /// existing object; the caller checks for one first.
+    pub async fn put_sealed_in_parts(
+        &self,
+        path: &ObjectPath,
+        payload: PutPayload,
+        part_bytes: usize,
+    ) -> object_store::Result<()> {
+        let key = self
+            .keys
+            .last()
+            .ok_or_else(|| error(anyhow::anyhow!("replica encryption key is missing")))?
+            .clone();
+        let context = self.context(path);
+        let sealed = tokio::task::spawn_blocking(move || seal_payload(&key, &context, payload))
+            .await
+            .map_err(error)?
+            .map_err(error)?;
+        let mut upload = self
+            .inner
+            .put_multipart_opts(path, PutMultipartOptions::default())
+            .await?;
+        let part_bytes = part_bytes.max(1);
+        let uploaded = async {
+            let mut offset = 0;
+            while offset < sealed.len() {
+                let end = (offset + part_bytes).min(sealed.len());
+                upload.put_part(sealed.slice(offset..end).into()).await?;
+                offset = end;
+            }
+            upload.complete().await.map(|_| ())
+        }
+        .await;
+        if uploaded.is_err() {
+            let _ = upload.abort().await;
+        }
+        uploaded
+    }
+
     pub fn new(inner: Arc<dyn ObjectStore>, keys: Vec<Key>, domain: String) -> Result<Self> {
         ensure!(!keys.is_empty(), "replica encryption key is missing");
         Ok(Self {
