@@ -1889,7 +1889,7 @@ async fn replace_inner(
         .database_dir(&stored.name)
         .join("previous.sqlite");
     let swapped = tokio::task::spawn_blocking(move || {
-        prepare_runtime_state(&replacement)
+        prepare_runtime_state(&path, &replacement)
             .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
         tako_db::replace_database(&path, &replacement, &previous)
     })
@@ -1936,12 +1936,24 @@ async fn replace_inner(
 /// claimed them before the replacement cannot save steps or finish them,
 /// and the runs are claimed again from their last step saved in the new
 /// contents.
-fn prepare_runtime_state(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn prepare_runtime_state(current: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use rusqlite::{Connection, OpenFlags, config::DbConfig};
 
+    // Workflow runtimes keep their store open across the swap and create its
+    // tables only when they open it, so a copy without them must get them.
+    let workflow_store = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+               WHERE type = 'table' AND name = 'tako_workflow_meta')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
+    if workflow_store {
+        db.execute_batch(&tako_workflows::enqueue::schema_sql())?;
+    }
     let has_columns = |table: &str, columns: &[&str]| -> rusqlite::Result<bool> {
         let placeholders = vec!["?"; columns.len()].join(", ");
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&table, &table];
@@ -1989,7 +2001,7 @@ fn prepare_runtime_state(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
             [],
         )?;
     }
-    if replay || workflows {
+    if replay || workflows || workflow_store {
         // The swap moves only the main file; make the changes durable in it.
         let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
         if busy != 0 {

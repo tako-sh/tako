@@ -243,6 +243,55 @@ async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
 }
 
 #[tokio::test]
+async fn resetting_a_workflow_database_keeps_its_workflow_tables() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    // A workflow runtime created the tables when it opened the store.
+    query(
+        &state,
+        ID,
+        "CREATE TABLE tako_workflow_meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
+    )
+    .await;
+    ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    // Runtimes keep their store open, so the reset copy has the tables
+    // already, and its schema version.
+    let version = query(
+        &state,
+        ID,
+        "SELECT value FROM tako_workflow_meta WHERE name = 'schema_version'",
+    )
+    .await;
+    assert_eq!(version["rows"].as_array().unwrap().len(), 1, "{version}");
+    let runs = query(&state, ID, "SELECT count(*) FROM tako_workflow_runs").await;
+    assert_eq!(runs["rows"][0][0], 0, "{runs}");
+
+    // A database that never held workflows stays empty.
+    let plain = "plain-reset";
+    create(&state, plain, None).await;
+    ok(
+        &state,
+        Command::ResetDatabase {
+            name: plain.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    let tables = query(&state, plain, "SELECT count(*) FROM sqlite_schema").await;
+    assert_eq!(tables["rows"][0][0], 0, "{tables}");
+}
+
+#[tokio::test]
 async fn restoring_releases_running_workflows_within_their_attempt_limits() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

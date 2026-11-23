@@ -14,6 +14,7 @@
 //! `app`.
 
 mod schema;
+pub(in crate::enqueue) use schema::batch as schema_batch;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]

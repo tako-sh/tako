@@ -98,6 +98,18 @@ const TABLES: &[&str] = &[
     ) STRICT",
 ];
 
+/// [`init`] as one SQL batch, for a server writing the tables into a
+/// database file directly.
+pub(in crate::enqueue) fn batch() -> String {
+    let mut sql = TABLES.join(";\n");
+    sql.push_str(&format!(
+        ";\nINSERT INTO tako_workflow_meta (name, value)
+         VALUES ('schema_version', {VERSION}), ('schedule_revision', 0)
+         ON CONFLICT (name) DO NOTHING;"
+    ));
+    sql
+}
+
 /// Idempotent: creates missing tables and records the schema version.
 pub(super) fn init() -> Vec<Statement> {
     let mut statements: Vec<_> = TABLES
