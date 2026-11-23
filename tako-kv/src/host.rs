@@ -1,20 +1,22 @@
-//! The KV host: stores on this server, who may use them, and where the
-//! stores of other servers' apps live.
+//! The KV host: stores on this server, which app environments bind them,
+//! and where the stores of this server's apps live.
+//!
+//! Apps call through the server's internal socket with their binding's
+//! token. The host serves a store it holds, or forwards the request to the
+//! store's server over the private network ([`crate::peer`]), which checks
+//! the environment's grant there.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use bytes::Bytes;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tako_core::{ErrorCode, KvRequest, Response};
 
-use crate::command::{self, Class, Limits};
-use crate::resp::Reply;
+use crate::peer::{PeerPool, PeerRequest};
 use crate::store::{Clock, Stats, Store, StoreConfig, StoreError, system_clock};
 
 /// A store's identifier: its name, unique within a network.
@@ -57,8 +59,7 @@ pub fn hash_token(token: &str) -> TokenHash {
     Sha256::digest(token.as_bytes()).into()
 }
 
-/// Generates a binding token: 32 random bytes, hex encoded, so it can sit in
-/// a `redis://` URL unescaped.
+/// Generates a binding token: 32 random bytes, hex encoded.
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("operating system random source");
@@ -69,29 +70,12 @@ pub fn generate_token() -> String {
 pub struct HostConfig {
     /// Bytes of data one store may hold; see [`StoreConfig::max_bytes`].
     pub max_store_bytes: u64,
-    /// Longest key or hash field.
-    pub max_key_bytes: usize,
-    /// Longest string or hash field value.
-    pub max_value_bytes: usize,
-    /// Largest single command.
-    pub max_request_bytes: usize,
-    /// Largest single reply.
-    pub max_reply_bytes: usize,
-    /// Request bytes buffered across all connections beyond each one's
-    /// first 64 KiB.
-    pub max_buffered_bytes: usize,
-    /// Reply bytes buffered across all connections beyond each one's first
-    /// 64 KiB, while they wait to be sent.
-    pub max_buffered_reply_bytes: usize,
-    /// Open connections per listener.
-    pub max_connections: usize,
-    /// How long a request waits for buffer space, and a reply for the
-    /// client to read it, before the connection closes.
-    pub stall_timeout: Duration,
     /// redb page cache per store.
     pub cache_bytes: usize,
     /// How long forwarding waits to reach another server.
     pub connect_timeout: Duration,
+    /// How long a forwarded request waits for its reply.
+    pub request_timeout: Duration,
     pub clock: Clock,
 }
 
@@ -99,35 +83,19 @@ impl Default for HostConfig {
     fn default() -> Self {
         Self {
             max_store_bytes: 1024 * 1024 * 1024,
-            max_key_bytes: 64 * 1024,
-            max_value_bytes: 16 * 1024 * 1024,
-            max_request_bytes: 32 * 1024 * 1024,
-            max_reply_bytes: 64 * 1024 * 1024,
-            max_buffered_bytes: 256 * 1024 * 1024,
-            max_buffered_reply_bytes: 256 * 1024 * 1024,
-            max_connections: 4096,
-            stall_timeout: Duration::from_secs(30),
             cache_bytes: 16 * 1024 * 1024,
             connect_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(30),
             clock: system_clock(),
         }
     }
 }
 
 impl HostConfig {
-    pub(crate) fn limits(&self) -> Limits {
-        Limits {
-            max_key_bytes: self.max_key_bytes,
-            max_value_bytes: self.max_value_bytes,
-        }
-    }
-
     fn store_config(&self) -> StoreConfig {
         StoreConfig {
             max_bytes: self.max_store_bytes,
-            limits: self.limits(),
             cache_bytes: self.cache_bytes,
-            max_reply_bytes: self.max_reply_bytes,
             clock: self.clock.clone(),
         }
     }
@@ -176,23 +144,6 @@ struct Grant {
     key_hash: TokenHash,
 }
 
-/// What a connection's credentials resolve to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Resolved {
-    Serve(StoreId),
-    Forward(Forward),
-    Unavailable(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Forward {
-    pub store: StoreId,
-    pub upstream: SocketAddr,
-    /// The app environment, without a temporary scope's suffix.
-    pub scope: String,
-    pub key: String,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     #[error("KV store {0} is not hosted on this server")]
@@ -201,33 +152,67 @@ pub enum HostError {
     AlreadyRegistered(StoreId),
     #[error("{0}")]
     Store(#[from] StoreError),
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
 }
 
-pub(crate) struct Inner {
-    pub(crate) config: HostConfig,
+/// Why a KV call failed, as the internal socket reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KvError {
+    pub code: Option<ErrorCode>,
+    pub message: String,
+}
+
+pub(crate) const NOT_SERVED: &str = "This server is not serving the KV store right now; retry.";
+const REBOUND: &str = "This app's KV binding changed or was removed; the app's processes restart with the new one.";
+pub(crate) const REFUSED: &str = "The KV store's server refused this app. Deploy the environment with full access to grant it.";
+
+impl KvError {
+    pub fn new(code: Option<ErrorCode>, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new(Some(ErrorCode::InvalidRequest), message)
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(Some(ErrorCode::Unavailable), message)
+    }
+
+    pub fn into_response(self) -> Response {
+        match self.code {
+            Some(code) => Response::coded_error(code, self.message),
+            None => Response::error(self.message),
+        }
+    }
+}
+
+impl From<StoreError> for KvError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Full { .. } => Self::new(Some(ErrorCode::KvStoreFull), error.to_string()),
+            StoreError::Closed => Self::unavailable(NOT_SERVED),
+            StoreError::Invalid(message) => Self::invalid(message),
+            StoreError::Storage(message) => Self::new(None, format!("KV storage error: {message}")),
+        }
+    }
+}
+
+struct Inner {
+    config: HostConfig,
     stores: RwLock<HashMap<StoreId, Arc<Store>>>,
     bindings: RwLock<HashMap<String, Vec<Binding>>>,
     by_token: RwLock<HashMap<TokenHash, (String, Binding)>>,
     remote_grants: RwLock<HashMap<String, Grant>>,
-    /// Request bytes buffered beyond each connection's base buffer.
-    pub(crate) buffered: Arc<Semaphore>,
-    /// Reply bytes buffered beyond each connection's base allowance.
-    pub(crate) replies: Arc<Semaphore>,
-    /// Open connections, for `CLIENT LIST`.
-    pub(crate) clients: Mutex<HashMap<u64, Arc<crate::server::ClientEntry>>>,
-    /// Counts `close_all` calls; connections close when it changes.
-    pub(crate) closings: tokio::sync::watch::Sender<u64>,
-    pub(crate) next_client: AtomicU64,
-    pub(crate) connected: AtomicUsize,
-    pub(crate) started: Instant,
+    peers: PeerPool,
 }
 
 /// The KV host. Cheap to clone.
 #[derive(Clone)]
 pub struct KvHost {
-    pub(crate) inner: Arc<Inner>,
+    inner: Arc<Inner>,
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -243,24 +228,25 @@ fn environment_scope(scope: &str) -> &str {
         .map_or(scope, |(environment, _)| environment)
 }
 
+/// A value reply: the JSON text, or null.
+fn reply(value: Option<Vec<u8>>) -> serde_json::Value {
+    match value {
+        Some(json) => serde_json::Value::String(String::from_utf8_lossy(&json).into_owned()),
+        None => serde_json::Value::Null,
+    }
+}
+
 impl KvHost {
     pub fn new(config: HostConfig) -> Self {
-        let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
-        let replies = Arc::new(Semaphore::new(config.max_buffered_reply_bytes));
+        let peers = PeerPool::new(config.connect_timeout, config.request_timeout);
         Self {
             inner: Arc::new(Inner {
                 config,
-                stores: RwLock::new(HashMap::new()),
-                bindings: RwLock::new(HashMap::new()),
-                by_token: RwLock::new(HashMap::new()),
-                remote_grants: RwLock::new(HashMap::new()),
-                buffered,
-                replies,
-                clients: Mutex::new(HashMap::new()),
-                closings: tokio::sync::watch::Sender::new(0),
-                next_client: AtomicU64::new(1),
-                connected: AtomicUsize::new(0),
-                started: Instant::now(),
+                stores: RwLock::default(),
+                bindings: RwLock::default(),
+                by_token: RwLock::default(),
+                remote_grants: RwLock::default(),
+                peers,
             }),
         }
     }
@@ -297,31 +283,29 @@ impl KvHost {
         self.store(id).map(|store| store.path().to_owned())
     }
 
-    pub(crate) fn store(&self, id: &StoreId) -> Option<Arc<Store>> {
+    fn store(&self, id: &StoreId) -> Option<Arc<Store>> {
         self.inner.stores.read().get(id).cloned()
     }
 
     /// Stops serving a store and closes its file once queued writes finish.
-    /// Connections using it get errors until they reconnect.
-    pub async fn unregister(&self, id: &StoreId) -> Result<(), HostError> {
+    /// Calls to it get errors until it is registered again. Blocks.
+    pub fn unregister(&self, id: &StoreId) -> Result<(), HostError> {
         let store = self
             .inner
             .stores
             .write()
             .remove(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
-        store.close().await;
+        store.close();
         Ok(())
     }
 
     /// Stops serving every store, as when a reloaded process takes over.
-    /// Connections close after their current command, so clients reconnect
-    /// to the process that serves the stores now.
-    pub async fn close_all(&self) {
-        self.inner.closings.send_modify(|count| *count += 1);
+    /// Blocks.
+    pub fn close_all(&self) {
         let stores: Vec<Arc<Store>> = self.inner.stores.write().drain().map(|(_, s)| s).collect();
         for store in stores {
-            store.close().await;
+            store.close();
         }
     }
 
@@ -359,23 +343,9 @@ impl KvHost {
         }
     }
 
-    pub(crate) fn resolve_token(&self, hash: &TokenHash) -> Option<Resolved> {
-        let (scope, binding) = self.inner.by_token.read().get(hash).cloned()?;
-        Some(match binding.home {
-            Home::Local => Resolved::Serve(binding.store),
-            Home::Remote { upstream, key } => Resolved::Forward(Forward {
-                store: binding.store,
-                upstream,
-                scope: environment_scope(&scope).to_owned(),
-                key,
-            }),
-            Home::Unavailable { reason } => Resolved::Unavailable(reason),
-        })
-    }
-
     /// Whether another server may act for `scope` on `store`. Both the
-    /// source address (checked by the listener) and the grant's key must
-    /// match: any process on a server can reach the peer port from its
+    /// source address (checked by the peer listener) and the grant's key
+    /// must match: any process on a server can reach the peer port from its
     /// address, but only that server knows the key.
     pub(crate) fn granted(&self, scope: &str, store: &StoreId, key: &str) -> bool {
         let presented = hash_token(key);
@@ -388,59 +358,110 @@ impl KvHost {
             })
     }
 
+    /// An app's call through the internal socket. `app` is the caller the
+    /// socket authenticated; `token` is one of its bindings. Blocks, and
+    /// may wait on another server.
+    pub fn call(
+        &self,
+        app: &str,
+        token: &str,
+        request: KvRequest,
+    ) -> Result<serde_json::Value, KvError> {
+        request.validate().map_err(KvError::invalid)?;
+        let (scope, binding) = self
+            .inner
+            .by_token
+            .read()
+            .get(&hash_token(token))
+            .cloned()
+            .ok_or_else(|| KvError::unavailable(REBOUND))?;
+        // A token is only good for the app environment it was issued to.
+        if environment_scope(&scope) != app {
+            return Err(KvError::unavailable(REBOUND));
+        }
+        match binding.home {
+            Home::Local => self.serve(&binding.store, request),
+            Home::Remote { upstream, key } => self.inner.peers.request(
+                upstream,
+                &PeerRequest {
+                    scope: environment_scope(&scope).to_owned(),
+                    grant: key,
+                    store: binding.store.as_str().to_owned(),
+                    request,
+                },
+            ),
+            Home::Unavailable { reason } => Err(KvError::unavailable(reason)),
+        }
+    }
+
+    /// A request another server forwarded for one of its app environments.
+    pub(crate) fn serve_peer(&self, peer: PeerRequest) -> Result<serde_json::Value, KvError> {
+        peer.request.validate().map_err(KvError::invalid)?;
+        let store = StoreId::parse(&peer.store).map_err(KvError::invalid)?;
+        if !self.granted(&peer.scope, &store, &peer.grant) {
+            return Err(KvError::new(None, REFUSED));
+        }
+        self.serve(&store, peer.request)
+    }
+
+    /// An administrator's call on a store this server hosts, for
+    /// `tako kv get|put|delete`. Blocks.
+    pub fn admin(&self, id: &StoreId, request: KvRequest) -> Result<serde_json::Value, KvError> {
+        request.validate().map_err(KvError::invalid)?;
+        self.serve(id, request)
+    }
+
+    fn serve(&self, id: &StoreId, request: KvRequest) -> Result<serde_json::Value, KvError> {
+        let store = self.store(id).ok_or_else(|| KvError::unavailable(NOT_SERVED))?;
+        match request {
+            KvRequest::Get { key } => Ok(reply(store.get(&key)?)),
+            KvRequest::Put { key, json, ttl_ms } => {
+                store.put(&key, json.into_bytes(), ttl_ms)?;
+                Ok(serde_json::Value::Null)
+            }
+            KvRequest::Delete { key } => {
+                store.delete(&key)?;
+                Ok(serde_json::Value::Null)
+            }
+        }
+    }
+
     /// The size of a store's file.
     pub fn size_bytes(&self, id: &StoreId) -> Option<u64> {
         let path = self.path(id)?;
         std::fs::metadata(path).ok().map(|meta| meta.len())
     }
 
-    /// Key counts and logical size of a store.
-    pub async fn stats(&self, id: &StoreId) -> Result<Stats, HostError> {
+    /// Key counts and charged size of a store.
+    pub fn stats(&self, id: &StoreId) -> Result<Stats, HostError> {
         let store = self
             .store(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
-        Ok(store.stats().await?)
+        Ok(store.stats()?)
     }
 
-    /// Runs one command with full access, for administrators. Transactions
-    /// and connection commands other than `PING`, `ECHO` and `TIME` are
-    /// refused.
-    pub async fn admin(&self, id: &StoreId, args: Vec<Bytes>) -> Result<Reply, HostError> {
+    /// Writes an export of a store this server hosts to `path`. Blocks.
+    pub fn export(&self, id: &StoreId, path: &Path) -> Result<Stats, HostError> {
         let store = self
             .store(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
-        if args.is_empty() {
-            return Ok(Reply::error("ERR empty command"));
-        }
-        let spec = match command::lookup(&args) {
-            Ok(spec) => spec,
-            Err(reply) => return Ok(reply),
-        };
-        if spec.class == Class::Connection {
-            return Ok(match spec.name {
-                "ping" => args
-                    .get(1)
-                    .cloned()
-                    .map_or(Reply::Simple("PONG".into()), Reply::Bulk),
-                "echo" => Reply::Bulk(args[1].clone()),
-                "time" => crate::server::time(&self.inner.config),
-                _ => Reply::Error(format!(
-                    "ERR {} is not available here; connect with a Redis client instead",
-                    spec.name.to_uppercase()
-                )),
-            });
-        }
-        let cmd = match command::parse(spec, &args, self.inner.config.limits()) {
-            Ok(cmd) => cmd,
-            Err(reply) => return Ok(reply),
-        };
-        let max_reply = self.inner.config.max_reply_bytes;
-        let mut ran = store.run(vec![cmd], max_reply).await?;
-        Ok(ran.replies.pop().unwrap_or(Reply::Nil))
+        Ok(store.export_to(path)?)
     }
 
-    /// Creates an empty store file.
+    /// Replaces a store's contents with the export at `path`. Blocks.
+    pub fn import(&self, id: &StoreId, path: &Path) -> Result<Stats, HostError> {
+        let store = self
+            .store(id)
+            .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
+        Ok(store.replace_from(path)?)
+    }
+
+    /// Creates an empty store file at `path`, closed again before this
+    /// returns.
     pub fn create_file(path: &Path) -> Result<(), HostError> {
         Ok(crate::store::create_file(path)?)
     }
 }
+
+#[cfg(test)]
+mod tests;

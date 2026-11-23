@@ -1,13 +1,14 @@
 //! KV stores hosted on one server: created and deleted like databases,
-//! bound alongside them, and served over the Redis protocol.
+//! bound alongside them, served to apps through the internal socket, and to
+//! other servers' apps through the peer port.
 
 use super::*;
 use crate::isolation::fixture::TestDataDir as TempDir;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
-use tako_core::{DatabaseBinding, DatabaseEngine};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tako_core::{DatabaseBinding, DatabaseEngine, KvRequest};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 const GENERATION: &str = "0123456789abcdef0123456789abcdef";
 
@@ -55,15 +56,32 @@ async fn create(state: &ServerState, name: &str, engine: DatabaseEngine) {
     .await;
 }
 
-async fn kv(state: &ServerState, name: &str, args: &[&str]) -> Value {
-    ok(
-        state,
-        Command::QueryKv {
+async fn query(state: &ServerState, name: &str, request: KvRequest) -> Response {
+    state
+        .handle_command(Command::QueryKv {
             name: name.into(),
-            args: args.iter().map(|a| a.to_string()).collect(),
-        },
-    )
-    .await
+            request,
+        })
+        .await
+}
+
+async fn get(state: &ServerState, name: &str, key: &str) -> Value {
+    match query(state, name, KvRequest::Get { key: key.into() }).await {
+        Response::Ok { data } => data,
+        Response::Error { message, .. } => panic!("expected a value, got: {message}"),
+    }
+}
+
+async fn put(state: &ServerState, name: &str, key: &str, json: &str, ttl_ms: Option<u64>) {
+    let request = KvRequest::Put {
+        key: key.into(),
+        json: json.into(),
+        ttl_ms,
+    };
+    match query(state, name, request).await {
+        Response::Ok { .. } => {}
+        Response::Error { message, .. } => panic!("expected the put to succeed, got: {message}"),
+    }
 }
 
 fn binding(name: &str, engine: DatabaseEngine) -> DatabaseBinding {
@@ -75,28 +93,44 @@ fn binding(name: &str, engine: DatabaseEngine) -> DatabaseBinding {
     }
 }
 
-/// Sends raw bytes and reads until `expected` bytes arrive or the server
-/// stops sending.
-async fn raw(stream: &mut tokio::net::TcpStream, send: &[u8], expected: usize) -> Vec<u8> {
-    stream.write_all(send).await.unwrap();
-    let mut got = Vec::new();
-    while got.len() < expected {
-        let mut chunk = [0u8; 4096];
-        match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut chunk)).await {
-            Ok(Ok(n)) if n > 0 => got.extend_from_slice(&chunk[..n]),
-            _ => break,
-        }
-    }
-    got
-}
-
-/// Serves the state's KV host on a port of the test's own, rather than the
-/// shared default port other tests' listeners also bind.
-async fn listen(state: &ServerState, access: tako_kv::Access) -> std::net::SocketAddr {
+/// Serves the state's KV host to loopback peers on a port of the test's own.
+async fn listen_peers(state: &ServerState) -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(tako_kv::serve(state.databases.kv.clone(), listener, access));
+    tokio::spawn(tako_kv::serve_peers(
+        state.databases.kv.clone(),
+        listener,
+        Arc::new(|ip: std::net::IpAddr| ip.is_loopback()),
+    ));
     address
+}
+
+/// Sends one forwarded request as another server would and reads the reply.
+async fn forward(address: std::net::SocketAddr, request: Value) -> Value {
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut line = serde_json::to_vec(&request).unwrap();
+    line.push(b'\n');
+    stream.write_all(&line).await.unwrap();
+    let mut reply = String::new();
+    tokio::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .await
+        .unwrap();
+    serde_json::from_str(&reply).unwrap()
+}
+
+/// An app's call through the internal socket.
+async fn call(
+    state: &ServerState,
+    app: &str,
+    token: &str,
+    request: KvRequest,
+) -> Result<Value, tako_kv::KvError> {
+    let kv = state.databases.kv.clone();
+    let (app, token) = (app.to_owned(), token.to_owned());
+    tokio::task::spawn_blocking(move || kv.call(&app, &token, request))
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -107,36 +141,29 @@ async fn kv_stores_are_created_queried_and_deleted() {
     assert!(state.databases.kv_path("sessions").is_file());
     assert!(!state.databases.database_path("sessions").exists());
 
-    assert_eq!(
-        kv(
-            &state,
-            "sessions",
-            &["SET", "challenge:1", "abc", "EX", "60"]
-        )
-        .await,
-        "OK"
-    );
-    assert_eq!(kv(&state, "sessions", &["GET", "challenge:1"]).await, "abc");
-    assert_eq!(kv(&state, "sessions", &["TTL", "challenge:1"]).await, 60);
-    kv(&state, "sessions", &["HSET", "h", "a", "1"]).await;
-    assert_eq!(
-        kv(&state, "sessions", &["HGETALL", "h"]).await,
-        json!([["a", "1"]])
-    );
-    assert_eq!(
-        kv(&state, "sessions", &["GET", "missing"]).await,
-        Value::Null
-    );
-    assert_eq!(
-        kv(&state, "sessions", &["INCR", "h"]).await["error"],
-        "WRONGTYPE Operation against a key holding the wrong kind of value"
-    );
-    assert!(
-        kv(&state, "sessions", &["MULTI"]).await["error"]
-            .as_str()
-            .unwrap()
-            .contains("not available here")
-    );
+    put(&state, "sessions", "challenge:1", r#""abc""#, Some(60_000)).await;
+    assert_eq!(get(&state, "sessions", "challenge:1").await, json!(r#""abc""#));
+    assert_eq!(get(&state, "sessions", "missing").await, Value::Null);
+    let invalid = query(
+        &state,
+        "sessions",
+        KvRequest::Put {
+            key: "k".into(),
+            json: "not json".into(),
+            ttl_ms: None,
+        },
+    )
+    .await;
+    assert_eq!(invalid.error_code(), Some(tako_core::ErrorCode::InvalidRequest));
+    query(
+        &state,
+        "sessions",
+        KvRequest::Delete {
+            key: "challenge:1".into(),
+        },
+    )
+    .await;
+    assert_eq!(get(&state, "sessions", "challenge:1").await, Value::Null);
 
     let status = ok(
         &state,
@@ -173,15 +200,11 @@ async fn kv_stores_are_created_queried_and_deleted() {
     }
     create(&state, "main", DatabaseEngine::Sqlite).await;
     assert!(
-        error(
-            &state,
-            Command::QueryKv {
-                name: "main".into(),
-                args: vec!["PING".into()],
-            },
-        )
-        .await
-        .contains("SQLite database")
+        query(&state, "main", KvRequest::Get { key: "k".into() })
+            .await
+            .error_message()
+            .unwrap()
+            .contains("SQLite database")
     );
     // Names are unique across engines.
     let duplicate = error(
@@ -213,14 +236,12 @@ async fn kv_stores_are_created_queried_and_deleted() {
             .kv
             .is_registered(&tako_kv::StoreId::parse("sessions").unwrap())
     );
-    error(
-        &state,
-        Command::QueryKv {
-            name: "sessions".into(),
-            args: vec!["PING".into()],
-        },
-    )
-    .await;
+    assert!(
+        query(&state, "sessions", KvRequest::Get { key: "k".into() })
+            .await
+            .error_message()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -254,7 +275,7 @@ async fn kv_stores_refuse_backups_at_create() {
 }
 
 #[tokio::test]
-async fn bindings_split_by_engine_and_serve_apps_over_redis() {
+async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, "sessions", DatabaseEngine::Kv).await;
@@ -289,38 +310,44 @@ async fn bindings_split_by_engine_and_serve_apps_over_redis() {
     let stores = crate::databases::kv_connections(&bindings);
     assert_eq!(sqlite.keys().collect::<Vec<_>>(), vec!["main"]);
     assert_eq!(stores.keys().collect::<Vec<_>>(), vec!["auth"]);
-    let token = &bindings["auth"].token;
-    assert_eq!(
-        stores["auth"].url,
-        format!(
-            "redis://:{token}@127.0.0.1:{}",
-            crate::databases::kv_app_port()
-        )
-    );
+    let token = bindings["auth"].token.clone();
+    assert_eq!(stores["auth"].token, token);
 
     state
         .databases
         .apply_bindings("web/production", &[&bindings]);
-    let address = listen(&state, tako_kv::Access::Apps).await;
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let auth = format!("AUTH {token}\r\nSET k v\r\nGET k\r\n");
+    let request = KvRequest::Put {
+        key: "k".into(),
+        json: r#""v""#.into(),
+        ttl_ms: None,
+    };
+    call(&state, "web/production", &token, request).await.unwrap();
     assert_eq!(
-        raw(&mut stream, auth.as_bytes(), 17).await,
-        b"+OK\r\n+OK\r\n$1\r\nv\r\n"
-    );
-    // The SQLite binding's token is not a KV credential.
-    let mut other = tokio::net::TcpStream::connect(address).await.unwrap();
-    let sqlite_auth = format!("AUTH {}\r\n", bindings["main"].token);
-    assert!(
-        raw(&mut other, sqlite_auth.as_bytes(), 9)
+        call(&state, "web/production", &token, KvRequest::Get { key: "k".into() })
             .await
-            .starts_with(b"-WRONGPASS")
+            .unwrap(),
+        json!(r#""v""#)
+    );
+    // The token is the environment's: another app cannot use it, and the
+    // SQLite binding's token is not a KV credential.
+    assert!(
+        call(&state, "other/production", &token, KvRequest::Get { key: "k".into() })
+            .await
+            .is_err()
+    );
+    let sqlite_token = bindings["main"].token.clone();
+    assert!(
+        call(&state, "web/production", &sqlite_token, KvRequest::Get { key: "k".into() })
+            .await
+            .is_err()
     );
 
-    // Removing the environment's bindings ends its connections.
+    // Removing the environment's bindings ends its access.
     state.databases.remove_bindings("web/production");
-    let got = raw(&mut stream, b"GET k\r\n", 60).await;
-    assert!(String::from_utf8_lossy(&got).contains("binding changed"));
+    let error = call(&state, "web/production", &token, KvRequest::Get { key: "k".into() })
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("binding changed"), "{}", error.message);
 }
 
 #[tokio::test]
@@ -339,37 +366,28 @@ async fn grants_reach_the_kv_peer_listener() {
     )
     .await;
     let key = granted["peer_key"].as_str().unwrap().to_owned();
-    let address = listen(
-        &state,
-        tako_kv::Access::Peers {
-            allow: Arc::new(|ip| ip.is_loopback()),
-        },
-    )
-    .await;
-    let handshake = |store: &str, key: &str| {
-        let mut bytes = Vec::new();
-        tako_kv::encode_request(
-            &[tako_kv::FORWARD_COMMAND, "web/production", store, key, "2"],
-            &mut bytes,
-        );
-        bytes
+    let address = listen_peers(&state).await;
+    let request = |store: &str, grant: &str| {
+        json!({
+            "scope": "web/production", "grant": grant, "store": store,
+            "operation": "put", "key": "relayed", "json": "\"yes\"",
+        })
     };
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let mut send = handshake("sessions", &key);
-    send.extend_from_slice(b"SET relayed yes\r\n");
-    assert_eq!(raw(&mut stream, &send, 10).await, b"+OK\r\n+OK\r\n");
-    assert_eq!(kv(&state, "sessions", &["GET", "relayed"]).await, "yes");
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let got = raw(&mut stream, &handshake("sessions", "wrong"), 30).await;
-    assert!(got.starts_with(b"-ERR forwarding refused"));
-    // The grant also names the SQLite database, which no KV store serves.
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let mut send = handshake("main", &key);
-    send.extend_from_slice(b"GET k\r\n");
-    let got = String::from_utf8(raw(&mut stream, &send, 40).await).unwrap();
+    assert_eq!(
+        forward(address, request("sessions", &key)).await,
+        json!({"status": "ok", "data": null})
+    );
+    assert_eq!(get(&state, "sessions", "relayed").await, json!("\"yes\""));
+    let refused = forward(address, request("sessions", "wrong")).await;
     assert!(
-        got.ends_with("not serving the store right now; retry\r\n"),
-        "{got}"
+        refused["message"].as_str().unwrap().contains("refused this app"),
+        "{refused}"
+    );
+    // The grant also names the SQLite database, which no KV store serves.
+    let unserved = forward(address, request("main", &key)).await;
+    assert!(
+        unserved["message"].as_str().unwrap().contains("not serving the KV store"),
+        "{unserved}"
     );
     // Deleting the store revokes it from the grant.
     ok(
@@ -381,9 +399,11 @@ async fn grants_reach_the_kv_peer_listener() {
         },
     )
     .await;
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let got = raw(&mut stream, &handshake("sessions", &key), 30).await;
-    assert!(got.starts_with(b"-ERR forwarding refused"));
+    let revoked = forward(address, request("sessions", &key)).await;
+    assert!(
+        revoked["message"].as_str().unwrap().contains("refused this app"),
+        "{revoked}"
+    );
 }
 
 #[tokio::test]
@@ -393,12 +413,12 @@ async fn kv_stores_reopen_with_their_data_after_a_restart() {
         let state = state(&temp);
         state.open_databases(None).await.unwrap();
         create(&state, "sessions", DatabaseEngine::Kv).await;
-        kv(&state, "sessions", &["SET", "kept", "1"]).await;
+        put(&state, "sessions", "kept", "1", None).await;
         state.stop_databases().await;
     }
     let state = state(&temp);
     state.open_databases(None).await.unwrap();
-    assert_eq!(kv(&state, "sessions", &["GET", "kept"]).await, "1");
+    assert_eq!(get(&state, "sessions", "kept").await, json!("1"));
     let status = ok(&state, Command::DatabaseStatus { name: None }).await;
     assert_eq!(status["databases"][0]["engine"], "kv");
 }

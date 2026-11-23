@@ -1,0 +1,9 @@
+{
+  "app": "demo",
+  "command": "kv",
+  "json": "{\"user\":\"u1\"}",
+  "key": "session:1",
+  "operation": "put",
+  "token": "kv-token-example",
+  "ttl_ms": 86400000
+}

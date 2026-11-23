@@ -1,11 +1,11 @@
 //! Databases hosted by this server, and the database bindings of its apps.
 //!
 //! Each database is a file under `<data_dir>/databases/<id>/`, owned by the
-//! server process: a SQLite database served over the libSQL HTTP protocol, or
-//! a KV store (redb) served over the Redis protocol. Apps on this server reach
-//! it on a loopback port with their binding token. Apps on other servers of
-//! the network reach it through their own server, which forwards requests (or,
-//! for KV stores, relays connections) to this server's private address.
+//! server process: a SQLite database served over the libSQL HTTP protocol on
+//! a loopback port, or a KV store (redb) served through the internal socket,
+//! both with the app's binding token. Apps on other servers of the network
+//! reach it through their own server, which forwards requests to this
+//! server's private address.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -536,12 +536,6 @@ pub(crate) fn app_port() -> u16 {
     *PORT.get_or_init(|| env_port("TAKO_DATABASE_PORT", tako_core::DATABASE_APP_PORT))
 }
 
-/// The loopback port apps reach KV stores on.
-pub(crate) fn kv_app_port() -> u16 {
-    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    *PORT.get_or_init(|| env_port("TAKO_KV_PORT", tako_core::KV_APP_PORT))
-}
-
 /// The connections app processes receive for their SQLite bindings.
 pub(crate) fn connections(
     bindings: &HashMap<String, AppDatabase>,
@@ -573,7 +567,7 @@ pub(crate) fn kv_connections(
         .map(|(name, binding)| {
             (
                 name.clone(),
-                KvConnection::new(&format!("127.0.0.1:{}", kv_app_port()), &binding.token),
+                KvConnection::new(&binding.token),
             )
         })
         .collect()
@@ -729,7 +723,8 @@ impl ServerState {
             task.abort();
         }
         self.databases.host.close_all().await;
-        self.databases.kv.close_all().await;
+        let kv = self.databases.kv.clone();
+        let _ = tokio::task::spawn_blocking(move || kv.close_all()).await;
     }
 
     /// Re-resolves where each applied binding's database lives, since other
@@ -763,23 +758,6 @@ impl ServerState {
             }
         });
         self.databases.tasks.lock().push(task.abort_handle());
-        let kv = self.databases.kv.clone();
-        let task = tokio::spawn(async move {
-            let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kv_app_port());
-            loop {
-                match bind_reuseport(address) {
-                    Ok(listener) => {
-                        tracing::info!(%address, "Serving KV stores to apps");
-                        tako_kv::serve(kv.clone(), listener, tako_kv::Access::Apps).await;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%address, %error, "KV listener unavailable; retrying");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
-            }
-        });
-        self.databases.tasks.lock().push(task.abort_handle());
     }
 
     fn spawn_database_peer_listener(self: &Arc<Self>) {
@@ -798,12 +776,10 @@ impl ServerState {
                     Ok(listener) => {
                         tracing::info!(%address, "Serving KV stores to network servers");
                         let proxy = kv_proxy.clone();
-                        tako_kv::serve(
+                        tako_kv::serve_peers(
                             kv.clone(),
                             listener,
-                            tako_kv::Access::Peers {
-                                allow: Arc::new(move |peer| proxy.is_server_address(peer)),
-                            },
+                            Arc::new(move |peer| proxy.is_server_address(peer)),
                         )
                         .await;
                     }
@@ -909,7 +885,8 @@ impl ServerState {
                 backup_key_base64,
             } => snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await,
             Command::QueryDatabase { name, sql } => self.query_database(&name, sql).await,
-            Command::QueryKv { name, args } => self.query_kv(&name, args).await,
+            // KV errors keep their codes (a full store, an invalid request).
+            Command::QueryKv { name, request } => return self.query_kv(&name, request).await,
             Command::MigrateDatabase {
                 name,
                 owner,
@@ -1105,10 +1082,10 @@ impl ServerState {
             DatabaseEngine::Kv => {
                 let store = tako_kv::StoreId::parse(id)?;
                 if self.databases.kv.is_registered(&store) {
-                    self.databases
-                        .kv
-                        .unregister(&store)
+                    let kv = self.databases.kv.clone();
+                    tokio::task::spawn_blocking(move || kv.unregister(&store))
                         .await
+                        .map_err(|e| e.to_string())?
                         .map_err(|e| e.to_string())?;
                 }
             }
@@ -1554,42 +1531,26 @@ impl ServerState {
         .expect("query result serializes"))
     }
 
-    async fn query_kv(&self, id: &str, args: Vec<String>) -> Result<serde_json::Value, String> {
-        let stored = self.hosted_database(id)?;
+    async fn query_kv(&self, id: &str, request: tako_core::KvRequest) -> Response {
+        let stored = match self.hosted_database(id) {
+            Ok(stored) => stored,
+            Err(message) => return Response::error(message),
+        };
         if stored.engine != DatabaseEngine::Kv {
-            return Err(format!(
+            return Response::error(format!(
                 "{id} is a SQLite database; use `tako sqlite shell`."
             ));
         }
-        let store = tako_kv::StoreId::parse(id)?;
-        let reply = self
-            .databases
-            .kv
-            .admin(&store, args.into_iter().map(Into::into).collect())
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(kv_json(reply))
-    }
-}
-
-/// A reply as JSON for the CLI; see [`tako_core::KvQueryResult`].
-fn kv_json(reply: tako_kv::Reply) -> serde_json::Value {
-    use tako_kv::Reply;
-    match reply {
-        Reply::Ok => "OK".into(),
-        Reply::Simple(text) => text.into(),
-        Reply::Error(message) => serde_json::json!({ "error": message }),
-        Reply::Int(value) => value.into(),
-        Reply::Bulk(bytes) => match String::from_utf8(bytes.to_vec()) {
-            Ok(text) => text.into(),
-            Err(_) => serde_json::json!({"base64": BASE64.encode(&bytes)}),
-        },
-        Reply::Nil | Reply::NilArray => serde_json::Value::Null,
-        Reply::Array(items) | Reply::Set(items) => items.into_iter().map(kv_json).collect(),
-        Reply::Map(pairs) => pairs
-            .into_iter()
-            .map(|(key, value)| serde_json::json!([kv_json(key), kv_json(value)]))
-            .collect(),
+        let store = match tako_kv::StoreId::parse(id) {
+            Ok(store) => store,
+            Err(message) => return Response::error(message),
+        };
+        let kv = self.databases.kv.clone();
+        match tokio::task::spawn_blocking(move || kv.admin(&store, request)).await {
+            Ok(Ok(value)) => Response::ok(value),
+            Ok(Err(error)) => error.into_response(),
+            Err(error) => Response::error(error.to_string()),
+        }
     }
 }
 

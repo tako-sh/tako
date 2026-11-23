@@ -195,7 +195,7 @@ pub enum Commands {
     #[command(visible_alias = "db")]
     Sqlite(sqlite::SqliteArgs),
 
-    /// Tako-hosted KV stores, for any Redis client
+    /// Tako-hosted KV stores of JSON values with optional expiry
     Kv(kv::KvArgs),
 
     /// Provider credentials used by Tako

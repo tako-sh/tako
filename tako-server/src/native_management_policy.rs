@@ -68,6 +68,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::ChannelClose { .. } => CommandClass::InternalWorker,
         Command::PrepareRelease { app, .. }
         | Command::PrepareReleaseUpload { app, .. }
@@ -371,6 +372,7 @@ pub(crate) fn authorize_command(
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }

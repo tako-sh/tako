@@ -449,6 +449,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. } => MANAGEMENT_RPC_TIMEOUT,
     }

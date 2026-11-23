@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "kv",
+  "key": "session:1",
+  "operation": "get",
+  "token": "kv-token-example"
+}

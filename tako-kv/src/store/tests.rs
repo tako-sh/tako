@@ -1,891 +1,220 @@
-use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
-use crate::command::{self, Limits};
 
 struct Fixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     path: PathBuf,
     store: Arc<Store>,
     now: Arc<AtomicU64>,
 }
 
-/// Room for any reply.
-const ANY: usize = usize::MAX;
-
 fn config(now: &Arc<AtomicU64>, max_bytes: u64) -> StoreConfig {
     let now = now.clone();
     StoreConfig {
         max_bytes,
-        limits: Limits {
-            max_key_bytes: 1024,
-            max_value_bytes: 1024 * 1024,
-        },
         cache_bytes: 1024 * 1024,
-        max_reply_bytes: 1024 * 1024,
         clock: Arc::new(move || now.load(Ordering::SeqCst)),
     }
 }
 
 fn fixture(max_bytes: u64) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("kv.redb");
+    let path = dir.path().join("store.redb");
     let now = Arc::new(AtomicU64::new(1_000_000));
     let store = Arc::new(Store::open(&path, config(&now, max_bytes)).unwrap());
     Fixture {
-        _dir: dir,
+        dir,
         path,
         store,
         now,
     }
 }
 
-fn parse(text: &str) -> Cmd {
-    let args: Vec<Bytes> = text
-        .split(' ')
-        .map(|a| Bytes::copy_from_slice(a.as_bytes()))
-        .collect();
-    let spec = command::lookup(&args).unwrap();
-    command::parse(
-        spec,
-        &args,
-        Limits {
-            max_key_bytes: 1024,
-            max_value_bytes: 1024 * 1024,
-        },
-    )
-    .unwrap()
-}
-
 impl Fixture {
-    async fn run(&self, text: &str) -> Reply {
-        self.store
-            .run(vec![parse(text)], ANY)
-            .await
-            .unwrap()
-            .replies
-            .remove(0)
-    }
-
     fn advance(&self, ms: u64) {
         self.now.fetch_add(ms, Ordering::SeqCst);
     }
 
-    async fn stats(&self) -> Stats {
-        self.store.stats().await.unwrap()
+    fn get(&self, key: &str) -> Option<String> {
+        self.store
+            .get(key)
+            .unwrap()
+            .map(|json| String::from_utf8(json).unwrap())
+    }
+
+    fn put(&self, key: &str, json: &str, ttl_ms: Option<u64>) -> Result<()> {
+        self.store.put(key, json.as_bytes().to_vec(), ttl_ms)
     }
 }
 
-fn bulk(text: &str) -> Reply {
-    Reply::bulk_str(text)
+#[test]
+fn values_round_trip_and_are_replaced_and_deleted() {
+    let f = fixture(1 << 30);
+    assert_eq!(f.get("user:1"), None);
+    f.put("user:1", r#"{"name":"Ada"}"#, None).unwrap();
+    assert_eq!(f.get("user:1").as_deref(), Some(r#"{"name":"Ada"}"#));
+    f.put("user:1", "2", None).unwrap();
+    assert_eq!(f.get("user:1").as_deref(), Some("2"));
+    let stats = f.store.stats().unwrap();
+    assert_eq!((stats.keys, stats.expires), (1, 0));
+    assert_eq!(stats.bytes, weight("user:1", 1));
+    assert!(f.store.delete("user:1").unwrap());
+    assert!(!f.store.delete("user:1").unwrap());
+    assert_eq!(f.get("user:1"), None);
+    assert_eq!(f.store.stats().unwrap(), Stats::default());
 }
 
-#[tokio::test]
-async fn strings_expire_on_time() {
+#[test]
+fn keys_expire_on_time_and_are_swept_without_reads() {
     let f = fixture(1 << 30);
-    assert_eq!(f.run("SET k v EX 10").await, Reply::Ok);
-    assert_eq!(f.run("TTL k").await, Reply::Int(10));
-    assert_eq!(f.run("PTTL k").await, Reply::Int(10_000));
-    assert_eq!(f.run("EXPIRETIME k").await, Reply::Int(1_010));
-    f.advance(9_999);
-    assert_eq!(f.run("GET k").await, bulk("v"));
+    f.put("challenge", r#""abc""#, Some(1_000)).unwrap();
+    f.put("kept", "1", None).unwrap();
+    assert_eq!(f.store.stats().unwrap().expires, 1);
+    f.advance(999);
+    assert!(f.get("challenge").is_some());
     f.advance(1);
-    assert_eq!(f.run("GET k").await, Reply::Nil);
-    assert_eq!(f.run("EXISTS k").await, Reply::Int(0));
-    assert_eq!(f.run("TTL k").await, Reply::Int(-2));
-    // A write finds the expired key absent.
-    assert_eq!(f.run("SET k v2 NX").await, Reply::Ok);
-    assert_eq!(f.run("TTL k").await, Reply::Int(-1));
-    assert_eq!(f.stats().await.keys, 1);
-}
-
-#[tokio::test]
-async fn expire_options_follow_redis() {
-    let f = fixture(1 << 30);
-    f.run("SET k v").await;
-    assert_eq!(f.run("EXPIRE k 100 XX").await, Reply::Int(0));
-    assert_eq!(f.run("EXPIRE k 100 GT").await, Reply::Int(0));
-    assert_eq!(f.run("EXPIRE k 100 LT").await, Reply::Int(1));
-    assert_eq!(f.run("EXPIRE k 200 NX").await, Reply::Int(0));
-    assert_eq!(f.run("EXPIRE k 200 GT").await, Reply::Int(1));
-    assert_eq!(f.run("EXPIRE k 300 XX LT").await, Reply::Int(0));
-    assert_eq!(f.run("PEXPIRE k 150000 XX LT").await, Reply::Int(1));
-    assert_eq!(f.run("TTL k").await, Reply::Int(150));
-    assert_eq!(f.run("PERSIST k").await, Reply::Int(1));
-    assert_eq!(f.run("PERSIST k").await, Reply::Int(0));
-    assert_eq!(f.run("EXPIRE missing 10").await, Reply::Int(0));
-    // A time in the past deletes the key.
-    assert_eq!(f.run("EXPIRE k -1").await, Reply::Int(1));
-    assert_eq!(f.run("EXISTS k").await, Reply::Int(0));
-    assert_eq!(f.run("SET k v EXAT 1").await, Reply::Ok);
-    assert_eq!(f.run("EXISTS k").await, Reply::Int(0));
-    assert_eq!(
-        f.stats().await,
-        Stats {
-            seq: f.stats().await.seq,
-            ..Stats::default()
-        }
-    );
-}
-
-#[tokio::test]
-async fn set_options_and_variants() {
-    let f = fixture(1 << 30);
-    assert_eq!(f.run("SET k v XX").await, Reply::Nil);
-    assert_eq!(f.run("SET k v NX GET").await, Reply::Nil);
-    assert_eq!(f.run("SET k w NX").await, Reply::Nil);
-    assert_eq!(f.run("SET k w GET PX 5000").await, bulk("v"));
-    assert_eq!(f.run("SET k x KEEPTTL").await, Reply::Ok);
-    assert_eq!(f.run("PTTL k").await, Reply::Int(5000));
-    assert_eq!(f.run("GETSET k y").await, bulk("x"));
-    assert_eq!(f.run("TTL k").await, Reply::Int(-1));
-    assert_eq!(f.run("SETNX k z").await, Reply::Int(0));
-    assert_eq!(f.run("GETEX k EX 30").await, bulk("y"));
-    assert_eq!(f.run("TTL k").await, Reply::Int(30));
-    assert_eq!(f.run("GETEX k PERSIST").await, bulk("y"));
-    assert_eq!(f.run("TTL k").await, Reply::Int(-1));
-    assert_eq!(f.run("GETDEL k").await, bulk("y"));
-    assert_eq!(f.run("GETDEL k").await, Reply::Nil);
-    assert_eq!(f.run("MSET a 1 b 2").await, Reply::Ok);
-    assert_eq!(f.run("MSETNX b 3 c 4").await, Reply::Int(0));
-    assert_eq!(f.run("MSETNX c 3 d 4").await, Reply::Int(1));
-    assert_eq!(
-        f.run("MGET a b c missing").await,
-        Reply::Array(vec![bulk("1"), bulk("2"), bulk("3"), Reply::Nil])
-    );
-    assert_eq!(f.run("APPEND a 23").await, Reply::Int(3));
-    assert_eq!(f.run("STRLEN a").await, Reply::Int(3));
-    assert_eq!(f.run("DEL a b missing").await, Reply::Int(2));
-}
-
-#[tokio::test]
-async fn counters_check_types_and_overflow() {
-    let f = fixture(1 << 30);
-    assert_eq!(f.run("INCR n").await, Reply::Int(1));
-    assert_eq!(f.run("INCRBY n 41").await, Reply::Int(42));
-    assert_eq!(f.run("DECRBY n 2").await, Reply::Int(40));
-    assert_eq!(f.run("DECR n").await, Reply::Int(39));
-    f.run("EXPIRE n 60").await;
-    assert_eq!(f.run("INCR n").await, Reply::Int(40));
-    assert_eq!(
-        f.run("TTL n").await,
-        Reply::Int(60),
-        "INCR keeps the expiry"
-    );
-    f.run("SET n 9223372036854775807").await;
-    assert_eq!(f.run("INCR n").await, Reply::error(OVERFLOW));
-    f.run("SET s abc").await;
-    assert_eq!(f.run("INCR s").await, Reply::error(NOT_INTEGER));
-    assert_eq!(f.run("INCRBYFLOAT s 1").await, Reply::error(NOT_FLOAT));
-    f.run("SET f 10.5").await;
-    assert_eq!(f.run("INCRBYFLOAT f 0.1").await, bulk("10.6"));
-    assert_eq!(f.run("INCRBYFLOAT f -0.6").await, bulk("10"));
-    assert_eq!(
-        f.run("INCRBYFLOAT f 1e308").await,
-        bulk(&format!("{}", 10.0 + 1e308))
-    );
-    f.run("HSET h a 1").await;
-    assert_eq!(f.run("INCR h").await, Reply::error(WRONGTYPE));
-    assert_eq!(f.run("GET h").await, Reply::error(WRONGTYPE));
-    assert_eq!(f.run("SET h x GET").await, Reply::error(WRONGTYPE));
-    assert_eq!(f.run("TYPE h").await, Reply::Simple("hash".into()));
-    // SET replaces a hash outright.
-    assert_eq!(f.run("SET h x").await, Reply::Ok);
-    assert_eq!(f.run("TYPE h").await, Reply::Simple("string".into()));
-}
-
-#[tokio::test]
-async fn hashes_track_fields_and_sizes() {
-    let f = fixture(1 << 30);
-    assert_eq!(f.run("HSET h a 1 b 2").await, Reply::Int(2));
-    assert_eq!(f.run("HSET h b 3 c 4").await, Reply::Int(1));
-    assert_eq!(f.run("HLEN h").await, Reply::Int(3));
-    assert_eq!(f.run("HGET h b").await, bulk("3"));
-    let Reply::Map(mut all) = f.run("HGETALL h").await else {
-        panic!()
-    };
-    // Fields come in slot order, like keys.
-    all.sort_by_key(|(field, _)| format!("{field:?}"));
-    assert_eq!(
-        all,
-        vec![
-            (bulk("a"), bulk("1")),
-            (bulk("b"), bulk("3")),
-            (bulk("c"), bulk("4"))
-        ]
-    );
-    assert_eq!(
-        f.run("HMGET h a x c").await,
-        Reply::Array(vec![bulk("1"), Reply::Nil, bulk("4")])
-    );
-    assert_eq!(f.run("HSETNX h a 9").await, Reply::Int(0));
-    assert_eq!(f.run("HINCRBY h a 5").await, Reply::Int(6));
-    assert_eq!(f.run("HINCRBYFLOAT h z 1.5").await, bulk("1.5"));
-    assert_eq!(f.run("HSET h t text").await, Reply::Int(1));
-    assert_eq!(f.run("HINCRBY h t 1").await, Reply::error(HASH_NOT_INTEGER));
-    assert_eq!(f.run("HSTRLEN h t").await, Reply::Int(4));
-    assert_eq!(f.run("HEXISTS h t").await, Reply::Int(1));
-    assert_eq!(
-        hscan_all(&f, "h", "MATCH [ab] NOVALUES").await,
-        BTreeSet::from(["a".to_owned(), "b".to_owned()])
-    );
-    f.run("EXPIRE h 100").await;
-    assert_eq!(f.run("RENAME h g").await, Reply::Ok);
-    assert_eq!(f.run("HLEN g").await, Reply::Int(5));
-    assert_eq!(f.run("TTL g").await, Reply::Int(100));
-    assert_eq!(f.run("HDEL g a b c z").await, Reply::Int(4));
-    assert_eq!(f.run("HDEL g t").await, Reply::Int(1));
-    // The last field takes the key with it, and every byte is returned.
-    assert_eq!(f.run("EXISTS g").await, Reply::Int(0));
-    let stats = f.stats().await;
-    assert_eq!((stats.keys, stats.expires, stats.bytes), (0, 0, 0));
-}
-
-#[tokio::test]
-async fn sizes_return_to_zero_after_every_kind_of_removal() {
-    let f = fixture(1 << 30);
-    f.run("SET a 1").await;
-    f.run("SET b 2 EX 5").await;
-    f.run("HSET h x 1 y 2").await;
-    f.run("RENAME a c").await;
-    f.run("RENAMENX c b").await;
-    assert_eq!(f.stats().await.keys, 3);
-    f.run("FLUSHDB").await;
-    let stats = f.stats().await;
-    assert_eq!((stats.keys, stats.expires, stats.bytes), (0, 0, 0));
-    f.run("SET a 1 EX 1").await;
-    f.run("HSET h x 1").await;
-    f.run("EXPIRE h 1").await;
-    f.advance(1_000);
-    // The periodic sweep removes them without any further command.
+    assert_eq!(f.get("challenge"), None);
+    // A put without a TTL clears an earlier one.
+    f.put("session", "1", Some(10)).unwrap();
+    f.put("session", "2", None).unwrap();
+    f.advance(20);
+    assert_eq!(f.get("session").as_deref(), Some("2"));
+    // The periodic sweep removes expired keys nobody reads.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while f.stats().await.keys != 0 {
+    while f.store.stats().unwrap().keys != 2 {
         assert!(Instant::now() < deadline, "expired keys were not swept");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::thread::sleep(Duration::from_millis(50));
     }
-    let stats = f.stats().await;
-    assert_eq!((stats.expires, stats.bytes), (0, 0));
+    let stats = f.store.stats().unwrap();
+    assert_eq!(stats.expires, 0);
+    assert_eq!(stats.bytes, weight("kept", 1) + weight("session", 1));
 }
 
-#[tokio::test]
-async fn large_hashes_and_expiring_keys_move_in_bounded_steps() {
-    let f = fixture(1 << 30);
-    // A hash larger than one move chunk is renamed whole, and its bytes
-    // are accounted the same under a name of the same length.
-    let value = "v".repeat(1000);
-    for chunk in 0..30 {
-        let pairs: Vec<String> = (0..100)
-            .map(|i| format!("f{} {value}", chunk * 100 + i))
-            .collect();
-        f.run(&format!("HSET big {}", pairs.join(" "))).await;
-    }
-    let before = f.stats().await;
-    assert_eq!(f.run("RENAME big gib").await, Reply::Ok);
-    let after = f.stats().await;
-    assert_eq!((after.keys, after.bytes), (before.keys, before.bytes));
-    assert_eq!(f.run("HLEN gib").await, Reply::Int(3000));
-    assert_eq!(f.run("HGET gib f2999").await, bulk(&value));
-    assert_eq!(f.run("EXISTS big").await, Reply::Int(0));
-    f.run("DEL gib").await;
-    // Expired keys with long names are swept a bounded number of bytes at
-    // a time, until none are left.
-    let name = "k".repeat(900);
-    for chunk in 0..25 {
-        let pairs: Vec<String> = (0..100)
-            .map(|i| format!("{name}{} v", chunk * 100 + i))
-            .collect();
-        f.run(&format!("MSET {}", pairs.join(" "))).await;
-        for i in 0..100 {
-            f.run(&format!("PEXPIRE {name}{} 1", chunk * 100 + i)).await;
-        }
-    }
-    f.advance(10);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while f.stats().await.keys != 0 {
-        assert!(Instant::now() < deadline, "expired keys were not swept");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let stats = f.stats().await;
-    assert_eq!((stats.expires, stats.bytes), (0, 0));
-}
-
-#[tokio::test]
-async fn full_stores_refuse_only_writes_that_would_grow_them() {
-    let f = fixture(4096);
-    f.run("SET n 10").await;
-    f.run("SET float 1.5").await;
-    f.run("HSET h a xx c 5").await;
-    let value = "x".repeat(500);
-    let mut refused = false;
-    for i in 0..20 {
-        match f.run(&format!("SET k{i} {value}")).await {
-            Reply::Ok => {}
-            Reply::Error(message) => {
-                assert_eq!(message, OOM);
-                refused = true;
-                break;
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-    assert!(refused);
-    let full = f.stats().await.bytes;
-    assert!(full >= 4096);
-    // Overwrites that are no larger work; larger ones and new keys do not.
-    assert_eq!(
-        f.run(&format!("SET k0 {}", "y".repeat(500))).await,
-        Reply::Ok
-    );
-    assert_eq!(
-        f.run(&format!("SET k0 {}", "x".repeat(400))).await,
-        Reply::Ok
-    );
-    assert_eq!(f.stats().await.bytes, full - 100);
-    let oom = Reply::error(OOM);
-    assert_eq!(f.run(&format!("SET k0 {}", "x".repeat(401))).await, oom);
-    assert_eq!(f.run("SET new v").await, oom);
-    // Writes that would change nothing reply as usual.
-    assert_eq!(f.run("SET k1 v NX").await, Reply::Nil);
-    assert_eq!(f.run("SET new v XX").await, Reply::Nil);
-    assert_eq!(f.run("SETNX k1 v").await, Reply::Int(0));
-    // MSET counts each key's last value, and its keys together.
-    let (big, small) = ("x".repeat(600), "x".repeat(400));
-    assert_eq!(f.run(&format!("MSET k1 {big} k1 {value}")).await, Reply::Ok);
-    assert_eq!(f.run(&format!("MSET k1 {small} k2 {big}")).await, Reply::Ok);
-    assert_eq!(f.run(&format!("MSET k3 {big}")).await, oom);
-    assert_eq!(f.run("MSET new v").await, oom);
-    // Counters may keep or lose digits, not gain them.
-    assert_eq!(f.run("INCR n").await, Reply::Int(11));
-    assert_eq!(f.run("DECRBY n 2").await, Reply::Int(9));
-    assert_eq!(f.run("INCRBY n 1000").await, oom);
-    assert_eq!(f.run("INCRBYFLOAT float 1").await, bulk("2.5"));
-    assert_eq!(f.run("INCRBYFLOAT float 0.25").await, oom);
-    assert_eq!(f.run("APPEND k0 x").await, oom);
-    // Hash fields work the same way.
-    assert_eq!(f.run("HSET h a yy").await, Reply::Int(0));
-    assert_eq!(f.run("HSET h b z").await, oom);
-    assert_eq!(f.run("HSETNX h a q").await, Reply::Int(0));
-    assert_eq!(f.run("HINCRBY h c 1").await, Reply::Int(6));
-    assert_eq!(f.run("HINCRBY h c 10").await, oom);
-    assert_eq!(f.run("HSET g a b").await, oom);
-    assert_eq!(f.run("HGET h a").await, bulk("yy"));
-    // Renaming to a longer name grows the key, and each of a hash's fields.
-    assert_eq!(f.run("RENAME h hash").await, oom);
-    assert_eq!(f.run("RENAME k2 k2-longer").await, oom);
-    assert_eq!(f.run("RENAME h x").await, Reply::Ok);
-    assert_eq!(f.run("RENAMENX x k0").await, Reply::Int(0));
-    assert_eq!(f.run("RENAME x h").await, Reply::Ok);
-    // Removing keys makes room again.
-    assert!(matches!(f.run("DEL k0 k1 k2").await, Reply::Int(3)));
-    assert_eq!(f.run(&format!("SET k0 {value}")).await, Reply::Ok);
-    assert_eq!(f.run("HSET g a b").await, Reply::Int(1));
-}
-
-/// Strings, a hash and expiries: entries in every data table.
-async fn fill(f: &Fixture, keys: usize) {
-    for chunk in 0..keys / 100 {
-        let pairs: Vec<String> = (0..100)
-            .map(|i| format!("k{} v", chunk * 100 + i))
-            .collect();
-        f.run(&format!("MSET {}", pairs.join(" "))).await;
-    }
-    let fields: Vec<String> = (0..100).map(|i| format!("f{i} v")).collect();
-    f.run(&format!("HSET h {}", fields.join(" "))).await;
-    for i in 0..100 {
-        f.run(&format!("EXPIRE k{i} 100")).await;
-    }
-}
-
-/// The current generation, the one being freed, and the tables in the file.
-fn layout(db: &Database) -> (u64, Option<u64>, BTreeSet<String>) {
-    use redb::TableHandle;
-    let txn = db.begin_read().unwrap();
-    let (generation, trash) = read_generations(&txn.open_table(META).unwrap()).unwrap();
-    let tables = txn
-        .list_tables()
-        .unwrap()
-        .map(|table| table.name().to_string())
-        .collect();
-    (generation, trash, tables)
-}
-
-fn tables_of(generations: &[u64]) -> BTreeSet<String> {
-    let mut tables = BTreeSet::from(["meta".to_string()]);
-    for &generation in generations {
-        for table in [KEYS, FIELDS, EXPIRY] {
-            tables.insert(table_name(table, generation));
-        }
-    }
-    tables
-}
-
-#[tokio::test]
-async fn flushes_empty_the_store_at_once_and_free_the_old_tables() {
-    let f = fixture(1 << 30);
-    fill(&f, 3_000).await;
-    // SYNC deletes the old tables before it replies.
-    assert_eq!(f.run("FLUSHDB").await, Reply::Ok);
-    assert_eq!(layout(&f.store.db().unwrap()), (1, None, tables_of(&[1])));
-    fill(&f, 3_000).await;
-    // ASYNC empties the store as it replies, and frees the old tables in
-    // the background.
-    assert_eq!(f.run("FLUSHALL ASYNC").await, Reply::Ok);
-    assert_eq!(f.run("DBSIZE").await, Reply::Int(0));
-    assert_eq!(f.run("GET k0").await, Reply::Nil);
-    assert_eq!(f.run("HGET h f0").await, Reply::Nil);
-    let stats = f.stats().await;
-    assert_eq!((stats.keys, stats.expires, stats.bytes), (0, 0, 0));
-    assert_eq!(f.run("SET k0 new").await, Reply::Ok);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while layout(&f.store.db().unwrap()).1.is_some() {
-        assert!(
-            Instant::now() < deadline,
-            "the flushed tables were not freed"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(layout(&f.store.db().unwrap()), (2, None, tables_of(&[2])));
-    assert_eq!(f.run("GET k0").await, bulk("new"));
-    assert_eq!(f.run("DBSIZE").await, Reply::Int(1));
-}
-
-/// Runs `work` in a write transaction and commits it.
-fn step(db: &Database, work: impl FnOnce(&mut WriteView<'_>) -> Result<bool>) -> bool {
-    let txn = db.begin_write().unwrap();
-    let more = {
-        let mut w = WriteView::open(&txn).unwrap();
-        let more = work(&mut w).unwrap();
-        w.flush().unwrap();
-        more
-    };
-    txn.commit().unwrap();
-    more
-}
-
-#[tokio::test]
-async fn flushed_tables_are_freed_a_bounded_step_at_a_time() {
-    let f = fixture(1 << 30);
-    // 2,501 keys, 100 fields and 100 expiries.
-    fill(&f, 2_500).await;
-    f.store.close().await;
-    let db = open_database(&f.path, 1 << 20).unwrap();
-    step(&db, |w| w.flush_all(true).map(|()| false));
-    assert_eq!(layout(&db), (1, Some(0), tables_of(&[0, 1])));
-    let mut steps = 1;
-    while step(&db, |w| w.drain(1_000)) {
-        steps += 1;
-    }
-    assert_eq!(steps, 3);
-    assert_eq!(layout(&db), (1, None, tables_of(&[1])));
-    // Only one generation waits: a flush while one does deletes it.
-    step(&db, |w| w.flush_all(true).map(|()| false));
-    step(&db, |w| w.flush_all(true).map(|()| false));
-    assert_eq!(layout(&db), (3, Some(2), tables_of(&[2, 3])));
-    drop(db);
-    // A store reopened with a generation to free goes on freeing it.
-    let store = Store::open(&f.path, config(&f.now, 1 << 30)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while layout(&store.db().unwrap()).1.is_some() {
-        assert!(
-            Instant::now() < deadline,
-            "the flushed tables were not freed"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(layout(&store.db().unwrap()), (3, None, tables_of(&[3])));
-    assert_eq!(store.stats().await.unwrap().keys, 0);
-}
-
-/// Reads `keys` for a transaction, as `WATCH` does.
-async fn watch(f: &Fixture, keys: &[&str]) -> (Vec<Watched>, WatchGuard) {
-    let mut guard = None;
-    let watched = watch_more(f, keys, &mut guard).await;
-    (watched, guard.unwrap())
-}
-
-/// Watches more keys under `guard`, as a connection's later `WATCH` does.
-async fn watch_more(f: &Fixture, keys: &[&str], guard: &mut Option<WatchGuard>) -> Vec<Watched> {
-    let keys = keys
-        .iter()
-        .map(|k| Bytes::copy_from_slice(k.as_bytes()))
-        .collect();
-    f.store.watch(keys, guard).await.unwrap()
-}
-
-fn ops() -> Vec<Op> {
-    vec![
-        Op::Cmd(parse("INCR k")),
-        Op::Failed(Reply::error("ERR x")),
-        Op::Cmd(parse("GET k")),
-    ]
-}
-
-#[tokio::test]
-async fn transactions_abort_when_watched_keys_change() {
-    let f = fixture(1 << 30);
-    f.run("SET k 1").await;
-    let (watched, _guard) = watch(&f, &["k", "absent"]).await;
-    assert!(watched[0].version.is_some() && watched[1].version.is_none());
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::Array(vec![Reply::Int(2), Reply::error("ERR x"), bulk("2")])
-    );
-    // The transaction itself changed k: a second one with the same watch aborts.
-    let (watched, _guard) = watch(&f, &["k"]).await;
-    f.run("INCR k").await;
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-    // Creating a key that was absent counts.
-    let (watched, _guard) = watch(&f, &["absent"]).await;
-    f.run("SET absent now").await;
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-    // Expiry counts as a change.
-    f.run("SET t v PX 10").await;
-    let (watched, _guard) = watch(&f, &["t"]).await;
-    f.advance(10);
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-}
-
-#[tokio::test]
-async fn absent_watched_keys_notice_being_created_and_removed() {
-    let f = fixture(1 << 30);
-    // Created and deleted again: absent at WATCH and at EXEC, but modified.
-    let (watched, guard) = watch(&f, &["lock"]).await;
-    f.run("SET lock other").await;
-    f.run("DEL lock").await;
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-    drop(guard);
-    // Created and flushed.
-    let (watched, guard) = watch(&f, &["lock"]).await;
-    f.run("SET lock other").await;
-    f.run("FLUSHDB").await;
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-    drop(guard);
-    // A removal before the WATCH does not count, and untouched keys run.
-    f.run("SET lock other").await;
-    f.run("DEL lock").await;
-    let (watched, guard) = watch(&f, &["lock"]).await;
+#[test]
+fn full_stores_refuse_only_writes_that_would_grow_them() {
+    let limit = 2 * weight("a", 100);
+    let f = fixture(limit);
+    let value = format!("\"{}\"", "x".repeat(98));
+    f.put("a", &value, None).unwrap();
+    f.put("b", &value, None).unwrap();
+    assert_eq!(f.store.stats().unwrap().bytes, limit);
+    assert!(matches!(f.put("c", "1", None), Err(StoreError::Full { .. })));
     assert!(matches!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::Array(_)
+        f.put("a", &format!("\"{}\"", "x".repeat(99)), None),
+        Err(StoreError::Full { .. })
     ));
-    drop(guard);
-    // A later WATCH on the same connection is covered by its guard.
-    let (mut watched, guard) = watch(&f, &["a"]).await;
-    let mut guard = Some(guard);
-    watched.extend(watch_more(&f, &["late"], &mut guard).await);
-    f.run("SET late 1").await;
-    f.run("DEL late").await;
-    assert_eq!(
-        f.store.exec(ops(), watched, ANY).await.unwrap(),
-        Reply::NilArray
-    );
-    // Only watched keys' removals are kept, and nothing once no
-    // connection watches.
-    f.run("SET b 1").await;
-    f.run("DEL b").await;
-    f.run("SET a 1").await;
-    f.run("DEL a").await;
-    {
-        let removals = f.store.removals.lock();
-        assert!(removals.removed.contains_key(b"a".as_slice()));
-        assert!(!removals.removed.contains_key(b"b".as_slice()));
-    }
-    drop(guard);
-    let removals = f.store.removals.lock();
-    assert!(
-        removals.removed.is_empty() && removals.watching.is_empty() && removals.keys.is_empty()
-    );
+    // Overwrites no larger, and deletes, still work.
+    f.put("a", &value, None).unwrap();
+    f.put("a", "1", None).unwrap();
+    f.store.delete("b").unwrap();
+    f.put("c", &value, None).unwrap();
+    assert!(f.store.stats().unwrap().bytes <= limit);
 }
 
-#[tokio::test]
-async fn batches_stop_before_replies_that_do_not_fit() {
+#[test]
+fn concurrent_writers_share_commits_and_lose_nothing() {
     let f = fixture(1 << 30);
-    let value = "x".repeat(300 * 1024);
-    f.run(&format!("SET big {value}")).await;
-    f.run("SET small v").await;
-    let need = Some(value.len() + 16);
-    // A read that does not fit stops the batch; the replies before it stay.
-    let ran = f
-        .store
-        .run(
-            vec![parse("GET small"), parse("GET big"), parse("GET small")],
-            100 * 1024,
-        )
-        .await
-        .unwrap();
-    assert_eq!((ran.replies, ran.short), (vec![bulk("v")], need));
-    // A write that returns a value is checked before it runs, so it has no
-    // effect until there is room for its reply.
-    for command in ["GETDEL big", "GETEX big PERSIST", "SET big x GET"] {
-        let ran = f.store.run(vec![parse(command)], 1024).await.unwrap();
-        assert_eq!((ran.replies.len(), ran.short), (0, need), "{command}");
-    }
-    assert_eq!(f.run("STRLEN big").await, Reply::Int(value.len() as i64));
-    let ran = f
-        .store
-        .run(vec![parse("INCR n"), parse("GETDEL big")], 400 * 1024)
-        .await
-        .unwrap();
-    assert_eq!(ran.short, None);
-    assert_eq!(ran.replies, vec![Reply::Int(1), bulk(&value)]);
-    assert_eq!(f.run("EXISTS big").await, Reply::Int(0));
-    // SCAN pages end at the room instead.
-    for i in 0..100 {
-        f.run(&format!("SET key{i:0>500} v")).await;
-    }
-    let ran = f
-        .store
-        .run(vec![parse("SCAN 0 COUNT 1000")], 8 * 1024)
-        .await
-        .unwrap();
-    let Reply::Array(page) = &ran.replies[0] else {
-        panic!()
-    };
-    let [Reply::Bulk(cursor), Reply::Array(keys)] = page.as_slice() else {
-        panic!()
-    };
-    assert_ne!(cursor.as_ref(), b"0");
-    assert!(keys.len() < 20, "{}", keys.len());
-}
-
-#[tokio::test]
-async fn transactions_cap_their_replies() {
-    let f = fixture(1 << 30);
-    let value = "x".repeat(300 * 1024);
-    f.run(&format!("SET big {value}")).await;
-    let mut ops: Vec<Op> = (0..8).map(|_| Op::Cmd(parse("GET big"))).collect();
-    ops.push(Op::Cmd(parse("INCR n")));
-    let Reply::Array(replies) = f.store.exec(ops, Vec::new(), ANY).await.unwrap() else {
-        panic!()
-    };
-    // The 1 MiB reply limit fits three values; later ones become errors,
-    // and the writes after them still run.
-    assert_eq!(
-        replies
-            .iter()
-            .filter(|r| matches!(r, Reply::Bulk(_)))
-            .count(),
-        3
-    );
-    assert!(matches!(&replies[7], Reply::Error(m) if m.contains("exceed")));
-    assert_eq!(replies[8], Reply::Int(1));
-    assert_eq!(f.run("GET n").await, bulk("1"));
-}
-
-#[tokio::test]
-async fn scan_pages_stop_at_the_reply_limit() {
-    let f = fixture(1 << 30);
-    let long = "k".repeat(1000);
-    for chunk in 0..30 {
-        let pairs: Vec<String> = (0..100)
-            .map(|i| format!("{long}{} v", chunk * 100 + i))
-            .collect();
-        f.run(&format!("MSET {}", pairs.join(" "))).await;
-    }
-    let Reply::Array(page) = f.run("SCAN 0 COUNT 100000").await else {
-        panic!()
-    };
-    let [Reply::Bulk(cursor), Reply::Array(keys)] = page.as_slice() else {
-        panic!()
-    };
-    assert_ne!(cursor.as_ref(), b"0", "the page ended before every key");
-    assert!(keys.len() < 3000 && keys.len() * 1000 <= 1024 * 1024 + 2000);
-    // Following the cursor still visits every key.
-    let mut seen = keys.len();
-    let mut cursor = String::from_utf8(cursor.to_vec()).unwrap();
-    while cursor != "0" {
-        let Reply::Array(page) = f.run(&format!("SCAN {cursor} COUNT 100000")).await else {
-            panic!()
-        };
-        let [Reply::Bulk(next), Reply::Array(keys)] = page.as_slice() else {
-            panic!()
-        };
-        seen += keys.len();
-        cursor = String::from_utf8(next.to_vec()).unwrap();
-    }
-    assert_eq!(seen, 3000);
-}
-
-#[tokio::test]
-async fn expensive_patterns_fail_instead_of_stalling() {
-    let f = fixture(1 << 30);
-    let key = "a".repeat(1000);
-    for i in 0..200 {
-        f.run(&format!("SET {key}{i} v")).await;
-    }
-    let pattern = format!("*{}b", "a".repeat(999));
-    for command in [
-        format!("KEYS {pattern}"),
-        format!("SCAN 0 MATCH {pattern} COUNT 1000"),
-    ] {
-        assert_eq!(
-            f.run(&command).await,
-            Reply::error(glob::TOO_COMPLEX),
-            "{}",
-            &command[..10]
-        );
-    }
-    // Cheap patterns over the same keys still work: keys ending in 1.
-    assert!(matches!(f.run("KEYS a*1").await, Reply::Array(keys) if keys.len() == 20));
-}
-
-#[tokio::test]
-async fn concurrent_writers_share_commits_and_lose_nothing() {
-    let f = fixture(1 << 30);
-    let mut tasks = Vec::new();
-    for _ in 0..64 {
-        let store = f.store.clone();
-        tasks.push(tokio::spawn(async move {
-            for _ in 0..20 {
-                store.run(vec![parse("INCR n")], ANY).await.unwrap();
-            }
-        }));
-    }
-    for task in tasks {
-        task.await.unwrap();
-    }
-    assert_eq!(f.run("GET n").await, bulk("1280"));
-}
-
-#[tokio::test]
-async fn data_survives_reopening() {
-    let f = fixture(1 << 30);
-    f.run("SET k v EX 100").await;
-    f.run("HSET h a 1").await;
-    f.store.close().await;
-    assert!(f.store.run(vec![parse("GET k")], ANY).await.is_err());
-    let reopened = Store::open(&f.path, config(&f.now, 1 << 30)).unwrap();
-    let get = reopened
-        .run(vec![parse("GET k"), parse("HGET h a"), parse("TTL k")], ANY)
-        .await
-        .unwrap()
-        .replies;
-    assert_eq!(get, vec![bulk("v"), bulk("1"), Reply::Int(100)]);
-    assert_eq!(reopened.stats().await.unwrap().keys, 2);
-}
-
-#[tokio::test]
-async fn scan_visits_every_key_once_the_cursor_ends() {
-    let f = fixture(1 << 30);
-    let mut expected = BTreeSet::new();
-    for i in 0..500 {
-        f.run(&format!("SET key:{i} v")).await;
-        expected.insert(format!("key:{i}"));
-    }
-    f.run("HSET hash a b").await;
-    let mut seen = BTreeSet::new();
-    let mut cursor = "0".to_owned();
-    let mut calls = 0;
-    loop {
-        calls += 1;
-        let Reply::Array(parts) = f
-            .run(&format!("SCAN {cursor} MATCH key:* COUNT 7 TYPE string"))
-            .await
-        else {
-            panic!()
-        };
-        let [Reply::Bulk(next), Reply::Array(keys)] = parts.as_slice() else {
-            panic!()
-        };
-        for key in keys {
-            let Reply::Bulk(key) = key else { panic!() };
-            seen.insert(String::from_utf8(key.to_vec()).unwrap());
+    std::thread::scope(|scope| {
+        for writer in 0..16 {
+            let store = f.store.clone();
+            scope.spawn(move || {
+                for i in 0..50 {
+                    store
+                        .put(&format!("w{writer}:{i}"), b"1".to_vec(), None)
+                        .unwrap();
+                }
+            });
         }
-        cursor = String::from_utf8(next.to_vec()).unwrap();
-        if cursor == "0" {
+    });
+    assert_eq!(f.store.stats().unwrap().keys, 800);
+}
+
+#[test]
+fn data_survives_reopening() {
+    let f = fixture(1 << 30);
+    f.put("k", r#""v""#, Some(100_000)).unwrap();
+    f.store.close();
+    assert!(matches!(f.store.get("k"), Err(StoreError::Closed)));
+    let reopened = Store::open(&f.path, config(&f.now, 1 << 30)).unwrap();
+    assert_eq!(reopened.get("k").unwrap().as_deref(), Some(&b"\"v\""[..]));
+    assert_eq!(reopened.stats().unwrap().keys, 1);
+}
+
+#[test]
+fn exports_round_trip_into_another_store_and_skip_expired_keys() {
+    let f = fixture(1 << 30);
+    for i in 0..2_500 {
+        f.put(&format!("key:{i}"), &format!("{{\"n\":{i}}}"), None)
+            .unwrap();
+    }
+    f.put("short", "1", Some(1_000)).unwrap();
+    f.put("long", "2", Some(100_000)).unwrap();
+    let export = f.dir.path().join("export.redb");
+    let exported = f.store.export_to(&export).unwrap();
+    assert_eq!(exported.keys, 2_502);
+
+    let other = fixture(1 << 30);
+    other.put("old", "1", None).unwrap();
+    other.advance(5_000);
+    let imported = other.store.replace_from(&export).unwrap();
+    // `short` expired before the import; `old` was replaced.
+    assert_eq!(imported.keys, 2_501);
+    assert_eq!(other.get("old"), None);
+    assert_eq!(other.get("key:2499").as_deref(), Some(r#"{"n":2499}"#));
+    assert_eq!(other.get("long").as_deref(), Some("2"));
+    assert_eq!(other.store.stats().unwrap(), imported);
+    // Expiry times are absolute, so `long` keeps its original deadline.
+    other.advance(1_000_000 + 100_000 - 1_005_000);
+    assert_eq!(other.get("long"), None);
+}
+
+#[test]
+fn imports_reject_other_files_and_oversized_exports_without_changes() {
+    let f = fixture(1 << 30);
+    f.put("kept", "1", None).unwrap();
+    let not_export = f.dir.path().join("plain.txt");
+    std::fs::write(&not_export, "hello").unwrap();
+    assert!(matches!(
+        f.store.replace_from(&not_export),
+        Err(StoreError::Invalid(_))
+    ));
+    // An export that does not fit this store's limit is refused whole.
+    let big = fixture(1 << 30);
+    for i in 0..100 {
+        big.put(&format!("k{i}"), &format!("\"{}\"", "x".repeat(100)), None)
+            .unwrap();
+    }
+    let export = f.dir.path().join("big.redb");
+    big.store.export_to(&export).unwrap();
+    let small = fixture(weight("k0", 102) * 10);
+    small.put("kept", "1", None).unwrap();
+    assert!(small.store.replace_from(&export).is_err());
+    assert_eq!(small.get("kept").as_deref(), Some("1"));
+    assert_eq!(f.get("kept").as_deref(), Some("1"));
+}
+
+#[test]
+fn replaced_generations_are_freed_in_the_background() {
+    let f = fixture(1 << 30);
+    for i in 0..3_000 {
+        f.put(&format!("k{i}"), "1", Some(1_000_000)).unwrap();
+    }
+    let export = f.dir.path().join("empty.redb");
+    fixture(1 << 30).store.export_to(&export).unwrap();
+    f.store.replace_from(&export).unwrap();
+    assert_eq!(f.store.stats().unwrap(), Stats::default());
+    let db = f.store.db().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let txn = db.begin_read().unwrap();
+        let (generation, trash) = read_generations(&txn.open_table(META).unwrap()).unwrap();
+        if trash.is_none() {
+            assert_eq!(generation, 1);
             break;
         }
+        assert!(Instant::now() < deadline, "the old generation was not freed");
+        drop(txn);
+        std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(seen, expected);
-    assert!(calls > 50, "COUNT bounds each call's work");
-    let Reply::Array(all) = f.run("KEYS key:1?").await else {
-        panic!()
-    };
-    assert_eq!(all.len(), 10);
-    assert_eq!(f.run("DBSIZE").await, Reply::Int(501));
-}
-
-/// Follows HSCAN's cursor to the end, collecting what each page returns.
-async fn hscan_pages(f: &Fixture, key: &str, options: &str) -> (Vec<String>, usize) {
-    let mut seen = Vec::new();
-    let mut cursor = "0".to_owned();
-    let mut calls = 0;
-    loop {
-        calls += 1;
-        let Reply::Array(parts) = f.run(&format!("HSCAN {key} {cursor} {options}")).await else {
-            panic!()
-        };
-        let [Reply::Bulk(next), Reply::Array(items)] = parts.as_slice() else {
-            panic!("{parts:?}")
-        };
-        for item in items {
-            let Reply::Bulk(item) = item else { panic!() };
-            seen.push(String::from_utf8(item.to_vec()).unwrap());
-        }
-        cursor = String::from_utf8(next.to_vec()).unwrap();
-        if cursor == "0" {
-            return (seen, calls);
-        }
-    }
-}
-
-async fn hscan_all(f: &Fixture, key: &str, options: &str) -> BTreeSet<String> {
-    hscan_pages(f, key, options).await.0.into_iter().collect()
-}
-
-#[tokio::test]
-async fn hscan_pages_through_large_hashes() {
-    let f = fixture(1 << 30);
-    let mut expected = BTreeSet::new();
-    for i in 0..500 {
-        f.run(&format!("HSET h f:{i} v{i}")).await;
-        expected.insert(format!("f:{i}"));
-    }
-    f.run("HSET h other x").await;
-    let (fields, calls) = hscan_pages(&f, "h", "MATCH f:* COUNT 7 NOVALUES").await;
-    assert_eq!(fields.len(), 500, "no field is returned twice");
-    assert_eq!(fields.into_iter().collect::<BTreeSet<_>>(), expected);
-    assert!(calls > 50, "COUNT bounds each call's work");
-    // With values, fields and values alternate.
-    let (items, _) = hscan_pages(&f, "h", "COUNT 100").await;
-    assert_eq!(items.len(), 1002);
-    for pair in items.chunks(2) {
-        if pair[0] != "other" {
-            assert_eq!(pair[1], format!("v{}", &pair[0][2..]));
-        }
-    }
-    assert_eq!(hscan_all(&f, "missing", "COUNT 5").await, BTreeSet::new());
-}
-
-#[tokio::test]
-async fn large_replies_are_refused() {
-    let f = fixture(1 << 30);
-    let value = "x".repeat(300 * 1024);
-    for i in 0..4 {
-        f.run(&format!("HSET h f{i} {value}")).await;
-        f.run(&format!("SET s{i} {value}")).await;
-    }
-    assert!(matches!(f.run("HGETALL h").await, Reply::Error(m) if m.contains("exceed")));
-    assert!(matches!(f.run("MGET s0 s1 s2 s3").await, Reply::Error(m) if m.contains("exceed")));
-    assert_eq!(f.run("HLEN h").await, Reply::Int(4));
-    // HSCAN pages instead: each page stays under the limit.
-    let (items, calls) = hscan_pages(&f, "h", "COUNT 100").await;
-    assert_eq!(items.len(), 8);
-    assert!(calls > 1);
 }

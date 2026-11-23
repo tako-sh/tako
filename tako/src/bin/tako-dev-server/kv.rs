@@ -1,22 +1,21 @@
 //! Local KV stores for apps registered with the dev daemon.
 //!
-//! The daemon serves each project's store files over the same Redis protocol
-//! as `tako-server`, on one loopback port shared by every registered app.
-//! Each registration (keyed by its config path) gets its own tokens, which
-//! stay stable across re-registration while a binding names the same file,
-//! so connected clients and workflow workers keep working after a reload.
+//! The daemon serves each project's store files through its internal
+//! socket, as `tako-server` does. Each registration (keyed by its config
+//! path) gets its own tokens, which stay stable across re-registration while
+//! a binding names the same file, so running processes and workflow workers
+//! keep working after a reload.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
-use tako_core::KvConnection;
-use tako_kv::{Access, Binding, Home, HostConfig, KvHost, StoreId};
-use tokio::sync::{Mutex, OnceCell};
+use tako_core::{KvConnection, KvRequest, Response};
+use tako_kv::{Binding, Home, HostConfig, KvHost, StoreId};
+use tokio::sync::Mutex;
 
 struct Server {
     host: KvHost,
-    address: String,
     registrations: Mutex<Registrations>,
 }
 
@@ -28,28 +27,22 @@ struct Registrations {
     scopes: HashMap<String, Scope>,
 }
 
-static SERVER: OnceCell<Server> = OnceCell::const_new();
+static SERVER: std::sync::LazyLock<Server> = std::sync::LazyLock::new(|| Server {
+    host: KvHost::new(HostConfig::default()),
+    registrations: Mutex::new(Registrations::default()),
+});
 
-async fn server() -> Result<&'static Server, String> {
-    SERVER
-        .get_or_try_init(|| async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|e| format!("bind local KV port: {e}"))?;
-            let address = listener
-                .local_addr()
-                .map_err(|e| e.to_string())?
-                .to_string();
-            let host = KvHost::new(HostConfig::default());
-            tokio::spawn(tako_kv::serve(host.clone(), listener, Access::Apps));
-            tracing::info!(address = %address, "Serving local KV stores");
-            Ok(Server {
-                host,
-                address,
-                registrations: Mutex::new(Registrations::default()),
-            })
-        })
-        .await
+fn server() -> &'static Server {
+    &SERVER
+}
+
+/// Serves an app's request from the internal socket. `config_path` is the
+/// registration of the calling app. Blocks.
+pub(crate) fn call(config_path: &str, token: &str, request: KvRequest) -> Response {
+    match server().host.call(config_path, token, request) {
+        Ok(value) => Response::ok(value),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// A stable ID for a store file; it never leaves this process.
@@ -77,7 +70,7 @@ pub(crate) async fn connect(
             ));
         }
     }
-    let server = server().await?;
+    let server = server();
     let mut registrations = server.registrations.lock().await;
     let previous = registrations
         .scopes
@@ -97,7 +90,7 @@ pub(crate) async fn connect(
     server.host.set_bindings(config_path, host_bindings);
     let connections = scope
         .iter()
-        .map(|(binding, (_, token))| (binding.clone(), KvConnection::new(&server.address, token)))
+        .map(|(binding, (_, token))| (binding.clone(), KvConnection::new(token)))
         .collect();
     registrations.scopes.insert(config_path.to_owned(), scope);
     close_unused(server, &mut registrations).await;
@@ -130,9 +123,10 @@ async fn open_bindings(
                 // Creating and opening the file blocks.
                 tokio::task::spawn_blocking(move || {
                     if let Some(parent) = register_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
                     host.register(register_id, register_path)
+                        .map_err(|e| e.to_string())
                 })
                 .await
                 .map_err(|e| e.to_string())?
@@ -158,9 +152,7 @@ async fn open_bindings(
 /// Revokes the bindings of the app registered at `config_path` and closes
 /// files no other app uses.
 pub(crate) async fn release(config_path: &str) {
-    let Some(server) = SERVER.get() else {
-        return;
-    };
+    let server = server();
     let mut registrations = server.registrations.lock().await;
     if registrations.scopes.remove(config_path).is_none() {
         return;
@@ -182,8 +174,16 @@ async fn close_unused(server: &Server, registrations: &mut Registrations) {
         .map(|(path, id)| (path.clone(), id.clone()))
         .collect();
     for (path, id) in unused {
-        if let Err(error) = server.host.unregister(&id).await {
-            tracing::warn!(path = %path.display(), "Failed to close local KV store: {error}");
+        let host = server.host.clone();
+        // Closing waits for the store's pending writes.
+        match tokio::task::spawn_blocking(move || host.unregister(&id)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(path = %path.display(), "Failed to close local KV store: {error}");
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "Failed to close local KV store: {error}");
+            }
         }
         registrations.files.remove(&path);
     }
@@ -192,46 +192,28 @@ async fn close_unused(server: &Server, registrations: &mut Registrations) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Runs commands on a fresh connection and returns everything it replies.
-    async fn send(connection: &KvConnection, commands: &str) -> String {
-        let (token, address) = connection
-            .url
-            .strip_prefix("redis://:")
-            .and_then(|rest| rest.split_once('@'))
-            .unwrap();
-        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-        stream
-            .write_all(format!("AUTH {token}\r\n{commands}").as_bytes())
+    /// Runs `request` as the app registered at `config_path`.
+    async fn send(config_path: &str, connection: &KvConnection, request: KvRequest) -> Response {
+        let (config_path, token) = (config_path.to_owned(), connection.token.clone());
+        tokio::task::spawn_blocking(move || call(&config_path, &token, request))
             .await
-            .unwrap();
-        let mut got = Vec::new();
-        let mut chunk = [0u8; 1024];
-        while let Ok(Ok(n)) = tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            stream.read(&mut chunk),
-        )
-        .await
-        {
-            if n == 0 {
-                break;
-            }
-            got.extend_from_slice(&chunk[..n]);
+            .unwrap()
+    }
+
+    fn put(key: &str) -> KvRequest {
+        KvRequest::Put {
+            key: key.into(),
+            json: r#""v""#.into(),
+            ttl_ms: None,
         }
-        String::from_utf8(got).unwrap()
     }
 
-    /// The daemon's server is one per process, and its listener runs on the
-    /// runtime that first starts it. Each `#[tokio::test]` has its own
-    /// runtime, which ends with the test, so every test that uses the
-    /// server runs in this one.
+    fn get(key: &str) -> KvRequest {
+        KvRequest::Get { key: key.into() }
+    }
+
     #[tokio::test]
-    async fn registrations() {
-        registrations_share_files_and_keep_tokens().await;
-        failed_registrations_close_the_files_they_opened().await;
-    }
-
     async fn registrations_share_files_and_keep_tokens() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir
@@ -244,17 +226,24 @@ mod tests {
 
         let first = connect("/a/tako.toml", &bindings).await.unwrap();
         let other = connect("/b/tako.toml", &bindings).await.unwrap();
-        assert_ne!(first["auth"].url, other["auth"].url);
-        assert_eq!(send(&first["auth"], "SET k v\r\n").await, "+OK\r\n+OK\r\n");
+        assert_ne!(first["auth"].token, other["auth"].token);
+        assert!(matches!(
+            send("/a/tako.toml", &first["auth"], put("k")).await,
+            Response::Ok { .. }
+        ));
+        // A registration cannot use another's token.
+        assert!(send("/b/tako.toml", &first["auth"], get("k")).await.error_message().is_some());
 
         let again = connect("/a/tako.toml", &bindings).await.unwrap();
-        assert_eq!(again["auth"].url, first["auth"].url);
+        assert_eq!(again["auth"].token, first["auth"].token);
 
         release("/a/tako.toml").await;
-        assert!(send(&first["auth"], "").await.starts_with("-WRONGPASS"));
-        assert_eq!(
-            send(&other["auth"], "GET k\r\n").await,
-            "+OK\r\n$1\r\nv\r\n",
+        assert!(send("/a/tako.toml", &first["auth"], get("k")).await.error_message().is_some());
+        assert!(
+            matches!(
+                send("/b/tako.toml", &other["auth"], get("k")).await,
+                Response::Ok { data } if data == r#""v""#
+            ),
             "the file stays open for /b"
         );
         release("/b/tako.toml").await;
@@ -263,9 +252,7 @@ mod tests {
 
     /// Whether the daemon has `file` open.
     async fn is_open(file: &str) -> bool {
-        SERVER
-            .get()
-            .unwrap()
+        server()
             .registrations
             .lock()
             .await
@@ -273,6 +260,7 @@ mod tests {
             .contains_key(Path::new(file))
     }
 
+    #[tokio::test]
     async fn failed_registrations_close_the_files_they_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = |name: &str| dir.path().join(name).display().to_string();
@@ -295,9 +283,8 @@ mod tests {
             "the file the failed call opened is closed"
         );
         assert!(is_open(&kept).await);
-        assert_eq!(
-            send(&first["a"], "SET k v\r\n").await,
-            "+OK\r\n+OK\r\n",
+        assert!(
+            matches!(send("/d/tako.toml", &first["a"], put("k")).await, Response::Ok { .. }),
             "the previous binding still works"
         );
         release("/d/tako.toml").await;

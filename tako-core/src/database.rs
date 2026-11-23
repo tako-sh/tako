@@ -2,11 +2,11 @@
 //! app SDKs.
 //!
 //! A database is a file owned by the server that hosts it (its home server):
-//! a SQLite database, or a key-value store that speaks the Redis protocol.
-//! Its name identifies it: names are unique within a network, across both
-//! engines. Apps reach it through a binding: the server gives each bound app
-//! process a URL and token for the SQL over HTTP protocol, or a `redis://`
-//! URL for a key-value store.
+//! a SQLite database, or a key-value store of JSON values with optional
+//! expiry. Its name identifies it: names are unique within a network, across
+//! both engines. Apps reach it through a binding: the server gives each bound
+//! app process a URL and token for the SQL over HTTP protocol, or a token the
+//! SDK sends through the internal socket for a key-value store.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,10 +23,8 @@ pub fn channel_replay_grant_scope(app: &str) -> String {
 pub const DATABASE_APP_PORT: u16 = 9845;
 /// Default private-network port where home servers accept forwarded requests.
 pub const DATABASE_PEER_PORT: u16 = 9847;
-/// Default loopback port of the key-value store endpoint for apps.
-pub const KV_APP_PORT: u16 = 9846;
-/// Default private-network port where home servers accept relayed
-/// key-value connections.
+/// Default private-network port where a KV store's server accepts
+/// requests forwarded for apps on other servers.
 pub const KV_PEER_PORT: u16 = 9848;
 /// Bytes of a database file moved per import or export request.
 pub const DATABASE_TRANSFER_CHUNK_BYTES: u64 = 512 * 1024;
@@ -75,7 +73,7 @@ pub enum DatabaseEngine {
     /// SQLite, served over the libSQL HTTP protocol.
     #[default]
     Sqlite,
-    /// A key-value store, served over the Redis protocol.
+    /// A key-value store, served through the internal socket.
     Kv,
 }
 
@@ -130,32 +128,27 @@ impl std::fmt::Debug for DatabaseBinding {
     }
 }
 
-/// What an app process receives for each key-value store binding: a
-/// `redis://` URL whose password is the binding's token, which Redis
-/// clients accept as is.
+/// What an app process receives for each KV binding in its bootstrap
+/// envelope: the binding's token, which its SDK sends with each call over
+/// the internal socket.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KvConnection {
-    pub url: String,
+    pub token: String,
 }
 
 impl KvConnection {
-    /// The URL for the store endpoint at `address`, authorized by `token`.
-    pub fn new(address: &str, token: &str) -> Self {
+    pub fn new(token: &str) -> Self {
         Self {
-            url: format!("redis://:{token}@{address}"),
+            token: token.to_owned(),
         }
     }
 }
 
-/// The URL carries the token, so it is never printed.
+/// The token authorizes the binding, so it is never printed.
 impl std::fmt::Debug for KvConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = match self.url.split_once('@') {
-            Some((_, address)) => format!("redis://:[REDACTED]@{address}"),
-            None => "[REDACTED]".into(),
-        };
         f.debug_struct("KvConnection")
-            .field("url", &redacted)
+            .field("token", &"[REDACTED]")
             .finish()
     }
 }
@@ -324,11 +317,9 @@ mod tests {
 
     #[test]
     fn kv_connections_redact_their_token() {
-        let connection = KvConnection::new("127.0.0.1:9846", "secret-token");
-        assert_eq!(connection.url, "redis://:secret-token@127.0.0.1:9846");
-        let printed = format!("{connection:?}");
-        assert!(!printed.contains("secret-token"));
-        assert!(printed.contains("127.0.0.1:9846"));
+        let connection = KvConnection::new("secret-token");
+        assert_eq!(connection.token, "secret-token");
+        assert!(!format!("{connection:?}").contains("secret-token"));
     }
 
     #[test]

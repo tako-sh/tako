@@ -117,9 +117,14 @@ pub struct SocketOptions {
     /// user uses 0666 behind a directory only Tako can list.
     pub mode: Option<u32>,
     pub cache: Option<CacheFn>,
+    pub kv: Option<KvFn>,
 }
 
 pub type CacheFn = Arc<dyn Fn(&str, bool, tako_core::CacheRequest) -> Response + Send + Sync>;
+
+/// Serves one KV call for the authenticated app: `(app, binding token,
+/// request)`. May wait on another server, so it runs on the network pool.
+pub type KvFn = Arc<dyn Fn(&str, &str, tako_core::KvRequest) -> Response + Send + Sync>;
 
 /// Routes a validated destination after the socket has authenticated the caller.
 pub type NetworkCallFn =
@@ -246,6 +251,7 @@ pub fn spawn_with_options(
         peer_auth,
         network_call,
         options.cache,
+        options.kv,
         shutdown_rx,
     ));
 
@@ -357,6 +363,7 @@ async fn run(
     peer_auth: Option<PeerAuthFn>,
     network_call: Option<NetworkCallFn>,
     cache: Option<CacheFn>,
+    kv: Option<KvFn>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     tokio::pin!(shutdown_rx);
@@ -371,6 +378,7 @@ async fn run(
                         let peer_auth = peer_auth.clone();
                         let network_call = network_call.clone();
                         let cache = cache.clone();
+                        let kv = kv.clone();
                         let peer_uid = stream.peer_cred().ok().map(|cred| cred.uid());
                         tokio::spawn(async move {
                             let _ = serve_jsonl_connection(
@@ -381,8 +389,12 @@ async fn run(
                                     let peer_auth = peer_auth.clone();
                                     let network_call = network_call.clone();
                                     let cache = cache.clone();
+                                    let kv = kv.clone();
                                     async move {
-                                        let is_network = matches!(&cmd, Command::NetworkCall { .. });
+                                        let is_network = matches!(
+                                            &cmd,
+                                            Command::NetworkCall { .. } | Command::Kv { .. }
+                                        );
                                         let operation = move || {
                                             handle_command(
                                                 &lookup,
@@ -391,6 +403,7 @@ async fn run(
                                                 peer_uid,
                                                 network_call.as_ref(),
                                                 cache.as_ref(),
+                                                kv.as_ref(),
                                                 cmd,
                                             )
                                         };
@@ -467,6 +480,7 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::ChannelPublish { app, .. }
         | Command::ChannelClose { app, .. }
         | Command::Cache { app, .. }
+        | Command::Kv { app, .. }
         | Command::NetworkCall { app, .. } => Some(app),
         _ => None,
     }
@@ -495,6 +509,7 @@ fn handle_command(
     peer_uid: Option<u32>,
     network_call: Option<&NetworkCallFn>,
     cache: Option<&CacheFn>,
+    kv: Option<&KvFn>,
     cmd: Command,
 ) -> Response {
     let app = match command_app(&cmd) {
@@ -519,6 +534,12 @@ fn handle_command(
         return match cache {
             Some(cache) => cache(&app, shared, request),
             None => Response::coded_error(ErrorCode::Unavailable, "cache unavailable"),
+        };
+    }
+    if let Command::Kv { token, request, .. } = cmd {
+        return match kv {
+            Some(kv) => kv(&app, &token, request),
+            None => Response::coded_error(ErrorCode::Unavailable, "KV stores are unavailable"),
         };
     }
 

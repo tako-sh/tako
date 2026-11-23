@@ -85,6 +85,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. }
         // Database operations neither start app processes nor touch

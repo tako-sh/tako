@@ -5,17 +5,19 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-bytes = "1"
 getrandom = "0.4"
 hex = "0.4"
 parking_lot = "0.13"
 redb = "5"
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.11"
+tako-core = { path = "../tako-core" }
+tako-socket = { path = "../tako-socket" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-redis = { version = "0.32", default-features = false, features = ["tokio-comp"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

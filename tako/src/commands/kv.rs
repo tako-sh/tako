@@ -1,14 +1,13 @@
-//! `tako kv`: Tako-hosted KV stores, which speak the Redis protocol.
+//! `tako kv`: Tako-hosted KV stores of JSON values with optional expiry.
 //!
 //! A KV store is hosted like a SQLite database: on one server of the
 //! network, recorded in the network state under a name no database or store
 //! shares, and bound per environment, here in `[envs.<env>].kv`.
 
-use std::io::{BufRead, Write};
 use std::path::Path;
 
 use clap::{Args, Subcommand};
-use tako_core::{Command, DatabaseEngine};
+use tako_core::{Command, DatabaseEngine, KvRequest};
 
 use crate::commands::sqlite::{self, Context, send};
 use crate::output;
@@ -40,14 +39,34 @@ pub enum KvCommands {
         name: Option<String>,
     },
 
-    /// Run Redis commands against a store
-    Shell {
+    /// Print a key's JSON value
+    Get {
         /// Store name
         name: String,
-        /// One command to run, such as `GET session:42`, instead of opening
-        /// an interactive shell
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
+        /// Key
+        key: String,
+    },
+
+    /// Set a key to a JSON value
+    Put {
+        /// Store name
+        name: String,
+        /// Key
+        key: String,
+        /// JSON value, such as `'{"plan":"pro"}'` or `'"text"'`; `-` reads stdin
+        value: String,
+        /// Remove the key after this long, such as `30s`, `15m`, `2h` or `7d`
+        #[arg(long, value_parser = parse_ttl)]
+        ttl: Option<std::time::Duration>,
+    },
+
+    /// Remove a key
+    #[command(name = "delete-key")]
+    DeleteKey {
+        /// Store name
+        name: String,
+        /// Key
+        key: String,
     },
 
     /// Delete a store and every key in it
@@ -80,10 +99,59 @@ async fn run_async(
         KvCommands::Status { name } => {
             sqlite::status(&ctx, name.as_deref(), DatabaseEngine::Kv).await
         }
-        KvCommands::Shell { name, command } => {
-            ctx.require_admin()?;
-            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
-            shell(&home, &name, command).await
+        KvCommands::Get { name, key } => {
+            let value = query(&ctx, &name, KvRequest::Get { key: key.clone() }).await?;
+            let Some(json) = value.as_str() else {
+                return Err(format!("{key} is not set in {name}.").into());
+            };
+            if output::is_json() {
+                let value: serde_json::Value = serde_json::from_str(json)?;
+                return output::json_result(
+                    serde_json::json!({"ok": true, "command": "kv get", "key": key, "value": value}),
+                );
+            }
+            println!("{json}");
+            Ok(())
+        }
+        KvCommands::Put {
+            name,
+            key,
+            value,
+            ttl,
+        } => {
+            let json = if value == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                text
+            } else {
+                value
+            };
+            let json = json.trim().to_owned();
+            if serde_json::from_str::<serde::de::IgnoredAny>(&json).is_err() {
+                return Err(
+                    "The value must be JSON. Quote text as a JSON string, such as '\"hello\"'."
+                        .into(),
+                );
+            }
+            let ttl_ms = ttl.map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX));
+            query(&ctx, &name, KvRequest::Put { key: key.clone(), json, ttl_ms }).await?;
+            if output::is_json() {
+                return output::json_result(
+                    serde_json::json!({"ok": true, "command": "kv put", "key": key}),
+                );
+            }
+            output::success(&format!("Set {key} in {name}"));
+            Ok(())
+        }
+        KvCommands::DeleteKey { name, key } => {
+            query(&ctx, &name, KvRequest::Delete { key: key.clone() }).await?;
+            if output::is_json() {
+                return output::json_result(
+                    serde_json::json!({"ok": true, "command": "kv delete-key", "key": key}),
+                );
+            }
+            output::success(&format!("Removed {key} from {name}"));
+            Ok(())
         }
         KvCommands::Delete { name, yes } => {
             sqlite::delete(&ctx, &name, yes, DatabaseEngine::Kv).await
@@ -91,190 +159,63 @@ async fn run_async(
     }
 }
 
-async fn shell(
-    home: &sqlite::target::Home,
-    name: &str,
-    command: Vec<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !command.is_empty() {
-        let reply = query(home, name, command).await?;
-        // An error reply fails the command; with --json the CLI reports it
-        // as `{"ok": false, "error": ...}`.
-        if let Some(error) = reply.get("error").and_then(|e| e.as_str()) {
-            if !output::is_json() {
-                println!("{}", render(&reply, 0));
-            }
-            return Err(error.to_owned().into());
-        }
-        if output::is_json() {
-            return output::json_result(
-                serde_json::json!({"ok": true, "command": "kv", "reply": reply}),
-            );
-        }
-        println!("{}", render(&reply, 0));
-        return Ok(());
-    }
-    let interactive = output::is_interactive();
-    if interactive {
-        output::hint(&format!(
-            "Connected to {name} on {}. Enter Redis commands; `quit` ends the shell.",
-            home.name
-        ));
-    }
-    let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
-    loop {
-        if interactive {
-            eprint!("{name}> ");
-            std::io::stderr().flush()?;
-        }
-        let Some(line) = lines.next() else { break };
-        let args = match split(&line?) {
-            Ok(args) => args,
-            Err(error) => {
-                output::error_stderr(&error);
-                continue;
-            }
-        };
-        match args.first().map(|a| a.to_ascii_lowercase()) {
-            None => continue,
-            Some(first) if first == "quit" || first == "exit" => break,
-            Some(_) => {}
-        }
-        match query(home, name, args).await {
-            Ok(reply) if output::is_json() => println!("{}", serde_json::to_string(&reply)?),
-            Ok(reply) => println!("{}", render(&reply, 0)),
-            Err(error) => output::error_stderr(&error.to_string()),
-        }
-    }
-    Ok(())
-}
-
 async fn query(
-    home: &sqlite::target::Home,
+    ctx: &Context,
     name: &str,
-    args: Vec<String>,
+    request: KvRequest,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    ctx.require_admin()?;
+    let (_, home) = ctx.resource(name, DatabaseEngine::Kv)?;
     send(
-        home,
+        &home,
         Command::QueryKv {
             name: name.to_owned(),
-            args,
+            request,
         },
     )
     .await
 }
 
-/// Renders a reply the way `redis-cli` does in a terminal.
-fn render(reply: &serde_json::Value, indent: usize) -> String {
-    use serde_json::Value;
-    match reply {
-        Value::Null => "(nil)".into(),
-        Value::String(text) => text.clone(),
-        Value::Number(number) => format!("(integer) {number}"),
-        Value::Bool(value) => value.to_string(),
-        Value::Object(object) => match (object.get("error"), object.get("base64")) {
-            (Some(Value::String(error)), _) => format!("(error) {error}"),
-            (_, Some(Value::String(base64))) => format!("(binary, {} bytes)", base64.len() * 3 / 4),
-            _ => reply.to_string(),
-        },
-        Value::Array(items) if items.is_empty() => "(empty array)".into(),
-        Value::Array(items) => {
-            let width = items.len().to_string().len();
-            items
-                .iter()
-                .enumerate()
-                .map(|(i, item)| {
-                    let prefix = format!("{:>width$}) ", i + 1);
-                    let pad = if i == 0 { 0 } else { indent };
-                    format!(
-                        "{}{prefix}{}",
-                        " ".repeat(pad),
-                        render(item, indent + prefix.len())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-    }
-}
-
-/// Splits a shell line into arguments: on whitespace, with double quotes
-/// (supporting `\n`, `\"` and `\\` escapes) and single quotes.
-fn split(line: &str) -> Result<Vec<String>, String> {
-    let mut args = Vec::new();
-    let mut chars = line.chars().peekable();
-    loop {
-        while chars.peek().is_some_and(|c| c.is_whitespace()) {
-            chars.next();
-        }
-        let Some(&first) = chars.peek() else {
-            return Ok(args);
-        };
-        let mut arg = String::new();
-        if first == '"' || first == '\'' {
-            chars.next();
-            loop {
-                match chars.next() {
-                    None => return Err("Unbalanced quotes".into()),
-                    Some(c) if c == first => break,
-                    Some('\\') if first == '"' => match chars.next() {
-                        Some('n') => arg.push('\n'),
-                        Some('r') => arg.push('\r'),
-                        Some('t') => arg.push('\t'),
-                        Some(other) => arg.push(other),
-                        None => return Err("Unbalanced quotes".into()),
-                    },
-                    Some(c) => arg.push(c),
-                }
-            }
-            if chars.peek().is_some_and(|c| !c.is_whitespace()) {
-                return Err("Closing quote must be followed by a space".into());
-            }
-        } else {
-            while let Some(&c) = chars.peek() {
-                if c.is_whitespace() {
-                    break;
-                }
-                arg.push(c);
-                chars.next();
-            }
-        }
-        args.push(arg);
+/// Parses a TTL: a whole number followed by `s`, `m`, `h` or `d`, or plain
+/// seconds.
+fn parse_ttl(text: &str) -> Result<std::time::Duration, String> {
+    let text = text.trim();
+    let (number, unit) = match text.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((at, _)) => text.split_at(at),
+        None => (text, "s"),
+    };
+    let seconds_per = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(format!("unknown unit {unit:?}; use s, m, h or d")),
+    };
+    let count: u64 = number
+        .parse()
+        .map_err(|_| format!("{text:?} is not a duration such as 30s, 15m, 2h or 7d"))?;
+    match count.checked_mul(seconds_per) {
+        Some(0) => Err("the TTL must be longer than zero".into()),
+        Some(seconds) => Ok(std::time::Duration::from_secs(seconds)),
+        None => Err("the TTL is too long".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn lines_split_like_redis_cli() {
-        assert_eq!(
-            split(r#"SET "user:1 name" 'it''s' "a\"b\n""#).unwrap_err(),
-            "Closing quote must be followed by a space"
-        );
-        assert_eq!(
-            split(r#"  SET "user:1 name" 'x y' "a\"b\n"  "#).unwrap(),
-            vec!["SET", "user:1 name", "x y", "a\"b\n"]
-        );
-        assert!(split("GET \"open").is_err());
-        assert!(split("   ").unwrap().is_empty());
-    }
-
-    #[test]
-    fn replies_render_like_redis_cli() {
-        assert_eq!(render(&json!("OK"), 0), "OK");
-        assert_eq!(render(&json!(5), 0), "(integer) 5");
-        assert_eq!(render(&json!(null), 0), "(nil)");
-        assert_eq!(render(&json!([]), 0), "(empty array)");
-        assert_eq!(render(&json!({"error": "ERR x"}), 0), "(error) ERR x");
-        assert_eq!(render(&json!({"base64": "AAAA"}), 0), "(binary, 3 bytes)");
-        assert_eq!(
-            render(&json!(["0", ["a", "b"]]), 0),
-            "1) 0\n2) 1) a\n   2) b"
-        );
-        assert_eq!(render(&json!([["f", "v"]]), 0), "1) 1) f\n   2) v");
+    fn ttls_parse_in_common_units() {
+        use std::time::Duration;
+        assert_eq!(parse_ttl("30s"), Ok(Duration::from_secs(30)));
+        assert_eq!(parse_ttl("15m"), Ok(Duration::from_secs(900)));
+        assert_eq!(parse_ttl("2h"), Ok(Duration::from_secs(7200)));
+        assert_eq!(parse_ttl("7d"), Ok(Duration::from_secs(604_800)));
+        assert_eq!(parse_ttl("45"), Ok(Duration::from_secs(45)));
+        assert!(parse_ttl("0s").is_err());
+        assert!(parse_ttl("5w").is_err());
+        assert!(parse_ttl("h").is_err());
+        assert!(parse_ttl("").is_err());
     }
 }

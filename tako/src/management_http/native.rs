@@ -220,6 +220,7 @@ pub(super) fn rpc_action(
         | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. } => {
             return Err(error(

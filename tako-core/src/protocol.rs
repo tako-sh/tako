@@ -31,6 +31,64 @@ pub enum CacheRequest {
         key: String,
     },
 }
+
+/// The longest KV key, in bytes of UTF-8.
+pub const KV_MAX_KEY_BYTES: usize = 1024;
+/// The longest KV value, in bytes of serialized JSON.
+pub const KV_MAX_VALUE_BYTES: usize = 256 * 1024;
+
+/// Operations on one key of a KV store. Values are JSON text, stored as
+/// given. A key without `ttl_ms` stays until it is deleted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum KvRequest {
+    /// Replies with the value's JSON text, or null when the key is missing
+    /// or expired.
+    Get { key: String },
+    Put {
+        key: String,
+        json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+    },
+    Delete { key: String },
+}
+
+impl KvRequest {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Get { key } | Self::Put { key, .. } | Self::Delete { key } => key,
+        }
+    }
+
+    pub fn writes(&self) -> bool {
+        !matches!(self, Self::Get { .. })
+    }
+
+    /// Checks the key and value limits and that the value is JSON.
+    pub fn validate(&self) -> Result<(), String> {
+        let key = self.key();
+        if key.is_empty() {
+            return Err("KV key cannot be empty.".into());
+        }
+        if key.len() > KV_MAX_KEY_BYTES {
+            return Err(format!("KV key exceeds {KV_MAX_KEY_BYTES} bytes."));
+        }
+        if let Self::Put { json, ttl_ms, .. } = self {
+            if json.len() > KV_MAX_VALUE_BYTES {
+                return Err(format!("KV value exceeds {} KiB.", KV_MAX_VALUE_BYTES / 1024));
+            }
+            if serde_json::from_str::<serde::de::IgnoredAny>(json).is_err() {
+                return Err("KV value must be JSON.".into());
+            }
+            if *ttl_ms == Some(0) {
+                return Err("KV ttl must be a positive number of milliseconds.".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
 
 pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec<u8> {
@@ -334,9 +392,10 @@ pub enum Command {
     /// Run one SQL statement as an administrator, for `tako sqlite shell`.
     QueryDatabase { name: String, sql: String },
 
-    /// Run one Redis command on a key-value store as an administrator, for
-    /// `tako kv shell`. Replies with a `KvQueryResult`.
-    QueryKv { name: String, args: Vec<String> },
+    /// Read or write one key of a KV store this server hosts, as an
+    /// administrator, for `tako kv get|put|delete`. Replies as the internal
+    /// socket's `Kv` does: the value's JSON text or null.
+    QueryKv { name: String, request: KvRequest },
 
     /// Apply an app's SQL migrations: each pending file in order, once,
     /// after a snapshot when any are pending. Replies with a
@@ -671,6 +730,15 @@ pub enum Command {
         shared: bool,
         #[serde(flatten)]
         request: CacheRequest,
+    },
+    /// One key of a KV store the caller binds. `token` is the binding's,
+    /// from the app's bootstrap envelope; the server serves the store or
+    /// forwards the request to the store's server.
+    Kv {
+        app: String,
+        token: String,
+        #[serde(flatten)]
+        request: KvRequest,
     },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.
     NetworkCall {

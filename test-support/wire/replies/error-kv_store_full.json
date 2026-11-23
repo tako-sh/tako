@@ -1,0 +1,5 @@
+{
+  "code": "kv_store_full",
+  "message": "rejected: kv_store_full",
+  "status": "error"
+}

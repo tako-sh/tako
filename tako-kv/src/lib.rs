@@ -1,21 +1,21 @@
-//! Tako-hosted key-value stores that speak the Redis protocol.
+//! Tako-hosted key-value stores: JSON values by key, with an optional TTL.
 //!
-//! A store is one redb file owned by the server that hosts it. Apps reach it
-//! with any Redis client, authenticating with their binding token; apps on
-//! other servers of the network reach it through their own server, which
-//! relays the connection over the private network. Strings, counters, key
-//! expiry, hashes and transactions (`MULTI`/`EXEC`/`WATCH`) are supported.
+//! A store is one redb file owned by the server that hosts it, and every
+//! app environment that binds it sees the same keys. Apps call through
+//! their server's internal socket with a binding token; a store on another
+//! server of the network is reached through that server's peer port, where
+//! the environment's grant is checked. Writes are on disk before they are
+//! acknowledged, and nothing is evicted: a full store refuses writes that
+//! would grow it.
 
-mod command;
-mod glob;
+pub mod export;
 mod host;
-mod resp;
-mod server;
+mod peer;
 mod store;
 
 pub use host::{
-    Binding, Home, HostConfig, HostError, KvHost, StoreId, TokenHash, generate_token, hash_token,
+    Binding, Home, HostConfig, HostError, KvError, KvHost, StoreId, TokenHash, generate_token,
+    hash_token,
 };
-pub use resp::{Reply, encode_request};
-pub use server::{Access, FORWARD_COMMAND, serve};
-pub use store::{Clock, Stats, StoreError, system_clock};
+pub use peer::serve_peers;
+pub use store::{Clock, KEY_OVERHEAD, Stats, StoreError, system_clock};

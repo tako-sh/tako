@@ -1,0 +1,8 @@
+{
+  "app": "demo",
+  "command": "kv",
+  "json": "1",
+  "key": "settings",
+  "operation": "put",
+  "token": "kv-token-example"
+}

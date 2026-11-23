@@ -2,8 +2,9 @@
 //!
 //! Each database a project binds gets a SQLite file under
 //! `.tako/data/databases/<name>.sqlite`, and each KV store a redb file under
-//! `.tako/data/kv/<name>.redb`, served over the same protocols as on servers,
-//! so app code is identical in development and production.
+//! `.tako/data/kv/<name>.redb`, served over the same protocols as on servers
+//! (KV through the internal socket, like the cache), so app code is identical
+//! in development and production.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -257,12 +258,15 @@ pub(crate) struct LocalDatabases {
     runtime: Option<tokio::runtime::Runtime>,
     connections: HashMap<String, DatabaseConnection>,
     kv_connections: HashMap<String, KvConnection>,
+    /// Serves the KV bindings through the run's internal socket.
+    kv: Option<tako_kv::KvHost>,
     cache_socket: Option<(tako_workflows::EnqueueSocketHandle, tempfile::TempDir)>,
 }
 
 impl LocalDatabases {
     /// `tako run` need not start the dev daemon. Serve the same cache file
-    /// and protocol on a private, app-pinned socket for the child's lifetime.
+    /// and protocol, and the local KV stores, on a private, app-pinned socket
+    /// for the child's lifetime.
     pub(crate) fn serve_run_cache(
         &mut self,
         project: &Path,
@@ -289,6 +293,15 @@ impl LocalDatabases {
         let host = crate::paths::tako_data_dir()?;
         let environment = environment.to_owned();
         let app = format!("local/{environment}");
+        let kv: Option<tako_workflows::KvFn> = self.kv.clone().map(|host| {
+            let kv: tako_workflows::KvFn = Arc::new(move |app, token, request| {
+                match host.call(app, token, request) {
+                    Ok(value) => tako_core::Response::ok(value),
+                    Err(error) => error.into_response(),
+                }
+            });
+            kv
+        });
         let handle = spawn_with_options(
             &socket,
             Arc::new(|_| None),
@@ -304,6 +317,7 @@ impl LocalDatabases {
                         caches.reply(&dir, req)
                     }
                 })),
+                kv,
             },
         )?;
         env.insert(
@@ -323,9 +337,10 @@ impl LocalDatabases {
         &self.kv_connections
     }
 
-    /// Starts serving `bindings` (binding → database name) and `kv` (binding
-    /// → KV store name) on loopback ports in a background runtime. Returns
-    /// an empty set without bindings.
+    /// Starts serving `bindings` (binding → database name) on a loopback
+    /// port in a background runtime, and opens `kv` (binding → KV store
+    /// name) for [`Self::serve_run_cache`] to serve. Returns an empty set
+    /// without bindings.
     pub(crate) fn start(
         project_dir: &Path,
         bindings: &BTreeMap<String, String>,
@@ -337,6 +352,17 @@ impl LocalDatabases {
                 cache_socket: None,
                 connections: HashMap::new(),
                 kv_connections: HashMap::new(),
+                kv: None,
+            });
+        }
+        let (kv, kv_connections) = open_kv(project_dir, kv)?;
+        if bindings.is_empty() {
+            return Ok(Self {
+                runtime: None,
+                cache_socket: None,
+                connections: HashMap::new(),
+                kv_connections,
+                kv,
             });
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -344,15 +370,6 @@ impl LocalDatabases {
             .thread_name("tako-local-db")
             .enable_all()
             .build()?;
-        let kv_connections = start_kv(&runtime, project_dir, kv)?;
-        if bindings.is_empty() {
-            return Ok(Self {
-                runtime: Some(runtime),
-                cache_socket: None,
-                connections: HashMap::new(),
-                kv_connections,
-            });
-        }
         let host = DatabaseHost::new(HostConfig::default());
         let mut registered = BTreeMap::new();
         let mut host_bindings = Vec::new();
@@ -413,23 +430,24 @@ impl LocalDatabases {
             cache_socket: None,
             connections,
             kv_connections,
+            kv,
         })
     }
 }
 
-/// Serves local KV store files on a loopback port of `runtime`.
-fn start_kv(
-    runtime: &tokio::runtime::Runtime,
+/// The app scope local KV bindings belong to: the run's pinned app.
+const LOCAL_KV_SCOPE: &str = "local/development";
+
+/// Opens local KV store files and binds them for the run's app.
+fn open_kv(
     project_dir: &Path,
     kv: &BTreeMap<String, String>,
-) -> Result<HashMap<String, KvConnection>, Box<dyn std::error::Error>> {
+) -> Result<(Option<tako_kv::KvHost>, HashMap<String, KvConnection>), Box<dyn std::error::Error>>
+{
     if kv.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((None, HashMap::new()));
     }
     let host = tako_kv::KvHost::new(tako_kv::HostConfig::default());
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    listener.set_nonblocking(true)?;
-    let address = listener.local_addr()?.to_string();
     let mut registered = BTreeMap::new();
     let mut bindings = Vec::new();
     let mut connections = HashMap::new();
@@ -454,23 +472,22 @@ fn start_kv(
             store: id,
             home: tako_kv::Home::Local,
         });
-        connections.insert(binding.clone(), KvConnection::new(&address, &token));
+        connections.insert(binding.clone(), KvConnection::new(&token));
     }
-    host.set_bindings("local/development", bindings);
-    runtime.spawn(async move {
-        match tokio::net::TcpListener::from_std(listener) {
-            Ok(listener) => tako_kv::serve(host, listener, tako_kv::Access::Apps).await,
-            Err(error) => tracing::warn!("Local KV listener failed: {error}"),
-        }
-    });
-    Ok(connections)
+    host.set_bindings(LOCAL_KV_SCOPE, bindings);
+    Ok((Some(host), connections))
 }
 
 impl Drop for LocalDatabases {
     fn drop(&mut self) {
+        // Stop serving before closing the stores.
+        self.cache_socket = None;
         if let Some(runtime) = self.runtime.take() {
             // Safe to call from async code, unlike a blocking shutdown.
             runtime.shutdown_background();
+        }
+        if let Some(kv) = self.kv.take() {
+            kv.close_all();
         }
     }
 }
@@ -613,25 +630,23 @@ route = "empty.test"
 
     #[test]
     fn local_kv_stores_serve_their_files() {
-        use std::io::{Read, Write};
         let dir = tempfile::tempdir().unwrap();
         let kv = BTreeMap::from([("auth".to_string(), "sessions".to_string())]);
         let local = LocalDatabases::start(dir.path(), &BTreeMap::new(), &kv).unwrap();
         assert!(local.connections().is_empty());
-        let url = &local.kv_connections()["auth"].url;
-        let (token, address) = url
-            .strip_prefix("redis://:")
-            .and_then(|rest| rest.split_once('@'))
-            .unwrap();
         assert!(kv_path(dir.path(), "sessions").exists());
-        let mut stream = std::net::TcpStream::connect(address).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        let token = &local.kv_connections()["auth"].token;
+        let host = local.kv.as_ref().unwrap();
+        let put = tako_core::KvRequest::Put {
+            key: "k".into(),
+            json: r#""v""#.into(),
+            ttl_ms: None,
+        };
+        host.call(LOCAL_KV_SCOPE, token, put).unwrap();
+        let got = host
+            .call(LOCAL_KV_SCOPE, token, tako_core::KvRequest::Get { key: "k".into() })
             .unwrap();
-        write!(stream, "AUTH {token}\r\nSET k v\r\nGET k\r\n").unwrap();
-        let mut got = vec![0u8; 17];
-        stream.read_exact(&mut got).unwrap();
-        assert_eq!(got, b"+OK\r\n+OK\r\n$1\r\nv\r\n");
+        assert_eq!(got, serde_json::json!(r#""v""#));
     }
 
     #[test]

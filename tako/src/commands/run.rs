@@ -60,7 +60,7 @@ pub fn run(
             .is_some_and(|env_config| !env_config.kv.is_empty())
         {
             crate::output::warning(&format!(
-                "{env}'s KV stores are not available to `tako run`; they are reachable only from deployed apps. Use `tako kv shell <name>`."
+                "{env}'s KV stores are not available to `tako run`; they are reachable only from deployed apps. Use `tako kv get <name> <key>`."
             ));
         }
         crate::local_databases::LocalDatabases::start(
@@ -72,7 +72,8 @@ pub fn run(
     use tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV;
     child_env.remove(TAKO_INTERNAL_SOCKET_ENV);
     if let Err(error) = databases.serve_run_cache(&context.project_dir, env, &mut child_env) {
-        let message = format!("Local cache unavailable; continuing without it: {error}");
+        let message =
+            format!("Local cache and KV stores unavailable; continuing without them: {error}");
         crate::output::warning(&message);
         tracing::warn!("{message}");
     }

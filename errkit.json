@@ -58,6 +58,10 @@
         "description": "Internal socket: the command or its arguments are malformed; retrying the same request cannot succeed.",
         "code": "THDDYW"
       },
+      "kv_store_full": {
+        "description": "Internal socket: the KV store reached its size limit; the write was not stored.",
+        "code": "M8VQ2R"
+      },
       "run_id_conflict": {
         "description": "Internal socket: the supplied workflow run ID already belongs to a different workflow or payload.",
         "code": "X9HMTE"
