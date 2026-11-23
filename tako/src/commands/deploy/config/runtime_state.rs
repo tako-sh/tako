@@ -90,21 +90,7 @@ pub(in crate::commands::deploy) fn needs_channel_replay(
     })
 }
 
+/// The rule the server applies too, so both agree on what a release runs.
 fn is_js_runtime_source_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    if file_name.starts_with('.')
-        || file_name.starts_with('_')
-        || [".d.ts", ".d.mts", ".d.cts"]
-            .iter()
-            .any(|suffix| file_name.ends_with(suffix))
-        || !path.is_file()
-    {
-        return false;
-    }
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("ts" | "tsx" | "js" | "mjs" | "mts")
-    )
+    tako_workflows::is_js_definition_source(path)
 }

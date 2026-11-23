@@ -140,6 +140,11 @@ async fn sync_app_workflows_uses_manifest_app_root() {
             .join("releases")
             .join("v1");
         std::fs::create_dir_all(release.join(workflows_dir)).unwrap();
+        std::fs::write(
+            release.join(workflows_dir).join("send.ts"),
+            r#"export default defineWorkflow("send", { handler: async () => {} });"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(release.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
         std::fs::write(
             release.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),
@@ -416,6 +421,53 @@ async fn deploys_of_workflow_releases_refuse_an_environment_without_a_workflow_d
         "{error}"
     );
     assert!(prepare(false).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_workflows_directory_without_definitions_runs_no_workflows() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "js-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = temp.path().join("apps/js-app/production/releases/v1");
+    write_js_workflow_scaffold(&release);
+    write_release_manifest(&release, "bun", "index.js", &["bun", "{main}"], None, 300);
+    // The deploy client provisions no workflow database for these files.
+    std::fs::remove_file(release.join("src/workflows/send.ts")).unwrap();
+    std::fs::write(release.join("src/workflows/README.md"), "notes").unwrap();
+    std::fs::write(release.join("src/workflows/_shared.ts"), "export {};").unwrap();
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let prepared = state
+        .prepare_app_workflows(
+            app_id,
+            &release,
+            None,
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: None,
+                require_store: true,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+        .await;
+    assert!(matches!(prepared, Ok(None)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

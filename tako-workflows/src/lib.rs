@@ -39,6 +39,7 @@ pub use manager::{
 };
 #[allow(unused_imports)]
 pub use supervisor::{
-    WorkerLane, WorkerLogSink, WorkerSpec, WorkerSupervisor, workflow_lanes_from_dir,
+    WorkerLane, WorkerLogSink, WorkerSpec, WorkerSupervisor, has_js_workflow_sources,
+    is_js_definition_source, workflow_lanes_from_dir,
 };
 pub mod network;

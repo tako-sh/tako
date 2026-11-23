@@ -256,7 +256,9 @@ impl ServerState {
                 } else {
                     app_path.join(js_app_root).join("workflows")
                 };
-                if !workflows_dir.is_dir() {
+                // The same rule the deploy client uses to provision the
+                // workflow database: a directory without definitions runs none.
+                if !tako_workflows::has_js_workflow_sources(&workflows_dir) {
                     return Ok(None);
                 }
 
