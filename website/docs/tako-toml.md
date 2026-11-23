@@ -226,15 +226,21 @@ The table is optional. When present, `database` is the name of a hosted SQLite d
 ```toml
 [envs.production]
 databases = { main = "main" }
-kv = { auth = "sessions" }
+kv = { auth = "sessions", limits = "rate-limits" }
 
 [envs.staging]
 kv = { auth = "sessions_staging" }
+
+# Optional: snapshot this store to another storage than backup.storage.
+[kv.sessions]
+backup = "private_backups"
 ```
 
 `[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `databases` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
 
-Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`. A top-level `[kv.<name>]` table is rejected: KV stores have no snapshots or other per-store settings. `tako kv delete` removes a deleted store's bindings and preserves the rest of the file. Container and Compose releases cannot bind KV stores yet. See [KV stores](/kv/).
+Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`.
+
+`[kv.<name>]` is optional and has one field, `backup`: the private S3 storage resource that receives the store's encrypted snapshots, instead of the deploying environment's `backup.storage`, with the same rules as `[databases.<name>].backup`. A name cannot have both a `[databases.<name>]` and a `[kv.<name>]` table. `tako kv delete` removes a deleted store's bindings and `[kv.<name>]` table and preserves the rest of the file. Container and Compose releases cannot bind KV stores yet. See [KV stores](/kv/).
 
 ## Backups
 

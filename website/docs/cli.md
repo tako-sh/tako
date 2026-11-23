@@ -26,7 +26,7 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `release`, `backup`, `delete`, `secret`, `credential`, `storage`, `sqlite`, `kv`, `generate`, and project-context `scale`, `status`, and `doctor`.
 
-Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secret sync`, `secret migrate`, `secret clear`, `backup now/download/restore`, `sqlite create/backup/restore/import/export/delete`, `kv create/delete`, and `workflow retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
+Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secret sync`, `secret migrate`, `secret clear`, `backup now/download/restore`, `sqlite create/backup/restore/import/export/delete`, `kv create/backup/restore/import/export/delete`, and `workflow retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
 
 The selected config file supplies environment networks in `[envs.<env>].network`; its parent directory determines the project root and local `.tako/` state. Config files in the same directory have independent network settings but share secret drafts; unpublished drafts cannot move to another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
@@ -424,18 +424,27 @@ tako kv create <name> [--server <server>]
 tako kv list
 tako kv ls
 tako kv status [<name>]
-tako kv shell <name> [<command> [<arg>...]]
-tako kv delete <name> [-y|--yes]
+tako kv get <name> <key>
+tako kv put <name> <key> <json|-> [--ttl <duration>]
+tako kv delete-key <name> <key>
+tako kv backup <name>
+tako kv backups <name>
+tako kv restore <name> (--latest | --snapshot <id>) [--server <server>] [-y|--yes]
+tako kv import <name> <file> [-y|--yes]
+tako kv export <name> <file>
+tako kv delete <name> [--server <server>] [-y|--yes]
 tako kv rm ...
 ```
 
 A KV store belongs to a network, which `tako kv` selects like `tako sqlite`. Databases and KV stores share the network's records, so a name identifies one of either; `create` refuses a name a database or store already has. `list` needs permission to deploy some app; the others require network and server administrator permission.
 
-`create` makes the store on `--server` (optional when the network has one server) and records it in the network; bind it by adding `kv = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. `list` reads the network's records; `status` asks each store's server for its size and the app environments using it, for every store the project binds when no name is given. KV stores have no snapshots, so there is no `backup`, `restore`, `import`, or `export`.
+`create` makes the store on `--server` (optional when the network has one server) and records it in the network; bind it by adding `kv = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. `list` reads the network's records; `status` asks each store's server for its size, backups, and the app environments using it, for every store the project binds when no name is given.
 
-`shell` runs one Redis command when one follows the name, such as `tako kv shell sessions TTL challenge:42`, and prints the reply as `redis-cli` does; an error reply makes it exit with an error. Without a command it reads one command per line from stdin, with quotes around arguments that contain spaces, until `quit`, `exit`, or the end of input, printing error replies and carrying on. The shell runs data commands plus `PING`, `ECHO`, and `TIME`; transactions, `INFO`, `CONFIG`, `CLIENT`, and other connection commands need a Redis client. `delete` removes the store and every key in it, its network record, and its `tako.toml` bindings; it refuses while apps on the store's server bind it, revokes grants to app environments on other servers, and asks for confirmation unless `--yes` is passed. When the store's server is no longer a member of the network, it removes only the record and bindings, so the name can be created again.
+`get` prints a key's JSON value as stored, and exits with an error when the key is not set or has expired. `put` sets a key to a JSON value; text must be quoted as a JSON string (`'"hello"'`), and `-` reads the value from stdin. `--ttl` takes whole seconds or a number followed by `s`, `m`, `h`, or `d`; without it the key stays until deleted. `delete-key` removes one key, and succeeds when the key is not set.
 
-Global `--json` prints `{"ok":true,"command":"kv",...}`: `databases` for `list` and `status`, and the created `database` for `create`. `shell --json` prints `reply` for one command, or `{"ok":false,"error":{"message":...}}` for an error reply, and one reply per line when reading stdin, where an error reply is `{"error": ...}`; strings that are not UTF-8 are `{"base64": ...}`, and RESP3 maps are arrays of `[key, value]` pairs. See [KV stores](/kv/).
+`backup`, `backups`, `restore`, `import`, `export`, and `delete --server` work like their [`tako sqlite`](#databases) counterparts, on a store's snapshots and export files. Backups go to `[kv.<name>].backup`, else the deploying environment's `backup.storage`. `restore` and `import` replace every key at once while apps keep reading the current ones; the contents they replace are kept on the server as `previous.redb` and, with backups configured, uploaded as a snapshot first. `import` takes a file from `tako kv export` and refuses anything else. `delete` removes the store, every key in it, its snapshots, its network record, and its `tako.toml` bindings and `[kv.<name>]` table; it refuses while apps on the store's server bind it, revokes grants to app environments on other servers, and asks for confirmation unless `--yes` is passed. When the store's server is no longer a member of the network, it removes only the record and bindings, so the name can be created again; `restore --server` recovers a store that has snapshots instead. `delete --server` removes only the copy a `restore --server` move left on another server.
+
+Global `--json` prints `{"ok":true,"command":"kv",...}`: `databases` for `list` and `status`, the created `database` for `create`, `snapshots` for `backups`, `result` for `backup` and `restore`, `imported` for `import`, and `exported` for `export`. `get --json` prints `{"ok":true,"command":"kv get","key":...,"value":...}` with the value as JSON; `put` and `delete-key` print `{"ok":true,"command":"kv put"|"kv delete-key","key":...}`. See [KV stores](/kv/).
 
 ## Workflows
 

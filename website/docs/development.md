@@ -270,7 +270,7 @@ With `tako dev --env <env>`, a custom environment binds only
 
 ## KV Stores In Dev
 
-`tako dev` serves each development KV store binding from `.tako/data/kv/<store-name>.redb` over the Redis protocol, on a loopback port of the dev daemon shared by its apps. Bind names in `[envs.development].kv`, or let development use every `kv` name the other environments bind. The file is created on first use; its URL and token change between dev daemon sessions, so read them from `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`). `tako run` serves the same files for one-off scripts. A custom environment binds only `[envs.<env>].kv` and stores files at `.tako/data/envs/<env>/kv/<store-name>.redb`. See [KV stores](/kv/#develop-locally).
+`tako dev` serves each development KV store binding from `.tako/data/kv/<store-name>.redb` through the dev daemon's internal socket, so `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`) works as in production. Bind names in `[envs.development].kv`, or let development use every `kv` name the other environments bind. The file is created on first use; tokens change between dev daemon sessions, so read stores from the binding. `tako run` serves the same files through its own internal socket for one-off scripts. A custom environment binds only `[envs.<env>].kv` and stores files at `.tako/data/envs/<env>/kv/<store-name>.redb`. See [KV stores](/kv/#develop-locally).
 
 ## Secrets And Storage In Dev
 

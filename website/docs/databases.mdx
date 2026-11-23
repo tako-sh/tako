@@ -11,7 +11,7 @@ Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DAT
 | --------------------------------------------------- | ------------------------------------------------------- |
 | Relational app data that must survive server loss   | A hosted database with a backup storage                 |
 | Data shared by apps on several servers              | A hosted database                                       |
-| Short-lived keys every server must see, with expiry | A [KV store](/kv/) over the Redis protocol              |
+| Short-lived keys every server must see, with expiry | A [KV store](/kv/) of JSON values                       |
 | Files, caches, or scratch data on one server        | `tako.dataDir` / `TAKO_DATA_DIR` ([Storage](/storage/)) |
 | Postgres, MySQL, or another external database       | A [secret](/secrets/) holding its URL                   |
 

@@ -113,7 +113,7 @@ Returns a secret value by name. Prefer the generated `Secrets` struct instead of
 
 Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
 
-### `tako.GetKV(name string) (tako.KV, bool)`
+### `tako.GetKV(name string) (*tako.KV, bool)`
 
 Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the environment does not bind it. `tako.KVNames()` lists bound names, sorted.
 
@@ -141,7 +141,7 @@ Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the 
 
 ## KV stores
 
-Tako-hosted KV stores speak the Redis protocol and are hosted on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, rate-limit counters, and locks. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { auth = "<name>" }` under `[envs.<env>]`. `KV` has `URL`, a `redis://:<token>@127.0.0.1:9846` URL that go-redis parses as is:
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
 
 ```go
 import (
@@ -149,34 +149,38 @@ import (
 	"errors"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"tako.sh"
 )
 
-// Create one client per process and reuse it; it reconnects on its own.
-func newKV() (*redis.Client, error) {
-	auth, ok := tako.GetKV("auth")
+type Challenge struct {
+	Challenge string `json:"challenge"`
+}
+
+func issue(ctx context.Context, userID, challenge string) error {
+	sessions, ok := tako.GetKV("sessions")
 	if !ok {
-		return nil, errors.New("no KV store bound as auth")
+		return errors.New("no KV store bound as sessions")
 	}
-	options, err := redis.ParseURL(auth.URL)
-	if err != nil {
-		return nil, err
-	}
-	return redis.NewClient(options), nil
+	// Without tako.WithTTL the key stays until deleted.
+	return sessions.Put(ctx, "challenge:"+userID, Challenge{challenge}, tako.WithTTL(5*time.Minute))
 }
 
-func issue(ctx context.Context, kv *redis.Client, userID, challenge string) error {
-	return kv.Set(ctx, "challenge:"+userID, challenge, 5*time.Minute).Err()
-}
-
-// GETDEL consumes the challenge on whichever server handles the response.
-func consume(ctx context.Context, kv *redis.Client, userID string) (string, error) {
-	return kv.GetDel(ctx, "challenge:"+userID).Result()
+// Reads the challenge on whichever server handles the response, then removes it.
+func consume(ctx context.Context, userID string) (Challenge, bool, error) {
+	var issued Challenge
+	sessions, ok := tako.GetKV("sessions")
+	if !ok {
+		return issued, false, errors.New("no KV store bound as sessions")
+	}
+	found, err := sessions.Get(ctx, "challenge:"+userID, &issued)
+	if err != nil || !found {
+		return issued, found, err
+	}
+	return issued, true, sessions.Delete(ctx, "challenge:"+userID)
 }
 ```
 
-Formatting a `KV` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `URL`. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases. Strings, counters, hashes, expiry, `SCAN`, and `MULTI`/`EXEC`/`WATCH` (go-redis `TxPipelined` and `Watch`) work; lists, sets, sorted sets, streams, pub/sub, blocking commands, and Lua scripts fail with `ERR unknown command`. A store holds up to 1 GiB and evicts nothing (writes that add data then fail with `OOM`); every write is on disk before it is acknowledged, but **KV stores have no snapshots or backups**, so keep canonical records in a database. `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` on a random loopback port. Container releases cannot bind KV stores yet.
+`Get(ctx, key, &value)` JSON-decodes into `value` and reports whether the key was set; a missing or expired key leaves `value` unchanged. `Put` JSON-encodes the value and replaces its TTL; `Delete` succeeds for a missing key. Each call honors `ctx` and stops after 30 seconds. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. Rejections are `*tako.ServerError`; match them with `errors.Is(err, tako.ErrKVStoreFull)` (the store reached its 1 GiB limit; nothing is evicted), `tako.ErrInvalidRequest`, or `tako.ErrUnavailable` (binding changed, store's server unreachable or restarting). There are no atomic counters, compare-and-set, or transactions: concurrent read-modify-write of one key can lose an update. Formatting a `*KV` or encoding it as JSON shows only its binding name. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases. Every write is on disk before it is acknowledged, and stores are backed up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`). `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Container releases cannot bind KV stores yet.
 
 ## Secrets
 

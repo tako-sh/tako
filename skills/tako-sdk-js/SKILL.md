@@ -97,7 +97,7 @@ export default function fetch(request: Request) {
 | `tako.secrets`   | Typed secret bag (interface regenerated from the local secret state and published cache)          |
 | `tako.storages`  | Typed storage bag (interface regenerated from `tako.toml`)                                        |
 | `tako.databases` | Typed database bindings, each `{ url, authToken }` for libSQL drivers                             |
-| `tako.kv`        | Typed KV store bindings, each `{ url }`, a `redis://` URL for Redis clients                       |
+| `tako.kv`        | Typed KV store bindings, each with `get`, `put` (optional `ttl`), and `delete` of JSON values     |
 | `tako.cache`     | Client for the server-owned, bounded JSON cache                                                   |
 | `tako.logger`    | Structured JSON logger (`tako.logger.info(...)`)                                                  |
 | `Env`            | TypeScript union of configured environment names                                                  |
@@ -138,7 +138,7 @@ if (!profile) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of serialized JSON; `ttl` is milliseconds and keys are limited to 1 KiB. `delete(key)` removes one key. The runtime owns a persistent redb cache per app/environment on each server; backups omit it. It requires the internal socket (native, SDK-enabled Compose services, and socket-equipped workers; standalone HTTP containers have none). A writable `TAKO_DATA_DIR` is not a substitute. Each server has its own cache, so a value put on one server is a miss on the others; use [`tako.kv`](#kv-stores) for values every server must read, such as challenges, sessions, and rate limits.
+`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of serialized JSON; `ttl` is milliseconds and keys are limited to 1 KiB. `delete(key)` removes one key. The runtime owns a persistent redb cache per app/environment on each server; backups omit it. It requires the internal socket (native, SDK-enabled Compose services, and socket-equipped workers; standalone HTTP containers have none). A writable `TAKO_DATA_DIR` is not a substitute. Each server has its own cache, so a value put on one server is a miss on the others; use [`tako.kv`](#kv-stores) for values every server must read, such as challenges and sessions.
 
 ## Images
 
@@ -247,40 +247,38 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 
 ## KV stores
 
-Tako-hosted KV stores speak the Redis protocol (RESP2/RESP3) and are hosted on one server of the network, reachable from apps on every server. Use them for short-lived values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, rate-limit counters, and locks. Create one with the CLI (administrator permission), bind it in `tako.toml`, then pass the binding's URL to a Redis client such as Bun's `RedisClient`:
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with the CLI (administrator permission), bind it in `tako.toml`, then call `get`, `put`, and `delete` on the binding:
 
 ```bash
-tako kv create sessions --server <server>
+tako kv create auth-sessions --server <server>
 ```
 
 ```toml
 [envs.production]
-kv = { auth = "sessions" } # binding = store name
+kv = { sessions = "auth-sessions" } # binding = store name; bind several stores in one table
 ```
 
 ```typescript
-import { RedisClient } from "bun";
 import { tako } from "tako.sh";
 
-const auth = tako.kv.auth;
-if (!auth) throw new Error("No KV store is bound as auth");
-// One client per process; it keeps a connection open and reconnects.
-const kv = new RedisClient(auth.url); // redis://:<token>@127.0.0.1:9846
+const sessions = tako.kv.sessions;
+if (!sessions) throw new Error("No KV store is bound as sessions");
 
-await kv.set(`challenge:${userId}`, challenge, "PX", 300_000);
-// On whichever server handles the response; GETDEL makes it single-use.
-const expected = await kv.getdel(`challenge:${userId}`);
+// TTL in milliseconds; without one the key stays until deleted.
+await sessions.put(`challenge:${userId}`, { challenge }, { ttl: 300_000 });
+// On whichever server handles the response, then remove it so it is single-use.
+const issued = await sessions.get<{ challenge: string }>(`challenge:${userId}`);
+await sessions.delete(`challenge:${userId}`);
 ```
 
-- `tako.kv.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].kv = { <binding> = "<store>" }`. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases; `tako kv list` shows the stores and their servers. A deploy fails when a bound name is not a KV store in the network.
-- On Node.js, `new Redis(tako.kv.auth.url)` (ioredis) and `createClient({ url: tako.kv.auth.url })` (node-redis) work the same way. Logging or serializing a binding redacts its token; never send the URL to the browser.
-- Supported: strings and counters (`SET` with `EX`/`PX`/`EXAT`/`PXAT`/`KEEPTTL`/`NX`/`XX`/`GET`, `GETDEL`, `GETEX`, `INCR`, `MGET`, ...), hashes (`HSET`, `HGETALL`, `HINCRBY`, `HSCAN`, ...), keys and expiry (`DEL`, `EXPIRE`, `TTL`, `SCAN`, ...), and `MULTI`/`EXEC`/`WATCH`. Lists, sets, sorted sets, streams, pub/sub, blocking commands, Lua (`EVAL`, `FUNCTION`), and databases other than 0 fail with `ERR unknown command`, so libraries that run Lua scripts (many queue and rate-limit libraries) do not work. Use workflows for queues and channels for pub/sub.
-- Patterns: a lock is `SET lock:<name> <owner> NX PX <ms>`; a fixed-window rate limit `INCR`s a key per window, such as `rate:<user>:<minute>`, and sets its expiry when `INCR` returns 1. Prefix keys with the app or feature when several apps bind the same store; they share its keys.
-- Every write is on disk before it is acknowledged. A store holds up to 1 GiB; at the limit, writes that add data fail with `OOM` and nothing is evicted. Keys are limited to 64 KiB and values to 16 MiB. **KV stores have no snapshots or backups**: a store is lost with its server, so keep canonical records in a database.
-- `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` over the same protocol, on a random loopback port; read the URL from the binding. Development uses `[envs.development].kv`, else every `kv` binding of any environment. `tako run --env <other>` gets no KV stores.
-- On another server than the store's, the app's own server relays the connection over the private network, adding a round trip per command; place a store where most of its traffic runs. After a deploy changes or revokes a binding, the next command on an old connection fails and the client reconnects with the current binding.
+- `tako.kv.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].kv = { <binding> = "<store>" }`; several apps and environments can bind one store and share its keys, so prefix keys with the app or feature. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases; `tako kv list` shows the stores and their servers. A deploy fails when a bound name is not a KV store in the network.
+- `get<T>(key)` resolves to the value or `undefined` for a missing or expired key; a stored `null` comes back as `null`. `put(key, value, { ttl })` replaces the value and its TTL; `delete(key)` succeeds for a missing key. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. There are no atomic counters, compare-and-set, scans, or transactions: concurrent read-modify-write of one key can lose an update. Use a hosted database for that.
+- Rejections are `TakoError` with `code: "TAKO_RPC_ERROR"` and `reason` `kv_store_full` (the store reached its 1 GiB limit; nothing is evicted), `invalid_request`, or `unavailable` (binding changed, store's server unreachable or restarting). Requests go through the internal socket with the binding's token; logging or serializing a binding never shows the token, and KV calls are server-only.
+- Every write is on disk before it is acknowledged. With `[envs.<env>].backup.storage` or `[kv.<store>].backup`, the server snapshots a changing store hourly, before release commands, before restores and imports, and on demand (`tako kv backup`), like hosted databases. `tako kv restore <store> --latest`, `export`, and `import` replace or copy every key at once; `restore --latest --server <server>` recovers a lost server's store.
+- `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Development uses `[envs.development].kv`, else every `kv` binding of any environment. `tako run --env <other>` gets no KV stores.
+- On another server than the store's, the app's own server forwards each request over the private network, adding a round trip; place a store where most of its traffic runs.
 - Container and Compose releases cannot bind KV stores yet. `tako.cache` stays the per-server, evicting JSON cache for recomputable values.
-- Verify with `tako kv status <name> --json` (`bindings`, `remote_grants`) and `tako kv shell <name> GET <key>`, and from the app by writing a key through one server and reading it through another.
+- Verify with `tako kv status <store> --json` (`backup`, `bindings`, `remote_grants`), `tako kv put <store> tako:check '"ok"' --ttl 60` and `tako kv get <store> tako:check`, and from the app by putting a key through one server and getting it through another.
 
 ## Vite Plugin
 

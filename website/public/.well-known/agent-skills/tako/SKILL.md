@@ -258,18 +258,22 @@ validation.
   environments that bind it first, and take `tako sqlite backup` before risky
   changes. Schema changes go in `migrations/` SQL files, applied on deploy.
 - Values every server of the network must see (login and WebAuthn challenges,
-  one-time tokens, sessions, rate-limit counters, locks) belong in a KV store
-  (`tako kv create`, bound in `[envs.<env>].kv`, read as `tako.kv.<binding>`):
-  a Redis-protocol store hosted on one server and reachable from all of them.
-  `tako.cache` is per server and evicts, so a value cached on one server is a
-  miss on the next. KV stores have no snapshots and are lost with their
-  server, so keep canonical records in a database. A binding name is used once
-  per environment across `databases` and `kv`, and store names share the
-  network's namespace with databases. `tako kv shell <name> <COMMAND...>` runs
-  commands with full access, writes included, and `tako kv delete` removes
-  every key; confirm the store and the environments that bind it first.
-  Inspect with `tako kv status <name> --json` and verify by writing a key on
-  one server and reading it through another.
+  one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
+  bound in `[envs.<env>].kv`, read as `tako.kv.<binding>` with `get`, `put`
+  with an optional TTL, and `delete` of JSON values; Go `tako.GetKV`, Rust
+  `tako::kv`): a store hosted on one server and reachable from all of them
+  through each app's internal socket. `tako.cache` is per server and evicts,
+  so a value cached on one server is a miss on the next. KV stores are backed
+  up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`;
+  `tako kv backup|backups|restore|export|import`), and have no atomic
+  counters or transactions, so keep canonical records in a database. A
+  binding name is used once per environment across `databases` and `kv`, and
+  store names share the network's namespace with databases. `tako kv get`,
+  `put`, and `delete-key` read and change keys with full access; `tako kv
+  restore`, `import`, and `delete` replace or remove every key, so confirm the
+  store and the environments that bind it first. Inspect with `tako kv status
+  <name> --json` and verify by putting a key through one server and getting it
+  through another.
 
 ## Channels, presence, stores, and workflows
 
