@@ -2,20 +2,9 @@ use super::*;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-fn old_index() -> BackupIndex {
-    serde_json::from_value(serde_json::json!({
-        "version": 1, "backups": [{
-            "id": "old", "app": "demo", "environment": "test", "server": "local",
-            "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "unused",
-            "archive_key": "old.enc", "manifest_key": "old.json",
-            "encryption": {"algorithm":"unused", "key_id":"unused", "nonce_base64":"", "tag_base64":""}
-        }]
-    })).unwrap()
-}
-
 /// Serve `requests` GET requests from `objects`, keyed by object key; any
 /// other key is 404. Returns the storage endpoint.
-pub(in crate::operations::backup) fn object_fixture(
+fn object_fixture(
     objects: std::collections::HashMap<String, Vec<u8>>,
     requests: usize,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
@@ -97,10 +86,6 @@ fn fixture_tls() -> &'static FixtureTls {
 /// clients trust it; certificate validation stays on.
 pub(super) fn fixture_store_certificate() -> object_store::Certificate {
     object_store::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
-}
-
-pub(in crate::operations::backup) fn fixture_root_certificate() -> reqwest::Certificate {
-    reqwest::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
 }
 
 pub(super) fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
@@ -251,37 +236,6 @@ pub(super) fn storage_binding(endpoint: &str) -> tako_core::StorageBinding {
     .unwrap()
 }
 
-fn storage_fixture(
-    statuses: Vec<u16>,
-) -> (object_store::aws::AmazonS3, tokio::task::JoinHandle<()>) {
-    let (listener, endpoint, acceptor) = tls_listener();
-    let fixture = tokio::task::spawn_blocking(move || {
-        for status in statuses {
-            let mut stream = accept(&listener, &acceptor);
-            let bytes = read_request(&mut stream);
-            assert!(bytes.starts_with(b"POST "), "expected S3 bulk delete");
-            let request = std::str::from_utf8(&bytes).unwrap();
-            let key = request
-                .split_once("<Key>")
-                .unwrap()
-                .1
-                .split_once("</Key>")
-                .unwrap()
-                .0;
-            let (status, body) = if status == 204 {
-                (
-                    200,
-                    format!("<DeleteResult><Deleted><Key>{key}</Key></Deleted></DeleteResult>"),
-                )
-            } else {
-                (status, String::new())
-            };
-            write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-        }
-    });
-    (backup_store(&storage_binding(&endpoint)).unwrap(), fixture)
-}
-
 #[tokio::test]
 async fn backup_clients_validate_the_storage_certificate() {
     // Trusted: the fixture's authority issued its certificate for 127.0.0.1.
@@ -321,45 +275,6 @@ async fn backup_clients_validate_the_storage_certificate() {
 }
 
 #[tokio::test]
-async fn retention_retries_failed_object_deletes() {
-    for status in [403, 500] {
-        let (storage, fixture) = storage_fixture(vec![status, status]);
-        let mut index = old_index();
-        queue_retention(&mut index, 1);
-        prune_retention(&storage, &mut index).await;
-        fixture.await.unwrap();
-        assert!(
-            index.backups.is_empty(),
-            "partially deleted backups must not be offered for restore"
-        );
-        assert_eq!(
-            index.pending_deletions.len(),
-            1,
-            "failed deletes must remain tracked"
-        );
-
-        // Retry from a persisted index, including an already-removed object.
-        let mut index: BackupIndex =
-            serde_json::from_slice(&serde_json::to_vec(&index).unwrap()).unwrap();
-        let (storage, fixture) = storage_fixture(vec![204, 404]);
-        prune_retention(&storage, &mut index).await;
-        fixture.await.unwrap();
-        assert!(index.pending_deletions.is_empty());
-    }
-}
-
-#[tokio::test]
-async fn partial_delete_retains_cleanup_intent() {
-    let (storage, fixture) = storage_fixture(vec![204, 500]);
-    let mut index = old_index();
-    queue_retention(&mut index, 1);
-    prune_retention(&storage, &mut index).await;
-    fixture.await.unwrap();
-    assert!(index.backups.is_empty());
-    assert_eq!(index.pending_deletions.len(), 1);
-}
-
-#[tokio::test]
 async fn backup_request_deadline_covers_a_stalled_response_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -395,37 +310,4 @@ async fn backup_request_deadline_covers_a_stalled_response_body() {
     .unwrap_err();
     assert!(error.contains("timed out"), "{error}");
     fixture.abort();
-}
-
-#[test]
-fn retention_expires_database_snapshots_after_48_hours_only() {
-    let now = 1_800_000_000;
-    let hour = 60 * 60;
-    let entry = |id: &str, kind: &str, age: i64| {
-        serde_json::json!({
-            "id": id, "app": "demo", "environment": "test", "server": "local",
-            "created_at_unix_secs": now - age, "size_bytes": 1, "sha256_hex": "unused",
-            "archive_key": format!("{id}.enc"), "manifest_key": format!("{id}.json"),
-            "encryption": {"algorithm":"unused", "key_id":"unused", "nonce_base64":"", "tag_base64":""},
-            "kind": kind
-        })
-    };
-    let mut index: BackupIndex = serde_json::from_value(serde_json::json!({
-        "version": 1, "backups": [
-            entry("db-fresh", "databases", 47 * hour),
-            entry("db-expired", "databases", 49 * hour),
-            entry("full-3d", "full", 72 * hour),
-            entry("full-expired", "full", 31 * 24 * hour),
-        ]
-    }))
-    .unwrap();
-    queue_retention_at(&mut index, 30, now);
-    let ids = |entries: &[tako_core::BackupInfo]| {
-        entries.iter().map(|b| b.id.clone()).collect::<Vec<_>>()
-    };
-    assert_eq!(ids(&index.backups), ["db-fresh", "full-3d"]);
-    assert_eq!(
-        ids(&index.pending_deletions),
-        ["db-expired", "full-expired"]
-    );
 }

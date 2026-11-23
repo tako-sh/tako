@@ -1,6 +1,5 @@
 pub mod agents;
 mod app_target;
-pub mod backups;
 pub mod codegen;
 pub mod completions;
 pub mod mcp;
@@ -27,6 +26,7 @@ pub mod run;
 pub mod scale;
 pub mod secret;
 pub mod server;
+pub(crate) mod server_target;
 pub mod status;
 pub mod storage;
 pub mod upgrade;

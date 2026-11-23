@@ -10,9 +10,6 @@ use crate::config::{
 };
 use crate::output;
 
-mod backup;
-pub(crate) use backup::{ensure_backup_keys_for_env, plain_backup_binding};
-
 #[derive(Subcommand)]
 pub enum StorageCommands {
     /// Attach a storage resource to this app

@@ -260,7 +260,6 @@ mod tests {
             secrets: None,
             credentials: None,
             storages: vec![],
-            backup_key: None,
             databases: vec![ProjectDatabase {
                 usage: DatabaseUsage::Binding {
                     binding: "main".into(),

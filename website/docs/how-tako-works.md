@@ -9,8 +9,8 @@ Tako is a local CLI plus a server runtime. The CLI owns project config, local de
 
 | Piece         | Role                                                                                                                                                      |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tako`        | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, backups, and generated files.                     |
-| `tako-server` | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, backups, logs, metrics, and management APIs.                                    |
+| `tako`        | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, databases, and generated files.                   |
+| `tako-server` | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, database backups, logs, metrics, and management APIs.                           |
 | SDKs          | Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`).                                                                 |
 | `tako.toml`   | App identity, runtime, routes, environments, builds, storage bindings, backups, SSL, source-IP policy, workflows, and server targets.                     |
 | Presets       | Framework defaults for entrypoints, asset roots, and dev commands. Built-ins currently include Vite, TanStack Start, and Next.js for JavaScript runtimes. |
@@ -36,7 +36,7 @@ Deploys build locally and roll out on every mapped server:
 5. Ask each server to extract and prepare the release.
 6. Run the configured `release` command once on the leader server, if present.
 7. Roll new instances into traffic and drain old instances.
-8. Finalize `current`, prune old or excess releases, and create a post-deploy backup when backups are enabled.
+8. Finalize `current` and prune old or excess releases.
 
 Native releases run from the prepared artifact. Container releases upload source, then the server builds the configured container file with Podman and runs the image on a private loopback port.
 
@@ -96,7 +96,7 @@ Each deployed app has durable data under the server data directory:
 
 `TAKO_SHARED_DATA_DIR` exposes `/opt/tako/shared/data/app` to apps on this server. Per-app users retain private directories and use a common group for shared files. Local development shares a directory under the same `TAKO_HOME`. Standalone containers and Compose services receive `/tako/shared-data` as a managed mount.
 
-These directories hold plain files. Tako does not discover or capture databases in them.
+These directories hold plain files. Tako does not back them up or discover databases in them; see [Backups](/backups/) for what it does protect.
 
 ### Hosted databases
 
@@ -108,17 +108,13 @@ With a backup storage (`[envs.<env>].backup.storage` or `[db.<name>].backup`), t
 
 ### KV stores
 
-A [KV store](/kv/) is a redb file under `databases/<name>/` in the server data directory of one server, owned by `tako-server` like a hosted database. Apps send `get`, `put`, and `delete` requests through the internal socket with their binding's token from the bootstrap envelope, which resolves to one store for one app environment. KV stores share the databases' network records, so one name identifies a database or a store, and their grants: on other servers than the store's, the app's own server checks the token and forwards the request over the private WireGuard network to the store's server on port 9848, presenting the key of the environment's grant. The network firewall opens port 9848 to servers only. Every write is on disk before it is acknowledged. With a backup storage, KV stores are backed up with hourly snapshots, as compact export files, rather than continuously like databases; they are not part of app-directory archives.
-
-### App data archives
-
-Full app-directory archives are manual (`tako backup now`) and opt-in with `[envs.<env>].backup`. They include local workflow state; channel replay and SDK cache are excluded because they are transient. Shared-directory files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
+A [KV store](/kv/) is a redb file under `databases/<name>/` in the server data directory of one server, owned by `tako-server` like a hosted database. Apps send `get`, `put`, and `delete` requests through the internal socket with their binding's token from the bootstrap envelope, which resolves to one store for one app environment. KV stores share the databases' network records, so one name identifies a database or a store, and their grants: on other servers than the store's, the app's own server checks the token and forwards the request over the private WireGuard network to the store's server on port 9848, presenting the key of the environment's grant. The network firewall opens port 9848 to servers only. Every write is on disk before it is acknowledged. With a backup storage, KV stores are backed up with hourly snapshots, as compact export files, rather than continuously like databases.
 
 ## Remote Management
 
 Normal app operations use signed, pinned HTTPS authenticated by the enrolled device's identity and network permissions. SSH is used for bootstrap, recovery, and server maintenance. WireGuard carries private network traffic; deploys do not require a workstation WireGuard interface.
 
-Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped commands such as deploy, status, logs, scale, release, backup, delete, and secret sync do not use SSH for the normal path.
+Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped commands such as deploy, status, logs, scale, release, delete, and secret sync do not use SSH for the normal path.
 
 ## Observability
 

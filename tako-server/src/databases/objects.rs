@@ -1,3 +1,5 @@
+//! Object storage transfers shared by hosted database backups.
+
 use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use futures_util::TryStreamExt;
@@ -7,9 +9,6 @@ use object_store::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{index::BackupIndex, now_unix_secs};
-
-pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub(crate) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -26,17 +25,6 @@ pub(crate) fn backup_store(
         .with_client_options(options)
         .build()
         .map_err(|e| format!("configure backup storage: {e}"))
-}
-
-#[cfg(test)]
-pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .tls_certs_merge([failure_tests::fixture_root_certificate()])
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn with_deadline<T>(
@@ -168,54 +156,8 @@ pub(crate) async fn download_object(
     .await
 }
 
-pub(super) fn queue_retention(index: &mut BackupIndex, retention_days: u16) {
-    queue_retention_at(index, retention_days, now_unix_secs());
-}
-
-pub(super) fn queue_retention_at(index: &mut BackupIndex, retention_days: u16, now: i64) {
-    let full_cutoff = now.saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
-    let database_cutoff = now.saturating_sub(super::databases::DATABASE_SNAPSHOT_RETENTION_SECS);
-    index.backups.retain(|backup| {
-        let cutoff = match backup.kind {
-            tako_core::BackupKind::Full => full_cutoff,
-            tako_core::BackupKind::Databases => database_cutoff,
-        };
-        if backup.created_at_unix_secs < cutoff {
-            index.pending_deletions.push(backup.clone());
-            false
-        } else {
-            true
-        }
-    });
-}
-
-pub(super) async fn prune_retention(store: &dyn ObjectStore, index: &mut BackupIndex) {
-    let mut pending = Vec::new();
-    for backup in std::mem::take(&mut index.pending_deletions) {
-        let mut deleted = true;
-        for key in [&backup.archive_key, &backup.manifest_key] {
-            let result = with_deadline(METADATA_TIMEOUT, async {
-                let key = ObjectPath::parse(key).map_err(|e| e.to_string())?;
-                match store.delete(&key).await {
-                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                    Err(error) => Err(error.to_string()),
-                }
-            })
-            .await;
-            if let Err(error) = result {
-                tracing::warn!(backup = %backup.id, %error, "Retention cleanup will retry");
-                deleted = false;
-            }
-        }
-        if !deleted {
-            pending.push(backup);
-        }
-    }
-    index.pending_deletions = pending;
-}
-
 #[cfg(test)]
-pub(super) mod failure_tests;
+mod failure_tests;
 #[cfg(test)]
 mod timeout_tests;
 

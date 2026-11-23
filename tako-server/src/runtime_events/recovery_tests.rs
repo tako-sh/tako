@@ -557,7 +557,6 @@ async fn successful_deploy_resets_the_backoff() {
         storages: Some(HashMap::new()),
         databases: None,
         ssl: tako_core::SslBinding::default(),
-        backup: None,
         force: false,
     };
 
@@ -660,64 +659,6 @@ async fn an_app_in_error_keeps_its_minimum_after_its_restart_history_settles() {
     assert_eq!(live(&app), 1, "an app in Error was left below its minimum");
     assert_eq!(app.state(), AppState::Error);
     state.app_manager.stop_app(&app.name()).await.unwrap();
-}
-
-#[tokio::test]
-async fn a_backup_holding_the_deploy_lock_does_not_hold_back_native_recovery() {
-    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
-    let state = test_state(dir.path());
-    let app = running_app(&state, dir.path(), "backed-up", 1, sh(READY));
-    let name = app.name();
-    let instance = healthy_instance(&app);
-
-    // A backup takes the deploy lock for a snapshot that can take minutes.
-    let backup = state.lock_deploy_for_backup(&name).await;
-    // Meanwhile the app crashes twice: once replaced at once, then backed off.
-    handle_health_event(&state, dead(&app, &instance)).await;
-    assert_eq!(live(&app), 1);
-    let replacement = app.get_instances().remove(0);
-    handle_health_event(&state, dead(&app, &replacement)).await;
-    assert!(app.get_instances().is_empty());
-
-    tick_after_backoff(&state).await;
-    assert_eq!(
-        live(&app),
-        1,
-        "recovery waited for the backup to release the deploy lock"
-    );
-    let started = app.get_instances().remove(0);
-
-    // Any other holder of the deploy lock still keeps recovery out.
-    drop(backup);
-    handle_health_event(&state, dead(&app, &started)).await;
-    {
-        let lock = state.get_deploy_lock(&name).await;
-        let _deploying = lock.lock().await;
-        tick_after_backoff(&state).await;
-        assert!(app.get_instances().is_empty(), "spawned under a deploy");
-    }
-
-    // A slot claimed during a backup is part of the instance set the next
-    // operation sees: a scale-down that follows the backup retires it.
-    let backup = state.lock_deploy_for_backup(&name).await;
-    tick_after_backoff(&state).await;
-    assert_eq!(live(&app), 1);
-    drop(backup);
-    let response = state
-        .handle_command(Command::Scale {
-            app: name.clone(),
-            instances: Some(0),
-            service: None,
-            reset: false,
-        })
-        .await;
-    assert!(response.is_ok(), "scale-down after a backup must succeed");
-    assert_eq!(
-        app.get_instances().len(),
-        0,
-        "the scale-down missed an instance"
-    );
-    state.app_manager.stop_app(&name).await.unwrap();
 }
 
 #[tokio::test]

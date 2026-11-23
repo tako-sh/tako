@@ -499,20 +499,12 @@ fn migration_checks_legacy_keys_even_when_a_different_local_draft_exists() {
 }
 
 #[test]
-fn backup_selection_and_storage_pairs_survive_record_ordering() {
+fn storage_pairs_survive_record_ordering_and_legacy_backup_keys_are_ignored() {
     let key = crate::crypto::EncryptionKey::generate().unwrap();
     let mut values = crate::config::EnvironmentSecrets {
         key_id: "a".repeat(16),
         ..Default::default()
     };
-    for id in ["backup-key-ffffffffffffffff", "backup-key-0000000000000000"] {
-        values
-            .backup_keys
-            .push(crate::config::EncryptedBackupKey::new(
-                id.into(),
-                crate::crypto::encrypt(id, &key).unwrap(),
-            ));
-    }
     let pair = crate::config::EncryptedStorageCredentials {
         access_key_id: crate::config::EncryptedSecretValue::new(
             crate::crypto::encrypt("access", &key).unwrap(),
@@ -524,55 +516,38 @@ fn backup_selection_and_storage_pairs_survive_record_ordering() {
         ),
     };
     values.storages.insert("archive".into(), pair);
-    let rows = local::rows(Some(&values)).unwrap();
+    let mut rows = local::rows(Some(&values)).unwrap();
     assert_eq!(
         rows.values()
             .filter(|row| row.key.kind == RecordKind::Storage)
             .count(),
         1
     );
-    let rebuilt = local::environment(values.key_id.clone(), &rows).unwrap();
-    assert_eq!(rebuilt, values);
-    let mut partial = rows.clone();
-    partial.remove(&RowKey {
-        kind: RecordKind::BackupKey,
-        name: "backup-key-0000000000000000".into(),
-    });
-    assert!(local::environment(values.key_id, &partial).is_err());
-}
-
-#[test]
-fn backup_selection_publishes_after_new_keys_and_before_removed_keys() {
-    let key = |kind, name: &str| RowKey {
-        kind,
-        name: name.into(),
-    };
-    let row = |key: &RowKey| Row {
-        key: key.clone(),
-        value: "value".into(),
-        expires_on: None,
-    };
-    let added = key(RecordKind::BackupKey, "backup-key-bbbbbbbbbbbbbbbb");
-    let removed = key(RecordKind::BackupKey, "backup-key-aaaaaaaaaaaaaaaa");
-    let selection = key(RecordKind::BackupActive, "active");
-    let secret = key(RecordKind::App, "TOKEN");
-    let current: Rows = [&added, &selection, &secret]
-        .into_iter()
-        .map(|key| (key.clone(), row(key)))
-        .collect();
-    let dirty = [&removed, &selection, &added, &secret]
-        .into_iter()
-        .cloned()
-        .collect();
     assert_eq!(
-        local::publication_order(dirty, &current),
-        [secret, added, selection.clone(), removed.clone()]
+        local::environment(values.key_id.clone(), &rows).unwrap(),
+        values
     );
-    // Removing every key removes the selection first.
-    let dirty = [&removed, &selection].into_iter().cloned().collect();
+    // Records of app data archive keys, which Tako no longer makes, change nothing.
+    for (kind, name) in [
+        (RecordKind::BackupKey, "backup-key-0000000000000000"),
+        (RecordKind::BackupActive, "active"),
+    ] {
+        let key = RowKey {
+            kind,
+            name: name.into(),
+        };
+        rows.insert(
+            key.clone(),
+            Row {
+                key,
+                value: "value".into(),
+                expires_on: None,
+            },
+        );
+    }
     assert_eq!(
-        local::publication_order(dirty, &Rows::new()),
-        [selection, removed]
+        local::environment(values.key_id.clone(), &rows).unwrap(),
+        values
     );
 }
 
@@ -670,4 +645,27 @@ fn apps_without_network_environments_ignore_unreadable_network_profiles() {
         error.contains(&profile.display().to_string()),
         "error should name the unreadable profile: {error}"
     );
+}
+
+#[test]
+fn local_state_with_archive_backup_keys_still_loads() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let project = directory.path();
+    std::fs::create_dir_all(project.join(".tako")).unwrap();
+    std::fs::write(
+        SecretsStore::default_path(project),
+        serde_json::json!({
+            "values": {
+                "production": {
+                    "key_id": "k1",
+                    "backup_keys": [{"id": "b1", "value": "sealed"}],
+                }
+            },
+            "environments": {},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let state = read_workspace(project).unwrap();
+    assert_eq!(state.values.environments["production"].key_id, "k1");
 }

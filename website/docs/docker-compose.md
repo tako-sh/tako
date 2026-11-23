@@ -79,7 +79,7 @@ Client controls are reserved: `DOCKER_*`, `COMPOSE_*`, `BUILDX_*`, `BUILDKIT_*`,
 
 Production does not load an implicit `.env` file. Use Tako variables and secrets for interpolation, or an explicit project-local service `env_file` for container environment values. File references must be literal relative paths; interpolation in file paths is unsupported.
 
-Before invoking Docker, Tako copies production inputs into a service-owned private directory and validates the Compose model and every build input. Builds, restarts, secret rotation, and rollback use that captured source and pinned images. These deployment inputs stay outside the app-data tree, so restoring an app-data backup preserves them.
+Before invoking Docker, Tako copies production inputs into a service-owned private directory and validates the Compose model and every build input. Builds, restarts, secret rotation, and rollback use that captured source and pinned images. These deployment inputs stay outside the app-data tree.
 
 The first successful preparation of a release is immutable. Preparing that release again reuses its captured source and images, even if uploaded files or image tags have changed; deploy a new release to rebuild or pull updated images.
 
@@ -201,7 +201,7 @@ Use named volumes for persistent data. The project identity is stable for one ap
 
 Networks, volumes, configs, and secrets are scoped to the app/environment. External resources and custom resource names are rejected in production. Networks use Docker's bridge driver and volumes use its local driver; driver options and custom IPAM settings are unsupported.
 
-Named volumes survive deployment, stop/start, rollback, and application deletion. Deleting data requires an explicit Docker volume operation. Tako's app-data backups do **not** include Docker named volumes. Use database-native dumps or a coordinated volume backup, and verify restoration into a separate stack. Application rollback restores the previous containers using their original dependency conditions. Completed dependency jobs stay completed. Rollback does not reverse schema migrations or restore database contents.
+Named volumes survive deployment, stop/start, rollback, and application deletion. Deleting data requires an explicit Docker volume operation. Tako does **not** back up Docker named volumes. Use database-native dumps or a coordinated volume backup, and verify restoration into a separate stack. Application rollback restores the previous containers using their original dependency conditions. Completed dependency jobs stay completed. Rollback does not reverse schema migrations or restore database contents.
 
 ## Updates and recovery
 
@@ -300,4 +300,4 @@ On a native network, supported Compose services use Tako's private gateway and D
 
 Compose deployments still target one server. Network membership and server drain do not replicate named volumes, move databases, or switch global ingress. Preserve separate backup and migration procedures for stateful services.
 
-Dependency logs belong to the group and remain available through `tako logs` when individual apps are stopped or the group has no tagged apps. Secret updates refresh running Docker services even when all HTTP apps are paused. Restoring a Tako app-data backup also restarts those services while preserving individual and group stop intent; Docker named volumes remain outside these backups.
+Dependency logs belong to the group and remain available through `tako logs` when individual apps are stopped or the group has no tagged apps. Secret updates refresh running Docker services even when all HTTP apps are paused.

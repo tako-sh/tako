@@ -1,3 +1,5 @@
+//! AES-256-GCM encryption of KV store snapshot files.
+
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -6,7 +8,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use openssl::symm::{Cipher, Crypter, Mode};
 use tako_core::{BackupEncryptionInfo, BackupKeyBinding};
 
-pub(super) const BACKUP_ENCRYPTION_ALGORITHM: &str = "aes-256-gcm";
+const BACKUP_ENCRYPTION_ALGORITHM: &str = "aes-256-gcm";
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
@@ -24,10 +26,10 @@ pub(crate) fn encrypt_backup_file(
         .map_err(|e| format!("generate backup encryption nonce: {e}"))?;
 
     let mut input = File::open(plaintext_path)
-        .map_err(|e| format!("open backup archive {}: {e}", plaintext_path.display()))?;
+        .map_err(|e| format!("open snapshot file {}: {e}", plaintext_path.display()))?;
     let mut output = File::create(encrypted_path).map_err(|e| {
         format!(
-            "create encrypted backup archive {}: {e}",
+            "create encrypted snapshot file {}: {e}",
             encrypted_path.display()
         )
     })?;
@@ -47,7 +49,7 @@ pub(crate) fn encrypt_backup_file(
         .map_err(|e| format!("finalize backup encryption tag: {e}"))?;
     output
         .flush()
-        .map_err(|e| format!("flush encrypted backup archive: {e}"))?;
+        .map_err(|e| format!("flush encrypted snapshot file: {e}"))?;
 
     Ok(BackupEncryptionInfo {
         algorithm: BACKUP_ENCRYPTION_ALGORITHM.to_string(),
@@ -82,13 +84,13 @@ pub(crate) fn decrypt_backup_file(
 
     let mut input = File::open(encrypted_path).map_err(|e| {
         format!(
-            "open encrypted backup archive {}: {e}",
+            "open encrypted snapshot file {}: {e}",
             encrypted_path.display()
         )
     })?;
     let mut output = File::create(plaintext_path).map_err(|e| {
         format!(
-            "create decrypted backup archive {}: {e}",
+            "create decrypted snapshot file {}: {e}",
             plaintext_path.display()
         )
     })?;
@@ -106,47 +108,8 @@ pub(crate) fn decrypt_backup_file(
     crypt_file(&mut input, &mut output, &mut crypter)?;
     output
         .flush()
-        .map_err(|e| format!("flush decrypted backup archive: {e}"))?;
+        .map_err(|e| format!("flush decrypted snapshot file: {e}"))?;
     Ok(())
-}
-
-pub(super) fn active_backup_key(
-    backup: &tako_core::BackupBinding,
-) -> Result<&BackupKeyBinding, String> {
-    backup
-        .backup_keys
-        .last()
-        .ok_or_else(|| "Backup encryption key is missing.".to_string())
-}
-
-pub(super) fn find_backup_key<'a>(
-    backup: &'a tako_core::BackupBinding,
-    key_id: &str,
-) -> Result<&'a BackupKeyBinding, String> {
-    backup
-        .backup_keys
-        .iter()
-        .find(|key| key.id == key_id)
-        .ok_or_else(|| format!("Backup encryption key not found: {key_id}"))
-}
-
-pub(super) fn validate_backup_key(key: &BackupKeyBinding) -> Result<(), String> {
-    let Some(suffix) = key.id.strip_prefix("backup-key-") else {
-        return Err("Backup key id must start with 'backup-key-'.".to_string());
-    };
-    if suffix.len() != 16 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("Backup key id must end with 16 hex characters.".to_string());
-    }
-    decode_backup_key(key).map(|_| ())
-}
-
-/// A key for database digests, separate from the archive encryption key.
-pub(super) fn database_digest_key(key: &BackupKeyBinding) -> Result<[u8; 32], String> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"tako backup database digest v1\0");
-    hasher.update(decode_backup_key(key)?);
-    Ok(hasher.finalize().into())
 }
 
 fn crypt_file(input: &mut File, output: &mut File, crypter: &mut Crypter) -> Result<(), String> {
@@ -155,24 +118,24 @@ fn crypt_file(input: &mut File, output: &mut File, crypter: &mut Crypter) -> Res
     loop {
         let read = input
             .read(&mut input_buf)
-            .map_err(|e| format!("read backup archive: {e}"))?;
+            .map_err(|e| format!("read snapshot file: {e}"))?;
         if read == 0 {
             break;
         }
         let written = crypter
             .update(&input_buf[..read], &mut output_buf)
-            .map_err(|e| format!("process backup archive encryption: {e}"))?;
+            .map_err(|e| format!("process snapshot encryption: {e}"))?;
         output
             .write_all(&output_buf[..written])
-            .map_err(|e| format!("write backup archive: {e}"))?;
+            .map_err(|e| format!("write snapshot file: {e}"))?;
     }
 
     let written = crypter
         .finalize(&mut output_buf)
-        .map_err(|e| format!("finalize backup archive encryption: {e}"))?;
+        .map_err(|e| format!("finalize snapshot encryption: {e}"))?;
     output
         .write_all(&output_buf[..written])
-        .map_err(|e| format!("write backup archive final block: {e}"))?;
+        .map_err(|e| format!("write snapshot file final block: {e}"))?;
     Ok(())
 }
 
@@ -214,16 +177,16 @@ mod tests {
         let plain = temp.path().join("plain.tar.zst");
         let encrypted = temp.path().join("plain.tar.zst.enc");
         let decrypted = temp.path().join("decrypted.tar.zst");
-        std::fs::write(&plain, b"backup archive bytes").unwrap();
+        std::fs::write(&plain, b"snapshot file bytes").unwrap();
         let key = test_key("backup-key-0123456789abcdef");
 
         let metadata = encrypt_backup_file(&plain, &encrypted, &key).unwrap();
         assert_eq!(metadata.algorithm, BACKUP_ENCRYPTION_ALGORITHM);
         assert_eq!(metadata.key_id, key.id);
-        assert_ne!(std::fs::read(&encrypted).unwrap(), b"backup archive bytes");
+        assert_ne!(std::fs::read(&encrypted).unwrap(), b"snapshot file bytes");
 
         decrypt_backup_file(&encrypted, &decrypted, &key, &metadata).unwrap();
-        assert_eq!(std::fs::read(&decrypted).unwrap(), b"backup archive bytes");
+        assert_eq!(std::fs::read(&decrypted).unwrap(), b"snapshot file bytes");
     }
 
     #[test]
@@ -232,7 +195,7 @@ mod tests {
         let plain = temp.path().join("plain.tar.zst");
         let encrypted = temp.path().join("plain.tar.zst.enc");
         let decrypted = temp.path().join("decrypted.tar.zst");
-        std::fs::write(&plain, b"backup archive bytes").unwrap();
+        std::fs::write(&plain, b"snapshot file bytes").unwrap();
         let key = test_key("backup-key-0123456789abcdef");
         let metadata = encrypt_backup_file(&plain, &encrypted, &key).unwrap();
         let wrong_key = test_key("backup-key-fedcba9876543210");

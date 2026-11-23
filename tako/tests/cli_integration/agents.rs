@@ -154,7 +154,6 @@ fn mcp_serves_tools_documentation_and_cli_results_over_stdio() {
         "tako_deploy",
         "tako_run",
         "tako_secret_set",
-        "tako_backup_restore",
         "tako_workflow_list",
         "tako_workflow_show",
         "tako_workflow_retry",

@@ -119,18 +119,6 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true'
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432/tcp
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -164,13 +152,10 @@ jobs:
           CORROSION_BIN="$corrosion_test_dir/corrosion" python3 e2e/network/corrosion-state.py
 
       - name: Run workspace tests
-        env:
-          TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-cli --locked --test cli_integration -- --test-threads=1
           cargo test -p tako-network --locked --test '*'
-          cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
           cargo test -p tako-db --locked
           cargo test -p tako-backup --locked --test recovery
           cargo test --locked --manifest-path vendor/terse-litestream/Cargo.toml
@@ -180,8 +165,6 @@ jobs:
           cargo test -p tako-compose --locked --lib -- --ignored --test-threads=1
           cargo test -p tako-server --locked --bin tako-server compose_runtime::tests -- --ignored --test-threads=1
           cargo test -p tako-server --locked --bin tako-server tests::compose_scaling -- --ignored --test-threads=1
-          cargo test -p tako-server --locked --bin tako-server compose_preparation_survives_app_data_restore -- --ignored --test-threads=1
-          cargo test -p tako-server --locked --bin tako-server restore_restarts_dependencies_without_http_instances -- --ignored --test-threads=1
           cargo test -p tako-cli --locked --bin tako-dev-server tests::compose -- --ignored --test-threads=1
 
       - name: Test patched Pingora buffering and protocols

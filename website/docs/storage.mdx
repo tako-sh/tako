@@ -9,16 +9,15 @@ The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Ru
 
 ## Choose where data lives
 
-| Need                                     | Use                                      | Boundary                                                                      |
-| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| Files uploaded or downloaded by clients  | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
-| Relational app data                      | A [hosted database](/databases/)         | Bound by name; backed up continuously to private S3 storage.                  |
-| Short-lived values every server must see | A [KV store](/kv/)                       | JSON values with optional expiry; snapshots go to private S3 storage.         |
-| App-owned local files                    | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
-| Recover the deployed app data tree       | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
-| Disposable computed JSON                 | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
+| Need                                     | Use                                      | Boundary                                                                |
+| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| Files uploaded or downloaded by clients  | A local or S3-compatible storage binding | Local storage requires a single production server and is not backed up. |
+| Relational app data                      | A [hosted database](/databases/)         | Bound by name; backed up continuously to private S3 storage.            |
+| Short-lived values every server must see | A [KV store](/kv/)                       | JSON values with optional expiry; snapshots go to private S3 storage.   |
+| App-owned local files                    | `tako.dataDir` / `TAKO_DATA_DIR`         | Per server and not backed up; container releases receive it as a mount. |
+| Disposable computed JSON                 | [Cache](/cache/)                         | Cache entries live on one server and are never backed up.               |
 
-A storage binding does not provision a database. Use a [hosted database](/databases/) for relational data; Tako's shared runtime-state Postgres credential is a separate choice.
+A storage binding does not provision a database. Use a [hosted database](/databases/) for relational data.
 
 ## App-owned local files
 
@@ -124,7 +123,7 @@ S3 URLs target the storage provider. Local storage returns a relative signed `/_
 
 Local uploads and downloads are served by the Rust proxy in development and production, even when no app worker is running. The JavaScript SDK only creates signed URLs. Tako uses Apache `object_store` for atomic local publication and enables file and directory fsync before acknowledging an upload. Uploads are streamed and limited to 128 MiB.
 
-Local objects live in Tako's private data area, separately from `tako.dataDir`. Development storage is scoped to the registered config; production storage is scoped to the deployed app and environment. Existing SDK-managed files are copied into the private area on first use; the original files remain untouched. Migration rejects symbolic links, hard links, and special files. Local filesystem key restrictions still apply. Production app-data backups include the private storage area; local objects remain tied to that server unless backed up elsewhere.
+Local objects live in Tako's private data area, separately from `tako.dataDir`. Development storage is scoped to the registered config; production storage is scoped to the deployed app and environment. Existing SDK-managed files are copied into the private area on first use; the original files remain untouched. Migration rejects symbolic links, hard links, and special files. Local filesystem key restrictions still apply. Local objects belong to their server and are not backed up: use an S3-compatible storage when objects must survive losing the server.
 
 ## Public files and images
 

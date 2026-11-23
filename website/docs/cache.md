@@ -51,7 +51,7 @@ Without `shared: true`, the same key is private to the app. There is no fallback
 
 ## Persistence and isolation
 
-`tako-server` stores private entries in `data/tako/cache.redb` and shared entries under the server's `shared-cache/` directory. Both are outside the app-owned data directory and app backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches, so a value written on one server is a miss on the others; keep values every server must read, such as login challenges and sessions, in a [KV store](/kv/). `tako dev` and `tako run` use the same stores for the selected local environment.
+`tako-server` stores private entries in `data/tako/cache.redb` and shared entries under the server's `shared-cache/` directory. Both are outside the app-owned data directory and are never backed up. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches, so a value written on one server is a miss on the others; keep values every server must read, such as login challenges and sessions, in a [KV store](/kv/). `tako dev` and `tako run` use the same stores for the selected local environment.
 
 Each store has a 64 MiB budget for JSON, keys, and per-entry overhead. Keys are limited to 1 KiB of UTF-8 and values to 256 KiB of serialized JSON. Writes reclaim expired entries even if nobody reads those keys; under pressure the soonest-expiring entries go first. Always handle a miss before the TTL. redb reuses freed pages, so the file can stay at its high-water mark. The byte budget is not an exact filesystem-size limit.
 

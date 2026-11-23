@@ -3,8 +3,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, db, delete, kv, releases, scale, secret, storage, upgrade,
-    workflows,
+    self, credentials, db, delete, kv, releases, scale, secret, storage, upgrade, workflows,
 };
 use clap::CommandFactory;
 
@@ -186,10 +185,6 @@ pub enum Commands {
     /// Object storage commands
     #[command(subcommand)]
     Storage(storage::StorageCommands),
-
-    /// App data backup commands
-    #[command(subcommand)]
-    Backup(backups::BackupCommands),
 
     /// Tako-hosted SQLite databases
     Db(db::DbArgs),
@@ -396,7 +391,6 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Ssh { .. } => "ssh",
         Commands::Secret(_) => "secret",
         Commands::Storage(_) => "storage",
-        Commands::Backup(_) => "backup",
         Commands::Db(_) => "db",
         Commands::Kv(_) => "kv",
         Commands::Credential { .. } => "credential",
@@ -439,7 +433,6 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             ]
             | ["network", "client", "add" | "revoke" | "list"]
             | ["secret", "migrate" | "sync" | "clear"]
-            | ["backup", "now" | "download" | "restore"]
             | [
                 "db",
                 "create" | "backup" | "restore" | "import" | "export" | "delete"
@@ -458,7 +451,7 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
                 "list"
             ]
             | ["workflow", "show"]
-            | ["backup" | "network", "list" | "status"]
+            | ["network", "list" | "status"]
             | ["db", "list" | "status" | "backups"]
             | ["kv", "list" | "status"]
             | ["network", "client" | "server", "list"]
@@ -597,20 +590,6 @@ impl Cli {
             Commands::Storage(cmd) => {
                 storage::run(cmd, self.config.as_deref())?;
                 json_success(json, "storage")
-            }
-            Commands::Backup(cmd) => {
-                let emit_generic = json
-                    && !matches!(
-                        cmd,
-                        backups::BackupCommands::List { .. }
-                            | backups::BackupCommands::Status { .. }
-                    );
-                backups::run(cmd, self.config.as_deref())?;
-                if emit_generic {
-                    json_success(true, "backup")
-                } else {
-                    Ok(())
-                }
             }
             Commands::Db(cmd) => {
                 // Each subcommand prints its own JSON result.

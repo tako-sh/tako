@@ -26,12 +26,12 @@ use tako_core::{
 use tako_db::DatabaseId;
 
 use super::backups::{SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
+use super::encryption::{decrypt_backup_file, encrypt_backup_file};
 use super::now_unix_secs;
-use crate::ServerState;
-use crate::operations::{
-    METADATA_TIMEOUT, backup_store, decrypt_backup_file, download_object, encrypt_backup_file,
-    put_json_object, upload_file, with_deadline,
+use super::objects::{
+    METADATA_TIMEOUT, backup_store, download_object, put_json_object, upload_file, with_deadline,
 };
+use crate::ServerState;
 use crate::state_store::StoredDatabase;
 
 /// How often a changing database is snapshotted.

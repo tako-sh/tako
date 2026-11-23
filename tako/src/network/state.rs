@@ -145,6 +145,7 @@ mod tests {
         cache.records = vec![
             sealed.clone(),
             record(RecordKind::Credential, None),
+            // A legacy plaintext record, still stored in older networks.
             record(RecordKind::BackupActive, Some(&selection)),
         ];
         assert!(!missing_keys(&cache, &device, None));

@@ -202,7 +202,6 @@ mod tests {
                 secrets_digest,
                 storages,
                 ssl,
-                backup,
                 ..
             } => {
                 assert_eq!(app, "my-app");
@@ -213,7 +212,6 @@ mod tests {
                 assert!(secrets_digest.is_none());
                 assert!(storages.is_none());
                 assert_eq!(ssl.provider, tako_core::SslProvider::LetsEncrypt);
-                assert!(backup.is_none());
             }
             _ => panic!("Expected Deploy command"),
         }

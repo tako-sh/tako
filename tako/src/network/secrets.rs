@@ -75,6 +75,14 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
                 }
             }
         }
+        // Archive backup keys of earlier releases are no longer kept locally.
+        if let Some(values) = value.get_mut("values").and_then(|v| v.as_object_mut()) {
+            for env in values.values_mut() {
+                if let Some(env) = env.as_object_mut() {
+                    env.remove("backup_keys");
+                }
+            }
+        }
         return Ok(serde_json::from_value(value)?);
     }
     let legacy = project.join(".tako/secrets.json");
@@ -367,7 +375,10 @@ fn merge_remote(
             &record.address.scope == scope
                 && !matches!(
                     record.address.kind,
-                    RecordKind::Database | RecordKind::DatabaseKey
+                    RecordKind::Database
+                        | RecordKind::DatabaseKey
+                        | RecordKind::BackupKey
+                        | RecordKind::BackupActive
                 )
                 && record.address.readable(permissions)
         })
@@ -495,7 +506,7 @@ pub(crate) fn preview_clear(project: &Path, app: &str, env: &str) -> Result<Vec<
 /// Delete every app secret of one environment from its network and from this
 /// worktree's drafts, publishing the deletions immediately. Unpublished drafts
 /// of other kinds, such as provider credentials, stay local. Storage
-/// credentials and backup keys are never touched: retained backups need them.
+/// credentials are never touched: hosted database backups need them.
 pub(crate) fn clear_environment(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
     let (alias, scope) = environment_target(app, env)?;
     let _lock = lock(project)?;
@@ -648,7 +659,7 @@ fn publish_changes(
     let observed_cache =
         read_cache(alias)?.unwrap_or_else(|| SharedSnapshot::empty(network.clone()));
     let observed = observed_cache.latest()?;
-    for row_key in local::publication_order(dirty, &current) {
+    for row_key in dirty {
         let id = RequestId::random()?;
         let address = RecordAddress {
             scope: scope.clone(),

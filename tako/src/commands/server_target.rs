@@ -1,21 +1,29 @@
+//! The servers an app environment runs on, and typed management requests to
+//! them.
+
+use serde::de::DeserializeOwned;
+use tako_core::{Command, Response};
+
 use crate::commands::helpers;
-use crate::config::{ServerInventory, TakoToml};
+use crate::config::{ServerEntry, ServerInventory, TakoToml};
+use crate::management_http::ManagementClient;
 
 #[derive(Debug, Clone)]
-pub(crate) struct BackupTarget {
+pub(crate) struct EnvTarget {
     pub(crate) app_name: String,
     pub(crate) env: String,
     pub(crate) remote_app_name: String,
     pub(crate) server_names: Vec<String>,
 }
 
-pub(crate) fn resolve_backup_target(
+/// The servers of `app_name`'s environment, or the one server requested.
+pub(crate) fn resolve_env_target(
     app_name: &str,
     requested_env: Option<&str>,
     requested_server: Option<&str>,
     tako_config: &TakoToml,
     servers: &ServerInventory,
-) -> Result<BackupTarget, Box<dyn std::error::Error>> {
+) -> Result<EnvTarget, Box<dyn std::error::Error>> {
     let env = helpers::resolve_env(requested_env);
     if !tako_config.envs.contains_key(&env) {
         return Err(format!("Environment '{}' not found in tako.toml.", env).into());
@@ -48,7 +56,7 @@ pub(crate) fn resolve_backup_target(
     helpers::validate_server_names(&server_names, servers)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    Ok(BackupTarget {
+    Ok(EnvTarget {
         app_name: app_name.to_string(),
         env: env.clone(),
         remote_app_name: tako_core::deployment_app_id(app_name, &env),
@@ -56,33 +64,30 @@ pub(crate) fn resolve_backup_target(
     })
 }
 
-pub(super) fn resolve_single_server(
-    server_names: &[String],
-    message: &str,
-) -> Result<String, String> {
-    match server_names {
-        [server] => Ok(server.clone()),
-        [] => Err("No target servers found.".to_string()),
-        _ => Err(message.to_string()),
-    }
+pub(crate) async fn send_typed_to_server<T>(
+    server: &ServerEntry,
+    command: Command,
+    response_name: &'static str,
+) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    let mut client = ManagementClient::for_server(server)
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_typed_response(
+        client.send(&command).await.map_err(|e| e.to_string())?,
+        response_name,
+    )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_single_server_accepts_only_target() {
-        assert_eq!(
-            resolve_single_server(&["prod".to_string()], "choose").unwrap(),
-            "prod"
-        );
-    }
-
-    #[test]
-    fn resolve_single_server_rejects_multiple_targets() {
-        let err = resolve_single_server(&["a".to_string(), "b".to_string()], "choose one")
-            .expect_err("should reject");
-        assert_eq!(err, "choose one");
+fn parse_typed_response<T>(response: Response, response_name: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    match response {
+        Response::Ok { data } => serde_json::from_value(data)
+            .map_err(|e| format!("invalid {response_name} response: {e}")),
+        Response::Error { message, .. } => Err(message),
     }
 }

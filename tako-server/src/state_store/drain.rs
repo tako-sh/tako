@@ -8,9 +8,8 @@ use std::time::{Duration, Instant};
 /// file, beside `state.sqlite`, until it drains or retires.
 const DRAIN_ACTIVITY_LOCK_FILE: &str = "drain-activity.lock";
 /// Every standby server process holds a shared lease on this file, in the
-/// data directory, for as long as it may run app instances. A backup
-/// restore holds it exclusively, so no standby serves an app while its
-/// data is restored.
+/// data directory, for as long as it may run app instances. Release cleanup
+/// holds it exclusively, so it never removes a release a standby serves.
 const STANDBY_LOCK_FILE: &str = "standby.lock";
 /// How often a start that waits for a lease tries again.
 const LEASE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
@@ -73,8 +72,8 @@ impl DrainLease {
     }
 
     /// A standby's shared lease on the standby lock of the data directory
-    /// `data_dir`, or a restore's exclusive one, unless a conflicting one is
-    /// held.
+    /// `data_dir`, or release cleanup's exclusive one, unless a conflicting
+    /// one is held.
     pub(crate) fn try_standby_in(
         data_dir: &std::path::Path,
         exclusive: bool,
