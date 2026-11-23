@@ -13,6 +13,7 @@
 mod hosted;
 pub(crate) mod legacy;
 pub(crate) mod operator;
+mod replacement;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,13 +29,9 @@ use hosted::HostedRunsDb;
 #[cfg(test)]
 pub(crate) use hosted::testing::HostedFixture;
 
-/// Finished history and run IDs remain reserved for at least six calendar months.
-/// SQL that creates the workflow store's tables in a database file, for a
-/// server preparing a replacement copy of a workflow database. Idempotent.
-pub fn schema_sql() -> String {
-    hosted::schema_batch()
-}
+pub use replacement::{keep_live_schedules, schema_sql};
 
+/// Finished history and run IDs remain reserved for at least six calendar months.
 pub const DEFAULT_RETENTION_MS: i64 = 184 * 24 * 60 * 60 * 1000;
 
 pub use tako_core::RunResult;

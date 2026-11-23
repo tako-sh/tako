@@ -247,11 +247,34 @@ async fn resetting_a_workflow_database_keeps_its_workflow_tables() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
-    // A workflow runtime created the tables when it opened the store.
+    // A workflow runtime created the tables when it opened the store, and
+    // the running release registered its schedules.
+    for sql in tako_workflows::enqueue::schema_sql().split(";\n") {
+        query(&state, ID, sql.trim_end_matches(';')).await;
+    }
     query(
         &state,
         ID,
-        "CREATE TABLE tako_workflow_meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
+        "UPDATE tako_workflow_meta SET value = 7 WHERE name = 'schedule_revision'",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_schedule_releases VALUES ('shop', 'b7', 7)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_schedules VALUES ('shop', 'nightly', '0 3 * * *', 1, NULL)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_runs VALUES
+             ('shop', 'r1', 'charge', '{}', 'pending', 0, 3, 0, NULL, NULL, NULL, 0, NULL, NULL)",
     )
     .await;
     ok(
@@ -274,6 +297,21 @@ async fn resetting_a_workflow_database_keeps_its_workflow_tables() {
     assert_eq!(version["rows"].as_array().unwrap().len(), 1, "{version}");
     let runs = query(&state, ID, "SELECT count(*) FROM tako_workflow_runs").await;
     assert_eq!(runs["rows"][0][0], 0, "{runs}");
+    // The running release registers its schedules only when it starts, so
+    // they and the revision counter carry over.
+    let schedules = query(
+        &state,
+        ID,
+        "SELECT s.name, r.build, m.value FROM tako_workflow_schedules s
+         JOIN tako_workflow_schedule_releases r USING (app)
+         JOIN tako_workflow_meta m ON m.name = 'schedule_revision'",
+    )
+    .await;
+    assert_eq!(
+        schedules["rows"],
+        serde_json::json!([["nightly", "b7", 7]]),
+        "{schedules}"
+    );
 
     // A database that never held workflows stays empty.
     let plain = "plain-reset";

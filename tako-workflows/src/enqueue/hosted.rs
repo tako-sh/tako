@@ -1214,7 +1214,12 @@ impl HostedRunsDb {
     /// schedule registration.
     pub(super) fn next_schedule_revision(&self) -> Result<i64, RunsDbError> {
         let [revision] = split(self.client.batch(&[Statement::new(
-            "UPDATE tako_workflow_meta SET value = value + 1 WHERE name = 'schedule_revision'
+            // Never below a registered revision, even in a database copied
+            // in from elsewhere.
+            "UPDATE tako_workflow_meta
+             SET value = MAX(value,
+                 COALESCE((SELECT MAX(revision) FROM tako_workflow_schedule_releases), 0)) + 1
+             WHERE name = 'schedule_revision'
              RETURNING value",
             vec![],
         )])?)?;

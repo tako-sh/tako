@@ -1941,19 +1941,23 @@ fn prepare_runtime_state(current: &Path, path: &Path) -> Result<(), Box<dyn std:
 
     // Workflow runtimes keep their store open across the swap and create its
     // tables only when they open it, so a copy without them must get them.
-    let workflow_store = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-               WHERE type = 'table' AND name = 'tako_workflow_meta')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
+    // They register schedules only when they start, so the copy keeps the
+    // live database's schedules and revision counter.
+    let live = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let workflow_store = live.query_row(
+        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+           WHERE type = 'table' AND name = 'tako_workflow_meta')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
     if workflow_store {
         db.execute_batch(&tako_workflows::enqueue::schema_sql())?;
+        tako_workflows::enqueue::keep_live_schedules(&live, &db)?;
     }
+    drop(live);
     let has_columns = |table: &str, columns: &[&str]| -> rusqlite::Result<bool> {
         let placeholders = vec!["?"; columns.len()].join(", ");
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&table, &table];
