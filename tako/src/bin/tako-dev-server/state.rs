@@ -220,6 +220,37 @@ pub fn kill_orphaned_process(project_dir: &str, config_path: &str) {
     remove_pid_file(project_dir, config_path);
 }
 
+/// The projects an earlier daemon registered in its `dev-server.sqlite`,
+/// whose app processes may outlive a crash. Read once so startup can clean
+/// them up, then the file is removed; on a read failure it is left alone.
+pub fn take_legacy_registrations(path: &Path) -> Vec<(String, String)> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let read = || -> rusqlite::Result<Vec<(String, String)>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        let mut statement = conn.prepare("SELECT project_dir, config_path FROM apps")?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    };
+    match read() {
+        Ok(apps) => {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
+            apps
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not read the earlier dev registrations");
+            Vec::new()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // redb store — persists registrations across restarts
 // ---------------------------------------------------------------------------

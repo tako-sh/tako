@@ -84,6 +84,30 @@ fn test_state() -> (Arc<Mutex<State>>, tempfile::TempDir) {
     (Arc::new(Mutex::new(st)), tmp)
 }
 
+#[test]
+fn legacy_sqlite_registrations_are_read_once_for_orphan_cleanup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("dev-server.sqlite");
+    assert!(state::take_legacy_registrations(&path).is_empty());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         CREATE TABLE apps (config_path TEXT PRIMARY KEY, project_dir TEXT NOT NULL,
+             name TEXT NOT NULL, variant TEXT, is_enabled INTEGER NOT NULL DEFAULT 1,
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, config_file TEXT);
+         INSERT INTO apps (config_path, project_dir, name, created_at, updated_at)
+             VALUES ('/p/tako.toml', '/p', 'app', 0, 0);",
+    )
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        state::take_legacy_registrations(&path),
+        [("/p".to_string(), "/p/tako.toml".to_string())]
+    );
+    assert!(!path.exists());
+    assert!(state::take_legacy_registrations(&path).is_empty());
+}
+
 fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
     let config_path = format!("{project_dir}/tako.toml");
     let mut s = state.lock().unwrap();
