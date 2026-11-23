@@ -76,6 +76,9 @@ pub(super) fn worker(
                         .reconcile_record_keys(time)
                         .map_err(Into::into)
                 }) {
+                    if let AgentError::Runtime(error) = &error {
+                        controller.note_journal_error(error);
+                    }
                     tracing::warn!(error = %error, "record key reconciliation pending");
                 }
             }
@@ -102,7 +105,12 @@ pub(super) fn worker(
             Err(mpsc::RecvTimeoutError::Timeout) => (),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        if controller.journal_failed.get() {
+            tracing::error!("runtime journal write failed; restarting the agent to reopen it");
+            break;
+        }
     }
+    let journal_failed = controller.journal_failed.get();
     control.withdraw();
     wait_for_broker(&control);
     // The stopped agent can no longer expire grants. Withdraw WireGuard and SSH
@@ -115,7 +123,12 @@ pub(super) fn worker(
     if let Err(error) = &child {
         tracing::error!(error = %error, "agent child shutdown failed");
     }
-    isolation.and(child)
+    isolation.and(child)?;
+    if journal_failed {
+        // A failed exit makes the service manager start the agent again.
+        return Err(AgentError::Invalid("runtime journal write failed"));
+    }
+    Ok(())
 }
 
 fn wait_for_broker(control: &Control) {
@@ -147,6 +160,9 @@ struct Controller {
     stop: Arc<AtomicBool>,
     renewal: Renewal,
     control: Control,
+    /// Set once a journal write failed on disk. The worker then exits, so
+    /// the agent restarts and reopens it instead of failing every request.
+    journal_failed: std::cell::Cell<bool>,
 }
 impl Controller {
     fn start(
@@ -318,7 +334,13 @@ impl Controller {
             stop,
             renewal: Renewal::new(gossip_leaf_hash),
             control,
+            journal_failed: std::cell::Cell::new(false),
         })
+    }
+    fn note_journal_error(&self, error: &RuntimeError) {
+        if error.journal_needs_reopen() {
+            self.journal_failed.set(true);
+        }
     }
     fn initial_isolate(
         config: &NodeConfig,
@@ -674,6 +696,9 @@ impl Controller {
         self.response(result)
     }
     fn response(&self, result: Result<tako_network::api::RpcResponse>) -> AgentResponse {
+        if let Err(AgentError::Runtime(error)) = &result {
+            self.note_journal_error(error);
+        }
         match result {
             Ok(response) => AgentResponse {
                 status: 200,

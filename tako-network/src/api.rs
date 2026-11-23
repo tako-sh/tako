@@ -69,6 +69,17 @@ journal_errors!(
     redb::SetDurabilityError
 );
 
+impl RuntimeError {
+    /// The journal failed to write to disk. redb then refuses every later
+    /// write until the database is opened again.
+    pub fn journal_needs_reopen(&self) -> bool {
+        matches!(
+            self,
+            Self::Journal(redb::Error::Io(_) | redb::Error::PreviousIo)
+        )
+    }
+}
+
 /// The commitment binds an authenticated identity to one management operation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

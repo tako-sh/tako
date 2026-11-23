@@ -259,6 +259,10 @@ pub(super) fn open(state_path: &Path, identity: &Identity) -> RuntimeResult<Data
     let legacy = state_path.with_extension("db");
     if !present(&path)? && exists(&legacy)? {
         import(&path, &legacy, identity)?;
+    } else if exists(&legacy)? {
+        // An import that stopped after moving its journal into place: the
+        // legacy file is stale, and nothing may open it again.
+        retire(&legacy)?;
     }
     let file = private_options().create(true).truncate(false).open(&path)?;
     if !file.metadata()?.is_file() {

@@ -238,7 +238,7 @@ fn nonce_consumed_before_import_is_still_a_replay() {
 }
 
 #[test]
-fn existing_redb_journal_is_used_and_legacy_file_left_alone() {
+fn existing_redb_journal_is_used_and_a_stale_legacy_file_retired() {
     let fixture = Fixture::new();
     let mut runtime = fixture.open();
     fixture
@@ -252,10 +252,12 @@ fn existing_redb_journal_is_used_and_legacy_file_left_alone() {
     )
     .unwrap();
     drop(db);
+    // As an import that stopped after moving its journal into place leaves
+    // it: the legacy file is stale, so it is retired, never imported.
     let mut runtime = fixture.open();
     let dir = fixture.dir.path();
-    assert!(dir.join("runtime.db").exists());
-    assert!(!dir.join("runtime.db.migrated").exists());
+    assert!(!dir.join("runtime.db").exists());
+    assert!(dir.join("runtime.db.migrated").exists());
     assert_eq!(rows(&runtime, CONSUMED_NONCES.0), 1);
     // The clock is the redb journal's (10), not the legacy file's (50).
     fixture
