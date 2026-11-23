@@ -332,6 +332,41 @@ fn commit_counts_as_a_write() {
 }
 
 #[test]
+fn reads_and_writes_that_change_nothing_leave_the_database_idle() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let wrote = |conn: &mut Connection, sql: &str| {
+        conn.execute(
+            sql,
+            &Args::Positional(&[]),
+            true,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap();
+        conn.take_wrote()
+    };
+    assert!(wrote(&mut conn, "CREATE TABLE t (x PRIMARY KEY)"));
+    assert!(wrote(&mut conn, "INSERT INTO t VALUES (1)"));
+    // A polled read transaction, as channel replay and workflows issue.
+    for sql in ["BEGIN", "SELECT * FROM t", "COMMIT"] {
+        assert!(!wrote(&mut conn, sql), "{sql}");
+    }
+    // A write transaction whose statements match nothing.
+    for sql in [
+        "BEGIN IMMEDIATE",
+        "UPDATE t SET x = 2 WHERE x = 5",
+        "DELETE FROM t WHERE x = 5",
+        "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
+        "COMMIT",
+    ] {
+        assert!(!wrote(&mut conn, sql), "{sql}");
+    }
+    // Schema and settings changes count even though no row changes.
+    assert!(wrote(&mut conn, "CREATE INDEX t_x ON t (x)"));
+    assert!(wrote(&mut conn, "PRAGMA user_version = 7"));
+}
+
+#[test]
 fn streaming_sinks_can_stop_early() {
     let fixture = fixture();
     let mut conn = open(&fixture);

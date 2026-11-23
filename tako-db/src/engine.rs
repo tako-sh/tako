@@ -411,9 +411,15 @@ pub struct Connection {
     /// Whether statements may begin or end transactions; see
     /// [`Connection::sequence_in_transaction`].
     transactions: Arc<TransactionControl>,
-    /// Set when a statement that may have changed the database ran, whether
-    /// or not it succeeded. Cleared by `take_wrote`.
+    /// Set when a statement changed the database: rows (including through
+    /// triggers) or the schema and settings. Reads, no-op writes and empty
+    /// transactions leave it clear, so a database that is only polled stays
+    /// idle for backups. Cleared by `take_wrote`.
     wrote: bool,
+    /// Whether a statement of the open transaction changed the database. Its
+    /// `COMMIT` sets `wrote` again, so a snapshot taken between a write and
+    /// the commit cannot lose the write.
+    transaction_wrote: bool,
     statement_timeout: Duration,
     /// Whether a statement inserted a row with a given rowid; see
     /// [`RowidWatch`].
@@ -524,6 +530,7 @@ impl Connection {
             dirty,
             transactions,
             wrote: false,
+            transaction_wrote: false,
             statement_timeout: config.statement_timeout,
             rowids,
         })
@@ -741,8 +748,6 @@ impl Connection {
         }
         let readonly = stmt.readonly();
         let inserts = !readonly && starts_with_insert(sql);
-        // Before stepping: the statement may write and then fail.
-        self.wrote |= !readonly;
         if let Err(error) = sink(Event::Begin(PendingColumns(stmt))) {
             self.disarm_deadline();
             return Err(error);
@@ -795,9 +800,11 @@ impl Connection {
         // Reset the statement (returning a cached one to the cache) before
         // reading the transaction state.
         drop((cached, fresh));
-        // COMMIT is read-only to SQLite, yet it is what makes earlier writes
-        // durable; a snapshot taken mid-transaction must not lose them.
-        self.wrote |= in_transaction && self.conn.is_autocommit();
+        // Counted after stepping, whether or not the statement then failed:
+        // RETURNING applies every change before its first row.
+        let modified = self.conn.total_changes() > before_changes
+            || (!readonly && !statement_verb(sql).is_some_and(changes_only_rows));
+        self.note_write(in_transaction, modified);
         if let Some(error) = failure {
             return Err(error);
         }
@@ -815,6 +822,20 @@ impl Connection {
             affected,
             last_insert_rowid,
         })
+    }
+
+    /// Records whether a statement changed the database. A transaction's
+    /// changes count again when it ends: COMMIT is read-only to SQLite, yet
+    /// it is what makes them durable. A rolled back one is counted too, which
+    /// costs at most one needless backup.
+    fn note_write(&mut self, in_transaction: bool, modified: bool) {
+        self.wrote |= modified;
+        if self.conn.is_autocommit() {
+            let ended = std::mem::take(&mut self.transaction_wrote);
+            self.wrote |= in_transaction && ended;
+        } else {
+            self.transaction_wrote |= modified;
+        }
     }
 
     fn arm_deadline(&self) {
@@ -928,6 +949,27 @@ fn check_not_empty(sql: &str) -> Result<(), Error> {
 }
 
 /// Whether `sql` is an `INSERT` or `REPLACE`, also after a `WITH` clause.
+/// Statements whose effect on the database `total_changes` fully counts:
+/// row changes, and transaction control, which changes nothing by itself.
+/// Any other statement SQLite does not call read-only (DDL, a writing
+/// `PRAGMA`, `VACUUM`) counts as a change.
+fn changes_only_rows(verb: &str) -> bool {
+    [
+        "insert",
+        "replace",
+        "update",
+        "delete",
+        "begin",
+        "commit",
+        "end",
+        "rollback",
+        "savepoint",
+        "release",
+    ]
+    .iter()
+    .any(|candidate| verb.eq_ignore_ascii_case(candidate))
+}
+
 fn starts_with_insert(sql: &str) -> bool {
     statement_verb(sql).is_some_and(|verb| {
         verb.eq_ignore_ascii_case("insert") || verb.eq_ignore_ascii_case("replace")
