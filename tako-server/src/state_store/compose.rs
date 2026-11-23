@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::{SqliteStateStore, StateStoreError, app_registry::upsert_app_on, encryption};
 use crate::instances::AppConfig;
 use rusqlite::OptionalExtension;

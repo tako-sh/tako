@@ -100,7 +100,7 @@ server.serve_forever()
 
     // Abort at a binding write, after SQLite has updated the app, its routes
     // and its secrets inside the same transaction.
-    let db = rusqlite::Connection::open(&temp.path().join("state.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join("state.sqlite")).unwrap();
     db.execute_batch(
         "CREATE TRIGGER reject_first BEFORE INSERT ON app_databases
         BEGIN SELECT RAISE(ABORT, 'first commit failed'); END;",
