@@ -22,7 +22,9 @@ jobs:
   alma-fixture:
     name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Usually about 4 minutes, but installing the fixture's packages took
+    # over 19 when Ubuntu's mirrors were slow and dropped connections.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
