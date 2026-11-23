@@ -252,6 +252,28 @@ fn a_clean_checkout_follows_its_environment_to_another_network() {
     let current = local::rows(state.values.environments.get("production")).unwrap();
     assert!(unpublished(entry, &current).is_empty());
     assert!(entry.pending.is_empty());
+
+    // An older release published an app data archive key with the
+    // environment's secrets. It is no local row, and no unpublished change.
+    let mut state = state;
+    let key = RowKey {
+        kind: RecordKind::BackupKey,
+        name: "backup-key-0000000000000000".into(),
+    };
+    state
+        .environments
+        .get_mut("production")
+        .unwrap()
+        .base
+        .push(Row {
+            key,
+            value: "sealed".into(),
+            expires_on: None,
+        });
+    write_workspace(&project, &state).unwrap();
+    let state = read_workspace(&project).unwrap();
+    let entry = &state.environments["production"];
+    assert!(unpublished(entry, &current).is_empty());
 }
 
 #[test]

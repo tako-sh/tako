@@ -75,7 +75,16 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
                 }
             }
         }
-        return Ok(serde_json::from_value(value)?);
+        let mut workspace: Workspace = serde_json::from_value(value)?;
+        // App data archive keys are no longer local rows, so their last
+        // published copies and queued commands are not unpublished changes.
+        for entry in workspace.environments.values_mut() {
+            entry.base.retain(|row| !retired(row.key.kind));
+            entry
+                .pending
+                .retain(|pending| !retired(pending.mutation.address.kind));
+        }
+        return Ok(workspace);
     }
     let legacy = project.join(".tako/secrets.json");
     let values = if legacy.try_exists()? {
@@ -88,6 +97,12 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
         ..Default::default()
     })
 }
+/// Kinds of the removed app data archive keys, which older releases kept
+/// with an environment's secrets.
+fn retired(kind: RecordKind) -> bool {
+    matches!(kind, RecordKind::BackupKey | RecordKind::BackupActive)
+}
+
 fn write_workspace(project: &Path, state: &Workspace) -> Result<()> {
     state.values.validate()?;
     super::write_json(&SecretsStore::default_path(project), state, true)
