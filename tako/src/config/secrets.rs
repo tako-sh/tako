@@ -35,6 +35,9 @@ pub struct EnvironmentSecrets {
     /// Tako/provider credential name to encrypted value.
     #[serde(default)]
     pub credentials: HashMap<String, EncryptedSecretValue>,
+    /// App data archive keys of earlier releases: read and dropped.
+    #[serde(default, rename = "backup_keys", skip_serializing)]
+    pub(crate) legacy_backup_keys: serde::de::IgnoredAny,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -364,9 +367,7 @@ impl SecretsStore {
                 .entry(env.to_string())
                 .or_insert_with(|| EnvironmentSecrets {
                     key_id: crate::crypto::generate_key_id(),
-                    app: HashMap::new(),
-                    storages: HashMap::new(),
-                    credentials: HashMap::new(),
+                    ..Default::default()
                 });
 
         Ok(env_secrets.key_id.clone())
@@ -381,9 +382,7 @@ impl SecretsStore {
             env.to_string(),
             EnvironmentSecrets {
                 key_id: key_id.to_string(),
-                app: HashMap::new(),
-                storages: HashMap::new(),
-                credentials: HashMap::new(),
+                ..Default::default()
             },
         );
         Ok(())

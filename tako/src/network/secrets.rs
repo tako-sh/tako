@@ -75,14 +75,6 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
                 }
             }
         }
-        // Archive backup keys of earlier releases are no longer kept locally.
-        if let Some(values) = value.get_mut("values").and_then(|v| v.as_object_mut()) {
-            for env in values.values_mut() {
-                if let Some(env) = env.as_object_mut() {
-                    env.remove("backup_keys");
-                }
-            }
-        }
         return Ok(serde_json::from_value(value)?);
     }
     let legacy = project.join(".tako/secrets.json");

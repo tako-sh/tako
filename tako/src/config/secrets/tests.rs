@@ -235,6 +235,21 @@ fn test_validate_secret_name_invalid_chars() {
 }
 
 #[test]
+fn stores_from_earlier_releases_load_without_their_archive_backup_keys() {
+    let store = SecretsStore::parse(
+        r#"{"production": {"key_id": "0123456789abcdef", "app": {}, "storages": {},
+            "backup_keys": [{"id": "b1", "value": "sealed"}]}}"#,
+    )
+    .unwrap();
+    assert_eq!(store.environments["production"].key_id, "0123456789abcdef");
+    assert!(
+        !serde_json::to_string(&store)
+            .unwrap()
+            .contains("backup_keys")
+    );
+}
+
+#[test]
 fn retired_credentials_load_and_remove_but_cannot_be_set() {
     assert!(validate_credential_name("postgres_url").is_ok());
     let error = validate_settable_credential_name("postgres_url").unwrap_err();
