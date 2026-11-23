@@ -304,4 +304,30 @@ mod tests {
         );
         assert_eq!(ChannelError::Storage("disk".into()).socket_code(), None);
     }
+
+    #[test]
+    fn an_unreachable_replay_database_is_retryable() {
+        use tako_core::ErrorCode;
+        use tako_db::client::ClientError;
+
+        for error in [
+            ClientError::Unavailable("connection refused".into()),
+            ClientError::Statement {
+                code: "SQLITE_BUSY".into(),
+            },
+        ] {
+            let error = ChannelError::from(error);
+            assert!(matches!(error, ChannelError::Unavailable(_)), "{error}");
+            assert_eq!(error.socket_code(), Some(ErrorCode::Unavailable));
+            assert_eq!(crate::authorize::error_response(&error).0, 503);
+            // Opening a store keeps it retryable.
+            let opened = error.or_storage("cannot open channel storage");
+            assert!(matches!(opened, ChannelError::Unavailable(_)));
+        }
+        let failed = ChannelError::from(ClientError::Statement {
+            code: "SQLITE_CONSTRAINT".into(),
+        });
+        assert!(matches!(failed, ChannelError::Storage(_)), "{failed}");
+        assert_eq!(crate::authorize::error_response(&failed).0, 500);
+    }
 }

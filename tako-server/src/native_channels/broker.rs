@@ -365,12 +365,14 @@ impl Broker {
                 let Some(application) = self.apps.get(&app) else {
                     return Ok(Reply::Response(Response::Rejected));
                 };
+                // Bounded like a registration: commands run one at a time.
                 if valid_channel(&channel)
-                    && application
-                        .store
-                        .sync_channel_async(&channel, &auth)
-                        .await
-                        .is_ok()
+                    && tokio::time::timeout_at(
+                        deadline,
+                        application.store.sync_channel_async(&channel, &auth),
+                    )
+                    .await
+                    .is_ok_and(|synced| synced.is_ok())
                 {
                     Response::Ok
                 } else {
@@ -390,12 +392,31 @@ impl Broker {
                 let Some(application) = self.apps.get_mut(&app) else {
                     return Ok(Reply::Response(Response::Rejected));
                 };
-                let result = application
-                    .store
-                    .run(move |store| {
-                        store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
-                    })
-                    .await;
+                // A publish that timed out may have committed since; its
+                // publication must not pass for this one's.
+                let mut stale = false;
+                while let Ok(_) | Err(TryRecvError::Lagged(_)) = application.publications.try_recv()
+                {
+                    stale = true;
+                }
+                let append = application.store.run(move |store| {
+                    store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
+                });
+                // Bounded like a registration: commands run one at a time, so
+                // one app's unresponsive database must not stall the others.
+                let result = tokio::time::timeout_at(deadline, append).await;
+                if stale || result.is_err() {
+                    // Readers reload from the shared history, which has
+                    // whatever committed.
+                    self.fence_app(&app);
+                    self.fanout(&Frame::Gap { app: app.clone() });
+                }
+                let Ok(result) = result else {
+                    return Ok(Reply::Response(Response::Rejected));
+                };
+                let Some(application) = self.apps.get_mut(&app) else {
+                    return Ok(Reply::Response(Response::Rejected));
+                };
                 match result {
                     Ok(message) => {
                         // Consume each committed publication before executing the next command.

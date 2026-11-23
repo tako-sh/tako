@@ -64,10 +64,8 @@ impl TakoProxy {
                     )
                     .await
                     .map(Arc::new)
-                    .map_err(|_| {
-                        ChannelError::Storage(
-                            "open store: channel reader or native broker unavailable".into(),
-                        )
+                    .map_err(|error| {
+                        error.or_storage("open store: channel reader or native broker unavailable")
                     })
                 })
                 .await?;

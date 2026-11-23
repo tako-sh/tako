@@ -108,19 +108,28 @@ impl DevChannelStore {
     /// The app's replay store. Blocking: the first call opens the database.
     fn store_for_app(&self, app_id: &str) -> std::result::Result<Arc<ChannelStore>, ChannelError> {
         let key = store_key(app_id);
+        let connection = {
+            let apps = self.apps.lock().unwrap();
+            let app = apps.get(&key).ok_or(ChannelError::NotProvisioned)?;
+            if let Some(store) = &app.store {
+                return Ok(store.clone());
+            }
+            app.connection.clone()
+        };
+        // Opened without the lock, so one app's database does not hold up
+        // every other app's requests.
+        let config =
+            ChannelStoreConfig::hosted(&connection.url, &connection.auth_token, key.as_str());
+        let store = Arc::new(ChannelStore::open_config(config)?);
         let mut apps = self.apps.lock().unwrap();
         let app = apps.get_mut(&key).ok_or(ChannelError::NotProvisioned)?;
-        if let Some(store) = &app.store {
-            return Ok(store.clone());
+        if app.connection != connection {
+            // Registered again meanwhile: the store is for the old binding.
+            return Err(ChannelError::Unavailable(
+                "the app's replay binding changed while it opened".into(),
+            ));
         }
-        let config = ChannelStoreConfig::hosted(
-            &app.connection.url,
-            &app.connection.auth_token,
-            key.as_str(),
-        );
-        let store = Arc::new(ChannelStore::open_config(config)?);
-        app.store = Some(store.clone());
-        Ok(store)
+        Ok(app.store.get_or_insert(store).clone())
     }
 
     /// Apply a server-side publication from the internal socket's

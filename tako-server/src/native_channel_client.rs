@@ -178,7 +178,7 @@ impl ProxyChannelStore {
         let store = tokio::task::spawn_blocking(move || ChannelStore::open_reader_config(config))
             .await
             .map_err(|_| ChannelError::Storage("channel store worker failed".into()))?
-            .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?;
+            .map_err(|error| error.or_storage("cannot open channel storage"))?;
         Self::subscribe(Arc::new(store), app, target, link).await
     }
     async fn subscribe(

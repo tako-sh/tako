@@ -21,16 +21,24 @@ impl DirectChannelStores {
         app: &tako_network::AppEnv,
         target: &ChannelTarget,
     ) -> Result<std::sync::Arc<ChannelStore>, ChannelError> {
-        let mut stores = self.0.lock();
-        if let Some(cached) = stores.get(app)
+        if let Some(cached) = self.0.lock().get(app)
             && cached.target == *target
         {
             return Ok(cached.store.clone());
         }
+        // Opened without the lock, so one app's unreachable database does
+        // not hold up every other app's requests.
         let store = std::sync::Arc::new(
             ChannelStore::open_config(target.config(app))
-                .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?,
+                .map_err(|error| error.or_storage("cannot open channel storage"))?,
         );
+        let mut stores = self.0.lock();
+        if let Some(cached) = stores.get(app)
+            && cached.target == *target
+        {
+            // Another request opened it meanwhile; keep the one in use.
+            return Ok(cached.store.clone());
+        }
         if let Some(old) = stores.insert(
             app.clone(),
             DirectStore {
