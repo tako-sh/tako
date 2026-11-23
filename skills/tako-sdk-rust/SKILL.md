@@ -105,10 +105,10 @@ missing or expired key. `put_blocking(key, &value, ttl)` JSON-encodes any
 `Serialize` value and replaces its TTL; `delete_blocking(key)` succeeds for a
 missing key. Calls stop after 30 seconds. Keys are 1 byte to 1 KiB; values are
 at most 256 KiB of JSON. A rejection is an `io::Error` wrapping
-`tako::KvRejected`; `tako::ErrorCode::of(&error)` is `Some(KvStoreFull)` when
-the store reached its 1 GiB limit (nothing is evicted), `Some(InvalidRequest)`,
-or `Some(Unavailable)` when the binding changed or the store's server is
-unreachable or restarting. There are no atomic counters, compare-and-set, or
+`tako::KvRejected`; `tako::ErrorCode::of(&error)` is `Some(InvalidRequest)`, or
+`Some(Unavailable)` when the binding changed or the store's server is
+unreachable or restarting. A store has no size limit beyond its server's disk,
+and nothing is evicted. There are no atomic counters, compare-and-set, or
 transactions: concurrent read-modify-write of one key can lose an update.
 
 An environment's `databases` and `kv` share one set of binding names, and

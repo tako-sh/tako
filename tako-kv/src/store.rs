@@ -39,8 +39,8 @@ const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 type EntryTable<'n> = TableDefinition<'n, &'static str, &'static [u8]>;
 type IndexTable<'n> = TableDefinition<'n, &'static [u8], ()>;
 
-/// Bytes charged for each key besides its key and value, so many tiny keys
-/// still count against the limit.
+/// Bytes counted for each key besides its key and value, roughly what an
+/// entry costs on disk, so a store's size reflects many tiny keys too.
 pub const KEY_OVERHEAD: u64 = 64;
 /// Writes waiting for the writer thread before callers wait to queue more.
 const QUEUE: usize = 1024;
@@ -72,9 +72,6 @@ pub fn system_clock() -> Clock {
 
 #[derive(Clone)]
 pub struct StoreConfig {
-    /// Bytes of keys, values and per-key overhead. A write that would take
-    /// the store past this is refused; nothing is evicted.
-    pub max_bytes: u64,
     /// Bytes of redb page cache.
     pub cache_bytes: usize,
     pub clock: Clock,
@@ -86,8 +83,6 @@ pub enum StoreError {
     Storage(String),
     #[error("the store is closed")]
     Closed,
-    #[error("the KV store is full ({limit} bytes); delete keys or give them a TTL")]
-    Full { limit: u64 },
     /// An import file that is not a KV export, or holds keys or values past
     /// the limits.
     #[error("{0}")]
@@ -103,7 +98,7 @@ type Result<T, E = StoreError> = std::result::Result<T, E>;
 /// Totals kept in the `meta` table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Stats {
-    /// Bytes charged against the limit: keys, values and overhead.
+    /// Bytes of keys, values and per-key overhead.
     pub bytes: u64,
     pub keys: u64,
     /// Keys with an expiry.
@@ -546,22 +541,10 @@ impl<'t> WriteView<'t> {
         Ok(())
     }
 
-    fn put(
-        &mut self,
-        key: &str,
-        json: &[u8],
-        expires_at: u64,
-        max_bytes: u64,
-        now: u64,
-    ) -> Result<()> {
+    fn put(&mut self, key: &str, json: &[u8], expires_at: u64, now: u64) -> Result<()> {
         let old = self.load(key, now)?;
         let added = weight(key, json.len());
         let freed = old.map_or(0, |(_, len)| weight(key, len));
-        // Nothing is evicted: a write that would take the store past its
-        // limit is refused, and one that shrinks it always succeeds.
-        if added > freed && self.stats.bytes + (added - freed) > max_bytes {
-            return Err(StoreError::Full { limit: max_bytes });
-        }
         self.dirty = true;
         if let Some((old_expiry, _)) = old {
             if old_expiry != 0 {
@@ -615,7 +598,7 @@ impl<'t> WriteView<'t> {
     }
 
     /// Replaces every key with an export file's live entries.
-    fn replace(&mut self, path: &Path, max_bytes: u64, now: u64) -> Result<Stats> {
+    fn replace(&mut self, path: &Path, now: u64) -> Result<Stats> {
         let reader = export::Reader::open(path)?;
         self.clear()?;
         for entry in reader.entries()? {
@@ -623,10 +606,7 @@ impl<'t> WriteView<'t> {
             if !live(expires_at, now) {
                 continue;
             }
-            if self.stats.bytes + weight(&key, json.len()) > max_bytes {
-                return Err(StoreError::Full { limit: max_bytes });
-            }
-            self.put(&key, &json, expires_at, max_bytes, now)?;
+            self.put(&key, &json, expires_at, now)?;
         }
         Ok(self.stats)
     }
@@ -825,8 +805,8 @@ fn has_cleanup(db: &Database, now: u64) -> bool {
     check().unwrap_or(false)
 }
 
-/// Applies a batch of work in one transaction, committed durably. A write
-/// refused for space fails alone; any other failure fails the batch.
+/// Applies a batch of work in one transaction, committed durably. A
+/// failure fails the whole batch.
 fn apply(
     db: &Database,
     works: &[Work],
@@ -842,11 +822,8 @@ fn apply(
         for work in works {
             outcomes.push(match work {
                 Work::Put { key, json, ttl_ms } => {
-                    match w.put(key, json, expiry_of(*ttl_ms, now), config.max_bytes, now) {
-                        Ok(()) => Ok(Outcome::Done),
-                        Err(StoreError::Full { limit }) => Err(StoreError::Full { limit }),
-                        Err(error) => return Err(error),
-                    }
+                    w.put(key, json, expiry_of(*ttl_ms, now), now)?;
+                    Ok(Outcome::Done)
                 }
                 Work::Delete { key } => Ok(Outcome::Deleted(w.delete(key, now)?)),
                 // Runs in a batch of its own, so its errors fail only it.
@@ -859,7 +836,7 @@ fn apply(
                         export_database(db, previous, now)?;
                     }
                     Ok(Outcome::Replaced(Replaced {
-                        stats: w.replace(path, config.max_bytes, now)?,
+                        stats: w.replace(path, now)?,
                         previous_changed,
                     }))
                 }

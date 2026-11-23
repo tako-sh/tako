@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 use tako_core::{ErrorCode, KvRequest, Response};
 
@@ -68,10 +68,12 @@ pub fn generate_token() -> String {
 
 #[derive(Clone)]
 pub struct HostConfig {
-    /// Bytes of data one store may hold; see [`StoreConfig::max_bytes`].
-    pub max_store_bytes: u64,
-    /// redb page cache per store.
+    /// redb page cache per store, while [`Self::total_cache_bytes`] has room.
     pub cache_bytes: usize,
+    /// redb page cache shared by every store of the host. A store opened
+    /// once it is used up gets [`MIN_CACHE_BYTES`], so memory stays bounded
+    /// however many stores a server hosts.
+    pub total_cache_bytes: usize,
     /// How long forwarding waits to reach another server.
     pub connect_timeout: Duration,
     /// How long a forwarded request waits for its reply.
@@ -82,8 +84,8 @@ pub struct HostConfig {
 impl Default for HostConfig {
     fn default() -> Self {
         Self {
-            max_store_bytes: 1024 * 1024 * 1024,
             cache_bytes: 16 * 1024 * 1024,
+            total_cache_bytes: 256 * 1024 * 1024,
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
             clock: system_clock(),
@@ -91,11 +93,13 @@ impl Default for HostConfig {
     }
 }
 
+/// The page cache a store gets once the host's shared budget is used up.
+pub const MIN_CACHE_BYTES: usize = 1024 * 1024;
+
 impl HostConfig {
-    fn store_config(&self) -> StoreConfig {
+    fn store_config(&self, cache_bytes: usize) -> StoreConfig {
         StoreConfig {
-            max_bytes: self.max_store_bytes,
-            cache_bytes: self.cache_bytes,
+            cache_bytes,
             clock: self.clock.clone(),
         }
     }
@@ -194,7 +198,6 @@ impl KvError {
 impl From<StoreError> for KvError {
     fn from(error: StoreError) -> Self {
         match error {
-            StoreError::Full { .. } => Self::new(Some(ErrorCode::KvStoreFull), error.to_string()),
             StoreError::Closed => Self::unavailable(NOT_SERVED),
             StoreError::Invalid(message) => Self::invalid(message),
             StoreError::Storage(message) => Self::new(None, format!("KV storage error: {message}")),
@@ -205,6 +208,8 @@ impl From<StoreError> for KvError {
 struct Inner {
     config: HostConfig,
     stores: RwLock<HashMap<StoreId, Arc<Store>>>,
+    /// Page cache held by each open store, from the shared budget.
+    caches: Mutex<HashMap<StoreId, usize>>,
     bindings: RwLock<HashMap<String, Vec<Binding>>>,
     by_token: RwLock<HashMap<TokenHash, (String, Binding)>>,
     remote_grants: RwLock<HashMap<String, Grant>>,
@@ -245,6 +250,7 @@ impl KvHost {
             inner: Arc::new(Inner {
                 config,
                 stores: RwLock::default(),
+                caches: Mutex::default(),
                 bindings: RwLock::default(),
                 by_token: RwLock::default(),
                 remote_grants: RwLock::default(),
@@ -262,13 +268,38 @@ impl KvHost {
         if self.is_registered(&id) {
             return Err(HostError::AlreadyRegistered(id));
         }
-        let store = Arc::new(Store::open(&path, self.inner.config.store_config())?);
+        let cache = {
+            let mut caches = self.inner.caches.lock();
+            if caches.contains_key(&id) {
+                return Err(HostError::AlreadyRegistered(id));
+            }
+            let used: usize = caches.values().sum();
+            let config = &self.inner.config;
+            let cache = config
+                .cache_bytes
+                .min(config.total_cache_bytes.saturating_sub(used))
+                .max(MIN_CACHE_BYTES.min(config.cache_bytes));
+            caches.insert(id.clone(), cache);
+            cache
+        };
+        let opened = Store::open(&path, self.inner.config.store_config(cache));
         let mut stores = self.inner.stores.write();
-        if stores.contains_key(&id) {
-            return Err(HostError::AlreadyRegistered(id));
+        match opened {
+            Ok(store) if !stores.contains_key(&id) => {
+                stores.insert(id, Arc::new(store));
+                Ok(())
+            }
+            Ok(_) => Err(HostError::AlreadyRegistered(id)),
+            Err(error) => {
+                self.inner.caches.lock().remove(&id);
+                Err(error.into())
+            }
         }
-        stores.insert(id, store);
-        Ok(())
+    }
+
+    /// Page cache the host's open stores hold together.
+    pub fn cache_bytes(&self) -> usize {
+        self.inner.caches.lock().values().sum()
     }
 
     pub fn is_registered(&self, id: &StoreId) -> bool {
@@ -299,6 +330,7 @@ impl KvHost {
             .remove(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
         store.close();
+        self.inner.caches.lock().remove(id);
         Ok(())
     }
 
@@ -309,6 +341,7 @@ impl KvHost {
         for store in stores {
             store.close();
         }
+        self.inner.caches.lock().clear();
     }
 
     /// Replaces the bindings of one app environment on this server.

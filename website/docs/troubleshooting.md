@@ -200,14 +200,13 @@ For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `
 
 Rejections carry a reason (`TakoError.reason` in JavaScript, `errors.Is` in Go, `ErrorCode::of` in Rust):
 
-- `kv_store_full`: the store reached its 1 GiB limit, so writes that would make it larger fail until keys are deleted or expire (overwriting a value with one no larger still works). Delete keys and give the rest a TTL.
 - `invalid_request`: an empty key, a key over 1 KiB, a value over 256 KiB of JSON, or a TTL of zero. Retrying cannot succeed.
 - `unavailable` with `This app's KV binding changed or was removed`: a deploy changed or revoked the binding, or the token belongs to another app environment. Processes of the new release use the new binding; old ones stop once they drain.
 - `unavailable` with `has not granted this app access`, or `The KV store's server refused this app`: the store's server holds no grant for the environment, for example after the store was deleted and recreated. Deploy the environment again from a full client.
 - `unavailable` with `not reachable`: this server could not reach the store's server over the private network. Check `tako network status --json`.
 - `unavailable` with `not serving the KV store right now`: the store's server is restarting or opening the store. Retry.
 
-A deploy that says the network has no KV store with a bound name needs `tako kv create <name>`, or a binding to one of the names `tako kv list` shows; one that says the name is a SQLite database needs the binding moved to `databases`. `tako kv import` refuses a file that is not a `tako kv export` file, or whose keys exceed the store's limit, and changes nothing. See [KV stores](/kv/#limits-and-security).
+A deploy that says the network has no KV store with a bound name needs `tako kv create <name>`, or a binding to one of the names `tako kv list` shows; one that says the name is a SQLite database needs the binding moved to `databases`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
 
 ## Secret Or Credential Key Problems
 

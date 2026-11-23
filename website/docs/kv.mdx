@@ -130,7 +130,6 @@ A request the server rejects fails with a stable reason:
 
 | Reason            | JavaScript (`TakoError.reason`) | Go (`errors.Is`)         | Rust (`ErrorCode::of`)      | Meaning                                                                        |
 | ----------------- | ------------------------------- | ------------------------ | --------------------------- | ------------------------------------------------------------------------------ |
-| `kv_store_full`   | `"kv_store_full"`               | `tako.ErrKVStoreFull`    | `ErrorCode::KvStoreFull`    | The store is at its size limit; the write was not stored                       |
 | `invalid_request` | `"invalid_request"`             | `tako.ErrInvalidRequest` | `ErrorCode::InvalidRequest` | The key or value is malformed or too large; retrying cannot succeed            |
 | `unavailable`     | `"unavailable"`                 | `tako.ErrUnavailable`    | `ErrorCode::Unavailable`    | The binding changed, the store's server cannot be reached, or it is restarting |
 
@@ -143,7 +142,8 @@ A TTL makes a key expire that long after the `put`. An expired key is never retu
 ## Durability and limits
 
 - Every write is on disk before it is acknowledged, so an acknowledged write survives a crash or power loss. Writes arriving together share one flush to disk.
-- A store holds up to 1 GiB, counting each key, its JSON value, and 64 bytes per key. Once it is full, a `put` that would make it larger fails with `kv_store_full`; nothing is evicted. Overwriting a value with one no larger still works, and deletes and expiry make room again.
+- A store has no size limit: it can hold many gigabytes, up to the free space on its server's disk. Nothing is evicted; deletes and expiry free space. A write the disk has no room for fails without being stored. `tako kv status` reports a store's size.
+- Each store keeps up to 16 MiB of recently used data in memory, from a 256 MiB budget shared by the stores on its server; stores opened once the budget is used keep 1 MiB, so memory stays bounded however many stores a server hosts. Reads of data outside that cache come from disk.
 - Keys are 1 byte to 1 KiB of UTF-8. Values are at most 256 KiB as JSON text. A TTL must be longer than zero.
 - `get`, `put`, and `delete` are the whole API: there are no atomic counters, compare-and-set, scans, transactions, or pub/sub, so two servers that read, change, and put the same key can overwrite each other. Use a [hosted database](/databases/) for queries and transactions, [Workflows](/workflows/) for queues, and [Channels](/channels/) for pub/sub.
 - KV bindings are available to native releases and their workflow workers. [Container and Compose releases](/docker/) cannot use them yet.
@@ -175,7 +175,7 @@ tako kv import sessions sessions.redb
 ```
 
 - `restore` replaces every key with a snapshot's, all at once: apps keep reading the current keys until it finishes, and writes since the snapshot are lost. `--latest` restores the newest snapshot that was not taken before a restore or import, so repeating it does not undo itself.
-- `export` downloads every live key, with its expiry, as one file. `import` replaces every key with an export's, all at once; it refuses a file that is not a Tako KV export, or whose keys do not fit the store's size limit, and changes nothing then.
+- `export` downloads every live key, with its expiry, as one file. `import` replaces every key with an export's, all at once; it refuses a file that is not a Tako KV export, and changes nothing then.
 - Before a restore or import replaces the keys, the server exports the exact contents it replaces to `previous.redb` in the store's directory, and uploads them as a "before restore" snapshot when backups are configured and the store changed since its last snapshot.
 - When a store's server is lost, `tako kv restore <name> --latest --server <new-server>` recovers it from its snapshots onto another server, keeping its name, as [for databases](/databases/#recover-on-another-server). Deploy every app that binds it afterwards. A copy the move left on a reachable old server is removed with `tako kv delete <name> --server <old-server>`.
 

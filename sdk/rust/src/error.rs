@@ -21,14 +21,12 @@ pub enum ErrorCode {
     ChannelClosed,
     /// A workflow run's signal inbox is full; the signal was not stored.
     SignalInboxFull,
-    /// The KV store reached its size limit; the write was not stored.
-    KvStoreFull,
     /// The server is draining, overloaded, or its storage is unreachable; retry later.
     Unavailable,
 }
 
 impl ErrorCode {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::RunNotOwned,
         Self::RunIdConflict,
         Self::InvalidRequest,
@@ -36,7 +34,6 @@ impl ErrorCode {
         Self::ChannelParamsInvalid,
         Self::ChannelClosed,
         Self::SignalInboxFull,
-        Self::KvStoreFull,
         Self::Unavailable,
     ];
 
@@ -50,7 +47,6 @@ impl ErrorCode {
             Self::ChannelParamsInvalid => "channel_params_invalid",
             Self::ChannelClosed => "channel_closed",
             Self::SignalInboxFull => "signal_inbox_full",
-            Self::KvStoreFull => "kv_store_full",
             Self::Unavailable => "unavailable",
         }
     }

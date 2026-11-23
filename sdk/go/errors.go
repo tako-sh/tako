@@ -20,8 +20,6 @@ var (
 	ErrChannelClosed = errors.New("tako: channel stream is closed")
 	// ErrSignalInboxFull: a workflow run's signal inbox is full; the signal was not stored.
 	ErrSignalInboxFull = errors.New("tako: workflow run signal inbox is full")
-	// ErrKVStoreFull: the KV store reached its size limit; the write was not stored.
-	ErrKVStoreFull = errors.New("tako: KV store is full")
 	// ErrUnavailable: the server is draining, overloaded, or its storage is unreachable; retry later.
 	ErrUnavailable = errors.New("tako: server unavailable")
 )
@@ -34,7 +32,6 @@ var errorCodes = map[string]error{
 	"channel_params_invalid": ErrChannelParamsInvalid,
 	"channel_closed":         ErrChannelClosed,
 	"signal_inbox_full":      ErrSignalInboxFull,
-	"kv_store_full":          ErrKVStoreFull,
 	"unavailable":            ErrUnavailable,
 }
 

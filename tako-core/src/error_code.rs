@@ -18,7 +18,6 @@ impl ErrorCode {
             Self::ChannelParamsInvalid => "channel_params_invalid",
             Self::ChannelUnknown => "channel_unknown",
             Self::InvalidRequest => "invalid_request",
-            Self::KvStoreFull => "kv_store_full",
             Self::RunIdConflict => "run_id_conflict",
             Self::RunNotOwned => "run_not_owned",
             Self::SignalInboxFull => "signal_inbox_full",

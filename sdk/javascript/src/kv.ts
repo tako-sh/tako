@@ -37,10 +37,7 @@ export interface KvPutOptions {
 export interface TakoKvStore {
   /** The key's value, or undefined when it is not set or has expired. */
   get<T = unknown>(key: string): Promise<T | undefined>;
-  /**
-   * Sets the key to `value`, which must be JSON-serializable. Rejects with
-   * reason `kv_store_full` when the store reached its size limit.
-   */
+  /** Sets the key to `value`, which must be JSON-serializable. */
   put<T>(key: string, value: T, options?: KvPutOptions): Promise<void>;
   /** Removes the key. Removing a key that is not set succeeds. */
   delete(key: string): Promise<void>;

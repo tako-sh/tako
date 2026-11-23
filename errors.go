@@ -20,8 +20,6 @@ var (
 	ErrChannelClosed = internal.ErrChannelClosed
 	// ErrSignalInboxFull: a workflow run's signal inbox is full; the signal was not stored.
 	ErrSignalInboxFull = internal.ErrSignalInboxFull
-	// ErrKVStoreFull: the KV store reached its size limit; the write was not stored.
-	ErrKVStoreFull = internal.ErrKVStoreFull
 	// ErrUnavailable: the server is draining, overloaded, or its storage is unreachable; retry later.
 	ErrUnavailable = internal.ErrUnavailable
 )

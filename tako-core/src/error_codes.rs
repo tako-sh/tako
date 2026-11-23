@@ -12,8 +12,6 @@ pub enum Err {
     ChannelUnknown,
     /// Internal socket: the command or its arguments are malformed; retrying the same request cannot succeed.
     InvalidRequest,
-    /// Internal socket: the KV store reached its size limit; the write was not stored.
-    KvStoreFull,
     /// Internal socket: the supplied workflow run ID already belongs to a different workflow or payload.
     RunIdConflict,
     /// Internal socket: a worker write names a run this claim no longer owns (lease reclaimed, cancelled, or finished).
@@ -30,7 +28,6 @@ impl Err {
         Self::ChannelParamsInvalid,
         Self::ChannelUnknown,
         Self::InvalidRequest,
-        Self::KvStoreFull,
         Self::RunIdConflict,
         Self::RunNotOwned,
         Self::SignalInboxFull,
@@ -43,7 +40,6 @@ impl Err {
             Self::ChannelParamsInvalid => "QNGCZD",
             Self::ChannelUnknown => "F2XQ4S",
             Self::InvalidRequest => "THDDYW",
-            Self::KvStoreFull => "M8VQ2R",
             Self::RunIdConflict => "X9HMTE",
             Self::RunNotOwned => "P5UMN4",
             Self::SignalInboxFull => "K7RW2Q",
@@ -57,7 +53,6 @@ impl Err {
             "QNGCZD" => Some(Self::ChannelParamsInvalid),
             "F2XQ4S" => Some(Self::ChannelUnknown),
             "THDDYW" => Some(Self::InvalidRequest),
-            "M8VQ2R" => Some(Self::KvStoreFull),
             "X9HMTE" => Some(Self::RunIdConflict),
             "P5UMN4" => Some(Self::RunNotOwned),
             "K7RW2Q" => Some(Self::SignalInboxFull),

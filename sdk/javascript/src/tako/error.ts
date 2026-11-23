@@ -21,7 +21,6 @@ export type TakoErrorCode =
  * - `channel_params_invalid`: channel params are malformed or fail the channel's params schema.
  * - `channel_closed`: the channel stream was closed and accepts no more messages.
  * - `signal_inbox_full`: a workflow run already holds the maximum buffered signals; this one was not stored.
- * - `kv_store_full`: the KV store reached its size limit; the write was not stored.
  * - `unavailable`: the server is draining, overloaded, or its storage is unreachable; retry later.
  */
 export type TakoErrorReason =
@@ -32,7 +31,6 @@ export type TakoErrorReason =
   | "channel_params_invalid"
   | "channel_closed"
   | "signal_inbox_full"
-  | "kv_store_full"
   | "unavailable";
 
 const REASONS: ReadonlySet<string> = new Set<TakoErrorReason>([
@@ -43,7 +41,6 @@ const REASONS: ReadonlySet<string> = new Set<TakoErrorReason>([
   "channel_params_invalid",
   "channel_closed",
   "signal_inbox_full",
-  "kv_store_full",
   "unavailable",
 ]);
 

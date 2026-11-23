@@ -234,7 +234,7 @@ fn kv_commands_match_the_wire_fixtures() {
         "replies/cache-hit-null.json",
         "replies/ok-null.json",
         "replies/ok-null.json",
-        "replies/error-kv_store_full.json",
+        "replies/error-unavailable.json",
     ]);
     let endpoint = crate::kv::Endpoint {
         socket: socket.path.clone(),
@@ -258,13 +258,13 @@ fn kv_commands_match_the_wire_fixtures() {
     let missing: Option<Value> = sessions.get_blocking_at(&endpoint, "session:1").unwrap();
     assert_eq!(missing, None);
     sessions.delete_blocking_at(&endpoint, "session:1").unwrap();
-    let full = sessions
+    let refused = sessions
         .put_blocking_at(&endpoint, "session:1", &1, None)
         .unwrap_err();
-    assert_eq!(ErrorCode::of(&full), Some(ErrorCode::KvStoreFull));
+    assert_eq!(ErrorCode::of(&refused), Some(ErrorCode::Unavailable));
     assert!(
-        full.to_string().contains("rejected: kv_store_full"),
-        "{full}"
+        refused.to_string().contains("rejected: unavailable"),
+        "{refused}"
     );
     let received = socket.received();
     let expected = ["kv-put", "kv-put-no-ttl", "kv-get", "kv-get", "kv-delete"];
@@ -297,7 +297,6 @@ fn error_reply_fixtures_map_to_error_codes() {
             "error-signal_inbox_full.json",
             Some(ErrorCode::SignalInboxFull),
         ),
-        ("error-kv_store_full.json", Some(ErrorCode::KvStoreFull)),
         ("error-unavailable.json", Some(ErrorCode::Unavailable)),
     ];
     let mut present: Vec<String> = std::fs::read_dir(wire_dir().join("replies"))

@@ -14,8 +14,8 @@ mod peer;
 mod store;
 
 pub use host::{
-    Binding, Home, HostConfig, HostError, KvError, KvHost, StoreId, TokenHash, generate_token,
-    hash_token,
+    Binding, Home, HostConfig, HostError, KvError, KvHost, MIN_CACHE_BYTES, StoreId, TokenHash,
+    generate_token, hash_token,
 };
 pub use peer::serve_peers;
 pub use store::{Clock, KEY_OVERHEAD, Replaced, Stats, StoreError, system_clock};

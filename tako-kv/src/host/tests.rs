@@ -75,19 +75,13 @@ fn apps_reach_their_own_bindings_only() {
 }
 
 #[test]
-fn full_stores_report_their_own_code() {
+fn closed_stores_are_unavailable() {
     let dir = tempfile::tempdir().unwrap();
-    let host = KvHost::new(HostConfig {
-        max_store_bytes: 100,
-        ..HostConfig::default()
-    });
+    let host = KvHost::new(HostConfig::default());
     let id = StoreId::parse("small").unwrap();
     host.register(id.clone(), dir.path().join("small.redb"))
         .unwrap();
-    let error = host
-        .admin(&id, put("k", &format!("\"{}\"", "x".repeat(100))))
-        .unwrap_err();
-    assert_eq!(error.code, Some(ErrorCode::KvStoreFull));
+    host.admin(&id, put("k", "1")).unwrap();
     host.close_all();
     let error = host.admin(&id, get("k")).unwrap_err();
     assert_eq!(error.code, Some(ErrorCode::Unavailable));
@@ -179,4 +173,43 @@ async fn other_servers_forward_with_their_grant() {
     let error = call(get("challenge")).await.unwrap_err();
     assert_eq!(error.code, Some(ErrorCode::Unavailable));
     assert!(error.message.contains("not reachable"), "{}", error.message);
+}
+
+#[test]
+fn stores_share_one_page_cache_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = KvHost::new(HostConfig {
+        cache_bytes: 4 * MIN_CACHE_BYTES,
+        total_cache_bytes: 10 * MIN_CACHE_BYTES,
+        ..HostConfig::default()
+    });
+    let open = |name: &str| {
+        let id = StoreId::parse(name).unwrap();
+        host.register(id.clone(), dir.path().join(format!("{name}.redb")))
+            .unwrap();
+        id
+    };
+    let first = open("first");
+    open("second");
+    assert_eq!(host.cache_bytes(), 8 * MIN_CACHE_BYTES);
+    // The third gets what is left, and stores past the budget the minimum.
+    open("third");
+    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
+    open("fourth");
+    assert_eq!(host.cache_bytes(), 11 * MIN_CACHE_BYTES);
+    // Closing a store returns its share.
+    host.unregister(&first).unwrap();
+    assert_eq!(host.cache_bytes(), 7 * MIN_CACHE_BYTES);
+    open("fifth");
+    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
+    // A store that fails to open holds nothing.
+    std::fs::write(dir.path().join("plain"), "").unwrap();
+    let broken = StoreId::parse("broken").unwrap();
+    assert!(
+        host.register(broken, dir.path().join("plain/broken.redb"))
+            .is_err()
+    );
+    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
+    host.close_all();
+    assert_eq!(host.cache_bytes(), 0);
 }

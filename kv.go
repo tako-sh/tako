@@ -96,8 +96,7 @@ func (k *KV) Get(ctx context.Context, key string, value any) (bool, error) {
 	return true, nil
 }
 
-// Put sets the key to value, encoded as JSON. A store that reached its size
-// limit rejects the write with an error matching ErrKVStoreFull.
+// Put sets the key to value, encoded as JSON.
 func (k *KV) Put(ctx context.Context, key string, value any, options ...KVOption) error {
 	var put kvPut
 	for _, option := range options {

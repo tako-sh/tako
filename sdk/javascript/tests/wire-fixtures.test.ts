@@ -244,9 +244,9 @@ describe("channel, store, and network commands match the wire fixtures", () => {
       expect(socket.take()).toEqual(fixture("commands/kv-get.json"));
       await sessions.delete("session:1");
       expect(socket.take()).toEqual(fixture("commands/kv-delete.json"));
-      socket.reply("replies/error-kv_store_full.json");
-      const full = await sessions.put("session:1", 1).catch((e: unknown) => e);
-      expect((full as TakoError).reason).toBe("kv_store_full");
+      socket.reply("replies/error-unavailable.json");
+      const refused = await sessions.put("session:1", 1).catch((e: unknown) => e);
+      expect((refused as TakoError).reason).toBe("unavailable");
       expect(socket.take()).toBeDefined();
     } finally {
       injectBootstrap({ token: null, secrets: {} });

@@ -37,9 +37,9 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// ```
 ///
 /// With the `tokio` feature, [`Kv::get`], [`Kv::put`] and [`Kv::delete`] are
-/// the async forms. A store that reached its size limit rejects writes with
-/// an error whose [`ErrorCode::of`](crate::ErrorCode::of) is
-/// [`ErrorCode::KvStoreFull`](crate::ErrorCode::KvStoreFull).
+/// the async forms. A rejection's [`ErrorCode::of`](crate::ErrorCode::of)
+/// gives its reason, such as
+/// [`ErrorCode::Unavailable`](crate::ErrorCode::Unavailable).
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct Kv {
     token: String,
