@@ -1425,14 +1425,7 @@ async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), S
     let pruned = with_deadline(UPLOAD_TIMEOUT, async {
         let segments = replica.segments().await.map_err(|e| format!("{e:#}"))?;
         let points = replica.points().await.map_err(|e| format!("{e:#}"))?;
-        let full: Vec<DatabaseSnapshot> = {
-            let mut full: Vec<_> = snapshots(&segments, &points)
-                .into_iter()
-                .filter(|snapshot| snapshot.full)
-                .collect();
-            full.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.created_at_unix_secs));
-            full
-        };
+        let full = full_images_newest_first(&segments, &points);
         let keep: BTreeSet<u64> = retained(&full, now_unix_secs())
             .iter()
             .filter_map(|id| id.parse().ok())
@@ -1447,6 +1440,22 @@ async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), S
         tracing::info!(database = %stored.name, segments = pruned.segments, points = pruned.points, "Pruned database backups");
     }
     Ok(())
+}
+
+/// The full images, newest first: by capture time, then, within a second,
+/// by transaction.
+fn full_images_newest_first(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
+    let mut full: Vec<_> = snapshots(segments, points)
+        .into_iter()
+        .filter(|snapshot| snapshot.full)
+        .collect();
+    full.sort_by_key(|snapshot| {
+        std::cmp::Reverse((
+            snapshot.created_at_unix_secs,
+            snapshot.id.parse::<u64>().unwrap_or(0),
+        ))
+    });
+    full
 }
 
 /// Which full images retention keeps beyond the seven days of history: the
@@ -2004,6 +2013,22 @@ mod tests {
 
     async fn holder_named(remote: &dyn ObjectStore, key: &ObjectPath) -> Option<String> {
         read_claim(remote, key).await.unwrap().unwrap().server
+    }
+
+    #[test]
+    fn full_images_of_one_second_are_ordered_by_transaction() {
+        let base = |txid: u64, at_ms: i64| Stored {
+            segment: tako_backup::Segment::new(9, 1, txid).unwrap(),
+            size: 1,
+            captured_at_ms: at_ms,
+            uploaded_at_ms: at_ms,
+        };
+        let segments = [base(5, 10_100), base(9, 10_900), base(12, 3_000)];
+        let order: Vec<String> = full_images_newest_first(&segments, &[])
+            .into_iter()
+            .map(|snapshot| snapshot.id)
+            .collect();
+        assert_eq!(order, ["9", "5", "12"]);
     }
 
     #[tokio::test(start_paused = true)]
