@@ -73,13 +73,17 @@ impl crate::ServerState {
                 .is_some_and(|compose| compose.has_sdk_services());
         let mut schedule_revision = None;
         let mut workflows = None;
+        // The bindings served until this deployment commits.
+        let previous_databases = if sdk_workflows {
+            self.state_store
+                .get_app_databases(&app_name)
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
         if sdk_workflows {
             // The workflow store opens with the new binding's token, so the
             // host must know it first; the running group's tokens stay valid.
-            let previous_databases = self
-                .state_store
-                .get_app_databases(&app_name)
-                .unwrap_or_default();
             self.databases
                 .apply_bindings(&app_name, &[&previous_databases, &config.databases]);
             let prepared = self
@@ -118,6 +122,10 @@ impl crate::ServerState {
             .state_store
             .begin_compose_deployment(&app_name, &runtime.project)
         {
+            if sdk_workflows {
+                self.databases
+                    .apply_bindings(&app_name, &[&previous_databases]);
+            }
             return Response::error(format!(
                 "Could not record pending Compose deployment: {error}"
             ));
@@ -175,6 +183,11 @@ impl crate::ServerState {
         .await;
 
         if let Err(error) = result {
+            // Nothing committed, so the previous bindings stay served.
+            if sdk_workflows {
+                self.databases
+                    .apply_bindings(&app_name, &[&previous_databases]);
+            }
             // The transaction owns containers; killing this logical instance
             // only detaches its log client until ownership has been committed.
             for instance in &instances {
