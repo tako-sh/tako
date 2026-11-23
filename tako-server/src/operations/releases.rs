@@ -204,6 +204,7 @@ impl crate::ServerState {
             app: app_name,
         };
         let mut bootstrap = None;
+        let mut uses_kv = false;
         if !databases.is_empty() {
             // The provisioned bindings supply peer keys that deployers
             // without administration do not send.
@@ -221,6 +222,7 @@ impl crate::ServerState {
                         return Response::error(format!("Release command failed: {error}"));
                     }
                 };
+            uses_kv = !connections.1.is_empty();
             bootstrap = Some(tako_core::bootstrap::envelope_string(
                 "",
                 tako_core::bootstrap::Bindings {
@@ -237,6 +239,18 @@ impl crate::ServerState {
             env.insert(
                 tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
                 bootstrap,
+            );
+        }
+        // KV stores answer through the internal socket, which checks that the
+        // caller runs as this app, so the command needs it and its app name.
+        if uses_kv {
+            env.insert(
+                tako_core::instance_env::TAKO_APP_NAME_ENV.to_string(),
+                app_name.to_string(),
+            );
+            env.insert(
+                tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV.to_string(),
+                self.workflows.socket_path().display().to_string(),
             );
         }
         if let Ok(path) = std::env::var("PATH") {

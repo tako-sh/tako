@@ -676,3 +676,104 @@ async fn kv_stores_snapshot_again_when_their_backup_destination_moves() {
     let moved = ok(&state, release()).await;
     assert!(moved["snapshot"].is_object(), "{moved}");
 }
+
+#[tokio::test]
+async fn release_commands_reach_their_kv_stores_through_the_internal_socket() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, "sessions", DatabaseEngine::Kv).await;
+    let release_dir = temp
+        .path()
+        .join("apps")
+        .join("web")
+        .join("production")
+        .join("releases")
+        .join("abc1234");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    let manifest = json!({
+        "protocol_version": tako_core::PROTOCOL_VERSION,
+        "runtime": "bun",
+        "main": "index.ts",
+        "idle_timeout": 300,
+        "app_dir": "",
+    });
+    std::fs::write(
+        release_dir.join("app.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    // The command reports what the SDK would read, then waits while the test
+    // uses its binding, which ends with the command.
+    let command_line = r#"printf '%s\n%s\n%s' "$TAKO_APP_NAME" "$TAKO_INTERNAL_SOCKET" "$TAKO_BOOTSTRAP_DATA" > env.tmp && mv env.tmp env.txt
+i=0; while [ ! -f done ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i+1)); done"#;
+    let release = tokio::spawn({
+        let state = state.clone();
+        let path = release_dir.to_string_lossy().to_string();
+        async move {
+            state
+                .handle_command(Command::RunRelease {
+                    app: "web/production".into(),
+                    version: "abc1234".into(),
+                    path,
+                    command_line: command_line.into(),
+                    vars: HashMap::new(),
+                    secrets_digest: None,
+                    databases: HashMap::from([(
+                        "auth".to_owned(),
+                        binding("sessions", DatabaseEngine::Kv),
+                    )]),
+                    force: false,
+                })
+                .await
+        }
+    });
+    let reported = release_dir.join("env.txt");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !reported.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the release command did not start"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let reported = std::fs::read_to_string(reported).unwrap();
+    let mut lines = reported.splitn(3, '\n');
+    let (app, socket, bootstrap) = (
+        lines.next().unwrap(),
+        lines.next().unwrap(),
+        lines.next().unwrap(),
+    );
+    assert_eq!(app, "web/production");
+    assert_eq!(
+        std::path::Path::new(socket),
+        state.workflows.socket_path().as_path()
+    );
+    let bootstrap: Value = serde_json::from_str(bootstrap).unwrap();
+    let token = bootstrap["kv"]["auth"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = KvRequest::Put {
+        key: "migrated".into(),
+        json: "true".into(),
+        ttl_ms: None,
+    };
+    call(&state, app, &token, request).await.unwrap();
+    std::fs::write(release_dir.join("done"), "").unwrap();
+
+    match release.await.unwrap() {
+        Response::Ok { .. } => {}
+        Response::Error { message, .. } => panic!("expected the release to succeed: {message}"),
+    }
+    assert_eq!(get(&state, "sessions", "migrated").await, json!("true"));
+    // The binding ends with the command.
+    let error = call(&state, app, &token, KvRequest::Get { key: "k".into() })
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("binding changed"),
+        "{}",
+        error.message
+    );
+}
