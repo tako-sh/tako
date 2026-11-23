@@ -1031,6 +1031,15 @@ impl ServerState {
             undo(false);
             return Err(format!("record database: {error}"));
         }
+        // A copy created for a move backs up only once it is restored; a new
+        // database clears this on its first backup. Marked before the
+        // database is registered, so no scheduler tick finds it unmarked.
+        if engine == DatabaseEngine::Sqlite
+            && let Err(error) = backups::mark_unrestored(self, &id)
+        {
+            undo(true);
+            return Err(error);
+        }
         let databases = self.databases.clone();
         let register_id = id.clone();
         let registered =
@@ -1044,12 +1053,6 @@ impl ServerState {
         }
         match engine {
             DatabaseEngine::Sqlite => {
-                // A copy created for a move backs up only once it is
-                // restored; a new database clears this on its first backup.
-                if let Err(error) = backups::mark_unrestored(self, &id) {
-                    undo(true);
-                    return Err(error);
-                }
                 // Nothing to capture until something is written.
                 if let Ok(database) = DatabaseId::parse(&id) {
                     self.databases.host.clear_changed(&database);

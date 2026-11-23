@@ -1162,19 +1162,7 @@ pub(crate) async fn status(
         match &info.backup {
             None => output::info("Backups not configured"),
             Some(backup) => {
-                let replicated = backup
-                    .replicated_at_unix_secs
-                    .map(|at| format!("backed up through {}", format_time(at)))
-                    .unwrap_or_else(|| "not backed up yet".into());
-                let full = backup
-                    .last_snapshot
-                    .as_ref()
-                    .map(|s| format!(" · full snapshot {}", format_time(s.created_at_unix_secs)))
-                    .unwrap_or_default();
-                output::info(&format!(
-                    "Continuous backups to {} · {replicated}{full}",
-                    backup.bucket
-                ));
+                output::info(&backup_status_line(engine, backup));
                 if let Some(error) = &backup.last_error {
                     output::warning(&format!("Last backup failed: {error}"));
                 }
@@ -1182,6 +1170,36 @@ pub(crate) async fn status(
         }
     }
     Ok(())
+}
+
+/// How `status` describes backups: continuous for SQLite databases,
+/// snapshots for KV stores.
+fn backup_status_line(engine: DatabaseEngine, backup: &tako_core::DatabaseBackupStatus) -> String {
+    let snapshot = backup
+        .last_snapshot
+        .as_ref()
+        .map(|s| format_time(s.created_at_unix_secs));
+    match engine {
+        DatabaseEngine::Sqlite => {
+            let replicated = backup
+                .replicated_at_unix_secs
+                .map(|at| format!("backed up through {}", format_time(at)))
+                .unwrap_or_else(|| "not backed up yet".into());
+            let full = snapshot
+                .map(|at| format!(" · full snapshot {at}"))
+                .unwrap_or_default();
+            format!(
+                "Continuous backups to {} · {replicated}{full}",
+                backup.bucket
+            )
+        }
+        DatabaseEngine::Kv => {
+            let last = snapshot
+                .map(|at| format!("last snapshot {at}"))
+                .unwrap_or_else(|| "no snapshots yet".into());
+            format!("Snapshots to {} · {last}", backup.bucket)
+        }
+    }
 }
 
 pub(crate) async fn backup_now(
@@ -2310,6 +2328,40 @@ fn format_time(unix: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_describes_each_engines_backups() {
+        let mut backup = tako_core::DatabaseBackupStatus {
+            bucket: "backups".into(),
+            endpoint: String::new(),
+            destination: None,
+            last_snapshot: None,
+            replicated_at_unix_secs: None,
+            last_attempt_unix_secs: None,
+            last_error: None,
+        };
+        assert_eq!(
+            backup_status_line(DatabaseEngine::Kv, &backup),
+            "Snapshots to backups · no snapshots yet"
+        );
+        assert!(
+            backup_status_line(DatabaseEngine::Sqlite, &backup)
+                .starts_with("Continuous backups to backups · not backed up yet")
+        );
+        backup.last_snapshot = Some(DatabaseSnapshot {
+            id: "7".into(),
+            created_at_unix_secs: 1_800_000_000,
+            reason: SnapshotReason::Scheduled,
+            full: true,
+            stored_bytes: 1,
+        });
+        let kv = backup_status_line(DatabaseEngine::Kv, &backup);
+        assert!(
+            kv.starts_with("Snapshots to backups · last snapshot "),
+            "{kv}"
+        );
+        assert!(!kv.contains("Continuous"), "{kv}");
+    }
 
     #[test]
     fn restore_recovers_onto_another_server_when_the_home_is_gone() {
