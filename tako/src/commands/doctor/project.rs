@@ -160,14 +160,14 @@ pub(super) fn checks(
                 Some(Ok(_)) => {
                     for binding in env.databases.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
-                            "{}: {} binds {}, which has no network record; create it with `tako sqlite create {}`",
-                            env.name, binding.binding, binding.database, binding.database
+                            "{}: {} uses {}, which has no network record; create it with `tako sqlite create {}`",
+                            env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }
                     for binding in env.kv.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
                             "{}: {} binds KV store {}, which has no network record; create it with `tako kv create {}`",
-                            env.name, binding.binding, binding.database, binding.database
+                            env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }
                 }
@@ -245,7 +245,7 @@ pub(super) fn json(report: Option<&ProjectReport>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::project_resources::{DatabaseBinding, EnvResources};
+    use crate::commands::project_resources::{DatabaseUsage, EnvResources, ProjectDatabase};
     use crate::config::{EncryptedSecretValue, SecretsStore, TakoToml};
 
     const NETWORK: &str = "0123456789abcdef0123456789abcdef";
@@ -261,8 +261,10 @@ mod tests {
             credentials: None,
             storages: vec![],
             backup_key: None,
-            databases: vec![DatabaseBinding {
-                binding: "main".into(),
+            databases: vec![ProjectDatabase {
+                usage: DatabaseUsage::Binding {
+                    binding: "main".into(),
+                },
                 database: "orders".into(),
                 server: database_server.map(str::to_owned),
             }],

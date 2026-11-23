@@ -17,8 +17,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use parking_lot::{Mutex, RwLock};
 use tako_core::{
-    DatabaseBinding, DatabaseConnection, DatabaseEngine, DatabaseInfo, DatabaseQueryResult,
-    KvConnection, Response, StorageBinding, StorageProvider,
+    CHANNEL_REPLAY_BINDING, DatabaseBinding, DatabaseConnection, DatabaseEngine, DatabaseInfo,
+    DatabaseQueryResult, KvConnection, Response, StorageBinding, StorageProvider,
+    channel_replay_grant_scope,
 };
 use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
@@ -335,9 +336,10 @@ impl Databases {
     fn resolve_bindings(&self, scope: &str, sets: &[HashMap<String, AppDatabase>]) {
         let mut seen = BTreeSet::new();
         let mut bindings = Vec::new();
+        let mut replay = Vec::new();
         let mut kv = Vec::new();
         for set in sets {
-            for binding in set.values() {
+            for (alias, binding) in set {
                 if !seen.insert(binding.token.clone()) {
                     continue;
                 }
@@ -347,7 +349,12 @@ impl Databases {
                         let Ok(database) = DatabaseId::parse(&binding.binding.name) else {
                             continue;
                         };
-                        bindings.push(Binding {
+                        let target = if alias == CHANNEL_REPLAY_BINDING {
+                            &mut replay
+                        } else {
+                            &mut bindings
+                        };
+                        target.push(Binding {
                             token_hash: tako_database::hash_token(&binding.token),
                             database,
                             home,
@@ -376,13 +383,16 @@ impl Databases {
         }
         self.host.set_bindings(scope, bindings);
         self.kv.set_bindings(scope, kv);
+        if !scope.ends_with(RELEASE_SCOPE_SUFFIX) {
+            self.host
+                .set_bindings(&channel_replay_grant_scope(scope), replay);
+        }
     }
 
     pub(crate) fn remove_bindings(&self, scope: &str) {
         let mut applied = self.applied.lock();
         applied.remove(scope);
-        self.host.set_bindings(scope, Vec::new());
-        self.kv.set_bindings(scope, Vec::new());
+        self.resolve_bindings(scope, &[]);
     }
 
     /// Validates requested bindings and assigns tokens. A binding keeps its
@@ -396,16 +406,34 @@ impl Databases {
         if requested.is_empty() {
             return Ok(HashMap::new());
         }
-        if config.compose.is_some() || !matches!(config.launch, AppLaunch::Native) {
-            return Err(
-                "Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet."
-                    .into(),
-            );
-        }
         let own = self.server_id();
         let mut prepared = HashMap::new();
         for (name, binding) in requested {
-            tako_core::validate_database_name(&name)?;
+            if name == CHANNEL_REPLAY_BINDING {
+                let sdk = match (&config.compose, &config.launch) {
+                    (Some(compose), _) => compose.has_sdk_services(),
+                    (None, AppLaunch::Container { .. }) => config.container_options.sdk,
+                    (None, AppLaunch::Native) => true,
+                    (None, AppLaunch::Compose) => false,
+                };
+                if !sdk {
+                    return Err("Hosted channel replay requires an SDK-enabled release.".into());
+                }
+                if binding.engine != DatabaseEngine::Sqlite {
+                    return Err(format!(
+                        "Channel replay needs a SQLite database; {} is a KV store.",
+                        binding.name
+                    ));
+                }
+            } else {
+                tako_core::validate_database_name(&name)?;
+                if config.compose.is_some() || !matches!(config.launch, AppLaunch::Native) {
+                    return Err(
+                        "Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet."
+                            .into(),
+                    );
+                }
+            }
             tako_core::validate_database_name(&binding.name)?;
             let local = match &own {
                 Some(own) => own == &binding.server,
@@ -431,6 +459,14 @@ impl Databases {
             if binding.peer_key.is_none() {
                 binding.peer_key = existing.and_then(|existing| existing.binding.peer_key.clone());
             }
+            if name == CHANNEL_REPLAY_BINDING
+                && !local
+                && binding.peer_key.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(
+                    "Remote channel replay requires a database grant from a full client.".into(),
+                );
+            }
             prepared.insert(name, AppDatabase { binding, token });
         }
         Ok(prepared)
@@ -453,6 +489,9 @@ impl Databases {
         // Release commands get their own tokens, and the environment's peer
         // keys, which deployers without administration do not send.
         let mut requested = requested;
+        if requested.contains_key(CHANNEL_REPLAY_BINDING) {
+            return Err("Release commands cannot use the channel replay binding.".into());
+        }
         for (name, binding) in &mut requested {
             if binding.peer_key.is_none()
                 && let Some(current) = config
@@ -509,17 +548,19 @@ pub(crate) fn connections(
 ) -> HashMap<String, DatabaseConnection> {
     bindings
         .iter()
-        .filter(|(_, binding)| binding.binding.engine == DatabaseEngine::Sqlite)
-        .map(|(name, binding)| {
-            (
-                name.clone(),
-                DatabaseConnection {
-                    url: format!("http://127.0.0.1:{}", app_port()),
-                    auth_token: binding.token.clone(),
-                },
-            )
+        .filter(|(name, binding)| {
+            name.as_str() != CHANNEL_REPLAY_BINDING
+                && binding.binding.engine == DatabaseEngine::Sqlite
         })
+        .map(|(name, binding)| (name.clone(), connection(binding)))
         .collect()
+}
+
+pub(crate) fn connection(binding: &AppDatabase) -> DatabaseConnection {
+    DatabaseConnection {
+        url: format!("http://127.0.0.1:{}", app_port()),
+        auth_token: binding.token.clone(),
+    }
 }
 
 /// The connections app processes receive for their KV store bindings.
@@ -546,6 +587,14 @@ fn env_port(name: &str, default: u16) -> u16 {
 }
 
 impl ServerState {
+    /// The server's committed hosted replay connection for an app environment.
+    pub fn channel_replay_database(&self, app: &str) -> Result<Option<DatabaseConnection>, String> {
+        self.state_store
+            .channel_credentials(app)
+            .map(|(hosted, _)| hosted)
+            .map_err(|_| "channel database binding unavailable".into())
+    }
+
     /// Opens the hosted databases and serves them to this server's apps.
     /// Runs before apps are restored, so they reach their databases at boot;
     /// their bindings are applied as each app is restored. Only a primary
@@ -1004,7 +1053,7 @@ impl ServerState {
             self.databases.host.clear_changed(&database);
         }
         tracing::info!(database = %id, engine = ?engine, "Created database");
-        Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
+        Ok(serde_json::to_value(self.database_info(&stored)?).expect("info serializes"))
     }
 
     async fn delete_database(
@@ -1028,7 +1077,7 @@ impl ServerState {
         // From here, deploys cannot start binding the database; one already
         // binding it makes the delete wait for it to finish.
         let _deleting = self.databases.start_deleting(id)?;
-        let info = self.database_info(&stored);
+        let info = self.database_info(&stored)?;
         // Bindings of apps on this server are known to be current. Grants for
         // other servers can outlive the deployments that used them (deleting
         // an app does not reach this server), so they are revoked instead;
@@ -1152,39 +1201,44 @@ impl ServerState {
                 .list_databases()
                 .map_err(|e| format!("read databases: {e}"))?,
         };
-        let infos: Vec<DatabaseInfo> = stored.iter().map(|db| self.database_info(db)).collect();
+        let infos = stored
+            .iter()
+            .map(|db| self.database_info(db))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(serde_json::json!({ "databases": infos }))
     }
 
-    pub(crate) fn database_info(&self, stored: &StoredDatabase) -> DatabaseInfo {
+    fn database_info(&self, stored: &StoredDatabase) -> Result<DatabaseInfo, String> {
         let mut bindings = BTreeSet::new();
-        for app in self.app_manager.list_apps() {
-            if let Some(app) = self.app_manager.get_app(&app) {
-                let config = app.config.read();
-                if config
-                    .databases
-                    .values()
-                    .any(|binding| self.databases.binds_here(&binding.binding, &stored.name))
-                {
-                    bindings.insert(config.deployment_id());
+        let mut record = |scope: &str, set: &HashMap<String, AppDatabase>| {
+            for (alias, binding) in set {
+                if self.databases.binds_here(&binding.binding, &stored.name) {
+                    bindings.insert(if alias == CHANNEL_REPLAY_BINDING {
+                        channel_replay_grant_scope(scope)
+                    } else {
+                        scope.to_owned()
+                    });
                 }
             }
+        };
+        for (scope, set) in self
+            .state_store
+            .all_app_databases()
+            .map_err(|e| format!("read database bindings: {e}"))?
+        {
+            record(&scope, &set);
         }
         // The binding sets in use, also the previous one a rollout keeps
         // until old instances drain, and a release command's.
         for (scope, sets) in self.databases.applied.lock().iter() {
-            if sets
-                .iter()
-                .flat_map(HashMap::values)
-                .any(|binding| self.databases.binds_here(&binding.binding, &stored.name))
-            {
-                bindings.insert(scope.clone());
+            for set in sets {
+                record(scope, set);
             }
         }
         let remote_grants = self
             .state_store
             .all_database_grants()
-            .unwrap_or_default()
+            .map_err(|e| format!("read database grants: {e}"))?
             .into_iter()
             .filter(|(_, grant)| grant.databases.contains(&stored.name))
             .map(|(scope, _)| scope)
@@ -1198,7 +1252,7 @@ impl ServerState {
                 .and_then(|id| self.databases.kv.size_bytes(&id)),
         }
         .unwrap_or(0);
-        DatabaseInfo {
+        Ok(DatabaseInfo {
             name: stored.name.clone(),
             engine: stored.engine,
             generation: stored.generation.clone(),
@@ -1207,7 +1261,7 @@ impl ServerState {
             bindings: bindings.into_iter().collect(),
             remote_grants,
             backup: snapshots::status(self, stored),
-        }
+        })
     }
 
     async fn configure_database_backup(
@@ -1247,7 +1301,7 @@ impl ServerState {
             }
         }
         let updated = self.hosted_database(id)?;
-        Ok(serde_json::to_value(self.database_info(&updated)).expect("info serializes"))
+        Ok(serde_json::to_value(self.database_info(&updated)?).expect("info serializes"))
     }
 
     fn grant_databases(
@@ -1256,10 +1310,10 @@ impl ServerState {
         ids: Vec<String>,
         keep_existing: bool,
     ) -> Result<serde_json::Value, String> {
-        crate::release::validate_app_name(app)?;
-        if !app.contains('/') {
-            return Err("Grants name an app environment as `<app>/<env>`.".into());
-        }
+        let base = app.strip_suffix("#channels").unwrap_or(app);
+        base.parse::<tako_network::AppEnv>()
+            .map_err(|_| "Grants name an app environment as `<app>/<env>`.".to_owned())?;
+        crate::release::validate_app_name(base)?;
         // Pinned while the grant is stored, so a delete cannot pass its
         // revocation in between: one already under way makes this fail, and
         // one that starts meanwhile is refused. Grants kept from before are
@@ -1290,16 +1344,20 @@ impl ServerState {
         Ok(serde_json::json!({"app": app, "databases": granted, "peer_key": key}))
     }
 
-    /// Whether an app environment uses a database hosted here, through a
-    /// binding on this server or a grant for other servers.
-    pub(crate) fn app_uses_database(&self, app: &str, id: &str) -> bool {
-        let bound = self.app_manager.get_app(app).is_some_and(|app| {
-            app.config
-                .read()
-                .databases
-                .values()
-                .any(|binding| self.databases.binds_here(&binding.binding, id))
-        });
+    /// Only application SQL bindings and grants authorize deploy-time SQL.
+    fn app_uses_database(&self, app: &str, id: &str) -> bool {
+        if app.parse::<tako_network::AppEnv>().is_err() {
+            return false;
+        }
+        let bound = self
+            .state_store
+            .get_app_databases(app)
+            .is_ok_and(|bindings| {
+                bindings.iter().any(|(name, binding)| {
+                    name != CHANNEL_REPLAY_BINDING
+                        && self.databases.binds_here(&binding.binding, id)
+                })
+            });
         bound
             || self
                 .state_store
@@ -1667,5 +1725,42 @@ mod tests {
         assert!(databases.start_deleting("shop").is_err());
         databases.end_release("demo/production");
         assert!(databases.start_deleting("shop").is_ok());
+    }
+
+    #[test]
+    fn only_sdk_releases_can_bind_hosted_replay_and_only_native_releases_can_bind_app_sql() {
+        let dir = tempfile::tempdir().unwrap();
+        let databases = Databases::new(dir.path());
+        *databases.server_id.write() = Some("edge".into());
+        let prepare = |alias: &str, config: &AppConfig| {
+            databases.prepare_bindings(
+                &HashMap::new(),
+                HashMap::from([(alias.to_owned(), binding("other", Some("issued")))]),
+                config,
+            )
+        };
+        let mut config = AppConfig::default();
+        assert!(prepare(CHANNEL_REPLAY_BINDING, &config).is_ok());
+        assert!(prepare("main", &config).is_ok());
+        config.launch = AppLaunch::Container {
+            image: "app".into(),
+            port: 3000,
+        };
+        assert!(prepare(CHANNEL_REPLAY_BINDING, &config).is_ok());
+        assert!(prepare("main", &config).is_err());
+        config.container_options.sdk = false;
+        assert!(prepare(CHANNEL_REPLAY_BINDING, &config).is_err());
+        config.launch = AppLaunch::Compose;
+        config.compose = Some(Default::default());
+        assert!(prepare(CHANNEL_REPLAY_BINDING, &config).is_err());
+        config.compose.as_mut().unwrap().services.insert(
+            "worker".into(),
+            tako_core::compose::ComposeServiceConfig {
+                sdk: true,
+                ..Default::default()
+            },
+        );
+        assert!(prepare(CHANNEL_REPLAY_BINDING, &config).is_ok());
+        assert!(prepare("main", &config).is_err());
     }
 }

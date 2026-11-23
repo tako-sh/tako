@@ -183,6 +183,52 @@ storages = { uploads = "prod_uploads", cache = "local" }
 }
 
 #[test]
+fn channel_replay_database_is_optional_and_scoped_to_each_environment() {
+    let config = TakoToml::parse(
+        r#"
+[envs.production]
+route = "chat.example.com"
+[envs.production.channels]
+database = "chat-prod-replay"
+
+[envs.staging]
+route = "staging.example.com"
+[envs.staging.channels]
+database = "chat_stage2-"
+
+[envs.development]
+"#,
+    )
+    .unwrap();
+
+    for (name, expected) in [
+        ("production", Some("chat-prod-replay")),
+        ("staging", Some("chat_stage2-")),
+        ("development", None),
+    ] {
+        let env = &config.envs[name];
+        assert_eq!(env.channels.as_ref().map(|c| c.database.as_str()), expected);
+        assert!(env.databases.is_empty());
+    }
+}
+
+#[test]
+fn channel_replay_database_rejects_invalid_names_and_fields() {
+    let table = "[envs.development.channels]";
+    for name in ["", "Chat", "9chat", "chat.db", " chat ", &"a".repeat(64)] {
+        let err = TakoToml::parse(&format!("{table}\ndatabase = '{name}'")).unwrap_err();
+        assert!(err.to_string().contains("database name"), "{err}");
+    }
+    for (fields, expected) in [
+        ("", "missing field `database`"),
+        ("databse = 'chat'", "unknown field `databse`"),
+    ] {
+        let err = TakoToml::parse(&format!("{table}\n{fields}")).unwrap_err();
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+#[test]
 fn parses_backup_storage_reference() {
     let config = TakoToml::parse(
         r#"
@@ -589,5 +635,15 @@ fn kv_bindings_parse_and_share_names_with_databases() {
     assert!(
         invalid.contains("must start with a lowercase letter"),
         "{invalid}"
+    );
+
+    let replay = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = { auth = \"sessions\" }\nchannels.database = \"sessions\"\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        replay.contains("channel replay needs a SQLite database"),
+        "{replay}"
     );
 }

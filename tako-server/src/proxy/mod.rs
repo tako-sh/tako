@@ -24,6 +24,7 @@ pub(crate) use server::{ServerBuildConfig, build_server_with_acme};
 pub use static_files::*;
 
 use crate::channels::registry::ChannelRegistry;
+use crate::channels::{ChannelTarget, ChannelTargetResolver, DirectChannelStores};
 use crate::lb::LoadBalancer;
 use crate::native_channel_client::ProxyChannelStore;
 use crate::routing::RouteTable;
@@ -76,11 +77,12 @@ pub struct TakoProxy {
     /// when the app is unregistered.
     channel_stores: SyncRwLock<HashMap<String, Arc<tokio::sync::OnceCell<Arc<ProxyChannelStore>>>>>,
     native_channels: SyncRwLock<Option<crate::native_channels::Client>>,
-    channel_postgres_url: SyncRwLock<Option<ChannelPostgresUrlResolver>>,
+    channel_target: SyncRwLock<Option<ChannelTargetResolver>>,
+    direct_channel_stores: Arc<DirectChannelStores>,
     /// Resolved channel backend per app, tagged with the credential generation
     /// it was read at. Resolution reads and decrypts state, so it runs again
     /// only after a deployment changes runtime credentials.
-    channel_credentials: SyncRwLock<HashMap<String, (u64, Option<String>)>>,
+    channel_credentials: SyncRwLock<HashMap<String, (u64, ChannelTarget)>>,
     channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
@@ -89,9 +91,6 @@ pub struct TakoProxy {
     /// Channel metadata cache hydrated from app internal endpoints.
     channel_registry: Arc<ChannelRegistry>,
 }
-
-pub(crate) type ChannelPostgresUrlResolver =
-    Arc<dyn Fn(&str) -> std::result::Result<Option<String>, String> + Send + Sync>;
 
 impl TakoProxy {
     fn metrics_enabled(&self) -> bool {
@@ -124,7 +123,8 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             native_channels: SyncRwLock::new(None),
-            channel_postgres_url: SyncRwLock::new(None),
+            channel_target: SyncRwLock::new(None),
+            direct_channel_stores: Arc::default(),
             channel_credentials: SyncRwLock::new(HashMap::new()),
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
@@ -161,7 +161,8 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             native_channels: SyncRwLock::new(None),
-            channel_postgres_url: SyncRwLock::new(None),
+            channel_target: SyncRwLock::new(None),
+            direct_channel_stores: Arc::default(),
             channel_credentials: SyncRwLock::new(HashMap::new()),
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
@@ -170,8 +171,8 @@ impl TakoProxy {
         }
     }
 
-    pub(crate) fn set_channel_postgres_url_resolver(&self, resolver: ChannelPostgresUrlResolver) {
-        *self.channel_postgres_url.write() = Some(resolver);
+    pub(crate) fn set_channel_target_resolver(&self, resolver: ChannelTargetResolver) {
+        *self.channel_target.write() = Some(resolver);
     }
 
     pub(crate) fn set_native_channel_client(&self, client: crate::native_channels::Client) {

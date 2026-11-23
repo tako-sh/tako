@@ -149,58 +149,36 @@ impl ServerState {
         // the same SQLite connection. The proxy shares the registry, so
         // publish params are checked against what subscribers are checked with.
         let channel_registry = Arc::new(crate::channels::registry::ChannelRegistry::new());
+        let direct_channel_stores = Arc::new(crate::channels::DirectChannelStores::default());
         {
+            let state_store = state_store.clone();
+            let resolve: crate::channels::ChannelTargetResolver =
+                Arc::new(move |app| crate::channels::ChannelTarget::for_app(&state_store, app));
             let native_publisher = native_channel_client(&data_dir)?
-                .map(crate::native_channel_client::BlockingPublisher::new)
+                .map(|client| {
+                    crate::native_channel_client::BlockingPublisher::new(client, resolve.clone())
+                })
                 .transpose()
                 .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
             let data_dir = data_dir.clone();
-            let state_store = state_store.clone();
             let registry = channel_registry.clone();
-            let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =
-                parking_lot::RwLock::new(HashMap::new());
+            let stores = direct_channel_stores.clone();
             workflows.set_channel_publisher(std::sync::Arc::new(
                 move |request: tako_workflows::ChannelPublishRequest<'_>| {
                     let app = request.app;
                     let publication = crate::channels::trusted_publication(&registry, request)?;
                     if let Some(publisher) = &native_publisher {
-                        let postgres_url = state_store
-                            .get_runtime_credentials(app)
-                            .map_err(|_| {
-                                tako_core::SocketError::new(
-                                    tako_core::ErrorCode::Unavailable,
-                                    "channel credentials unavailable",
-                                )
-                            })?
-                            .get("postgres_url")
-                            .cloned();
-                        return publisher.publish(app, &publication, postgres_url);
+                        return publisher.publish(app, &publication);
                     }
-
-                    let store = if let Some(existing) = stores.read().get(app) {
-                        existing.clone()
-                    } else {
-                        let mut guard = stores.write();
-                        if let Some(existing) = guard.get(app) {
-                            existing.clone()
-                        } else {
-                            let postgres_url = state_store
-                                .get_runtime_credentials(app)
-                                .ok()
-                                .and_then(|credentials| credentials.get("postgres_url").cloned());
-                            let config = crate::channels::app_channel_store_config_with_postgres(
-                                &data_dir,
-                                app,
-                                postgres_url.as_deref(),
-                            );
-                            let opened = Arc::new(
-                                tako_channels::ChannelStore::open_config(config)
-                                    .map_err(|e| format!("open channel store: {e}"))?,
-                            );
-                            guard.insert(app.to_string(), opened.clone());
-                            opened
-                        }
-                    };
+                    let app = crate::native_channel_client::app_scope(app)?;
+                    let target = resolve(app.as_str()).map_err(|error| {
+                        tako_core::SocketError::new(tako_core::ErrorCode::Unavailable, error)
+                    })?;
+                    let (store, _) = stores.open(
+                        crate::channels::app_channels_db_path(&data_dir, app.as_str()),
+                        &app,
+                        &target,
+                    )?;
                     store
                         .publish_trusted(&publication)
                         .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
@@ -259,6 +237,7 @@ impl ServerState {
             spawn_gate,
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             channel_registry,
+            direct_channel_stores,
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             backup_locks: SyncRwLock::new(HashMap::new()),
             manual_backup_states: SyncRwLock::new(HashMap::new()),

@@ -45,7 +45,7 @@ impl Broker {
             .presence
             .check(&self.local, &channel, &member, allowance)?;
         let now = now_ms();
-        let pg = application.postgres_url.is_some();
+        let pg = application.target.postgres_presence();
         if pg {
             let channel = channel.clone();
             let member = member.clone();
@@ -93,7 +93,7 @@ impl Broker {
             .apps
             .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
-        if application.postgres_url.is_none() {
+        if !application.target.postgres_presence() {
             for (peer, sender) in self.peers.lock().iter() {
                 if !application.presence_queried.contains(peer)
                     && sender
@@ -107,7 +107,7 @@ impl Broker {
                 }
             }
         }
-        let members = if application.postgres_url.is_some() {
+        let members = if application.target.postgres_presence() {
             let now = now_ms();
             let rows = application
                 .store
@@ -152,7 +152,7 @@ impl Broker {
             .apps
             .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
-        let pg = application.postgres_url.is_some();
+        let pg = application.target.postgres_presence();
         if pg {
             let channel = channel.clone();
             let id = connection_id.clone();
@@ -193,7 +193,7 @@ impl Broker {
         let Some(application) = self.apps.get_mut(app) else {
             return Ok(());
         };
-        if application.postgres_url.is_some() {
+        if application.target.postgres_presence() {
             return Ok(());
         }
         let publication = match publication {

@@ -162,6 +162,10 @@ impl crate::ServerState {
                     schedule_revision,
                 )
                 .map_err(|e| format!("Could not commit Compose deployment: {e}"))?;
+            self.databases
+                .apply_bindings(&app_name, &[&config.databases]);
+            self.channel_credentials_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             Ok(())
         }
         .await;

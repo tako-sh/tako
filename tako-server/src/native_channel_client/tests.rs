@@ -31,7 +31,7 @@ impl FakeBroker {
 }
 #[async_trait]
 impl BrokerLink for FakeBroker {
-    async fn register(&self, _: AppEnv, _: Option<String>) -> io::Result<()> {
+    async fn register(&self, _: AppEnv, _: ChannelTarget) -> io::Result<()> {
         self.calls.lock().push("register");
         if self.reject.load(Ordering::SeqCst) {
             Err(io::Error::other("secret URL must never escape"))
@@ -121,9 +121,10 @@ async fn attached() -> (ProxyChannelStore, Arc<FakeBroker>, DuplexStream) {
     let link = Arc::new(FakeBroker::default());
     let server = link.stream().await;
     let store = Arc::new(ChannelStore::open_in_memory().unwrap());
-    let proxy = ProxyChannelStore::subscribe(store, scope(), None, link.clone(), None)
-        .await
-        .unwrap();
+    let proxy =
+        ProxyChannelStore::subscribe(store, scope(), ChannelTarget::Local, link.clone(), None)
+            .await
+            .unwrap();
     (proxy, link, server)
 }
 
@@ -134,13 +135,10 @@ async fn initial_registration_and_subscription_precede_reader_exposure() {
     let writer = ChannelStore::open_sqlite(&path).unwrap();
     let link = Arc::new(FakeBroker::default());
     let _server = link.stream().await;
-    let proxy = ProxyChannelStore::open_with_link(
-        ChannelStoreConfig::sqlite(path),
-        scope(),
-        Some(link.clone()),
-    )
-    .await
-    .unwrap();
+    let proxy =
+        ProxyChannelStore::open_with_link(path, scope(), ChannelTarget::Local, link.clone())
+            .await
+            .unwrap();
     proxy.ensure_ready().await.unwrap();
     assert_eq!(*link.calls.lock(), vec!["register", "subscribe"]);
     assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
@@ -156,18 +154,15 @@ async fn replaced_sqlite_tree_invalidates_cached_reader_and_notifications() {
     let _writer = ChannelStore::open_sqlite(&path).unwrap();
     let link = Arc::new(FakeBroker::default());
     let mut notices = link.stream().await;
-    let proxy = ProxyChannelStore::open_with_link(
-        ChannelStoreConfig::sqlite(path),
-        scope(),
-        Some(link.clone()),
-    )
-    .await
-    .unwrap();
+    let proxy =
+        ProxyChannelStore::open_with_link(path, scope(), ChannelTarget::Local, link.clone())
+            .await
+            .unwrap();
     let mut resets = proxy.resets("events");
     std::fs::rename(&root, temp.path().join("previous-data")).unwrap();
     std::fs::create_dir(&root).unwrap();
     assert!(
-        proxy.check_backend(None).is_err(),
+        proxy.check_backend(&ChannelTarget::Local).is_err(),
         "cache must reopen a replaced database"
     );
     assert!(
@@ -303,7 +298,9 @@ async fn native_sync_and_publish_never_write_the_reader_or_deliver_ack_twice() {
 async fn backend_change_is_explicit_and_subscription_task_does_not_retain_store() {
     let (proxy, _link, mut server) = attached().await;
     let error = proxy
-        .check_backend(Some("postgres://secret"))
+        .check_backend(&ChannelTarget::Postgres {
+            url: zeroize::Zeroizing::new("postgres://secret".into()),
+        })
         .unwrap_err()
         .to_string();
     assert!(error.contains("configuration changed"));
@@ -325,7 +322,7 @@ async fn failed_initial_subscription_does_not_expose_a_ready_reader() {
     let link = Arc::new(FakeBroker::default());
     let store = Arc::new(ChannelStore::open_in_memory().unwrap());
     assert!(
-        ProxyChannelStore::subscribe(store, scope(), None, link, None)
+        ProxyChannelStore::subscribe(store, scope(), ChannelTarget::Local, link, None)
             .await
             .is_err()
     );

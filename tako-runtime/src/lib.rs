@@ -9,7 +9,7 @@ pub use plugin::{PluginContext, RuntimePlugin, plugin_for_id, runtime_def_for};
 pub use plugins::javascript::{
     detect_package_manager, find_js_project_root, read_package_manager_spec,
 };
-pub use sdk::{AppSdk, detect_app_sdk};
+pub use sdk::{AppSdk, app_uses_sdk, detect_app_sdk};
 
 /// Find the project root for the given runtime, starting from `project_dir`.
 ///

@@ -302,6 +302,7 @@ pub enum Command {
     /// deploy widens grants before its rollout, while the previous release
     /// still runs, and narrows them once the rollout succeeds.
     GrantDatabases {
+        /// `<app>/<env>` for application SQL, or its separate `#channels` service scope.
         app: String,
         databases: Vec<String>,
         #[serde(default)]

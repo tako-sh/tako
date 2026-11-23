@@ -1,4 +1,5 @@
 use super::{BrokerLink, app_scope};
+use crate::channels::ChannelTargetResolver;
 use crate::native_channels::Client;
 use std::{
     io,
@@ -9,7 +10,6 @@ use tako_channels::{ChannelLifecycle, ChannelMessage, ChannelPublishPayload, Tru
 use tako_core::{ErrorCode, SocketError};
 use tako_network::AppEnv;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use zeroize::Zeroizing;
 
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -18,7 +18,6 @@ struct Publication {
     channel: String,
     payload: ChannelPublishPayload,
     lifecycle: Option<ChannelLifecycle>,
-    postgres_url: Option<Zeroizing<String>>,
     deadline: Instant,
     reply: mpsc::SyncSender<Result<ChannelMessage, SocketError>>,
     _bytes: OwnedSemaphorePermit,
@@ -32,10 +31,10 @@ pub(crate) struct BlockingPublisher {
     budget: Arc<Semaphore>,
 }
 impl BlockingPublisher {
-    pub(crate) fn new(client: Client) -> io::Result<Self> {
-        Self::with_link(Arc::new(client))
+    pub(crate) fn new(client: Client, resolve: ChannelTargetResolver) -> io::Result<Self> {
+        Self::with_link(Arc::new(client), resolve)
     }
-    fn with_link(link: Arc<dyn BrokerLink>) -> io::Result<Self> {
+    fn with_link(link: Arc<dyn BrokerLink>, resolve: ChannelTargetResolver) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -55,7 +54,8 @@ impl BlockingPublisher {
                         .saturating_duration_since(Instant::now());
                     let result = runtime
                         .block_on(async {
-                            tokio::time::timeout(remaining, send(&*link, &publication)).await
+                            tokio::time::timeout(remaining, send(&*link, &resolve, &publication))
+                                .await
                         })
                         .unwrap_or_else(|_| {
                             Err(busy("native channel publication acknowledgement timed out"))
@@ -74,17 +74,11 @@ impl BlockingPublisher {
         &self,
         app: &str,
         publication: &TrustedPublication,
-        postgres_url: Option<String>,
     ) -> Result<serde_json::Value, SocketError> {
         let deadline = Instant::now() + DEADLINE;
         let app = app_scope(app).map_err(|_| "invalid channel app scope")?;
-        let postgres_url = postgres_url.map(Zeroizing::new);
         let channel = publication.stream.key().to_owned();
-        if channel.len() > 1024
-            || postgres_url
-                .as_ref()
-                .is_some_and(|url| url.len() > 16 * 1024)
-        {
+        if channel.len() > 1024 {
             return Err(too_large());
         }
         let encoded = serde_json::to_vec(&publication.payload)
@@ -104,7 +98,6 @@ impl BlockingPublisher {
                 channel,
                 payload: publication.payload.clone(),
                 lifecycle: publication.lifecycle.clone(),
-                postgres_url,
                 deadline,
                 reply,
                 _bytes: bytes,
@@ -131,17 +124,16 @@ fn too_large() -> SocketError {
 
 async fn send(
     link: &dyn BrokerLink,
+    resolve: &ChannelTargetResolver,
     publication: &Publication,
 ) -> Result<ChannelMessage, SocketError> {
-    link.register(
-        publication.app.clone(),
-        publication
-            .postgres_url
-            .as_deref()
-            .map(|url| url.to_owned()),
-    )
-    .await
-    .map_err(|_| busy("native channel registration rejected or unavailable"))?;
+    // Resolve at dispatch, so a publish queued before a rollout doesn't
+    // register obsolete credentials after it.
+    let target =
+        resolve(publication.app.as_str()).map_err(|_| busy("channel credentials unavailable"))?;
+    link.register(publication.app.clone(), target)
+        .await
+        .map_err(|_| busy("native channel registration rejected or unavailable"))?;
     // The lifecycle travels with the publish: the broker applies it only once
     // the stream accepts the message.
     link.publish(

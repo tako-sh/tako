@@ -149,14 +149,14 @@ impl ServerState {
                     errors.push(format!("{app_name}: {e}"));
                     HashMap::new()
                 });
-            config.databases = self
-                .state_store
-                .get_app_databases(&app_name)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(app = %app_name, "Failed to read database bindings: {}", e);
+            config.databases = match self.state_store.get_app_databases(&app_name) {
+                Ok(bindings) => bindings,
+                Err(e) => {
+                    tracing::error!(app = %app_name, "Failed to read database bindings: {}", e);
                     errors.push(format!("{app_name}: {e}"));
-                    HashMap::new()
-                });
+                    continue;
+                }
+            };
             // Before the app's processes start, so they can reach them.
             self.databases
                 .apply_bindings(&config.deployment_id(), &[&config.databases]);

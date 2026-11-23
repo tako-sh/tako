@@ -191,9 +191,14 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 
 ```bash
 tako deploy [--env <env>] [-y|--yes] [--force] [--description <text>]
+tako deploy --env production --dry-run --json
 ```
 
 Uses the environment's [network](#choosing-a-network) and records its ID in `[envs.<env>].network` in the selected TOML config; in an interactive terminal it offers to add a server when that network has none yet. Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Before the release command, it snapshots each bound [hosted database](/databases/) that changed and has backups configured; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
+
+On a network with exactly one trusted server, a full client creates missing declared app SQLite databases and, for a channel-capable release without a selected backend, the generated replay database. It reports each new name and home once. A successful `--json` deploy lists these in `created_databases` (`name`, `server`); an empty list means it created none. With several trusted servers, use `tako sqlite create <name> --server <server>` to place a missing database; for replay, set `[envs.<env>.channels].database` to that name. A restricted deploy client needs a full client to provision database access first. See [Deploy Replay Storage](/channels/#deploy-replay-storage).
+
+`--dry-run --json` previews database creations (`create_databases`) and the selected replay database (`channel_database`, with `name`, `server`, and `implicit` when present) from cached network state. `channel_replay_unprovisioned` is true when a deploy-only client finds no replay database to use. It does not create anything, grant access, build, or deploy. In particular, a cached plan is not confirmation that every server currently has the required grants or that its database is reachable.
 
 ```bash
 tako logs [--env <env>] [--tail] [--days N]
@@ -351,7 +356,7 @@ Running `tako credential` without a subcommand lists credentials. Set and remove
 
 Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in the local state and the network state, never exposed to app code, and published by `tako secret sync` or deploy. Running processes receive the new bindings on deploy.
 
-`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` moves channel replay, Presence membership, Store invalidation, and workflow state to shared Postgres. Multi-server workflows need it unless every workflow is `local: true`; channels, presence, and stores work across a network's servers without it. It is a provider credential and is not exposed to app code.
+`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` selects shared Postgres for workflows and, unless `[envs.<env>.channels].database` selects hosted SQLite, for channels, presence and Store invalidations. Selecting a replay database does not change workflow storage or migrate existing history. Multi-server workflows need Postgres unless every workflow opts into local execution. Neither provider credential is exposed to app code.
 
 ## Storage
 
@@ -404,7 +409,7 @@ tako sqlite rm ...
 
 `tako db` is an alias for `tako sqlite`. A database belongs to a network: `--network`, else the network configured in the selected TOML file's environments, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments configure several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migration` need permission to deploy some app; the others require network and server administrator permission.
 
-`create` makes the database on `--server` (optional when the network has one server) and records it in the network; bind it by adding `databases = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. Backups are configured by the deploys that bind a database, from the environment's `backup.storage`. `list` reads the network's records; `status` asks each database's server for size, users, and backup state, for every database the project binds when no name is given.
+`create` makes the database on `--server` (optional on a one-server network) and records its home. Bind it to app code with `[envs.<env>].databases` or select it for runtime replay with `[envs.<env>.channels].database`. `list --json` shows its home and the project's `channel_replay_envs`; `channel_owner` identifies an automatically owned replay database. `status` asks the home for size, users, and backup state, for every database the project uses if no name is given. In its JSON `bindings` and `remote_grants`, `<app>/<env>#channels` denotes runtime replay access. Snapshots require an environment `backup.storage` or `[databases.<name>].backup`.
 
 `migration new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time (or the next number no migration in the folder uses) and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migration list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migration apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
 

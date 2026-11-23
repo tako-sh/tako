@@ -79,6 +79,18 @@
       "required": ["run"],
       "type": "object"
     },
+    "ChannelsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "description": "Hosted database name for channel replay, separate from app database bindings.",
+          "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+          "type": "string"
+        }
+      },
+      "required": ["database"],
+      "type": "object"
+    },
     "ComposeConfig": {
       "additionalProperties": false,
       "description": "One deployment group. Compose owns the service processes and shared resources.",
@@ -186,6 +198,10 @@
         "backup": {
           "$ref": "#/$defs/BackupConfig",
           "description": "Private storage for manual app-directory archives (`tako backup now`)."
+        },
+        "channels": {
+          "$ref": "#/$defs/ChannelsConfig",
+          "description": "Channel replay settings for this environment."
         },
         "databases": {
           "additionalProperties": {

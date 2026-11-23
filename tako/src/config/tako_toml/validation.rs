@@ -285,6 +285,21 @@ impl TakoToml {
                     "Environment '{env_name}' binds '{name}' in both databases and kv; give the KV store binding another name"
                 )));
             }
+            if let Some(channels) = &env_config.channels {
+                tako_core::validate_database_name(&channels.database).map_err(|error| {
+                    ConfigError::Validation(format!("[envs.{env_name}.channels].database: {error}"))
+                })?;
+                if env_config
+                    .kv
+                    .values()
+                    .any(|store| *store == channels.database)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.channels].database names '{}', which this environment binds as a KV store; channel replay needs a SQLite database",
+                        channels.database
+                    )));
+                }
+            }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
             }

@@ -9,13 +9,13 @@ use super::{
     peer::Frame,
     wire,
 };
+use crate::channels::ChannelTarget;
 pub(super) use commands::{Commands, CommandsReceiver, commands};
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
 use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore, RemoteIngest};
 use tako_network::{AppEnv, DeviceId};
 use tokio::sync::{broadcast, broadcast::error::TryRecvError, mpsc, oneshot, watch};
-use zeroize::Zeroizing;
 
 pub(super) enum Command {
     Local {
@@ -122,7 +122,7 @@ async fn run_ordered(
 pub(super) struct Application {
     pub store: Arc<ChannelStore>,
     local_file: Option<crate::channels::LocalChannelFile>,
-    pub(super) postgres_url: Option<Zeroizing<String>>,
+    pub(super) target: ChannelTarget,
     publications: broadcast::Receiver<ChannelPublication>,
     pub(super) subscribers: live::Subscribers,
     presence: super::presence::Leases,
@@ -241,12 +241,12 @@ impl Broker {
     async fn register(
         &mut self,
         app: AppEnv,
-        postgres_url: Option<Zeroizing<String>>,
+        target: ChannelTarget,
         deadline: tokio::time::Instant,
     ) -> io::Result<()> {
         let replacing = match self.apps.get(&app) {
             Some(existing)
-                if existing.postgres_url == postgres_url
+                if existing.target == target
                     && existing
                         .local_file
                         .as_ref()
@@ -260,31 +260,19 @@ impl Broker {
         if !replacing && self.apps.len() >= MAX_APPS {
             return Err(error("channel app limit reached"));
         }
-        if postgres_url
-            .as_ref()
-            .is_some_and(|url| url.len() > 16 * 1024)
-        {
-            return Err(error("channel URL exceeds limit"));
-        }
+        target.validate().map_err(error)?;
         let path = self
             .apps_root
             .join(app.as_str())
             .join("data/tako/channels.sqlite");
-        let url = postgres_url.clone();
-        let app_id = app.to_string();
+        let config = target.config(path.clone(), &app);
+        let local = matches!(target, ChannelTarget::Local);
         let open = tokio::task::spawn_blocking(move || {
-            let local = url.is_none();
             let previous_file = local
                 .then(|| crate::channels::LocalChannelFile::capture(path.clone()).ok())
                 .flatten();
-            let store = if let Some(url) = url {
-                ChannelStore::open_postgres(&url, &app_id)
-            } else {
-                std::fs::create_dir_all(path.parent().unwrap())
-                    .map_err(|_| error("cannot create channel storage"))?;
-                ChannelStore::open_sqlite(&path)
-            }
-            .map_err(|_| error("cannot open channel storage"))?;
+            let store = ChannelStore::open_config(config)
+                .map_err(|_| error("cannot open channel storage"))?;
             if previous_file
                 .as_ref()
                 .is_some_and(|file| !file.is_current())
@@ -317,12 +305,13 @@ impl Broker {
             let application = self.apps.get_mut(&app).expect("registered application");
             application.store = store;
             application.local_file = local_file;
-            application.postgres_url = postgres_url;
+            application.target = target;
             application.publications = publications;
             application.presence.clear_remote(&self.local);
             application.presence_queried.clear();
             self.refresh_live(&app);
-            self.notify(&app, Notification::Gap);
+            self.notify(&app, Notification::BackendChanged);
+            self.apps[&app].subscribers.lock().clear();
             return Ok(());
         }
         self.apps.insert(
@@ -330,7 +319,7 @@ impl Broker {
             Application {
                 store,
                 local_file,
-                postgres_url,
+                target,
                 publications,
                 subscribers: Arc::default(),
                 presence: Default::default(),
@@ -395,8 +384,8 @@ impl Broker {
                     Response::Rejected
                 }
             }
-            Request::Register { app, postgres_url } => {
-                if self.register(app, postgres_url, deadline).await.is_ok() {
+            Request::Register { app, target } => {
+                if self.register(app, target, deadline).await.is_ok() {
                     Response::Ok
                 } else {
                     Response::Rejected
@@ -515,12 +504,6 @@ impl Broker {
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub(super) fn postgres_seam(&mut self, app: &AppEnv) {
-        // Use the real notification/fanout path without an external PostgreSQL service.
-        self.apps.get_mut(app).unwrap().postgres_url =
-            Some(Zeroizing::new("test credential".into()));
-    }
     fn fanout(&mut self, frame: &Frame) -> bool {
         let Ok(bytes) = wire::encode(frame) else {
             return false;
@@ -587,14 +570,14 @@ impl Broker {
                 };
                 let notification = match publication {
                     ChannelPublication::Wake { channel } => {
-                        if application.postgres_url.is_none() || !valid_channel(&channel) {
+                        if !application.target.shared_replay() || !valid_channel(&channel) {
                             return Ok(());
                         }
                         application.store.wake(&channel);
                         Notification::Wake { channel }
                     }
                     ChannelPublication::Event(event) => {
-                        if application.postgres_url.is_some() {
+                        if application.target.shared_replay() {
                             return Ok(());
                         }
                         if !valid_channel(&event.channel) || event.payload.r#type.len() > 1024 {

@@ -86,7 +86,7 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `kv`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `kv`, `channels`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
 `[envs.<env>].network` is the stable 32-character lowercase hexadecimal network ID from `tako network list --json`. Local aliases are not accepted in the config. Set it explicitly or let the first deploy record its chosen network, then commit the config. `development` runs locally and cannot set `network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
@@ -202,7 +202,7 @@ databases = { main = "main" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names. A database's name identifies it within the environment's network, whose records hold its server; a deploy fails when the network has no database with a bound name. Development bindings need nothing else: `tako dev` and `tako run` serve them from `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds every name used by any environment.
+`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names in the environment's network. On a one-server network a full client's deploy creates missing databases there. On a larger network, first run `tako sqlite create <name> --server <server>` with full access; the database can live outside this app's target servers. Development uses local files in `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds the app SQL aliases from the other environments.
 
 `[databases.<name>]` is optional and has one field:
 
@@ -210,7 +210,16 @@ backup = "private_backups"
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backup` | Private S3 storage resource that receives the database's encrypted snapshots, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database has no snapshots; removing them and deploying stops them. |
 
-`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live; every database is usable from every server of its network. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. Bindings are written by hand; `tako sqlite delete` removes a deleted database's bindings and table and preserves the rest of the file. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
+`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot expose app SQL bindings. See [Databases](/databases/).
+
+## Channel replay
+
+```toml
+[envs.production.channels]
+database = "chat-prod-replay"
+```
+
+The table is optional. When present, `database` is the name of a hosted SQLite database used by the channel runtime, not an app SQL alias. It overrides `postgres_url` for channels only. Without it, channel-capable deploys use the environment's Postgres credential if set, otherwise a generated app/environment database. The same single-server creation and multi-server placement rules apply as for app databases. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in memory. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's backend.
 
 ## KV Stores
 
@@ -276,7 +285,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Every deploy targets a network, whose servers replicate bounded channel replay, presence leases, and invalidation fanout separately from workflow storage, so durable channel replay, presence, and store notifications use SQLite across servers without `postgres_url`; ephemeral channels use memory-only delivery. Configured Postgres credentials remain in use and must be valid. See [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/) for their separate storage requirements.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Selecting a hosted channel replay database neither satisfies this requirement nor moves workflow runs. See [Workflows](/workflows/).
 
 ## Complete Example
 

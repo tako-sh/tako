@@ -5,6 +5,7 @@ use super::{
     peer::{Frame, Hello},
     wire::{Budget, MAX_FRAME},
 };
+use crate::channels::ChannelTarget;
 use std::net::IpAddr;
 use tako_channels::{
     ChannelError, ChannelEvent, ChannelEventId, ChannelMessage, ChannelPublication,
@@ -25,6 +26,11 @@ fn local_id() -> DeviceId {
 }
 fn app() -> AppEnv {
     "chat/production".parse().unwrap()
+}
+fn postgres_target() -> ChannelTarget {
+    ChannelTarget::Postgres {
+        url: zeroize::Zeroizing::new("test credential".into()),
+    }
 }
 fn payload(n: usize) -> ChannelPublishPayload {
     ChannelPublishPayload {
@@ -248,7 +254,7 @@ async fn new_broker() -> (tempfile::TempDir, Broker) {
         broker
             .local(Request::Register {
                 app: app(),
-                postgres_url: None
+                target: ChannelTarget::Local
             })
             .await
             .unwrap(),
@@ -269,7 +275,7 @@ async fn registration_reopens_channels_after_data_tree_restore() {
         broker
             .local(Request::Register {
                 app: app(),
-                postgres_url: None
+                target: ChannelTarget::Local
             })
             .await
             .unwrap(),
@@ -612,7 +618,7 @@ async fn first_registration_after_restart_invalidates_offline_cursor() {
     restarted
         .local(Request::Register {
             app: app(),
-            postgres_url: None,
+            target: ChannelTarget::Local,
         })
         .await
         .unwrap();
@@ -719,7 +725,7 @@ async fn pump_preserves_partial_inbound_frame_while_sending_keepalives() {
 #[tokio::test]
 async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only_hint() {
     let (_temp, mut broker) = new_broker().await;
-    broker.postgres_seam(&app());
+    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
     let store = broker.apps[&app()].store.clone();
     let changes = store.changes("events");
     let mut publications = store.publications();
@@ -1026,7 +1032,7 @@ async fn presence_updates_and_leaves_cross_peers_once_with_origin_bound_identity
     right
         .local(Request::Register {
             app: app(),
-            postgres_url: None,
+            target: ChannelTarget::Local,
         })
         .await
         .unwrap();
@@ -1135,7 +1141,7 @@ async fn presence_rejects_foreign_identity_and_drops_peer_leases_on_gap() {
 #[tokio::test]
 async fn postgres_presence_seam_uses_shared_table_and_does_not_forward_or_reinsert() {
     let (_temp, mut broker) = new_broker().await;
-    broker.postgres_seam(&app());
+    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
     let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
     broker.peers.lock().insert(remote_id(), sender);
     broker
@@ -1243,7 +1249,7 @@ async fn first_presence_query_discovers_existing_peer_leases_without_client_rene
     right
         .local(Request::Register {
             app: app(),
-            postgres_url: None,
+            target: ChannelTarget::Local,
         })
         .await
         .unwrap();
@@ -1391,7 +1397,9 @@ async fn backend_registration_change_rejects_without_replacing_writer_and_same_c
         broker
             .local(Request::Register {
                 app: app(),
-                postgres_url: Some(zeroize::Zeroizing::new("postgres://secret".into())),
+                target: ChannelTarget::Postgres {
+                    url: zeroize::Zeroizing::new("postgres://secret".into())
+                },
             })
             .await
             .unwrap(),
@@ -1402,7 +1410,7 @@ async fn backend_registration_change_rejects_without_replacing_writer_and_same_c
         broker
             .local(Request::Register {
                 app: app(),
-                postgres_url: None
+                target: ChannelTarget::Local
             })
             .await
             .unwrap(),
@@ -1492,7 +1500,7 @@ async fn authenticated_peer_loss_requests_fence_even_when_admission_fails() {
 }
 
 #[tokio::test]
-async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a_gap() {
+async fn re_registration_with_a_changed_backend_replaces_the_store_and_retires_old_subscriptions() {
     let (_temp, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     let previous = broker.apps[&app()].store.clone();
@@ -1503,12 +1511,12 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a
     else {
         panic!()
     };
-    broker.postgres_seam(&app());
+    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
     assert!(matches!(
         broker
             .local(Request::Register {
                 app: app(),
-                postgres_url: None
+                target: ChannelTarget::Local
             })
             .await
             .unwrap(),
@@ -1516,13 +1524,13 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a
     ));
     let application = &broker.apps[&app()];
     assert!(!Arc::ptr_eq(&previous, &application.store));
-    assert!(application.postgres_url.is_none());
-    assert_eq!(application.subscribers.lock().len(), 1);
+    assert!(matches!(application.target, ChannelTarget::Local));
+    assert!(application.subscribers.lock().is_empty());
     let packet = notices.recv().await.unwrap();
     assert!(matches!(
         serde_json::from_slice::<Notice>(&packet.bytes).unwrap(),
         Notice::Notification {
-            notification: Notification::Gap
+            notification: Notification::BackendChanged
         }
     ));
     stale(&broker.apps[&app()].store, &before);
@@ -1552,9 +1560,11 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
         .local_until(
             Request::Register {
                 app: stalled.clone(),
-                postgres_url: Some(zeroize::Zeroizing::new(format!(
-                    "postgres://tako:secret@127.0.0.1:{port}/tako"
-                ))),
+                target: ChannelTarget::Postgres {
+                    url: zeroize::Zeroizing::new(format!(
+                        "postgres://tako:secret@127.0.0.1:{port}/tako"
+                    )),
+                },
             },
             started + Duration::from_millis(300),
         )
@@ -1570,7 +1580,7 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
             Duration::from_secs(2),
             broker.local(Request::Register {
                 app: other.clone(),
-                postgres_url: None
+                target: ChannelTarget::Local
             })
         )
         .await

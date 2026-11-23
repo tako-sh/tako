@@ -297,14 +297,26 @@ The JavaScript SDK handles replay expiry and internal resets outside business
 messages. Custom channels must reload authoritative application state when
 history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
-subscription readiness. Native brokers replicate bounded SQLite replay and fan
-out to trusted server peers; presence uses expiring server-bound leases. This
-is not permanent history or durable workflow migration. Every deploy targets a
-network, so multi-server durable channel/presence/store delivery uses SQLite without Postgres;
-ephemeral channels use memory-only delivery. Configured credentials remain in use; credential
-read or validation failures must not trigger a backend fallback. Multi-server
-workflows still require Postgres unless intentionally local. Test expired history
-and the resulting authoritative-state reload.
+subscription readiness. In production, durable channel replay and Store
+invalidations use a Tako-hosted SQLite database (one home server; other servers
+reach it over the private network). `[envs.<env>.channels].database` names it,
+even when `postgres_url` is set; otherwise a configured `postgres_url` keeps
+shared Postgres for channels, and otherwise a channel-capable release (JS
+channel/presence/store definitions, a native app depending on a Tako SDK,
+`container_options.sdk`, or a Compose service with `x-tako.sdk: true`) gets a
+generated app/environment database. A full-access deploy creates a missing
+database only when the network has one trusted server; on several servers it
+stops with the `tako sqlite create` command to run before setting `database`.
+Deploy-only identities cannot create databases or grants, so run that first
+deploy with full access. Ephemeral channels and native presence leases stay in
+broker memory; Postgres as the channel backend rejects ephemeral delivery. Apps
+selecting one database share storage, not rooms; a restore or import resets
+replay cursors and clients resync. Replay is not permanent history or durable
+workflow migration, and credential failures must not trigger a backend fallback.
+Multi-server workflows still require Postgres unless intentionally local.
+`tako dev` keeps replay in memory. See
+https://tako.sh/docs/channels/#deploy-replay-storage. Test expired history and
+the resulting authoritative-state reload.
 
 Channel, Presence, and Store requests enforce params validation and the app's
 authorization in both dev and production, so private access rules can be
@@ -316,8 +328,8 @@ external writers. Go/Rust registrations use the same browser/React client as JS.
 Offline persistence is opt-in on both backend policy and client user/tenant scope;
 never use credentials as cache scopes. Match cache versions, honor expiry, and
 clear caches on logout. Cached reads do not install an offline app shell or queue
-writes. Native multi-server notification state can use SQLite or an explicitly
-configured Postgres backend. Verify private scope isolation,
+writes. Invalidations use the environment's channel replay backend (hosted
+SQLite or shared Postgres). Verify private scope isolation,
 invalidation, reconnect catch-up, and offline expiry through the real app flow.
 
 ## Install or refresh agent support

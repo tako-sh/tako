@@ -185,6 +185,37 @@ impl SqliteStateStore {
         }
     }
 
+    /// A deploy commits these together. Reading them in separate queries can
+    /// see neither backend during a switch and mistakenly start a local file.
+    pub(crate) fn channel_credentials(
+        &self,
+        app: &str,
+    ) -> Result<(Option<tako_core::DatabaseConnection>, Option<String>), StateStoreError> {
+        let (databases, credentials): (Option<Vec<u8>>, Option<Vec<u8>>) =
+            self.lock_conn()?.query_row(
+                "SELECT (SELECT encrypted_data FROM app_databases WHERE app = ?1),
+                        (SELECT encrypted_data FROM app_runtime_credentials WHERE app = ?1)",
+                [app],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        let hosted = databases
+            .map(|bytes| self.decrypt_json::<HashMap<String, AppDatabase>>(&bytes))
+            .transpose()?
+            .and_then(|bindings| {
+                bindings
+                    .get(tako_core::CHANNEL_REPLAY_BINDING)
+                    .map(crate::databases::connection)
+            });
+        if hosted.is_some() {
+            return Ok((hosted, None));
+        }
+        let postgres = credentials
+            .map(|bytes| self.decrypt_json::<HashMap<String, String>>(&bytes))
+            .transpose()?
+            .and_then(|mut credentials| credentials.remove("postgres_url"));
+        Ok((hosted, postgres))
+    }
+
     /// Replaces an app environment's grant and returns its key, which stays
     /// the same while the environment keeps a grant. An empty set revokes
     /// the grant.
@@ -217,10 +248,23 @@ impl SqliteStateStore {
     pub(crate) fn all_database_grants(
         &self,
     ) -> Result<BTreeMap<String, DatabaseGrant>, StateStoreError> {
+        self.all_database_rows("SELECT app, encrypted_data FROM database_grants")
+    }
+
+    /// Includes committed releases that could not be started on this boot.
+    pub(crate) fn all_app_databases(
+        &self,
+    ) -> Result<BTreeMap<String, HashMap<String, AppDatabase>>, StateStoreError> {
+        self.all_database_rows("SELECT app, encrypted_data FROM app_databases")
+    }
+
+    fn all_database_rows<T: serde::de::DeserializeOwned>(
+        &self,
+        sql: &str,
+    ) -> Result<BTreeMap<String, T>, StateStoreError> {
         let rows = {
             let conn = self.lock_conn()?;
-            let mut statement =
-                conn.prepare("SELECT app, encrypted_data FROM database_grants ORDER BY app")?;
+            let mut statement = conn.prepare(sql)?;
             statement
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))

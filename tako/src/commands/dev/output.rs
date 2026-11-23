@@ -405,7 +405,8 @@ pub async fn run_dev_output(
     let (key_tx, mut key_rx) = mpsc::channel::<Event>(64);
     spawn_key_reader(key_tx);
 
-    let mut sys = System::new();
+    // Metrics are best-effort; sysinfo only fails on unsupported platforms.
+    let mut sys = System::new().ok();
     // 1-second ticker drives metrics refresh (every 2nd tick).
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     let mut tick_count = 0u64;
@@ -448,9 +449,10 @@ pub async fn run_dev_output(
 
                 // Refresh metrics every 2 seconds; only redraw if values changed.
                 if tick_count.is_multiple_of(METRICS_REFRESH_SECS)
-                    && let Some(pid) = app_pid {
+                    && let Some(pid) = app_pid
+                    && let Some(sys) = sys.as_mut() {
                         sys.refresh_processes(ProcessesToUpdate::All, false);
-                        if let Some((cpu, mem)) = process_tree_metrics(&sys, pid) {
+                        if let Some((cpu, mem)) = process_tree_metrics(sys, pid) {
                             let changed = fs.cpu != Some(cpu) || fs.mem_bytes != Some(mem);
                             fs.cpu = Some(cpu);
                             fs.mem_bytes = Some(mem);
@@ -475,9 +477,11 @@ pub async fn run_dev_output(
                     }
                     DevEvent::AppReady => {
                         fs.status = "running".to_string();
-                        if let Some(pid) = app_pid {
+                        if let Some(pid) = app_pid
+                            && let Some(sys) = sys.as_mut()
+                        {
                             sys.refresh_processes(ProcessesToUpdate::All, false);
-                            if let Some((cpu, mem)) = process_tree_metrics(&sys, pid) {
+                            if let Some((cpu, mem)) = process_tree_metrics(sys, pid) {
                                 fs.cpu = Some(cpu);
                                 fs.mem_bytes = Some(mem);
                             }

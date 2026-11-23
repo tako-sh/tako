@@ -263,13 +263,21 @@ pub(crate) fn authorize_command(
                 if let Some(storages) = storages {
                     validate_local_storages(context.data_dir, scope, storages)?;
                 }
-                // Database bindings need grants, which only full clients make.
-                // An empty set would remove every binding; see
-                // `keep_database_bindings`.
-                if let Some(databases) = databases.as_ref()
-                    && !same_bindings(databases, provisioned_app(context, scope)?.databases)
-                {
-                    return Err(DATABASES_DENIED);
+                // Scoped clients assert provisioned targets; they cannot grant or remove one.
+                if let Some(requested) = databases.as_ref().filter(|set| !set.is_empty()) {
+                    let current = provisioned_app(context, scope)?.databases;
+                    let matches = if requested.len() == 1
+                        && let Some(replay) = requested.get(tako_core::CHANNEL_REPLAY_BINDING)
+                    {
+                        current
+                            .get(tako_core::CHANNEL_REPLAY_BINDING)
+                            .is_some_and(|binding| keeps_binding(replay, binding))
+                    } else {
+                        same_bindings(requested, current)
+                    };
+                    if !matches {
+                        return Err(DATABASES_DENIED);
+                    }
                 }
             }
         }
@@ -284,10 +292,11 @@ pub(crate) fn authorize_command(
             if !permissions.is_full() && !databases.is_empty() {
                 let provisioned = provisioned_app(context, scope)?;
                 if databases.iter().any(|(name, binding)| {
-                    !provisioned
-                        .databases
-                        .get(name)
-                        .is_some_and(|current| keeps_binding(binding, current))
+                    name == tako_core::CHANNEL_REPLAY_BINDING
+                        || !provisioned
+                            .databases
+                            .get(name)
+                            .is_some_and(|current| keeps_binding(binding, current))
                 }) {
                     return Err(DATABASES_DENIED);
                 }
@@ -501,14 +510,11 @@ fn validate_managed_directories(data_dir: &Path, relative: &Path) -> Result<(), 
     Ok(())
 }
 
-/// A deploy client never changes database bindings, so a deploy from one
-/// that sends an empty set keeps the environment's bindings instead of
-/// removing them. Call before [`authorize_command`]; a non-empty set that
-/// differs is still refused there.
+/// After authorization checks the original assertions, dispatch a scoped deploy
+/// with the entire committed binding set (including its server-issued keys).
 pub(crate) fn keep_database_bindings(permissions: &Permissions, command: &mut Command) {
     if !permissions.is_full()
         && let Command::Deploy { databases, .. } = command
-        && databases.as_ref().is_some_and(HashMap::is_empty)
     {
         *databases = None;
     }
@@ -718,17 +724,14 @@ mod tests {
             _ => unreachable!(),
         };
         let mut empty = f.decode_command(json!({"command":"deploy","databases":{}}));
-        // Unchanged, the policy alone refuses it: it would drop the binding.
-        assert_eq!(f.authorize(&empty), Err(DATABASES_DENIED));
+        assert_eq!(f.authorize(&empty), Ok(()));
         keep_database_bindings(&f.permissions, &mut empty);
         assert_eq!(databases(&empty), None);
         assert_eq!(f.authorize(&empty), Ok(()));
 
         // A different, non-empty set is still refused.
         let other = json!({"main": {"name": "shop", "server": "other"}});
-        let mut moved = f.decode_command(json!({"command":"deploy","databases":other}));
-        keep_database_bindings(&f.permissions, &mut moved);
-        assert!(databases(&moved).is_some());
+        let moved = f.decode_command(json!({"command":"deploy","databases":other}));
         assert_eq!(f.authorize(&moved), Err(DATABASES_DENIED));
 
         // A full client's empty set still removes the bindings.
@@ -767,6 +770,52 @@ mod tests {
             json!({"main": {"name": "shop", "server": "edge", "peer_key": "issued-by-edge"}});
         let deploy = f.decode_command(json!({"command":"deploy","databases":issued}));
         assert_eq!(f.authorize(&deploy), Ok(()));
+    }
+
+    #[test]
+    fn scoped_replay_assertions_require_a_provisioned_target_and_never_deliver_it_to_releases() {
+        let mut f = Fixture::new();
+        let replay = json!({"@channels":{"name":"streams","server":"edge"}});
+        let mut deploy = f.decode_command(json!({"command":"deploy","databases": replay}));
+        assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
+        f.databases = serde_json::from_value(json!({
+            "@channels":{"name":"streams","server":"edge","peer_key":"service-key"},
+            "main":{"name":"orders","server":"edge","peer_key":"app-key"}
+        }))
+        .unwrap();
+        assert_eq!(f.authorize(&deploy), Ok(()));
+        keep_database_bindings(&f.permissions, &mut deploy);
+        assert!(matches!(
+            deploy,
+            Command::Deploy {
+                databases: None,
+                ..
+            }
+        ));
+        for altered in [
+            json!({"@channels":{"name":"other","server":"edge"}}),
+            json!({"@channels":{"name":"streams","server":"edge2"}}),
+            json!({"@channels":{"name":"streams","server":"edge","peer_key":"app-key"}}),
+            json!({"main":{"name":"streams","server":"edge"}}),
+        ] {
+            for command in ["deploy", "run_release"] {
+                assert_eq!(
+                    f.authorize(&f.decode_command(json!({"command":command,"databases":altered}))),
+                    Err(DATABASES_DENIED)
+                );
+            }
+        }
+        assert_eq!(
+            f.authorize(&f.decode_command(json!({"command":"run_release","databases":replay}))),
+            Err(DATABASES_DENIED)
+        );
+        for admin in [
+            json!({"command":"reset_database","name":"streams"}),
+            json!({"command":"grant_databases","app":"demo/staging#channels","databases":["streams"]}),
+            json!({"command":"query_database","name":"streams","sql":"SELECT 1"}),
+        ] {
+            assert!(f.authorize(&f.decode_command(admin)).is_err());
+        }
     }
 
     /// Everything else in an app environment needs full access, including

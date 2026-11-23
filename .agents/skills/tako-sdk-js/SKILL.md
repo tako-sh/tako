@@ -371,7 +371,7 @@ interface TakoStatus {
 
 ## Channels
 
-Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks without shared Postgres; Postgres rejects ephemeral publication/subscription. Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
+Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks, using broker memory rather than the replay database; Postgres as the channel backend rejects ephemeral publication/subscription (Postgres used only for workflows does not). Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
 
 Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
 
@@ -438,7 +438,7 @@ await chat({ roomId: "room1" }).publish({
 await chat({ roomId: "room1" }).close();
 ```
 
-`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors: a publish to a closed stream has `reason: "channel_closed"`, rejected params `"channel_params_invalid"`, and a channel the build does not define `"channel_unknown"`. With native multi-server replication, a publish from another server racing the close may be dropped, so publish and close a stream from one place. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
+`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors: a publish to a closed stream has `reason: "channel_closed"`, rejected params `"channel_params_invalid"`, and a channel the build does not define `"channel_unknown"`. Hosted SQLite and shared Postgres order publishes and closes in one database, so finish publishing before closing, even when publishers run on different servers. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
 
 #### Resumable streams (LLM replies)
 
@@ -518,13 +518,16 @@ The terminal close (`tako.close`, code 4200) is final and never a business
 message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
 response that ends without `tako.close` stay reconnectable.
 
-Native network brokers replicate bounded SQLite replay and fan out to trusted
-server peers. Replay gaps trigger quiet SDK resync, not business reset messages;
-reload authoritative state when history expires. This does not migrate durable
-workflows or databases. Native multi-server durable channel/presence/store delivery
-can use SQLite without `postgres_url`; ephemeral channels use memory-only delivery.
-Configured Postgres remains in use; credential failures stop deployment
-rather than switching backends.
+In production, durable replay lives in the environment's Tako-hosted SQLite
+database (one home server, reached by the others over the private network), or
+in shared Postgres when `postgres_url` is configured and
+`[envs.<env>.channels].database` is not. Ephemeral channels and native presence
+leases stay in broker memory. Replay gaps, expired history, and a restore or
+import of the replay database trigger quiet SDK resync, not business reset
+messages; reload authoritative state. This does not migrate durable workflows
+or app databases. Credential failures stop deployment rather than switching
+backends. See https://tako.sh/docs/channels/#deploy-replay-storage for backend
+selection and multi-server placement.
 Verify replay expiry, a current-state reload, async callback failure, and clean
 shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
 
@@ -560,7 +563,7 @@ update({ typing: true });
 
 `members` contains `{ connectionId, subject?, data }`, including the current membership. Every hook call creates a distinct member entry even when several subscriptions share a physical socket; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
-Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases. Multi-server presence can use SQLite without a `postgres_url` credential; an explicitly configured Postgres backend remains in use. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
+In production, native brokers keep expiring server-bound presence leases in memory and exchange them with trusted servers, without Postgres; when Postgres is the selected channel backend, it stores the leases. Database snapshots and restores do not include membership. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
 
 ### Stores
 
@@ -645,11 +648,11 @@ data. The app shell must already be available: no PWA/service worker, offline
 write queue, or conflict-resolution engine is installed.
 
 Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
-16 KiB and complete read responses at 1 MiB. Native brokers fan out invalidations
-with bounded replay. Native multi-server invalidation delivery can use SQLite
-without `postgres_url`; configured Postgres remains in use. See https://tako.sh/docs/stores/ for native backends and
-the complete lifecycle. Verify scoped invalidation, reconnection, user switching,
-and offline expiry, not just the initial render.
+16 KiB and complete read responses at 1 MiB. Invalidations use the environment's
+channel replay backend (hosted SQLite or shared Postgres), so every server reads
+the same bounded history. See https://tako.sh/docs/stores/ for the complete
+lifecycle. Verify scoped invalidation, reconnection, user switching, and offline
+expiry, not just the initial render.
 
 ### React
 
@@ -794,7 +797,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Native channel brokers support bounded replication separately from workflow storage. Native multi-server durable channels can use SQLite without `postgres_url`; ephemeral channels use memory-only delivery without replay.
+Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Channel replay storage is separate: a hosted replay database selected with `[envs.<env>.channels].database` neither satisfies this requirement nor moves workflow runs, and with it set `postgres_url` serves workflows only. Ephemeral channels use memory-only delivery without replay.
 
 ### Enqueuing
 

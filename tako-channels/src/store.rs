@@ -1,3 +1,5 @@
+mod hosted;
+mod hosted_sql;
 mod postgres;
 mod presence;
 mod sqlite;
@@ -11,11 +13,14 @@ use crate::{
     CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
     ChannelPublishPayload, ReplayCursor, ReplayFrom,
 };
+use hosted::HostedChannelStore;
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
 pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
+/// One hosted head query per poll tick; larger subscription sets span ticks.
+const HOSTED_HEAD_BATCH: usize = 256;
 /// A connection may outlive its lifetime by the time its last frames take.
 const IDLE_STREAM_GRACE_MS: i64 = 60_000;
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
@@ -39,7 +44,7 @@ fn stream_limit_error(channel: &str) -> ChannelError {
 use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ChannelStoreConfig {
     Sqlite {
         path: PathBuf,
@@ -49,6 +54,32 @@ pub enum ChannelStoreConfig {
         schema: String,
         app_id: String,
     },
+    /// Shared SQLite replay through a server-issued database binding.
+    Hosted {
+        url: String,
+        token: String,
+        app_id: String,
+    },
+}
+
+impl std::fmt::Debug for ChannelStoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite { path } => f.debug_struct("Sqlite").field("path", path).finish(),
+            Self::Postgres { schema, app_id, .. } => f
+                .debug_struct("Postgres")
+                .field("url", &"[REDACTED]")
+                .field("schema", schema)
+                .field("app_id", app_id)
+                .finish(),
+            Self::Hosted { app_id, .. } => f
+                .debug_struct("Hosted")
+                .field("url", &"[REDACTED]")
+                .field("token", &"[REDACTED]")
+                .field("app_id", app_id)
+                .finish(),
+        }
+    }
 }
 
 impl ChannelStoreConfig {
@@ -60,6 +91,18 @@ impl ChannelStoreConfig {
         Self::Postgres {
             url: url.into(),
             schema: POSTGRES_CHANNELS_SCHEMA.to_string(),
+            app_id: app_id.into(),
+        }
+    }
+
+    pub fn hosted(
+        url: impl Into<String>,
+        token: impl Into<String>,
+        app_id: impl Into<String>,
+    ) -> Self {
+        Self::Hosted {
+            url: url.into(),
+            token: token.into(),
             app_id: app_id.into(),
         }
     }
@@ -83,6 +126,7 @@ pub struct ChannelStore {
 enum ChannelStoreBackend {
     Sqlite(SqliteChannelStore),
     Postgres(Box<PostgresChannelStore>),
+    Hosted(HostedChannelStore),
 }
 
 impl ChannelStoreBackend {
@@ -90,13 +134,16 @@ impl ChannelStoreBackend {
         match self {
             Self::Sqlite(store) => store.prune(now),
             Self::Postgres(store) => store.prune(now),
+            Self::Hosted(store) => store.prune(now),
         }
     }
 
-    fn latest_ids(&self, channels: &[String]) -> Result<Vec<(String, i64)>, ChannelError> {
+    /// Stream heads, and whether the shared database was replaced since the last poll.
+    fn latest_ids(&self, channels: &[String]) -> Result<(Vec<(String, i64)>, bool), ChannelError> {
         match self {
-            Self::Sqlite(store) => store.latest_ids(channels),
-            Self::Postgres(store) => store.latest_ids(channels),
+            Self::Sqlite(store) => Ok((store.latest_ids(channels)?, false)),
+            Self::Postgres(store) => Ok((store.latest_ids(channels)?, false)),
+            Self::Hosted(store) => store.latest_ids(channels),
         }
     }
 }
@@ -115,12 +162,16 @@ impl ChannelStore {
         read_only: bool,
     ) -> Result<Self, ChannelError> {
         let backend = Arc::new(backend);
-        let changes = delivery.changes.clone();
         let lifetime = Arc::new(());
         let weak = Arc::downgrade(&lifetime);
         let worker_backend = backend.clone();
-        let sender = changes.clone();
-        let poll_remote = matches!(backend.as_ref(), ChannelStoreBackend::Postgres(_));
+        // Weak, so the worker never extends the delivery channels' lifetime.
+        let worker_delivery = Arc::downgrade(&delivery);
+        let (poll_remote, poll_batch) = match backend.as_ref() {
+            ChannelStoreBackend::Sqlite(_) => (false, usize::MAX),
+            ChannelStoreBackend::Postgres(_) => (true, usize::MAX),
+            ChannelStoreBackend::Hosted(_) => (true, HOSTED_HEAD_BATCH),
+        };
         if read_only && !poll_remote {
             return Ok(Self {
                 backend,
@@ -133,10 +184,13 @@ impl ChannelStore {
             .name("channel-store".into())
             .spawn(move || {
                 let mut next_prune = std::time::Instant::now();
+                let mut pending_channels = Vec::new();
                 loop {
-                    if weak.strong_count() == 0 {
+                    let (true, Some(worker_delivery)) =
+                        (weak.strong_count() > 0, worker_delivery.upgrade())
+                    else {
                         break;
-                    }
+                    };
                     let backend = &worker_backend;
                     if !read_only && std::time::Instant::now() >= next_prune {
                         if let Err(error) = backend.prune(now_unix_ms()) {
@@ -145,25 +199,31 @@ impl ChannelStore {
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
                     }
                     // Commits in this process wake subscribers directly. Polling
-                    // covers commits by other writers of the same store: remote
-                    // Postgres servers, or the previous server process sharing
-                    // this SQLite file during a zero-downtime reload.
-                    let subscribed_channels = {
-                        let mut streams = sender.lock();
+                    // covers other processes writing to the shared store or
+                    // the same local SQLite file during a zero-downtime reload.
+                    if pending_channels.is_empty() {
+                        // Snapshot a round so subscription churn cannot starve later batches.
+                        let mut streams = worker_delivery.changes.lock();
                         streams.retain(|_, changes| changes.receiver_count() > 0);
-                        streams.keys().cloned().collect::<Vec<_>>()
-                    };
-                    if !subscribed_channels.is_empty() {
-                        match backend.latest_ids(&subscribed_channels) {
-                            Ok(heads) => {
-                                let streams = sender.lock();
+                        pending_channels = streams.keys().cloned().collect();
+                    }
+                    if !pending_channels.is_empty() {
+                        let start = pending_channels.len().saturating_sub(poll_batch);
+                        match backend.latest_ids(&pending_channels[start..]) {
+                            Ok((heads, replaced)) => {
+                                if replaced {
+                                    worker_delivery.replaced();
+                                }
+                                let streams = worker_delivery.changes.lock();
                                 for (channel, latest) in heads {
                                     notify_committed(&streams, &channel, latest);
                                 }
                             }
                             Err(error) => tracing::warn!(%error, "channel change poll failed"),
                         }
+                        pending_channels.truncate(start);
                     }
+                    drop(worker_delivery);
                     std::thread::sleep(std::time::Duration::from_millis(if poll_remote {
                         100
                     } else {
@@ -287,6 +347,9 @@ impl ChannelStore {
                 schema,
                 app_id,
             } => Self::open_postgres_with_schema(&url, &schema, &app_id),
+            ChannelStoreConfig::Hosted { url, token, app_id } => {
+                Self::open_hosted_mode(&url, &token, &app_id, false)
+            }
         }
     }
 
@@ -314,7 +377,23 @@ impl ChannelStore {
                 Arc::default(),
                 true,
             ),
+            ChannelStoreConfig::Hosted { url, token, app_id } => {
+                Self::open_hosted_mode(&url, &token, &app_id, true)
+            }
         }
+    }
+
+    fn open_hosted_mode(
+        url: &str,
+        token: &str,
+        app_id: &str,
+        read_only: bool,
+    ) -> Result<Self, ChannelError> {
+        Self::from_backend_mode(
+            ChannelStoreBackend::Hosted(HostedChannelStore::open(url, token, app_id, read_only)?),
+            Arc::default(),
+            read_only,
+        )
     }
 
     /// Open (or create) the channel DB at `path` and run the idempotent
@@ -404,8 +483,8 @@ impl ChannelStore {
     pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.conn.lock(),
-            ChannelStoreBackend::Postgres(_) => {
-                panic!("sqlite connection requested for postgres channel store")
+            ChannelStoreBackend::Postgres(_) | ChannelStoreBackend::Hosted(_) => {
+                panic!("local sqlite connection requested for shared channel store")
             }
         }
     }
@@ -437,10 +516,10 @@ impl ChannelStore {
     }
 
     pub fn ensure_ephemeral_supported(&self) -> Result<(), ChannelError> {
-        if matches!(self.backend.as_ref(), ChannelStoreBackend::Postgres(_)) {
-            return Err(crate::ephemeral::unsupported());
+        match self.backend.as_ref() {
+            ChannelStoreBackend::Postgres(_) => Err(crate::ephemeral::unsupported()),
+            ChannelStoreBackend::Sqlite(_) | ChannelStoreBackend::Hosted(_) => Ok(()),
         }
-        Ok(())
     }
 
     pub fn subscribe_ephemeral(
@@ -508,31 +587,28 @@ impl ChannelStore {
     ) -> Result<ChannelMessage, ChannelError> {
         self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
+        let wake = || ChannelPublication::Wake {
+            channel: channel.into(),
+        };
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
                 let (message, event) = store.publish(channel, payload, lifecycle)?;
-                // An already closed stream returns its marker; nothing new to deliver.
-                let Some(event) = event else {
-                    return Ok(message);
-                };
-                (message, ChannelPublication::Event(event))
+                (message, event.map(ChannelPublication::Event))
             }
             ChannelStoreBackend::Postgres(store) => {
                 let (message, appended) = store.append(channel, payload, lifecycle)?;
-                let message = scope_postgres_id(channel, message)?;
-                if !appended {
-                    return Ok(message);
-                }
-                (
-                    message,
-                    ChannelPublication::Wake {
-                        channel: channel.into(),
-                    },
-                )
+                (scope_postgres_id(channel, message)?, appended.then(wake))
+            }
+            ChannelStoreBackend::Hosted(store) => {
+                let (message, appended) = store.publish(channel, payload, lifecycle)?;
+                (message, appended.then(wake))
             }
         };
-        self.deliver(&message, false);
-        let _ = self.delivery.publications.send(publication);
+        // Closing an already closed stream returns its marker without a commit.
+        if let Some(publication) = publication {
+            self.deliver(&message, false);
+            let _ = self.delivery.publications.send(publication);
+        }
         Ok(message)
     }
 
@@ -557,7 +633,7 @@ impl ChannelStore {
         self.deliver(message, ephemeral);
     }
 
-    /// Subscribe once per app before accepting local publications. Lag requires peer reset.
+    /// Subscribe before local publication. Lag fences replicated replay or signals a shared-store gap.
     pub fn publications(&self) -> tokio::sync::broadcast::Receiver<ChannelPublication> {
         self.delivery.publications.subscribe()
     }
@@ -579,7 +655,7 @@ impl ChannelStore {
         let _publication = self.delivery.publish.lock();
         let ChannelStoreBackend::Sqlite(store) = self.backend.as_ref() else {
             return Err(ChannelError::BadRequest(
-                "PostgreSQL delivery accepts wake hints, not remote events".into(),
+                "shared channel storage accepts wake hints, not durable remote events".into(),
             ));
         };
         match store.ingest_remote(event, || self.signal_gap(None))? {
@@ -593,7 +669,7 @@ impl ChannelStore {
         }
     }
 
-    /// Wake a stream after a PostgreSQL peer commit without inserting another row.
+    /// Wake a stream after a shared-store commit without inserting another row.
     pub fn wake(&self, channel: &str) {
         self.delivery.wake(channel, None);
     }
@@ -610,23 +686,17 @@ impl ChannelStore {
 
     /// Signal transport loss or lag. None resets all currently connected streams.
     pub fn signal_gap(&self, channel: Option<&str>) {
-        let mut resets = self.delivery.resets.lock();
-        resets.retain(|_, sender| sender.receiver_count() > 0);
-        for (stream, sender) in resets.iter() {
-            if channel.is_none_or(|channel| channel == stream) {
-                sender.send_modify(|generation| *generation = generation.wrapping_add(1));
-            }
-        }
+        self.delivery.signal_gap(channel);
     }
 
-    /// Invalidate SQLite replay after transport loss, including clients that reconnect later.
-    /// The persisted event origin remains stable; PostgreSQL retains its shared history.
+    /// Invalidate replicated SQLite replay after transport loss, including on reconnect.
+    /// Shared stores retain their history and signal only a live gap.
     pub fn invalidate_replay(&self) -> Result<(), ChannelError> {
         self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.invalidate_replay(|| self.signal_gap(None)),
-            ChannelStoreBackend::Postgres(_) => {
+            ChannelStoreBackend::Postgres(_) | ChannelStoreBackend::Hosted(_) => {
                 self.signal_gap(None);
                 Ok(())
             }
@@ -641,6 +711,7 @@ impl ChannelStore {
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.read_after(channel, after, limit),
+            ChannelStoreBackend::Hosted(store) => store.read_after(channel, after, limit),
             ChannelStoreBackend::Postgres(store) => store
                 .read_after(
                     channel,
@@ -660,6 +731,7 @@ impl ChannelStore {
     pub fn close_marker(&self, channel: &str) -> Result<Option<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.close_marker(channel),
+            ChannelStoreBackend::Hosted(store) => store.close_marker(channel),
             ChannelStoreBackend::Postgres(store) => store
                 .close_marker(channel)?
                 .map(|message| scope_postgres_id(channel, message))
@@ -674,6 +746,7 @@ impl ChannelStore {
     ) -> Result<Option<ReplayCursor>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.replay_cursor(channel, requested),
+            ChannelStoreBackend::Hosted(store) => store.replay_cursor(channel, requested),
             ChannelStoreBackend::Postgres(store) => store
                 .replay_cursor(
                     channel,
@@ -697,6 +770,7 @@ impl ChannelStore {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.sync_channel(channel, auth),
             ChannelStoreBackend::Postgres(store) => store.sync_channel(channel, auth),
+            ChannelStoreBackend::Hosted(store) => store.sync_channel(channel, auth),
         }
     }
 }
@@ -832,6 +906,195 @@ mod ordering_tests {
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+
+    #[test]
+    fn shared_store_config_debug_redacts_binding_credentials() {
+        let url = "postgres://user:secret@db/internal";
+        let token = "private-binding-token";
+        for config in [
+            ChannelStoreConfig::postgres(url, "app/prod"),
+            ChannelStoreConfig::hosted("http://db/?key=secret", token, "app/prod"),
+        ] {
+            let debug = format!("{config:?}");
+            assert!(debug.contains("app/prod"));
+            assert!(!debug.contains("secret"));
+            assert!(!debug.contains(token));
+        }
+    }
+
+    async fn hosted_handles() -> (ChannelStore, ChannelStore) {
+        let (writer, reader, _) = hosted_handles_at().await;
+        (writer, reader)
+    }
+
+    async fn hosted_handles_at() -> (ChannelStore, ChannelStore, PathBuf) {
+        use tako_database::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replay.sqlite");
+        DatabaseHost::create_file(&path).unwrap();
+        let host = DatabaseHost::new(Default::default());
+        let database = DatabaseId::generate();
+        host.register(database.clone(), path.clone()).unwrap();
+        let app = "shop/production";
+        let token = generate_token();
+        host.set_bindings(
+            app,
+            vec![Binding {
+                database,
+                token_hash: hash_token(&token),
+                home: Home::Local,
+            }],
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = ChannelStoreConfig::hosted(
+            format!("http://{}", listener.local_addr().unwrap()),
+            token,
+            app,
+        );
+        tokio::spawn(async move {
+            let _dir = dir;
+            tako_database::http::serve(host, listener, tako_database::http::Access::Apps).await
+        });
+        tokio::task::spawn_blocking(move || {
+            let writer = ChannelStore::open_config(config.clone()).unwrap();
+            (
+                writer,
+                ChannelStore::open_reader_config(config).unwrap(),
+                path,
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hosted_reset_resets_live_subscribers_whose_heads_move_back() {
+        let (writer, reader, path) = hosted_handles_at().await;
+        let (writer, reader) = (Arc::new(writer), Arc::new(reader));
+        let mut changes = reader.changes("room");
+        let mut gap = reader.resets("room");
+        let payload = ChannelPublishPayload {
+            r#type: "event".into(),
+            data: 1.into(),
+        };
+        let publish = |count: usize| {
+            let payload = payload.clone();
+            writer.run(move |writer| {
+                for _ in 0..count {
+                    writer.append("room", &payload)?;
+                }
+                Ok(())
+            })
+        };
+        async fn wait_for(changes: &mut tokio::sync::watch::Receiver<Option<i64>>, head: i64) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while *changes.borrow_and_update() != Some(head) {
+                    changes.changed().await.unwrap();
+                }
+            })
+            .await
+            .expect("reader did not observe the head");
+        }
+        publish(3).await.unwrap();
+        wait_for(&mut changes, 3).await;
+        gap.borrow_and_update();
+        // `tako sqlite reset` replaces the file under both open handles.
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "DROP VIEW tako_replay_bounds; DROP TABLE tako_replay_messages;
+                 DROP TABLE tako_replay_streams; DROP TABLE tako_replay_apps;",
+            )
+            .unwrap();
+        publish(1).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), gap.changed())
+            .await
+            .expect("reader did not signal a gap after the reset")
+            .unwrap();
+        // Position 1 of the new epoch is below the head seen before the reset.
+        wait_for(&mut changes, 1).await;
+        drop(reader);
+    }
+
+    #[tokio::test]
+    async fn hosted_native_live_delivery_does_not_persist_events_or_presence() {
+        let (writer, reader) = hosted_handles().await;
+        let mut live = reader.subscribe_ephemeral("room").unwrap();
+        let mut events = writer.ephemeral_publications();
+        let payload = ChannelPublishPayload {
+            r#type: "event".into(),
+            data: 1.into(),
+        };
+        let message = writer.publish_ephemeral("room", &payload).unwrap();
+        let mut event = events.try_recv().unwrap();
+        assert!(event.ephemeral);
+        event.ephemeral = false;
+        assert!(writer.ingest_remote(&event).is_err());
+        reader.notify_committed(&message, true);
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), live.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*received, message);
+        let member = crate::PresenceMember {
+            connection_id: "conn".into(),
+            subject: Some("alice".into()),
+            data: serde_json::Value::Null,
+        };
+        assert!(writer.update_presence("room", &member, 0).is_err());
+        assert!(
+            writer
+                .presence("room", 0)
+                .unwrap_err()
+                .to_string()
+                .contains("native broker")
+        );
+        assert!(
+            Arc::new(reader)
+                .read_after_async("room", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_reader_recovers_a_missed_wake_and_keeps_its_cursor_across_mesh_loss() {
+        let (writer, reader) = hosted_handles().await;
+        let mut changes = reader.changes("room");
+        let reader = Arc::new(reader);
+        let head = reader
+            .run(move |reader| {
+                let mut publications = writer.publications();
+                let gap = writer.resets("room");
+                let after = reader.replay_cursor("room", None)?;
+                let closed = writer.close("room")?;
+                assert_eq!(
+                    publications.try_recv().unwrap(),
+                    ChannelPublication::Wake {
+                        channel: "room".into()
+                    }
+                );
+                assert_eq!(writer.close("room")?, closed);
+                assert!(publications.try_recv().is_err());
+                writer.invalidate_replay()?;
+                assert!(gap.has_changed().unwrap());
+                let cursor = closed.id.parse::<ReplayCursor>().unwrap();
+                assert_eq!(reader.replay_cursor("room", Some(cursor))?, Some(cursor));
+                assert_eq!(reader.read_after("room", after, 10)?, [closed]);
+                assert!(reader.close("room").is_err());
+                Ok(cursor.position)
+            })
+            .await
+            .unwrap();
+        // The reader's worker must recover without receiving the mesh Wake.
+        tokio::time::timeout(std::time::Duration::from_secs(5), changes.changed())
+            .await
+            .expect("reader did not poll a remote commit")
+            .unwrap();
+        assert_eq!(*changes.borrow(), Some(head));
+    }
 
     #[test]
     fn fanout_state_is_released_with_the_last_subscriber_of_a_stream() {

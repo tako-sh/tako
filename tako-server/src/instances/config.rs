@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::internal_app_host;
 
 /// Configuration for an app
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppConfig {
     /// App name
     pub name: String,
@@ -38,7 +38,7 @@ pub struct AppConfig {
     pub secrets: HashMap<String, String>,
     /// Storage bindings loaded from encrypted server state.
     pub storages: HashMap<String, tako_core::StorageBinding>,
-    /// Database bindings, with the tokens their processes present.
+    /// App and server-owned database bindings, with their tokens.
     pub databases: HashMap<String, crate::state_store::AppDatabase>,
     /// Client source-IP mode for requests routed to this app.
     pub source_ip: tako_core::SourceIpMode,
@@ -56,6 +56,18 @@ pub struct AppConfig {
     pub startup_timeout: Duration,
     /// Idle timeout (for on-demand scaling)
     pub idle_timeout: Duration,
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("name", &self.name)
+            .field("environment", &self.environment)
+            .field("version", &self.version)
+            .field("launch", &self.launch)
+            .field("stopped", &self.stopped)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

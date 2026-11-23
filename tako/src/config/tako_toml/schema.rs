@@ -206,6 +206,9 @@ pub struct EnvConfig {
     /// names are shared with `databases`: each is used once per environment.
     #[serde(default)]
     pub kv: HashMap<String, String>,
+    /// Channel replay settings for this environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<ChannelsConfig>,
 
     /// Private storage for manual app-directory archives (`tako backup now`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,6 +230,15 @@ pub struct EnvConfig {
     /// Per-environment release command override. An empty string explicitly
     /// clears the top-level `release` command for this environment.
     pub release: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChannelsConfig {
+    /// Hosted database name for channel replay, separate from app database bindings.
+    #[cfg_attr(test, schemars(regex(pattern = super::json_schema::DATABASE_NAME_PATTERN)))]
+    pub database: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

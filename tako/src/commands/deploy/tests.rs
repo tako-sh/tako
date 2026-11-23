@@ -14,7 +14,21 @@ fn release_command_payload_pins_the_secret_snapshot() {
         source_ip: tako_core::SourceIpMode::Auto,
         secrets_digest: Some("digest".to_string()),
         storages: HashMap::new(),
-        databases: HashMap::new(),
+        databases: HashMap::from([(
+            "main".into(),
+            tako_core::DatabaseBinding {
+                name: "orders".into(),
+                server: "s1".into(),
+                peer_key: None,
+                engine: tako_core::DatabaseEngine::Sqlite,
+            },
+        )]),
+        channel_database: Some(tako_core::DatabaseBinding {
+            name: "replay".into(),
+            server: "s2".into(),
+            peer_key: None,
+            engine: tako_core::DatabaseEngine::Sqlite,
+        }),
         ssl: tako_core::SslBinding::default(),
         backup: None,
         force: true,
@@ -30,6 +44,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
         path,
         command_line,
         secrets_digest,
+        databases,
         force,
         ..
     }) = cfg.release_command_payload("/opt/tako/apps/my-app/production/releases/v1")
@@ -43,6 +58,15 @@ fn release_command_payload_pins_the_secret_snapshot() {
     assert_eq!(command_line, "bun run migrate");
     assert!(force);
     assert_eq!(secrets_digest.as_deref(), Some("digest"));
+    assert_eq!(
+        databases, cfg.databases,
+        "release commands get only SQL bindings"
+    );
+    let full = cfg.deploy_databases(true).unwrap();
+    assert_eq!(full.len(), 2);
+    let scoped = cfg.deploy_databases(false).unwrap();
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[tako_core::CHANNEL_REPLAY_BINDING].name, "replay");
 }
 
 #[test]
@@ -535,6 +559,41 @@ fn runtime_state_storage_validation_native_channels_validate_configured_postgres
     }
 }
 
+#[test]
+fn hosted_channel_replay_ignores_an_expired_postgres_url_unless_workflows_use_it() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    let mut config = native_multi_server_js_config();
+    config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
+        database: "events".into(),
+    });
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            POSTGRES_CREDENTIAL_NAME,
+            EncryptedSecretValue::new("encrypted".into(), Some("2000-01-01".into())),
+        )
+        .unwrap();
+    let validate = || {
+        config::validate_runtime_state_storage_for_deploy(
+            temp.path(),
+            &config,
+            &secrets,
+            "production",
+            2,
+        )
+    };
+    assert!(!validate().has_errors(), "{:?}", validate().errors);
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
+    );
+    assert!(validate().errors[0].contains("expired"));
+}
+
 fn write_workflow(temp: &TempDir, name: &str, source: &str) {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();
@@ -559,4 +618,31 @@ fn multi_server_js_config() -> TakoToml {
         )]),
         ..Default::default()
     }
+}
+
+#[test]
+fn native_releases_need_channel_replay_only_with_a_tako_sdk() {
+    let temp = TempDir::new().unwrap();
+    let config = TakoToml::parse("name = 'api'\nruntime = 'go'\n").unwrap();
+    let needs = || config::needs_channel_replay(temp.path(), &config, BuildAdapter::Go);
+    fs::write(temp.path().join("go.mod"), "module api\n\ngo 1.22\n").unwrap();
+    assert!(!needs());
+    fs::write(
+        temp.path().join("go.mod"),
+        "module api\n\ngo 1.22\n\nrequire tako.sh v0.4.1\n",
+    )
+    .unwrap();
+    assert!(needs());
+    // A custom-built Rust binary counts before its first build writes Cargo.lock.
+    let rust = TempDir::new().unwrap();
+    fs::write(
+        rust.path().join("Cargo.toml"),
+        "[package]\nname = 'api'\n[dependencies]\ntako = '0.3'\n",
+    )
+    .unwrap();
+    assert!(config::needs_channel_replay(
+        rust.path(),
+        &config,
+        BuildAdapter::Unknown
+    ));
 }

@@ -169,8 +169,9 @@ partition membership; verified subjects identify users, while each tab has its
 own connection ID. Metadata is untrusted client JSON. The proxy and React hook
 manage leases, disconnect cleanup, and reconnects. Every authorized member of a
 scope sees its roster; permissions are checked again when the configured maximum
-connection lifetime expires. A network's servers exchange presence leases
-without Postgres; a configured `postgres_url` credential remains in use.
+connection lifetime expires. Native brokers keep presence leases in memory and
+exchange them across a network's servers without Postgres; Postgres stores them
+only when it is the selected channel backend.
 
 Local Presence connections run the same auth callbacks as production and use
 in-memory state, so private-room rejection and trusted identities can be
@@ -234,8 +235,13 @@ Invalidate only after commit, using the exact params; `{}` is not a wildcard.
 External writers must invalidate explicitly; Tako does not inspect database
 dependencies. Publication errors do not roll back or retry the database write;
 use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
-read responses at 1 MiB. Invalidations reach every server of the network without
-`postgres_url`; a configured Postgres backend remains in use. See
+read responses at 1 MiB. Invalidations use the environment's channel replay
+backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
+server of the network. Because `Cargo.toml` depends on the `tako` crate, a
+deploy with neither `[envs.<env>.channels].database` nor `postgres_url` selects a
+generated replay database; on a multi-server network, create one with
+`tako sqlite create` and set `database` first (see
+https://tako.sh/docs/channels/#deploy-replay-storage). See
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.
 

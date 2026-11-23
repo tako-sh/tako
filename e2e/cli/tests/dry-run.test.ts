@@ -9,9 +9,12 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { networkFixture } from "../helpers/network";
 import { TakoTerminal, run } from "../helpers/terminal";
-import { mkdtemp, realpath, writeFile, rm, mkdir } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, realpath, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+const TAKO_BIN =
+  process.env.TAKO_BIN ?? resolve(import.meta.dirname, "..", "..", "..", "target", "debug", "tako");
 
 let tempDir: string;
 let takoHome: string;
@@ -89,6 +92,50 @@ describe("application lifecycle", () => {
 });
 
 describe("deploy --dry-run", () => {
+  test("previews replay and SQL creation from offline membership without editing the config", async () => {
+    await setupProject({ servers: { solo: { host: "10.0.0.1" } } });
+    const configPath = join(tempDir, "tako.toml");
+    await appendFile(configPath, 'databases = { main = "orders" }\n');
+    const config = await readFile(configPath, "utf8");
+    await mkdir(join(tempDir, "src/channels"), { recursive: true });
+    await writeFile(join(tempDir, "src/channels/chat.ts"), 'export default defineChannel("chat");');
+    // A terminal merges stderr into stdout; --json reserves stdout for the result.
+    const child = Bun.spawn([TAKO_BIN, "--json", "--dry-run", "deploy"], {
+      cwd: tempDir,
+      env: { ...process.env, HOME: tempDir, TAKO_HOME: takoHome },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(`deploy --dry-run exited ${exitCode}\n${stderr}`);
+    const result = JSON.parse(stdout);
+    expect(result.channel_database).toMatchObject({ implicit: true, server: "solo" });
+    expect(result.create_databases).toEqual([
+      { name: result.channel_database.name, server: "solo" },
+      { name: "orders", server: "solo" },
+    ]);
+    expect(await readFile(configPath, "utf8")).toBe(config);
+  });
+
+  test("requires database placement even when only one of two network servers is a deploy target", async () => {
+    await setupProject({ servers: { east: { host: "10.0.0.1" }, west: { host: "10.0.0.2" } } });
+    const path = join(tempDir, "tako.toml");
+    const config = (await readFile(path, "utf8")).replace('["east", "west"]', '["east"]');
+    await writeFile(path, config + '[envs.production.channels]\ndatabase = "chat-replay"\n');
+    const { term, exitCode } = await run(["--dry-run", "deploy"], {
+      cwd: tempDir,
+      cols: 400,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(exitCode).toBe(1);
+    expect(term.fullText()).toContain("tako sqlite create chat-replay --server west --network");
+    expect(term.fullText()).toContain("tako sqlite create chat-replay --server east --network");
+  });
+
   test("shows app summary when env is auto-resolved", async () => {
     await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
 

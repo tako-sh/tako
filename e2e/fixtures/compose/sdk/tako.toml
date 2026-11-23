@@ -5,3 +5,6 @@ file = "compose.yaml"
 
 [envs.production]
 servers = ["prod"]
+
+[envs.production.channels]
+database = "channel-replay"

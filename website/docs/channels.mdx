@@ -109,7 +109,7 @@ Messages published without reachable subscribers, during disconnects, or before 
 
 Ephemeral messages have `id: ""`; SSE frames omit the `id` field. Reconnects start with live events and do not resume from a replay cursor. Authorization, params, SSE/WebSocket transport, keepalives, and connection lifetime still apply. Setting `replayWindowMs` together with `ephemeral: true` is rejected; in Go, leave `ReplayWindowMs` at its zero value.
 
-Ephemeral channels support local development, single-server production, and native network servers without a `postgres_url` credential. Shared Postgres deployments still reject ephemeral publishing and subscriptions; a shared database alone does not provide the native live transport. A channel can be durable or ephemeral independently of other channels in the app. Use [Presence](/presence/) for membership and current typing/cursor metadata.
+Ephemeral channels work in local development and on native networks using SQLite replay, including hosted SQLite. They use the broker's memory, not the replay database. Choosing Postgres **for channels** still rules out ephemeral publishing and subscriptions; using Postgres only for workflows does not. Use [Presence](/presence/) for membership and current typing/cursor metadata.
 
 A successful ephemeral publish means the local broker accepted the event for best-effort fanout; it does not acknowledge receipt by every server or browser. A lost acknowledgement leaves acceptance uncertain, so retries can create another event. Events keep their originating broker's order while its incarnation is active, but concurrent publishers on different servers have no shared total order. Internal `eventId` values use a fresh random origin when the in-memory publisher is recreated; duplicate detection is bounded and does not survive a restart. Applications must tolerate missing events and repeats. Fetch authoritative state or use expiry for updates that must eventually converge: a browser can remain connected while its server loses a peer, and not every dropped event produces a recovery callback.
 
@@ -330,9 +330,7 @@ Client publishing throws before sending an unserializable payload, an oversized 
 
 For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes. A reconnect can replay retained events after a network interruption or a restart when the reconnect reaches storage that still has that history. Replay is a bounded delivery window, not automatic state failover.
 
-Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. A committed publish immediately notifies subscribers using the same store. Native SQLite brokers deliver notifications over the private transport. Shared Postgres stores also poll for commits from other processes or servers every 100 ms. Database reads run outside the async request workers.
-
-Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survive an application process crash, but recent commits can be lost after a host crash or power failure. Replay is a short delivery buffer; keep canonical history in the app database as described below.
+Replay cleanup runs while the store is open, including when no clients are connected. Definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. With hosted SQLite or shared Postgres, the publish commits to the shared store. Native brokers notify peers of the change; readers also poll for new messages, so a missed notification need not mean a missed row.
 
 - SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
 - `connect({ lastMessageId })` resumes a WebSocket subscription after that cursor. The shared protocol sends it as the subscription's `cursor`; dedicated WS uses `last_message_id`. `useChannel` tracks the latest complete message's ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one logical subscription by default, so non-React code owns its reconnection.
@@ -400,28 +398,38 @@ A client written without the JavaScript SDK can use dedicated SSE/WS endpoints: 
 
 ## Deploy Replay Storage
 
-Replay storage is a deployment choice for durable channels; application publish and subscribe code stays the same. Ephemeral channels use memory-only delivery in every environment and do not use the replay backends below.
+Durable channels and Store invalidations use the environment's replay database. Application publish and subscribe code stays the same. `tako dev` keeps replay in memory and never connects to the production database.
 
-| Deployment                     | Replay storage and delivery                                                                                               |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| Local development              | In-memory for the current dev daemon process                                                                              |
-| One production server          | Tako-managed SQLite (`channels.sqlite`) by default                                                                        |
-| Several servers in a network   | Bounded SQLite replay replication and fanout over native private transport; Postgres can remain the shared replay backend |
-| Explicit Postgres backend      | Shared schema `tako_channels`, keyed by deployed app id; supported on one or multiple servers                             |
+| Production configuration | What deploy does |
+| --- | --- |
+| `[envs.<env>.channels].database` names a hosted SQLite database | Uses that database for channels, even if `postgres_url` is set for workflows. |
+| No channel database; `postgres_url` configured | Keeps shared Postgres (`tako_channels`) for channels. Set the provider credential with `tako credential set postgres_url --env production`. |
+| Neither configured; channel-capable release | Uses a generated database name owned by this app/environment. A full client's deploy creates it automatically if the network has exactly one trusted server. An existing matching record keeps its recorded home when the network grows. |
 
-Native brokers exchange events only with trusted active server peers. Replay has byte and event-count limits; membership changes, transport gaps, or expired history can require a reset. The JavaScript SDK keeps reset messages out of business handlers and resumes subscriptions. Custom channels must reload authoritative application state through their recovery callback; stores reload their authorized snapshot. Reconnect does not recover missing business records by itself.
-
-Every deploy targets a network, so durable channel replay, presence, and store notifications use SQLite across the network's servers. No Postgres credential is required for those capabilities. If `postgres_url` is configured, Tako keeps using it; invalid or unreadable credentials fail deployment rather than silently switching backends.
-
-To select shared Postgres explicitly:
+**On a network with several servers**, deploy won't guess where a missing database belongs, even when this app targets just one server. A full client chooses the home, configures the name, and deploys:
 
 ```bash
-tako credential set postgres_url --env production
+tako sqlite create chat-prod-replay --network production --server edge-a
 ```
 
-This is an encrypted provider credential, not a `tako.toml` field or an app secret. Set it for the selected environment, then deploy to apply the backend. Existing installations using the removed external-VPN enrollment flow need [re-enrollment](/servers/#choose-the-vpn-provider).
+```toml
+[envs.production.channels]
+database = "chat-prod-replay"
+```
 
-Native replication is a bounded delivery mechanism. It does not replicate an application's database or move durable workflow execution state. Keep workflow storage configured independently, and test recovery by reloading current state after a gap.
+```bash
+tako deploy --env production
+```
+
+If the named database already exists on another server of the same network, use it there; no second copy is needed. A deploy-only CI client can reuse a provisioned backend but cannot create databases or grant access; without one, its deploy keeps the servers' current channel storage and says so. Have a full client deploy the configuration to every target first. `tako deploy --env production --dry-run --json` previews placement from cached network state. After deploy, `tako sqlite list --json` shows the database and home; a full client can check actual usage and backup state with `tako sqlite status <name> --json`.
+
+Deploy checks JavaScript `channels/`, `stores/`, and `presence/` definitions under `app_root` (default `src`). Other native releases register channels at runtime through an SDK, so deploy checks whether the app depends on one: `tako.sh` in `go.mod`, or the `tako` crate in `Cargo.toml`. For container releases it checks `container_options.sdk`; for Compose it checks whether any service has `x-tako.sdk: true`. An explicit channel database makes the choice independent of source discovery. The setting gives the runtime access; it does not expose a SQL binding in any SDK.
+
+Two apps or environments can explicitly select the same hosted database. **They share storage, not rooms:** identical channel names and params still have separate messages, cursors and subscribers. Prefer a dedicated replay database. Giving an app an ordinary SQL binding to that same database also gives it access to all its tables, including other apps' replay rows.
+
+Hosted replay keeps each channel's history for its `replayWindowMs`, with no size cap, so the replay database grows with how much an app publishes within that window. Hosted replay has one [database home](/databases/#apps-on-other-servers). Its loss or unavailability affects every app using it; no other server takes over automatically. [Database snapshots and restore](/databases/#back-up-and-restore) apply to the whole file, and snapshots require configured backup storage. A restore or import invalidates earlier hosted replay cursors. Native presence leases and ephemeral messages are not included.
+
+**Upgrading from per-server `data/tako/channels.sqlite`:** switching to a new hosted database starts with an empty replay window. Deploy neither imports nor deletes the old files. Coordinate all publishers, readers, servers and workers during the switch: instances still using the previous backend can see a different stream. Pause publishes if that gap matters; reconnect clients and reload authoritative state after cutover. Do the same when switching between Postgres and hosted SQLite. A retained history is a reconnect aid, not an event archive or an exactly-once guarantee.
 
 ## Keep Canonical History In Your App Database
 
@@ -553,7 +561,7 @@ Keep these limits in mind:
 - **Make repeats harmless.** A step can run again after a failure or a worker restart, and a reader can see a message twice across a replay. Because every message carries the cumulative `content`, a repeated or restarted step replaces the visible text rather than appending duplicates, and expired early chunks lose nothing. If chunks must be deltas, give each a sequence number and let the client keep one entry per number.
 - **Close only when nothing follows.** Publishing to a closed stream fails, so close after the last attempt that could publish. Step retries above run inside `ctx.run`, and `ctx.fail` stops run-level retries after the stream is closed. Closing twice is safe, so a replayed `close()` succeeds.
 - **Ephemeral channels cannot be closed.** `close()` on an ephemeral channel throws, and it throws in the browser.
-- **Publish and close from one place.** A close is ordered after the publishes the same server made before it. With native multi-server replication, a publish from another server that races the close may be dropped on servers that already have the marker, so every server ends at the close with nothing after it. Shared Postgres orders publishes and closes in one store and never drops one. Peers keep a replicated stream, and its close, for the same `replayWindowMs` as the server it came from, timed from when that server stored each message. Once a closed stream reopens on one server (its close expired there), the publishes made there reopen it on every other server too, even one that has not yet removed its copy of the close.
+- **Publish and close from one place.** Hosted SQLite and shared Postgres order publishes and closes in one database. A publish arriving after the marker is rejected while the marker is retained; closing again returns the existing marker. Finish publishing before closing, even when the publishers run on different servers.
 
 ## Verify
 

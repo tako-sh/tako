@@ -13,13 +13,18 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
     let workflow_storage = project_workflow_storage(project_dir, tako_config);
-    let has_channels = project_has_channels(project_dir, tako_config);
-    if workflow_storage == WorkflowStorageIntent::NoWorkflows && !has_channels {
+    // A selected `[envs.<env>.channels].database` keeps channels off Postgres.
+    let channels_use_postgres = project_needs_channel_replay(project_dir, tako_config)
+        && tako_config
+            .envs
+            .get(env)
+            .and_then(|spec| spec.channels.as_ref())
+            .is_none();
+    if workflow_storage == WorkflowStorageIntent::NoWorkflows && !channels_use_postgres {
         return result;
     }
 
-    // Every deploy targets a network, whose servers replicate channels,
-    // presence, and stores without Postgres. Only workflows can require it.
+    // Hosted SQLite is available for channels. Only workflows can require Postgres.
     let requires_postgres =
         server_count > 1 && workflow_storage == WorkflowStorageIntent::RequiresRemote;
     let postgres_credential = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME);
@@ -117,7 +122,34 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
     }
 }
 
-fn project_has_channels(project_dir: &Path, tako_config: &TakoToml) -> bool {
+/// Whether the project's code uses channels, presence or stores, which keep
+/// their history in the environment's channel replay backend.
+pub(crate) fn project_needs_channel_replay(project_dir: &Path, tako_config: &TakoToml) -> bool {
+    let adapter =
+        super::resolve_build_adapter(project_dir, tako_config).unwrap_or(BuildAdapter::Unknown);
+    needs_channel_replay(project_dir, tako_config, adapter)
+}
+
+pub(in crate::commands::deploy) fn needs_channel_replay(
+    project_dir: &Path,
+    tako_config: &TakoToml,
+    adapter: BuildAdapter,
+) -> bool {
+    if let Some(compose) = &tako_config.compose {
+        return compose.has_sdk_services();
+    }
+    if tako_config.container.is_some() || tako_config.image.is_some() {
+        return tako_config.container_options.sdk;
+    }
+    // JS definitions are discovered from files. Go and custom programs register
+    // channels at runtime through a Tako SDK, so they need one to use replay.
+    if adapter.preset_group() != crate::build::PresetGroup::Js {
+        let source_root =
+            crate::commands::deploy::project::source_bundle_root(project_dir, adapter.id());
+        if tako_runtime::app_uses_sdk(adapter.id(), project_dir, &source_root) {
+            return true;
+        }
+    }
     let app_root = crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root());
     ["channels", "presence", "stores"].iter().any(|kind| {
         let entries = match std::fs::read_dir(app_root.join(kind)) {

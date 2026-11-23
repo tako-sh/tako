@@ -46,6 +46,7 @@ From repo root:
 
 ```bash
 just e2e e2e/fixtures/javascript/bun
+just e2e e2e/fixtures/javascript/channels-workflows
 just e2e e2e/fixtures/javascript/nextjs
 just e2e e2e/fixtures/javascript/tanstack-start
 just e2e examples/go/basic
@@ -124,4 +125,7 @@ After deploy, it runs universal runtime checks:
 - The `channels-workflows` fixture additionally opens a real SSE stream,
   verifies direct channel publish delivery, enqueues a workflow with a supplied
   run ID, verifies the workflow-published event arrives on the same stream, and
-  checks that a repeated enqueue returns the same run ID.
+  checks that a repeated enqueue returns the same run ID. After both servers are
+  deployed, it publishes on both, resumes SSE with the other server's cursor,
+  and matches the acknowledged events to rows in the named hosted `channel-replay`
+  database. The Store uses a separate `messages` database for export/import.

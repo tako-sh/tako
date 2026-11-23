@@ -213,12 +213,12 @@ where
                 {
                     return error(StatusCode::INTERNAL_SERVER_ERROR, &message);
                 }
-                policy::keep_database_bindings(&permissions, &mut command);
                 if let Err(message) =
                     authorize_command(&state, &permissions, scope.as_ref(), &command)
                 {
                     return error(StatusCode::FORBIDDEN, &message);
                 }
+                policy::keep_database_bindings(&permissions, &mut command);
                 let caller = if permissions.is_full() {
                     crate::operations::Caller::Full
                 } else {

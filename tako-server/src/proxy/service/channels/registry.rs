@@ -1,29 +1,30 @@
 use super::*;
+use crate::channels::ChannelTarget;
 
 impl TakoProxy {
     /// The app's channel backend from runtime credentials, resolved once per
     /// credential generation rather than on every channel request.
-    pub(super) async fn channel_postgres_url_for(
+    async fn channel_target_for(
         &self,
         app_name: &str,
         native_configured: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<ChannelTarget> {
         let generation = self
             .channel_credentials_generation
             .load(std::sync::atomic::Ordering::Acquire);
-        if let Some((resolved_at, url)) = self.channel_credentials.read().get(app_name)
+        if let Some((resolved_at, target)) = self.channel_credentials.read().get(app_name)
             && *resolved_at == generation
         {
-            return Ok(url.clone());
+            return Ok(target.clone());
         }
-        let resolver = self.channel_postgres_url.read().clone();
+        let resolver = self.channel_target.read().clone();
         let app_id = app_name.to_owned();
-        let postgres_url = tokio::task::spawn_blocking(move || match resolver {
+        let target = tokio::task::spawn_blocking(move || match resolver {
             Some(resolve) => resolve(&app_id),
             None if native_configured => {
                 Err("native channel credentials resolver missing".to_string())
             }
-            None => Ok(None),
+            None => Ok(ChannelTarget::Local),
         })
         .await
         .map_err(|_| {
@@ -37,8 +38,8 @@ impl TakoProxy {
         // lands in between forces one more resolution instead of going stale.
         self.channel_credentials
             .write()
-            .insert(app_name.to_owned(), (generation, postgres_url.clone()));
-        Ok(postgres_url)
+            .insert(app_name.to_owned(), (generation, target.clone()));
+        Ok(target)
     }
 
     /// Keep the reader and its broker subscription in the existing per-app cache.
@@ -50,8 +51,10 @@ impl TakoProxy {
     ) -> Result<Arc<ProxyChannelStore>> {
         let native = self.native_channels.read().clone();
         let native_configured = native.is_some();
-        let postgres_url = self
-            .channel_postgres_url_for(app_name, native_configured)
+        let app = app_scope(app_name)
+            .map_err(|_| Error::explain(ErrorType::InternalError, "invalid channel app scope"))?;
+        let target = self
+            .channel_target_for(app.as_str(), native_configured)
             .await?;
         for reopened in [false, true] {
             let cell = self
@@ -62,27 +65,29 @@ impl TakoProxy {
                 .clone();
             let store = cell
                 .get_or_try_init(|| async {
-                    let app = app_scope(app_name).map_err(|_| {
-                        Error::explain(ErrorType::InternalError, "invalid channel app scope")
-                    })?;
-                    let config = crate::channels::app_channel_store_config_with_postgres(
+                    let path = crate::channels::app_channels_db_path(
                         self.lb.app_manager().data_dir(),
-                        app_name,
-                        postgres_url.as_deref(),
+                        app.as_str(),
                     );
-                    ProxyChannelStore::open(config, app, native.clone())
-                        .await
-                        .map(Arc::new)
-                        .map_err(|_| {
-                            Error::explain(
-                                ErrorType::InternalError,
-                                "channel reader or native broker unavailable",
-                            )
-                        })
+                    ProxyChannelStore::open(
+                        path,
+                        app.clone(),
+                        target.clone(),
+                        native.clone(),
+                        self.direct_channel_stores.clone(),
+                    )
+                    .await
+                    .map(Arc::new)
+                    .map_err(|_| {
+                        Error::explain(
+                            ErrorType::InternalError,
+                            "channel reader or native broker unavailable",
+                        )
+                    })
                 })
                 .await?;
-            let current = store.is_native() == native_configured
-                && store.check_backend(postgres_url.as_deref()).is_ok();
+            let current =
+                store.is_native() == native_configured && store.check_backend(&target).is_ok();
             if !current {
                 let mut stores = self.channel_stores.write();
                 if stores

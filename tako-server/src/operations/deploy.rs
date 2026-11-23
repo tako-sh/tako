@@ -188,9 +188,14 @@ impl crate::ServerState {
         inject_app_data_dir_env(&mut config.env_vars, &data_paths);
         config.secrets = secrets;
         config.storages = storages;
-        // Without new bindings the existing ones stay, but they are checked
-        // against this release again (a container release cannot use them).
-        let previous_databases = config.databases.clone();
+        // A scoped deploy keeps precisely the committed bindings it was authorized
+        // against, even if the previous app could not be started during recovery.
+        let previous_databases = match self.state_store.get_app_databases(app_name) {
+            Ok(previous) => previous,
+            Err(error) => {
+                return Response::error(format!("Failed to read database bindings: {error}"));
+            }
+        };
         let requested_databases = databases.unwrap_or_else(|| {
             previous_databases
                 .iter()
@@ -338,6 +343,9 @@ impl crate::ServerState {
         let target = target_new_instances_for_build(config.min_instances, old_count);
         let updater =
             RollingUpdater::new(self.app_manager.spawner(), RollingUpdateConfig::default());
+        // Old instances can fail to drain after the commit; the committed
+        // bindings must then stay served.
+        let committed = std::sync::atomic::AtomicBool::new(false);
         let rollout = updater
             .update(&app, &config, target, || {
                 self.state_store
@@ -352,6 +360,7 @@ impl crate::ServerState {
                             .and_then(|runtime| runtime.schedule_revision()),
                     )
                     .map_err(|error| format!("Could not commit deployment: {error}"))?;
+                committed.store(true, std::sync::atomic::Ordering::Release);
                 app.update_config(config.clone());
                 if first_deploy {
                     self.app_manager.publish_app(&app);
@@ -380,8 +389,12 @@ impl crate::ServerState {
                 result
             }
             failed => {
-                self.databases
-                    .apply_bindings(app_name, &[&previous_databases]);
+                let served = if committed.load(std::sync::atomic::Ordering::Acquire) {
+                    &config.databases
+                } else {
+                    &previous_databases
+                };
+                self.databases.apply_bindings(app_name, &[served]);
                 let error = match failed {
                     Ok(result) => result
                         .error
