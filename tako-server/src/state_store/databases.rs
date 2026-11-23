@@ -1,5 +1,6 @@
-//! Databases hosted on this server, the database bindings of apps on this
-//! server, and grants for apps on other servers.
+//! Databases (SQLite databases and KV stores) hosted on this server, the
+//! database bindings of apps on this server, and grants for apps on other
+//! servers.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -20,6 +21,7 @@ pub(crate) struct DatabaseSecrets {
 pub(crate) struct StoredDatabase {
     /// Unique within the network; identifies the database.
     pub name: String,
+    pub engine: tako_core::DatabaseEngine,
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
@@ -54,16 +56,34 @@ pub(crate) struct DatabaseGrant {
     pub key: String,
 }
 
+fn engine_name(engine: tako_core::DatabaseEngine) -> &'static str {
+    match engine {
+        tako_core::DatabaseEngine::Sqlite => "sqlite",
+        tako_core::DatabaseEngine::Kv => "kv",
+    }
+}
+
+fn parse_engine(name: &str) -> Result<tako_core::DatabaseEngine, StateStoreError> {
+    match name {
+        "sqlite" => Ok(tako_core::DatabaseEngine::Sqlite),
+        "kv" => Ok(tako_core::DatabaseEngine::Kv),
+        other => Err(StateStoreError::InvalidData(format!(
+            "unknown database engine {other}"
+        ))),
+    }
+}
+
 impl SqliteStateStore {
     pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(&database.secrets)?;
         self.lock_conn()?.execute(
-            "INSERT INTO databases (name, generation, created_at, encrypted_data) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO databases (name, generation, created_at, encrypted_data, engine) VALUES (?1, ?2, ?3, ?4, ?5)",
             (
                 &database.name,
                 &database.generation,
                 database.created_at_unix_secs as i64,
                 encrypted,
+                engine_name(database.engine),
             ),
         )?;
         Ok(())
@@ -72,7 +92,7 @@ impl SqliteStateStore {
     pub(crate) fn list_databases(&self) -> Result<Vec<StoredDatabase>, StateStoreError> {
         let conn = self.lock_conn()?;
         let mut statement = conn.prepare(
-            "SELECT name, generation, created_at, encrypted_data FROM databases ORDER BY name",
+            "SELECT name, generation, created_at, encrypted_data, engine FROM databases ORDER BY name",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -81,13 +101,15 @@ impl SqliteStateStore {
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(name, generation, created_at, encrypted)| {
+            .map(|(name, generation, created_at, encrypted, engine)| {
                 Ok(StoredDatabase {
                     name,
+                    engine: parse_engine(&engine)?,
                     generation,
                     created_at_unix_secs: created_at.max(0) as u64,
                     secrets: self.decrypt_json(&encrypted)?,
@@ -103,20 +125,22 @@ impl SqliteStateStore {
         let row = self
             .lock_conn()?
             .query_row(
-                "SELECT generation, created_at, encrypted_data FROM databases WHERE name = ?1",
+                "SELECT generation, created_at, encrypted_data, engine FROM databases WHERE name = ?1",
                 [name],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 },
             )
             .optional()?;
-        row.map(|(generation, created_at, encrypted)| {
+        row.map(|(generation, created_at, encrypted, engine)| {
             Ok(StoredDatabase {
                 name: name.to_owned(),
+                engine: parse_engine(&engine)?,
                 generation,
                 created_at_unix_secs: created_at.max(0) as u64,
                 secrets: self.decrypt_json(&encrypted)?,
@@ -283,6 +307,7 @@ mod tests {
         let (_dir, store) = store();
         let database = StoredDatabase {
             name: "main".into(),
+            engine: tako_core::DatabaseEngine::Sqlite,
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 7,
             secrets: DatabaseSecrets {
@@ -323,6 +348,17 @@ mod tests {
             .query_row("SELECT encrypted_data FROM databases", [], |row| row.get(0))
             .unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("a2V5"));
+        let kv = StoredDatabase {
+            name: "sessions".into(),
+            engine: tako_core::DatabaseEngine::Kv,
+            ..database.clone()
+        };
+        store.create_database(&kv).unwrap();
+        assert_eq!(
+            store.get_database("sessions").unwrap().unwrap().engine,
+            kv.engine
+        );
+        assert_eq!(store.list_databases().unwrap()[1], kv);
         store.delete_database(&database.name).unwrap();
         assert!(store.get_database(&database.name).unwrap().is_none());
         assert!(

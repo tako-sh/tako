@@ -41,6 +41,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::QueryKv { .. }
         | Command::MigrateDatabase { app: None, .. }
         | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
@@ -67,6 +68,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::ChannelClose { .. } => CommandClass::InternalWorker,
         Command::PrepareRelease { app, .. }
         | Command::PrepareReleaseUpload { app, .. }
@@ -370,6 +372,7 @@ pub(crate) fn authorize_command(
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. }
         | Command::Cache { .. }
+        | Command::Kv { .. }
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }
@@ -378,6 +381,7 @@ pub(crate) fn authorize_command(
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::QueryKv { .. }
         | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
         | Command::DatabaseImportChunk { .. }
@@ -714,6 +718,7 @@ mod tests {
                 name: "shop".into(),
                 server: "edge".into(),
                 peer_key: None,
+                engine: tako_core::DatabaseEngine::Sqlite,
             },
         );
         let databases = |command: &Command| match command {
@@ -746,6 +751,7 @@ mod tests {
                 name: "shop".into(),
                 server: "edge".into(),
                 peer_key: Some("issued-by-edge".into()),
+                engine: tako_core::DatabaseEngine::Sqlite,
             },
         );
         // Deployers without administration never see peer keys.

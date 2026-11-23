@@ -368,14 +368,15 @@ async fn run_async(
             .is_some()
     };
     let has_postgres = postgres(&secrets);
-    if !tako_config.envs[&env].databases.is_empty() && is_container_release {
-        return Err("Database bindings are available to native releases only; container and Compose releases cannot use them yet.".into());
+    let environment = &tako_config.envs[&env];
+    if (!environment.databases.is_empty() || !environment.kv.is_empty()) && is_container_release {
+        return Err("Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet.".into());
     }
     // Only deploys that bind, select, provision or revoke a database read the
     // directory, so an unreadable record cannot block unrelated apps.
-    let environment = &tako_config.envs[&env];
     let reads_directory = configure_bindings
         || !environment.databases.is_empty()
+        || !environment.kv.is_empty()
         || environment.channels.is_some()
         || (needs_replay && !has_postgres);
     let mut database_records = if reads_directory {
@@ -700,7 +701,7 @@ async fn run_async(
     // that no longer binds the network's databases.
     let revokes_grants = configure_bindings && !database_records.is_empty();
     let mut granted = None;
-    if !database_plan.sql.is_empty() || revokes_grants {
+    if !database_plan.sql.is_empty() || !database_plan.kv.is_empty() || revokes_grants {
         let prepared = databases::prepare(databases::Preparation {
             plan: &database_plan,
             records: &database_records,
@@ -716,6 +717,7 @@ async fn run_async(
         })
         .await?;
         databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
+        databases::apply_peer_keys(&mut database_plan.kv, &prepared.peer_keys);
         if let Some(replay) = &mut database_plan.replay {
             replay.binding.peer_key = prepared
                 .replay_peer_keys
@@ -749,7 +751,13 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
-        databases: crate::commands::sqlite::target::wire_bindings(&database_plan.sql),
+        // Binding names are unique across databases and KV stores.
+        databases: crate::commands::sqlite::target::wire_bindings(&database_plan.sql)
+            .into_iter()
+            .chain(crate::commands::sqlite::target::wire_bindings(
+                &database_plan.kv,
+            ))
+            .collect(),
         channel_database: database_plan.replay.map(|replay| replay.binding),
         force,
         main: manifest_main,

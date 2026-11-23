@@ -608,3 +608,80 @@ fn compose_loads_service_routes_and_local_app_defaults() {
             .is_err()
     );
 }
+
+#[test]
+fn kv_bindings_parse_and_share_names_with_databases() {
+    let config = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { auth = \"sessions\" }\n",
+    )
+    .unwrap();
+    assert_eq!(config.envs["production"].kv["auth"], "sessions");
+
+    let shared = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { main = \"sessions\" }\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        shared.contains("binds 'main' in both databases and kv"),
+        "{shared}"
+    );
+
+    let invalid = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = { Auth = \"sessions\" }\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        invalid.contains("must start with a lowercase letter"),
+        "{invalid}"
+    );
+
+    let replay = TakoToml::parse(
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = { auth = \"sessions\" }\nchannels.database = \"sessions\"\n",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        replay.contains("channel replay needs a SQLite database"),
+        "{replay}"
+    );
+}
+
+#[test]
+fn kv_stores_take_their_backup_storage_from_their_own_table_or_the_environment() {
+    let storages = "[storages.kv_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n\n[storages.env_backups]\nprovider = \"s3\"\nbucket = \"e\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n";
+    let config = TakoToml::parse(&format!(
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = {{ auth = \"sessions\", limits = \"rate-limits\" }}\nbackup = {{ storage = \"env_backups\" }}\n\n[kv.sessions]\nbackup = \"kv_backups\"\n\n{storages}"
+    ))
+    .unwrap();
+    assert_eq!(config.kv["sessions"].backup.as_deref(), Some("kv_backups"));
+    assert_eq!(
+        crate::commands::storage::database_backup_setting(&config, "production", "sessions"),
+        Some(("kv_backups".into(), "[kv.sessions].backup".into()))
+    );
+    assert_eq!(
+        crate::commands::storage::database_backup_setting(&config, "production", "rate-limits"),
+        Some((
+            "env_backups".into(),
+            "[envs.production].backup.storage".into()
+        ))
+    );
+
+    let missing = TakoToml::parse("[kv.sessions]\nbackup = \"nowhere\"\n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing.contains("[kv.sessions].backup references missing storage"),
+        "{missing}"
+    );
+    let both = TakoToml::parse(&format!(
+        "[databases.sessions]\nbackup = \"kv_backups\"\n\n[kv.sessions]\nbackup = \"kv_backups\"\n\n{storages}"
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        both.contains("both [databases.sessions] and [kv.sessions]"),
+        "{both}"
+    );
+}

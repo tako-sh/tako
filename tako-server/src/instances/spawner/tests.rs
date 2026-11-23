@@ -434,6 +434,7 @@ async fn bootstrap_pipe_envelope_has_token_and_secrets() {
             secrets: &secrets,
             storages: &storages,
             databases: &HashMap::new(),
+            kv: &HashMap::new(),
         },
     )
     .expect("create pipe");
@@ -473,6 +474,7 @@ async fn bootstrap_pipe_is_created_even_with_empty_secrets() {
             secrets: &secrets,
             storages: &storages,
             databases: &HashMap::new(),
+            kv: &HashMap::new(),
         },
     )
     .expect("create pipe");

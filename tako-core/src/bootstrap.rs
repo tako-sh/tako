@@ -1,7 +1,7 @@
 //! Bootstrap envelope passed to every Tako-managed process.
 //!
 //! The SDK reads a JSON object
-//! `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}` from
+//! `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}, "kv": {...}}` from
 //! the inherited read end of a pipe at startup for native processes, or
 //! from `TAKO_BOOTSTRAP_DATA` for container processes. It uses that
 //! envelope to populate `tako.secrets` from `tako.sh` and the internal
@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::database::DatabaseConnection;
+use crate::database::{DatabaseConnection, KvConnection};
 use crate::storage::StorageBinding;
 
 /// Environment variable used to deliver the bootstrap envelope to container
@@ -28,10 +28,11 @@ pub struct Bindings<'a> {
     pub secrets: &'a HashMap<String, String>,
     pub storages: &'a HashMap<String, StorageBinding>,
     pub databases: &'a HashMap<String, DatabaseConnection>,
+    pub kv: &'a HashMap<String, KvConnection>,
 }
 
 /// Serialize a Tako bootstrap envelope (`{token, secrets, storages,
-/// databases}`) to the JSON bytes that go onto fd 3. Infallible for the
+/// databases, kv}`) to the JSON bytes that go onto fd 3. Infallible for the
 /// concrete input types.
 pub fn envelope_bytes(token: &str, bindings: Bindings<'_>) -> Vec<u8> {
     let envelope = serde_json::json!({
@@ -39,6 +40,7 @@ pub fn envelope_bytes(token: &str, bindings: Bindings<'_>) -> Vec<u8> {
         "secrets": bindings.secrets,
         "storages": bindings.storages,
         "databases": bindings.databases,
+        "kv": bindings.kv,
     });
     serde_json::to_vec(&envelope).expect("string/string map always serializes")
 }
@@ -58,10 +60,13 @@ mod tests {
         storages: &'a HashMap<String, StorageBinding>,
         databases: &'a HashMap<String, DatabaseConnection>,
     ) -> Bindings<'a> {
+        static NO_KV: std::sync::LazyLock<HashMap<String, KvConnection>> =
+            std::sync::LazyLock::new(HashMap::new);
         Bindings {
             secrets,
             storages,
             databases,
+            kv: &NO_KV,
         }
     }
 
@@ -113,9 +118,10 @@ mod tests {
         let obj = parsed.as_object().expect("top level must be object");
         assert_eq!(
             obj.len(),
-            4,
-            "exactly token, secrets, storages, and databases keys"
+            5,
+            "exactly token, secrets, storages, databases, and kv keys"
         );
+        assert!(parsed["kv"].as_object().unwrap().is_empty());
         assert!(obj.contains_key("token"));
         assert!(obj.contains_key("secrets"));
         assert!(obj.contains_key("storages"));

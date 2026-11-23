@@ -112,7 +112,7 @@ fn bundled_docs_and_skills_are_discoverable_and_searchable() {
     ] {
         assert!(docs::content(&format!("docs/{topic}")).is_some(), "{topic}");
     }
-    for topic in ["secrets", "presence", "stores"] {
+    for topic in ["secrets", "presence", "stores", "kv"] {
         let source = docs::content(&format!("docs/{topic}")).unwrap();
         for variant in ["```ts JavaScript", "```go Go", "```rust Rust"] {
             assert!(source.contains(variant), "{topic}: {variant}");

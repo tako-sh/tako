@@ -1,7 +1,8 @@
 //! Snapshot backups of hosted databases.
 //!
-//! A snapshot is a compact, verified copy of the database (`VACUUM INTO`),
-//! compressed with zstd and encrypted with the database's backup key, then
+//! A snapshot is a compact, verified copy of the database (`VACUUM INTO`,
+//! or for a KV store its export file), compressed with zstd and encrypted
+//! with the database's backup key, then
 //! uploaded next to a JSON manifest. The manifest is written last, so only
 //! complete snapshots are ever listed. Snapshots run hourly while the
 //! database changes, before deploy release commands, before restores, and on
@@ -19,8 +20,8 @@ use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tako_core::{
-    BackupEncryptionInfo, BackupKeyBinding, DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason,
-    StorageBinding,
+    BackupEncryptionInfo, BackupKeyBinding, DatabaseBackupStatus, DatabaseEngine, DatabaseSnapshot,
+    SnapshotReason, StorageBinding,
 };
 use tako_database::DatabaseId;
 
@@ -85,7 +86,108 @@ fn manifest_key(stored: &StoredDatabase, snapshot: &str) -> String {
 }
 
 fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
-    format!("{}/{snapshot}.sqlite.zst.enc", prefix(stored))
+    format!(
+        "{}/{snapshot}.{}.zst.enc",
+        prefix(stored),
+        extension(stored)
+    )
+}
+
+/// The file extension of a database's copies: SQLite files, or KV exports.
+pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
+    match stored.engine {
+        DatabaseEngine::Sqlite => "sqlite",
+        DatabaseEngine::Kv => "redb",
+    }
+}
+
+/// Whether the database may differ from its last snapshot.
+pub(crate) fn has_changes(state: &ServerState, stored: &StoredDatabase) -> bool {
+    match stored.engine {
+        DatabaseEngine::Sqlite => {
+            DatabaseId::parse(&stored.name).is_ok_and(|id| state.databases.host.has_changes(&id))
+        }
+        DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
+            .is_ok_and(|id| state.databases.kv.has_changes(&id)),
+    }
+}
+
+/// Records that the database differs from its last snapshot.
+pub(crate) fn mark_changed(state: &ServerState, stored: &StoredDatabase) {
+    match stored.engine {
+        DatabaseEngine::Sqlite => {
+            if let Ok(id) = DatabaseId::parse(&stored.name) {
+                state.databases.host.mark_changed(&id);
+            }
+        }
+        DatabaseEngine::Kv => {
+            if let Ok(id) = tako_kv::StoreId::parse(&stored.name) {
+                state.databases.kv.mark_changed(&id);
+            }
+        }
+    }
+}
+
+/// The size of the database's file on disk.
+pub(crate) fn size_bytes(state: &ServerState, stored: &StoredDatabase) -> u64 {
+    match stored.engine {
+        DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
+            .ok()
+            .and_then(|id| state.databases.host.size_bytes(&id)),
+        DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
+            .ok()
+            .and_then(|id| state.databases.kv.size_bytes(&id)),
+    }
+    .unwrap_or(0)
+}
+
+/// Writes a consistent copy of the database to `dest`. With `backup`, the
+/// database counts as unchanged until its next write, unless this fails.
+pub(crate) async fn copy_contents(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    dest: &Path,
+    backup: bool,
+) -> Result<(), String> {
+    match stored.engine {
+        DatabaseEngine::Sqlite => {
+            let id = DatabaseId::parse(&stored.name)?;
+            let copied = state.databases.host.snapshot(&id, dest).await;
+            if !backup {
+                // An export is not a backup: the scheduler still uploads the
+                // contents, even a write that lands while the copy is made.
+                state.databases.host.mark_changed(&id);
+            }
+            copied.map_err(|e| format!("copy database: {e}"))
+        }
+        DatabaseEngine::Kv => {
+            let id = tako_kv::StoreId::parse(&stored.name)?;
+            let kv = state.databases.kv.clone();
+            let dest = dest.to_owned();
+            tokio::task::spawn_blocking(move || {
+                if backup {
+                    kv.snapshot(&id, &dest)
+                } else {
+                    kv.export(&id, &dest)
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map(drop)
+            .map_err(|e| format!("export KV store: {e}"))
+        }
+    }
+}
+
+/// Checks that `path` holds a usable copy for the database's engine. Blocks.
+pub(crate) fn verify_copy(engine: DatabaseEngine, path: &Path) -> Result<(), String> {
+    match engine {
+        DatabaseEngine::Sqlite => tako_database::verify_database(path),
+        DatabaseEngine::Kv => tako_kv::export::Reader::open(path)
+            .and_then(|reader| reader.check())
+            .map(drop)
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Names the server that last restored the database. A copy a move left
@@ -451,9 +553,7 @@ pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) 
         if removed > 0 {
             tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
         }
-        let changed =
-            DatabaseId::parse(&stored.name).is_ok_and(|id| state.databases.host.has_changes(&id));
-        if stored.secrets.backup.is_some() && changed {
+        if stored.secrets.backup.is_some() && has_changes(state, &stored) {
             jobs.start(state, stored.name);
         }
     }
@@ -541,10 +641,7 @@ impl Drop for Pending {
 }
 
 async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
-    let Ok(id) = DatabaseId::parse(&stored.name) else {
-        return false;
-    };
-    if !state.databases.host.has_changes(&id) {
+    if !has_changes(state, stored) {
         return false;
     }
     let loaded = state
@@ -596,7 +693,6 @@ pub(crate) async fn take(
     reason: SnapshotReason,
     only_if_changed: bool,
 ) -> Result<Option<DatabaseSnapshot>, String> {
-    let id = DatabaseId::parse(&stored.name)?;
     let lock = state.databases.lock(&stored.name);
     let _guard = lock.lock().await;
     // The destination may have changed while this run waited for the lock.
@@ -607,7 +703,7 @@ pub(crate) async fn take(
             stored.name
         ));
     };
-    if only_if_changed && !state.databases.host.has_changes(&id) {
+    if only_if_changed && !has_changes(state, stored) {
         return Ok(None);
     }
     let started = now_unix_secs();
@@ -624,7 +720,7 @@ pub(crate) async fn take(
     };
     if result.is_err() {
         // The copy cleared the changed flag; keep the scheduler retrying.
-        state.databases.host.mark_changed(&id);
+        mark_changed(state, stored);
     }
     record(state, stored, &backup, started, reason, result)
         .await
@@ -749,8 +845,7 @@ async fn copy_database(
     state: &ServerState,
     stored: &StoredDatabase,
 ) -> Result<SnapshotCopy, String> {
-    let id = DatabaseId::parse(&stored.name)?;
-    let size = state.databases.host.size_bytes(&id).unwrap_or(0);
+    let size = size_bytes(state, stored);
     let work = fresh_work_dir(state, &stored.name, "snapshot")?;
     let available = crate::operations::available_bytes(&work.path)?;
     let space =
@@ -758,13 +853,8 @@ async fn copy_database(
             .databases
             .snapshot_space
             .reserve(size.saturating_mul(3), available, "a snapshot")?;
-    let path = work.path.join("snapshot.sqlite");
-    state
-        .databases
-        .host
-        .snapshot(&id, &path)
-        .await
-        .map_err(|e| format!("copy database: {e}"))?;
+    let path = work.path.join(format!("snapshot.{}", extension(stored)));
+    copy_contents(state, stored, &path, true).await?;
     Ok(SnapshotCopy {
         work,
         path,
@@ -792,8 +882,8 @@ async fn upload_copy(
         nanoid::nanoid!(8, &nanoid::alphabet::SAFE[..])
     );
     let key = key_binding(stored, None);
-    let compressed = copy.work.path.join("snapshot.sqlite.zst");
-    let encrypted = copy.work.path.join("snapshot.sqlite.zst.enc");
+    let compressed = copy.work.path.join("snapshot.zst");
+    let encrypted = copy.work.path.join("snapshot.zst.enc");
     let copy = copy.path.clone();
     let (sha256, database_bytes, encryption) = {
         let (copy, compressed, encrypted) = (copy.clone(), compressed.clone(), encrypted.clone());
@@ -1083,7 +1173,11 @@ fn orphaned_data(objects: &[(ObjectPath, i64)], now: i64) -> Vec<ObjectPath> {
         .iter()
         .filter(|(key, modified)| {
             key.filename()
-                .and_then(|name| name.strip_suffix(".sqlite.zst.enc"))
+                .and_then(|name| {
+                    // Either engine's data: SQLite copies or KV exports.
+                    name.strip_suffix(".sqlite.zst.enc")
+                        .or_else(|| name.strip_suffix(".redb.zst.enc"))
+                })
                 .is_some_and(|id| !manifests.contains(id))
                 && now.saturating_sub(*modified) >= ORPHAN_AGE_SECS
         })
@@ -1234,13 +1328,14 @@ async fn restore_from(
         _space: space,
     };
     let work = &reserved.work;
-    let encrypted = work.path.join("snapshot.sqlite.zst.enc");
+    let encrypted = work.path.join("snapshot.zst.enc");
     download_object(remote, &data_key(stored, &manifest.snapshot.id), &encrypted).await?;
     let key = key_binding(stored, key_override.as_deref());
-    let restored = work.path.join("restored.sqlite");
+    let restored = work.path.join(format!("restored.{}", extension(stored)));
     {
         let (encrypted, restored) = (encrypted.clone(), restored.clone());
-        let compressed = work.path.join("snapshot.sqlite.zst");
+        let compressed = work.path.join("snapshot.zst");
+        let engine = stored.engine;
         let encryption = manifest.encryption.clone();
         let expected = manifest.snapshot.sha256.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1250,7 +1345,7 @@ async fn restore_from(
             if sha256 != expected {
                 return Err("the downloaded snapshot does not match its checksum".into());
             }
-            tako_database::verify_database(&restored)
+            verify_copy(engine, &restored)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -1289,6 +1384,9 @@ pub(crate) async fn replace_locked(
     replacement: PathBuf,
     pause_reason: &str,
 ) -> Result<Vec<String>, String> {
+    if stored.engine == DatabaseEngine::Kv {
+        return replace_kv_locked(state, stored, replacement).await;
+    }
     let id = DatabaseId::parse(&stored.name)?;
     // The caller read `stored` before it took the lock; a delete and create
     // of the same name meanwhile leaves a different database under it.
@@ -1355,6 +1453,85 @@ pub(crate) async fn replace_locked(
                 "could not upload a snapshot of the replaced contents (kept as previous.sqlite on the server): {error}"
             ));
         }
+    }
+    Ok(warnings)
+}
+
+/// [`replace_locked`] for a KV store: the replacement is applied in one
+/// transaction while the store keeps serving, so readers see the old
+/// contents or the new ones. The exact contents it replaces are exported to
+/// `previous.redb` first, and uploaded as a snapshot when backups are
+/// configured and they changed since the last one.
+async fn replace_kv_locked(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    replacement: PathBuf,
+) -> Result<Vec<String>, String> {
+    let id = tako_kv::StoreId::parse(&stored.name)?;
+    // The caller read `stored` before it took the lock; a delete and create
+    // of the same name meanwhile leaves a different store under it.
+    let current = state.hosted_database(&stored.name)?;
+    if current.generation != stored.generation {
+        return Err(format!(
+            "KV store {} was replaced by a new store of the same name meanwhile; nothing was changed.",
+            stored.name
+        ));
+    }
+    let previous = state
+        .databases
+        .database_dir(&stored.name)
+        .join("previous.redb");
+    // Whether the replaced contents need a backup is read in the store's
+    // writer as it exports them, so a write racing the replace counts.
+    let changed = {
+        let kv = state.databases.kv.clone();
+        let previous = previous.clone();
+        tokio::task::spawn_blocking(move || kv.import(&id, &replacement, Some(&previous)))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("replace KV store {}: {e}", stored.name))?
+            .previous_changed
+    };
+    let mut warnings = Vec::new();
+    let Some(backup) = stored.secrets.backup.clone().filter(|_| changed) else {
+        return Ok(warnings);
+    };
+    let copy = async {
+        let size = std::fs::metadata(&previous)
+            .map(|meta| meta.len())
+            .map_err(|e| e.to_string())?;
+        let work = fresh_work_dir(state, &stored.name, "snapshot")?;
+        let available = crate::operations::available_bytes(&work.path)?;
+        let space = state.databases.snapshot_space.reserve(
+            size.saturating_mul(3),
+            available,
+            "a snapshot",
+        )?;
+        let path = work.path.join("snapshot.redb");
+        std::fs::copy(&previous, &path).map_err(|e| e.to_string())?;
+        Ok::<_, String>(SnapshotCopy {
+            work,
+            path,
+            _space: space,
+        })
+    }
+    .await;
+    match copy {
+        Ok(copy) => {
+            let started = now_unix_secs();
+            // Not fenced, like the SQLite copy of replaced contents.
+            let result = upload_copy(stored, &backup, &copy, SnapshotReason::Restore, None).await;
+            if let Err(error) =
+                record(state, stored, &backup, started, SnapshotReason::Restore, result).await
+            {
+                warnings.push(format!(
+                    "could not upload a snapshot of the replaced contents (kept as previous.redb on the server): {error}"
+                ));
+            }
+        }
+        Err(error) => warnings.push(format!(
+            "could not snapshot the replaced contents (kept as previous.redb on the server): {error}"
+        )),
     }
     Ok(warnings)
 }
@@ -1570,10 +1747,14 @@ mod tests {
             (key("4-d.json"), 0),
             // Something else written under the prefix.
             (key("notes.txt"), 0),
+            // A KV store's data, with and without its manifest.
+            (key("5-e.redb.zst.enc"), now - 2 * day),
+            (key("6-f.redb.zst.enc"), 0),
+            (key("6-f.json"), 0),
         ];
         assert_eq!(
             orphaned_data(&objects, now),
-            vec![key("2-b.sqlite.zst.enc")]
+            vec![key("2-b.sqlite.zst.enc"), key("5-e.redb.zst.enc")]
         );
     }
 

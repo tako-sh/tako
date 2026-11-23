@@ -86,6 +86,7 @@ async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
         state,
         Command::CreateDatabase {
             name: id.into(),
+            engine: tako_core::DatabaseEngine::Sqlite,
             generation: GENERATION.into(),
             backup_key_base64: key(),
             backup: bucket.map(backup),
@@ -272,6 +273,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
             name: ID.into(),
             server: "edge".into(),
             peer_key: Some(key.clone()),
+            engine: tako_core::DatabaseEngine::Sqlite,
         },
     )]);
     config.databases = original
@@ -889,6 +891,7 @@ async fn deleting_a_database_revokes_its_grants() {
         &state,
         Command::CreateDatabase {
             name: ID.into(),
+            engine: tako_core::DatabaseEngine::Sqlite,
             generation: GENERATION.into(),
             backup_key_base64: key(),
             backup: None,
@@ -1583,6 +1586,7 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
         &state,
         Command::CreateDatabase {
             name: ID.into(),
+            engine: tako_core::DatabaseEngine::Sqlite,
             generation: GENERATION.into(),
             backup_key_base64: key(),
             backup: None,
@@ -1622,6 +1626,7 @@ async fn only_bindings_to_this_server_count_for_its_copy() {
         name: ID.into(),
         server: server.into(),
         peer_key: None,
+        engine: tako_core::DatabaseEngine::Sqlite,
     };
     assert!(state.databases.binds_here(&binding("server-a"), ID));
     // The database moved: a binding to it on server-b leaves the copy here
@@ -1639,6 +1644,7 @@ async fn bindings_keep_their_token_only_for_the_same_home() {
         name: ID.into(),
         server: server.into(),
         peer_key: None,
+        engine: tako_core::DatabaseEngine::Sqlite,
     };
     let previous = HashMap::from([(
         "main".to_owned(),
@@ -2000,6 +2006,7 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
                 name: ID.into(),
                 server: String::new(),
                 peer_key: None,
+                engine: tako_core::DatabaseEngine::Sqlite,
             },
             token: "old-instances".into(),
         },

@@ -22,6 +22,9 @@ func TestBootstrapFixtureParses(t *testing.T) {
 		Databases: map[string]DatabaseConnection{
 			"main": {URL: "http://127.0.0.1:9845", AuthToken: "token-example"},
 		},
+		KV: map[string]KVConnection{
+			"sessions": {Token: "kv-token-example"},
+		},
 	}
 	if !reflect.DeepEqual(bootstrap, want) {
 		t.Fatalf("bootstrap parsed as %#v", bootstrap)

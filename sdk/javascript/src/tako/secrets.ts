@@ -5,7 +5,7 @@
  * `loadSecrets` without dragging `node:fs` into consumer graphs.
  *
  * Tako spawns each app process with a pipe on fd 3 containing a JSON
- * envelope `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}`.
+ * envelope `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}, "kv": {...}}`.
  * Server/worker entrypoints read the envelope and call `injectBootstrap(...)`
  * before the user's module is imported. Processes without an entrypoint, such
  * as scripts under `tako run`, receive it in `TAKO_BOOTSTRAP_DATA`, which is
@@ -33,6 +33,8 @@ export interface BootstrapEnvelope {
   storages?: Record<string, unknown> | undefined;
   /** Database connections keyed by binding name. */
   databases?: Record<string, unknown> | undefined;
+  /** KV store connections keyed by binding name. */
+  kv?: Record<string, unknown> | undefined;
 }
 
 interface BootstrapState {
@@ -40,13 +42,14 @@ interface BootstrapState {
   secrets: Record<string, string>;
   storages: Record<string, unknown>;
   databases: Record<string, unknown>;
+  kv: Record<string, unknown>;
 }
 
 const BOOTSTRAP_ENV = "TAKO_BOOTSTRAP_DATA";
 /** Set by Tako on every Compose service with `x-tako`. */
 const COMPOSE_SERVICE_ENV = "TAKO_COMPOSE_SERVICE";
 
-let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {}, databases: {} };
+let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {}, databases: {}, kv: {} };
 let injected = false;
 
 /** Low-level: replace the whole bootstrap state (tests + fd-reader init). */
@@ -57,6 +60,7 @@ export function injectBootstrap(next: BootstrapEnvelope): void {
     secrets: Object.assign(Object.create(null), next.secrets ?? {}),
     storages: Object.assign(Object.create(null), next.storages ?? {}),
     databases: Object.assign(Object.create(null), next.databases ?? {}),
+    kv: Object.assign(Object.create(null), next.kv ?? {}),
   };
 }
 
@@ -76,10 +80,11 @@ export function parseBootstrapEnvelope(data: string): BootstrapEnvelope {
     typeof parsed["token"] !== "string" ||
     !isObject(parsed["secrets"]) ||
     !optionalObject(parsed, "storages") ||
-    !optionalObject(parsed, "databases")
+    !optionalObject(parsed, "databases") ||
+    !optionalObject(parsed, "kv")
   ) {
     throw new Error(
-      "Tako: bootstrap must be {token: string, secrets: object, storages?: object, databases?: object}",
+      "Tako: bootstrap must be {token: string, secrets: object, storages?: object, databases?: object, kv?: object}",
     );
   }
   return {
@@ -87,6 +92,7 @@ export function parseBootstrapEnvelope(data: string): BootstrapEnvelope {
     secrets: parsed["secrets"] as Record<string, string>,
     storages: parsed["storages"] as Record<string, unknown> | undefined,
     databases: parsed["databases"] as Record<string, unknown> | undefined,
+    kv: parsed["kv"] as Record<string, unknown> | undefined,
   };
 }
 
@@ -155,6 +161,11 @@ export function getStorageBindings(): Record<string, unknown> {
 /** Returns database connection payloads injected by Tako at process startup. */
 export function getDatabaseBindings(): Record<string, unknown> {
   return current().databases;
+}
+
+/** Returns KV store connection payloads injected by Tako at process startup. */
+export function getKvBindings(): Record<string, unknown> {
+  return current().kv;
 }
 
 /**

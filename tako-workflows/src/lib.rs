@@ -29,7 +29,7 @@ pub use enqueue::{DEFAULT_RETENTION_MS, POSTGRES_WORKFLOWS_SCHEMA, RunsDb, Workf
 #[allow(unused_imports)]
 pub use enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, ChannelPublishRequest, ChannelWrite,
-    EnqueueSocketHandle, HealthCheck, OnClaimed, OnEnqueue, PeerAuthFn,
+    EnqueueSocketHandle, HealthCheck, KvFn, OnClaimed, OnEnqueue, PeerAuthFn,
     spawn as spawn_enqueue_socket,
 };
 #[allow(unused_imports)]

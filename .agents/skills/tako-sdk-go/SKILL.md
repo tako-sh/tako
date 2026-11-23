@@ -113,6 +113,10 @@ Returns a secret value by name. Prefer the generated `Secrets` struct instead of
 
 Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
 
+### `tako.GetKV(name string) (*tako.KV, bool)`
+
+Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the environment does not bind it. `tako.KVNames()` lists bound names, sorted.
+
 ## Databases
 
 Tako-hosted SQLite databases are created with `tako sqlite create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
@@ -134,6 +138,49 @@ db, err := sql.Open("libsql", main.DSN())
 ```
 
 Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+
+## KV stores
+
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
+
+```go
+import (
+	"context"
+	"errors"
+	"time"
+
+	"tako.sh"
+)
+
+type Challenge struct {
+	Challenge string `json:"challenge"`
+}
+
+func issue(ctx context.Context, userID, challenge string) error {
+	sessions, ok := tako.GetKV("sessions")
+	if !ok {
+		return errors.New("no KV store bound as sessions")
+	}
+	// Without tako.WithTTL the key stays until deleted.
+	return sessions.Put(ctx, "challenge:"+userID, Challenge{challenge}, tako.WithTTL(5*time.Minute))
+}
+
+// Reads the challenge on whichever server handles the response, then removes it.
+func consume(ctx context.Context, userID string) (Challenge, bool, error) {
+	var issued Challenge
+	sessions, ok := tako.GetKV("sessions")
+	if !ok {
+		return issued, false, errors.New("no KV store bound as sessions")
+	}
+	found, err := sessions.Get(ctx, "challenge:"+userID, &issued)
+	if err != nil || !found {
+		return issued, found, err
+	}
+	return issued, true, sessions.Delete(ctx, "challenge:"+userID)
+}
+```
+
+`Get(ctx, key, &value)` JSON-decodes into `value` and reports whether the key was set; a missing or expired key leaves `value` unchanged. `Put` JSON-encodes the value and replaces its TTL; `Delete` succeeds for a missing key. Each call honors `ctx` and stops after 30 seconds. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. Rejections are `*tako.ServerError`; match them with `errors.Is(err, tako.ErrInvalidRequest)` or `tako.ErrUnavailable` (binding changed, store's server unreachable or restarting). A store has no size limit beyond its server's disk, and nothing is evicted. There are no atomic counters, compare-and-set, or transactions: concurrent read-modify-write of one key can lose an update. Formatting a `*KV` or encoding it as JSON shows only its binding name. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases. Every write is on disk before it is acknowledged, and stores are backed up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`). `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Container releases cannot bind KV stores yet.
 
 ## Secrets
 

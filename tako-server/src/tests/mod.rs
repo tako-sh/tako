@@ -245,6 +245,7 @@ mod compose_sdk;
 mod databases;
 mod delete_upgrade;
 mod deploy;
+mod kv;
 mod lifecycle;
 mod release_command;
 mod scale_limits;

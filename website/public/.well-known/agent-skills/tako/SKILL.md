@@ -3,7 +3,7 @@ name: tako
 description: >-
   Build, run, deploy, and debug Tako applications. Use for projects with tako.toml,
   tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS,
-  deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.
+  deployments, logs, routing, typed HTTP contracts, secrets, storage, hosted databases, KV stores, channels, presence, stores, and workflows.
 type: framework
 library: tako.sh
 sources:
@@ -14,7 +14,7 @@ sources:
 # Working with Tako
 
 Tako owns the application's runtime, local HTTPS, deployment, routing, secrets,
-storage bindings, channels, presence, stores, and workflows. Keep those operations in Tako so local
+storage, database, and KV store bindings, channels, presence, stores, and workflows. Keep those operations in Tako so local
 checks exercise the same configuration the application deploys with.
 
 ## Find the right context
@@ -25,7 +25,7 @@ checks exercise the same configuration the application deploys with.
    command arguments. Tools use the installed CLI's credentials and permissions.
 3. Read bundled docs through `tako_docs` (list topics with no arguments, then pass
    a topic), or MCP resources at `tako://docs/<topic>`. Start with `index` for
-   task routing, then read the relevant topic. Use `secrets`, `databases`, `storage`,
+   task routing, then read the relevant topic. Use `secrets`, `databases`, `kv`, `storage`,
    `images`, or `cache` for those primitives; `networks`, `servers`, `deployment`, `routing`,
    `operations`, and `backups` cover deployed apps. Search with `tako_search_docs`.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
@@ -52,7 +52,7 @@ checks exercise the same configuration the application deploys with.
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,
   follow it through the API and data, and check logs or responses.
-- After changing secrets, storages, database bindings, service/channel/presence/store definitions, or workflow definitions,
+- After changing secrets, storages, database or KV store bindings, service/channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing
   generated declarations.
@@ -68,9 +68,9 @@ checks exercise the same configuration the application deploys with.
    new entries on the next call.
 3. For production, inspect `tako_status`, `tako_release_list`, and `tako_logs`.
    In a project, `tako_status` also lists each environment's resources
-   (secret count, credentials, storage, backup key, databases and their
-   servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
-   expiring secrets, unrecorded databases and servers lacking key grants.
+   (secret count, credentials, storage, backup key, databases and KV stores
+   and their servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
+   expiring secrets, unrecorded databases or KV stores, and servers lacking key grants.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.
    For a failing or stuck workflow run, read its stored state with
@@ -257,6 +257,23 @@ validation.
   removes the database with its snapshots, so confirm the database and the
   environments that bind it first, and take `tako sqlite backup` before risky
   changes. Schema changes go in `migrations/` SQL files, applied on deploy.
+- Values every server of the network must see (login and WebAuthn challenges,
+  one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
+  bound in `[envs.<env>].kv`, read as `tako.kv.<binding>` with `get`, `put`
+  with an optional TTL, and `delete` of JSON values; Go `tako.GetKV`, Rust
+  `tako::kv`): a store hosted on one server and reachable from all of them
+  through each app's internal socket. `tako.cache` is per server and evicts,
+  so a value cached on one server is a miss on the next. KV stores are backed
+  up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`;
+  `tako kv backup|backups|restore|export|import`), and have no atomic
+  counters or transactions, so keep canonical records in a database. A
+  binding name is used once per environment across `databases` and `kv`, and
+  store names share the network's namespace with databases. `tako kv get`,
+  `put`, and `delete-key` read and change keys with full access; `tako kv
+  restore`, `import`, and `delete` replace or remove every key, so confirm the
+  store and the environments that bind it first. Inspect with `tako kv status
+  <name> --json` and verify by putting a key through one server and getting it
+  through another.
 
 ## Channels, presence, stores, and workflows
 

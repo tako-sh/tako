@@ -29,6 +29,7 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::SnapshotDatabase { .. }
             | Command::RestoreDatabase { .. }
             | Command::QueryDatabase { .. }
+            | Command::QueryKv { .. }
             | Command::MigrateDatabase { .. }
             | Command::ResetDatabase { .. }
             | Command::BeginDatabaseImport { .. }
@@ -396,6 +397,7 @@ impl crate::ServerState {
             | Command::ListDatabaseSnapshots { .. }
             | Command::RestoreDatabase { .. }
             | Command::QueryDatabase { .. }
+            | Command::QueryKv { .. }
             | Command::MigrateDatabase { .. }
             | Command::ResetDatabase { .. }
             | Command::BeginDatabaseImport { .. }
@@ -573,6 +575,7 @@ impl crate::ServerState {
             | Command::Signal { .. }
             | Command::NetworkCall { .. }
             | Command::Cache { .. }
+            | Command::Kv { .. }
         | Command::ChannelPublish { .. }
             | Command::ChannelClose { .. } => Response::error(
                 "workflow/channel commands must be sent over the internal socket, not the management socket"

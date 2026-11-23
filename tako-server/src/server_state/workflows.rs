@@ -5,6 +5,7 @@ pub(crate) struct WorkflowBindings<'a> {
     pub(crate) secrets: &'a HashMap<String, String>,
     pub(crate) storages: &'a HashMap<String, tako_core::StorageBinding>,
     pub(crate) databases: &'a HashMap<String, tako_core::DatabaseConnection>,
+    pub(crate) kv: &'a HashMap<String, tako_core::KvConnection>,
     pub(crate) postgres_url: Option<&'a String>,
 }
 
@@ -40,9 +41,9 @@ impl ServerState {
     ) -> Result<(), StateStoreError> {
         let secrets = self.state_store.get_secrets(app_name)?;
         let storages = self.state_store.get_storages(app_name)?;
-        let databases = self
-            .databases
-            .connections(&self.state_store.get_app_databases(app_name)?);
+        let bindings = self.state_store.get_app_databases(app_name)?;
+        let databases = self.databases.connections(&bindings);
+        let kv = crate::databases::kv_connections(&bindings);
         let runtime_credentials = self.state_store.get_runtime_credentials(app_name)?;
         let prepared = self
             .prepare_app_workflows(
@@ -53,6 +54,7 @@ impl ServerState {
                     secrets: &secrets,
                     storages: &storages,
                     databases: &databases,
+                    kv: &kv,
                     postgres_url: runtime_credentials.get("postgres_url"),
                 },
                 ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
@@ -141,6 +143,7 @@ impl ServerState {
             secrets,
             storages,
             databases,
+            kv,
             postgres_url,
         } = bindings;
         let mut worker_env = manifest.env_vars.clone();
@@ -326,6 +329,7 @@ impl ServerState {
         // Containerized workers have no loopback route to the database host.
         if manifest.runtime != "container" {
             spec.databases = databases.clone();
+            spec.kv = kv.clone();
         }
         self.workflows
             .prepare(store, manifest.workflow_retention_ms, spec, activation)

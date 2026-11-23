@@ -220,6 +220,19 @@ impl ServerState {
             }));
         }
 
+        // KV calls from apps resolve their binding token here, then run on
+        // this server's store or are forwarded to the store's server.
+        let databases = Arc::new(crate::databases::Databases::new(&runtime.data_dir));
+        {
+            let kv = databases.kv.clone();
+            workflows.set_kv(Arc::new(move |app, token, request| {
+                match kv.call(app, token, request) {
+                    Ok(value) => tako_core::Response::ok(value),
+                    Err(error) => error.into_response(),
+                }
+            }));
+        }
+
         if tokio::runtime::Handle::try_current().is_ok() {
             workflows
                 .start_socket()
@@ -250,7 +263,7 @@ impl ServerState {
             drain_observer_started: AtomicBool::new(false),
             proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
-            databases: Arc::new(crate::databases::Databases::new(&runtime.data_dir)),
+            databases,
             restore_failures: SyncRwLock::new(HashMap::new()),
             runtime,
             workflows,

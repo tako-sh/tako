@@ -6679,6 +6679,7 @@ dependencies = [
  "tako-core",
  "tako-database",
  "tako-images",
+ "tako-kv",
  "tako-network",
  "tako-runtime",
  "tako-socket",
@@ -6776,6 +6777,25 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "url",
+]
+
+[[package]]
+name = "tako-kv"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "hex",
+ "parking_lot 0.13.0",
+ "redb",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tako-core",
+ "tako-socket",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6877,6 +6897,7 @@ dependencies = [
  "tako-core",
  "tako-database",
  "tako-images",
+ "tako-kv",
  "tako-network",
  "tako-runtime",
  "tako-socket",

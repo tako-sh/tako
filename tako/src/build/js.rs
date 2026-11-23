@@ -82,6 +82,14 @@ fn read_database_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<Str
     }
 }
 
+/// Read KV store binding names across all environments.
+fn read_kv_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
+    match config {
+        Some(config) => config_binding_names(config, |env| &env.kv),
+        None => read_binding_names(project_dir, "kv"),
+    }
+}
+
 /// [`read_binding_names`] for a loaded config.
 fn config_binding_names(
     config: &TakoToml,
@@ -255,6 +263,27 @@ fn build_storages_block(names: &[String]) -> String {
     out
 }
 
+fn build_kv_block(names: &[String]) -> String {
+    if names.is_empty() {
+        return "  /**\n   * Project-specific KV store bindings from `tako.toml`.\n   *\n   * No KV stores are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoKv {}\n\n".to_string();
+    }
+    let mut out = String::from(
+        "  /**\n   * Project-specific KV store bindings from `tako.toml`.\n   *\n   * Each binding stores JSON values: `get(key)`, `put(key, value, { ttl })`\n   * with an optional TTL in milliseconds, and `delete(key)`.\n   */\n  export interface TakoKv {\n",
+    );
+    for name in names {
+        out.push_str(&format!(
+            "    /** KV store binding `{name}`. Read it with `tako.kv.{}`. */\n",
+            ts_property_name(name)
+        ));
+        out.push_str(&format!(
+            "    readonly {}: import(\"tako.sh\").TakoKvStore;\n",
+            ts_property_name(name)
+        ));
+    }
+    out.push_str("  }\n\n");
+    out
+}
+
 fn build_databases_block(names: &[String]) -> String {
     if names.is_empty() {
         return "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * No databases are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoDatabases {}\n\n".to_string();
@@ -370,6 +399,7 @@ fn build_declarations(
     secret_names: &[String],
     storage_names: &[String],
     database_names: &[String],
+    kv_names: &[String],
     env_names: &[String],
     var_names: &[String],
     channel_types: &str,
@@ -381,6 +411,7 @@ fn build_declarations(
     out.push_str(&build_secrets_block(secret_names));
     out.push_str(&build_storages_block(storage_names));
     out.push_str(&build_databases_block(database_names));
+    out.push_str(&build_kv_block(kv_names));
     if !channel_types.trim().is_empty() {
         push_indented_block(&mut out, channel_types, 2);
         out.push('\n');
@@ -462,6 +493,7 @@ fn write_tako_declarations_with_network_options(
     let secret_names = super::secret_names(project_dir, config, environment)?;
     let storage_names = read_storage_names(project_dir, config);
     let database_names = read_database_names(project_dir, config);
+    let kv_names = read_kv_names(project_dir, config);
     let (env_names, var_names) = if let Some(config) = config {
         use std::collections::BTreeSet;
         let envs: BTreeSet<_> = ["development", "production"]
@@ -516,6 +548,7 @@ fn write_tako_declarations_with_network_options(
         &secret_names,
         &storage_names,
         &database_names,
+        &kv_names,
         &env_names,
         &var_names,
         &channel_types,

@@ -144,10 +144,10 @@ tako dev stop --env test-e2e
 ```
 
 The selected environment supplies routes, variables, secrets, storage bindings,
-and database bindings; `ENV` and `tako.env` reflect it. Shared `[vars]` still apply.
-Custom local environments bind only their own databases. Their local database
-files and app data live under `.tako/data/envs/<env>/` (names longer than 255 bytes use `~` followed by their SHA-256 digest); ordinary development keeps
-`.tako/data/`. The database files are local even if that environment also deploys
+and database and KV store bindings; `ENV` and `tako.env` reflect it. Shared `[vars]` still apply.
+Custom local environments bind only their own databases and KV stores. Their local database
+and KV store files and app data live under `.tako/data/envs/<env>/` (names longer than 255 bytes use `~` followed by their SHA-256 digest); ordinary development keeps
+`.tako/data/`. These files are local even if that environment also deploys
 to a server. External storage bindings still use their configured provider.
 
 Each config/environment pair has its own daemon registration, logs, process, and
@@ -242,7 +242,7 @@ Development processes receive:
 
 User variables come from `[vars]` plus `[vars.<selected-environment>]`.
 
-The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, `storages`, and `databases`.
+The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, `storages`, `databases`, and `kv`.
 
 ## One-Off Local Commands
 
@@ -256,7 +256,7 @@ tako run -- cargo run --bin migrate
 
 `--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
 
-The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets, storage bindings, and database bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets` and `tako.databases`.
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets, storage bindings, and database and KV store bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`, `tako.databases`, and `tako.kv`.
 
 Secrets are not raw process env vars.
 
@@ -267,6 +267,10 @@ Secrets are not raw process env vars.
 With `tako dev --env <env>`, a custom environment binds only
 `[envs.<env>].databases` and stores files at
 `.tako/data/envs/<env>/databases/<database-name>.sqlite`.
+
+## KV Stores In Dev
+
+`tako dev` serves each development KV store binding from `.tako/data/kv/<store-name>.redb` through the dev daemon's internal socket, so `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`) works as in production. Bind names in `[envs.development].kv`, or let development use every `kv` name the other environments bind. The file is created on first use; tokens change between dev daemon sessions, so read stores from the binding. `tako run` serves the same files through its own internal socket for one-off scripts. A custom environment binds only `[envs.<env>].kv` and stores files at `.tako/data/envs/<env>/kv/<store-name>.redb`. See [KV stores](/kv/#develop-locally).
 
 ## Secrets And Storage In Dev
 

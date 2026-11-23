@@ -76,6 +76,8 @@ pub(crate) struct EnvResources {
     pub storages: Vec<StorageBinding>,
     pub backup_key: Option<bool>,
     pub databases: Vec<ProjectDatabase>,
+    /// KV store bindings, which share the databases' network records.
+    pub kv: Vec<ProjectDatabase>,
     pub note: Option<String>,
 }
 
@@ -120,6 +122,9 @@ impl ProjectResources {
                                 tako_core::channel_replay_grant_scope(&scope)
                             }
                         });
+                    }
+                    if env.kv.iter().any(|store| store.database == record.name) {
+                        users.insert(tako_core::deployment_app_id(&self.app, &env.name));
                     }
                 }
                 homed.push((record.name.clone(), users.into_iter().collect()));
@@ -284,21 +289,22 @@ pub(crate) fn env_resources(
     storages.sort_by(|a, b| a.binding.cmp(&b.binding));
 
     let database_servers = server_names(records, inventory);
-    let mut databases: Vec<ProjectDatabase> = env
-        .map(|env| {
-            env.databases
-                .iter()
-                .map(|(binding, database)| ProjectDatabase {
-                    usage: DatabaseUsage::Binding {
-                        binding: binding.clone(),
-                    },
-                    database: database.clone(),
-                    server: database_servers.get(database).cloned(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    databases.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
+    let bindings = |bound: &std::collections::HashMap<String, String>| {
+        let mut bindings: Vec<ProjectDatabase> = bound
+            .iter()
+            .map(|(binding, database)| ProjectDatabase {
+                usage: DatabaseUsage::Binding {
+                    binding: binding.clone(),
+                },
+                database: database.clone(),
+                server: database_servers.get(database).cloned(),
+            })
+            .collect();
+        bindings.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
+        bindings
+    };
+    let mut databases = env.map(|env| bindings(&env.databases)).unwrap_or_default();
+    let kv = env.map(|env| bindings(&env.kv)).unwrap_or_default();
     if let Some(database) = replay_database(config, name, records, secrets, needs_replay) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::ChannelReplay,
@@ -332,6 +338,7 @@ pub(crate) fn env_resources(
                 .is_some_and(|env| !env.backup_keys.is_empty())
         }),
         databases,
+        kv,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
     }
 }

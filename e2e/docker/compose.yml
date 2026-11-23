@@ -13,6 +13,7 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
+        APT_MIRROR: ${APT_MIRROR:-}
       dockerfile: e2e/docker/server/ubuntu.Dockerfile
     volumes:
       - e2e_ssh_keys:/opt/e2e/keys:ro

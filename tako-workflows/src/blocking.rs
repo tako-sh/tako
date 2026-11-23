@@ -10,11 +10,21 @@ static STORAGE_OPERATIONS: Semaphore = Semaphore::const_new(32);
 // A network invocation can call back into the recipient's storage socket.
 // Never hold a storage permit while waiting for that round trip.
 static NETWORK_OPERATIONS: Semaphore = Semaphore::const_new(64);
+// KV calls never call back into a socket, so they wait for a permit rather
+// than fail. Their own pool keeps a busy or unreachable store from starving
+// network calls and storage operations, and the reverse.
+static KV_OPERATIONS: Semaphore = Semaphore::const_new(256);
 
 pub(crate) async fn run<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, tokio::task::JoinError> {
     run_with(&STORAGE_OPERATIONS, operation).await
+}
+
+pub(crate) async fn run_kv<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError> {
+    run_with(&KV_OPERATIONS, operation).await
 }
 
 pub(crate) async fn run_network<T: Send + 'static>(

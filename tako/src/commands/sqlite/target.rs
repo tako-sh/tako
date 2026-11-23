@@ -73,13 +73,14 @@ pub(crate) struct PlannedBinding {
 }
 
 impl PlannedBinding {
-    pub(crate) fn new(name: &str, home: Home) -> Self {
+    pub(crate) fn new(name: &str, home: Home, engine: tako_core::DatabaseEngine) -> Self {
         Self {
             database_name: name.to_owned(),
             binding: tako_core::DatabaseBinding {
                 name: name.to_owned(),
                 server: home.device_id.clone(),
                 peer_key: None,
+                engine,
             },
             home,
         }

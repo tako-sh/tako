@@ -1,5 +1,6 @@
-//! Removes `[databases.*]` entries and database bindings from `tako.toml`,
-//! preserving the rest of the file: comments, ordering, and formatting.
+//! Removes `[databases.*]` entries and database and KV store bindings from
+//! `tako.toml`, preserving the rest of the file: comments, ordering, and
+//! formatting.
 
 use std::fs;
 use std::path::Path;
@@ -26,50 +27,75 @@ fn save(path: &Path, doc: &DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// Removes the bindings under `key` (`databases` or `kv`) that name `name`
+/// in the environments of `network`, dropping tables left empty. Returns
+/// whether some environment is in another network, where they stay.
+fn remove_env_bindings(doc: &mut DocumentMut, key: &str, name: &str, network: &str) -> bool {
+    let Some(envs) = doc.get_mut("envs").and_then(Item::as_table_like_mut) else {
+        return false;
+    };
+    let mut other_network = false;
+    for (_, env) in envs.iter_mut() {
+        let Some(env) = env.as_table_like_mut() else {
+            continue;
+        };
+        if env
+            .get("network")
+            .and_then(Item::as_str)
+            .is_some_and(|id| id != network)
+        {
+            other_network = true;
+            continue;
+        }
+        let empty = match env.get_mut(key).and_then(Item::as_table_like_mut) {
+            Some(bindings) => {
+                let bound: Vec<String> = bindings
+                    .iter()
+                    .filter(|(_, target)| target.as_str() == Some(name))
+                    .map(|(binding, _)| binding.to_owned())
+                    .collect();
+                for binding in bound {
+                    bindings.remove(&binding);
+                }
+                bindings.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            env.remove(key);
+        }
+    }
+    other_network
+}
+
 impl TakoToml {
     /// Remove bindings in the selected network. A backup override is shared by
     /// every network and can still apply to an implicit channel database there.
     pub fn remove_database_from_file(path: &Path, name: &str, network: &str) -> Result<()> {
         let mut doc = load(path)?;
-        let mut other_network = false;
-        if let Some(envs) = doc.get_mut("envs").and_then(Item::as_table_like_mut) {
-            for (_, env) in envs.iter_mut() {
-                let Some(env) = env.as_table_like_mut() else {
-                    continue;
-                };
-                if env
-                    .get("network")
-                    .and_then(Item::as_str)
-                    .is_some_and(|id| id != network)
-                {
-                    other_network = true;
-                    continue;
-                }
-                let empty = match env.get_mut("databases").and_then(Item::as_table_like_mut) {
-                    Some(bindings) => {
-                        let bound: Vec<String> = bindings
-                            .iter()
-                            .filter(|(_, target)| target.as_str() == Some(name))
-                            .map(|(binding, _)| binding.to_owned())
-                            .collect();
-                        for binding in bound {
-                            bindings.remove(&binding);
-                        }
-                        bindings.is_empty()
-                    }
-                    None => false,
-                };
-                if empty {
-                    env.remove("databases");
-                }
-            }
-        }
+        let other_network = remove_env_bindings(&mut doc, "databases", name, network);
         if !other_network
             && let Some(databases) = doc.get_mut("databases").and_then(Item::as_table_like_mut)
         {
             databases.remove(name);
             if databases.is_empty() {
                 doc.remove("databases");
+            }
+        }
+        save(path, &doc)
+    }
+
+    /// Removes the bindings to KV store `name` in the environments of
+    /// `network`, and its `[kv.<name>]` settings unless environments of
+    /// another network still bind it.
+    pub fn remove_kv_from_file(path: &Path, name: &str, network: &str) -> Result<()> {
+        let mut doc = load(path)?;
+        let other_network = remove_env_bindings(&mut doc, "kv", name, network);
+        if !other_network && let Some(stores) = doc.get_mut("kv").and_then(Item::as_table_like_mut)
+        {
+            stores.remove(name);
+            if stores.is_empty() {
+                doc.remove("kv");
             }
         }
         save(path, &doc)
@@ -105,6 +131,26 @@ mod tests {
                 .unwrap()
                 .contains("[envs.staging]\nroute = \"staging.example.com\"\ndatabases")
         );
+    }
+
+    #[test]
+    fn removing_a_kv_store_drops_only_its_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n\n[kv.sessions]\nbackup = \"backups\"\n\n[kv.other]\nbackup = \"backups\"\n\n[storages.backups]\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
+        );
+        TakoToml::remove_kv_from_file(&path, "sessions", "0123456789abcdef0123456789abcdef")
+            .unwrap();
+        let config = TakoToml::load_from_file(&path).unwrap();
+        assert!(!config.kv.contains_key("sessions"));
+        assert!(config.kv.contains_key("other"));
+        assert_eq!(config.envs["production"].kv.len(), 1);
+        assert_eq!(config.envs["production"].databases.len(), 1);
+        assert!(config.envs["staging"].kv.is_empty());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# Sessions and challenges"));
+        assert!(!text.contains("[envs.staging]\nroute = \"staging.example.com\"\nkv"));
     }
 
     #[test]

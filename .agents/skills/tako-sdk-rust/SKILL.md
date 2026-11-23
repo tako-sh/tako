@@ -70,6 +70,55 @@ deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
 the release command; the endpoint is loopback-only on the server. Container
 releases cannot bind databases yet.
 
+## KV stores
+
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on
+one server of the network, reachable from apps on every server. Use them for
+values any server may need next: login and WebAuthn challenges, one-time
+tokens, sessions, and feature flags. Create one with `tako kv create <name>`
+(administrator permission) and bind it in `[envs.<env>].kv`, such as
+`kv = { sessions = "<name>" }`; an environment can bind several stores, and
+several apps can bind one. `tako::kv("sessions")` returns
+`Option<tako::Kv>`; requests go through the internal socket with the
+binding's token, and `Debug` never shows it. `tako::bootstrap()?.kv("sessions")`
+and `.kv_stores()` read the same bindings.
+
+```rust
+use std::time::Duration;
+
+/// Blocking calls work without features; with the SDK's `tokio` feature,
+/// `get`, `put`, and `delete` are the async forms.
+fn challenge(user_id: &str, challenge: &str) -> std::io::Result<Option<String>> {
+    let sessions = tako::kv("sessions").expect("a KV store bound as sessions");
+    let key = format!("challenge:{user_id}");
+    // `None` keeps the key until it is deleted.
+    sessions.put_blocking(&key, challenge, Some(Duration::from_secs(300)))?;
+    // Read it on whichever server handles the response, then remove it.
+    let issued: Option<String> = sessions.get_blocking(&key)?;
+    sessions.delete_blocking(&key)?;
+    Ok(issued)
+}
+```
+
+`get_blocking::<T>(key)` returns `io::Result<Option<T>>`, `None` for a
+missing or expired key. `put_blocking(key, &value, ttl)` JSON-encodes any
+`Serialize` value and replaces its TTL; `delete_blocking(key)` succeeds for a
+missing key. Calls stop after 30 seconds. Keys are 1 byte to 1 KiB; values are
+at most 256 KiB of JSON. A rejection is an `io::Error` wrapping
+`tako::KvRejected`; `tako::ErrorCode::of(&error)` is `Some(InvalidRequest)`, or
+`Some(Unavailable)` when the binding changed or the store's server is
+unreachable or restarting. A store has no size limit beyond its server's disk,
+and nothing is evicted. There are no atomic counters, compare-and-set, or
+transactions: concurrent read-modify-write of one key can lose an update.
+
+An environment's `databases` and `kv` share one set of binding names, and
+store names share the network's namespace with databases. Every write is on
+disk before it is acknowledged, and stores are backed up like databases
+(`[envs.<env>].backup.storage` or `[kv.<name>].backup`;
+`tako kv backup|backups|restore|export|import`). `tako dev` and `tako run`
+serve bindings from `.tako/data/kv/<store>.redb` through their internal
+sockets. Container releases cannot bind KV stores yet.
+
 ## Presence
 
 Use `PresenceRegistry` and `PresenceDefinition` for a Rust backend consumed by

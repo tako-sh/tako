@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
 import { loadDatabases } from "../src/database";
+import { loadKv } from "../src/kv";
 import { cache } from "../src/cache";
 import { call, channel, setNetworkCaller, workflow } from "../src/network";
 import { defineStore } from "../src/stores/define";
@@ -227,6 +228,31 @@ describe("channel, store, and network commands match the wire fixtures", () => {
     expect(socket.take()).toEqual(fixture("commands/cache-get-shared.json"));
   });
 
+  test("kv commands carry the binding token and an optional TTL", async () => {
+    injectBootstrap({ token: "t", secrets: {}, kv: { sessions: { token: "kv-token-example" } } });
+    try {
+      const sessions = loadKv()["sessions"]!;
+      await sessions.put("session:1", { user: "u1" }, { ttl: 86_400_000 });
+      expect(socket.take()).toEqual(fixture("commands/kv-put.json"));
+      await sessions.put("settings", 1);
+      expect(socket.take()).toEqual(fixture("commands/kv-put-no-ttl.json"));
+      socket.reply("replies/cache-hit-null.json");
+      expect(await sessions.get("session:1")).toBeNull();
+      expect(socket.take()).toEqual(fixture("commands/kv-get.json"));
+      socket.reply("replies/ok-null.json");
+      expect(await sessions.get("session:1")).toBeUndefined();
+      expect(socket.take()).toEqual(fixture("commands/kv-get.json"));
+      await sessions.delete("session:1");
+      expect(socket.take()).toEqual(fixture("commands/kv-delete.json"));
+      socket.reply("replies/error-unavailable.json");
+      const refused = await sessions.put("session:1", 1).catch((e: unknown) => e);
+      expect((refused as TakoError).reason).toBe("unavailable");
+      expect(socket.take()).toBeDefined();
+    } finally {
+      injectBootstrap({ token: null, secrets: {} });
+    }
+  });
+
   test("channel_publish", async () => {
     process.env[BUILD_ENV] = "v7";
     const board = defineChannel("board", {
@@ -399,12 +425,13 @@ describe("bootstrap fixture", () => {
     injectBootstrap({ token: null, secrets: {} });
   });
 
-  test("populates the token, secrets, storage, and database bindings", () => {
+  test("populates the token, secrets, storage, database, and KV bindings", () => {
     const text = readFileSync(join(WIRE_DIR, "bootstrap.json"), "utf8");
     initBootstrapFromFd(() => text);
     const envelope = fixture("bootstrap.json") as {
       storages: Record<string, unknown>;
       databases: Record<string, { url: string; authToken: string }>;
+      kv: Record<string, { token: string }>;
     };
     expect(getInternalToken()).toBe("tok-abc");
     const secrets = loadSecrets<Record<string, string>>();
@@ -414,5 +441,9 @@ describe("bootstrap fixture", () => {
     const main = loadDatabases()["main"];
     expect(main?.url).toBe(envelope.databases["main"]!.url);
     expect(main?.authToken).toBe(envelope.databases["main"]!.authToken);
+    const sessions = loadKv()["sessions"];
+    expect(sessions).toBeDefined();
+    expect(JSON.stringify(sessions)).toBe(JSON.stringify({ kv: "sessions" }));
+    expect(JSON.stringify(sessions)).not.toContain(envelope.kv["sessions"]!.token);
   });
 });

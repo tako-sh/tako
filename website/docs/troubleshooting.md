@@ -194,6 +194,20 @@ For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `
 
 `tako.databases.<binding>` is `undefined` (or `GetDatabase` reports false) when the environment does not bind that name: check `[envs.<env>].databases` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. A deploy that says the network has no database with a bound name needs `tako sqlite create <name>`, or a binding to one of the names `tako sqlite list` shows. See [Databases](/databases/#limits-and-security).
 
+## KV Store Requests Fail
+
+`tako.kv.<binding>` is `undefined` (or `GetKV` reports false, or `tako::kv` returns `None`) when the environment does not bind that name: check `[envs.<env>].kv` and deploy. `tako.kv requires a Tako runtime with an internal socket` (Go and Rust: `KV stores require the Tako runtime`) means the process has no internal socket: run it under `tako dev`, `tako run`, or a native deploy; container and Compose releases cannot use KV stores yet.
+
+Rejections carry a reason (`TakoError.reason` in JavaScript, `errors.Is` in Go, `ErrorCode::of` in Rust):
+
+- `invalid_request`: an empty key, a key over 1 KiB, a value over 256 KiB of JSON, or a TTL of zero. Retrying cannot succeed.
+- `unavailable` with `This app's KV binding changed or was removed`: a deploy changed or revoked the binding, or the token belongs to another app environment. Processes of the new release use the new binding; old ones stop once they drain.
+- `unavailable` with `has not granted this app access`, or `The KV store's server refused this app`: the store's server holds no grant for the environment, for example after the store was deleted and recreated. Deploy the environment again from a full client.
+- `unavailable` with `not reachable`: this server could not reach the store's server over the private network. Check `tako network status --json`.
+- `unavailable` with `not serving the KV store right now`: the store's server is restarting or opening the store. Retry.
+
+A deploy that says the network has no KV store with a bound name needs `tako kv create <name>`, or a binding to one of the names `tako kv list` shows; one that says the name is a SQLite database needs the binding moved to `databases`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
+
 ## Secret Or Credential Key Problems
 
 For values in the network state, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled full client can decrypt the network state; a deploy client cannot decrypt any of it. Unpublished drafts remain on the original worktree.

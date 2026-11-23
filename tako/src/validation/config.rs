@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::config::{ConfigError, Result, ServerInventory, TakoToml};
 
@@ -104,7 +104,10 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
     for warning in config.ignored_reserved_var_warnings() {
         result.warn(warning);
     }
-    for warning in database_binding_gaps(config) {
+    for warning in database_binding_gaps(config)
+        .into_iter()
+        .chain(kv_binding_gaps(config))
+    {
         result.warn(warning);
     }
     for warning in databases_without_backups(config) {
@@ -135,6 +138,16 @@ fn databases_without_backups(config: &TakoToml) -> Vec<String> {
                 ));
             }
         }
+        let mut stores: Vec<&String> = env_config.kv.values().collect();
+        stores.sort();
+        stores.dedup();
+        for store in stores {
+            if crate::commands::storage::database_backup_setting(config, env, store).is_none() {
+                warnings.push(format!(
+                    "KV store '{store}' gets no snapshots in '{env}': set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [kv.{store}], to a private S3 storage."
+                ));
+            }
+        }
     }
     warnings
 }
@@ -144,14 +157,30 @@ fn databases_without_backups(config: &TakoToml) -> Vec<String> {
 /// fails only once the app runs there. Development counts only when it lists
 /// its own bindings; otherwise it binds every name the others use.
 fn database_binding_gaps(config: &TakoToml) -> Vec<String> {
+    binding_gaps(config, |env| &env.databases, "database", "databases")
+}
+
+/// [`database_binding_gaps`] for KV stores: app code reads `tako.kv.<name>`
+/// in every environment, so one missing from an environment is `undefined`
+/// there although the generated types declare it.
+fn kv_binding_gaps(config: &TakoToml) -> Vec<String> {
+    binding_gaps(config, |env| &env.kv, "KV store", "kv")
+}
+
+fn binding_gaps(
+    config: &TakoToml,
+    bindings: impl Fn(&crate::config::EnvConfig) -> &HashMap<String, String>,
+    noun: &str,
+    key: &str,
+) -> Vec<String> {
     let envs: BTreeMap<&str, BTreeSet<&str>> = config
         .envs
         .iter()
-        .filter(|(name, env)| name.as_str() != "development" || !env.databases.is_empty())
+        .filter(|(name, env)| name.as_str() != "development" || !bindings(env).is_empty())
         .map(|(name, env)| {
             (
                 name.as_str(),
-                env.databases.keys().map(String::as_str).collect(),
+                bindings(env).keys().map(String::as_str).collect(),
             )
         })
         .collect();
@@ -164,8 +193,12 @@ fn database_binding_gaps(config: &TakoToml) -> Vec<String> {
                 .filter(|(_, other)| other.contains(binding))
                 .map(|(name, _)| format!("'{name}'"))
                 .collect();
+            let placeholder = match key {
+                "kv" => "store",
+                _ => "database",
+            };
             warnings.push(format!(
-                "Environment '{env}' does not bind database '{binding}', which {} {}; the app has no '{binding}' database in '{env}'. Bind one with `{binding} = \"<database>\"` in [envs.{env}].databases",
+                "Environment '{env}' does not bind {noun} '{binding}', which {} {}; the app has no '{binding}' {noun} in '{env}'. Bind one with `{binding} = \"<{placeholder}>\"` in [envs.{env}].{key}",
                 others.join(", "),
                 if others.len() == 1 { "binds" } else { "bind" },
             ));
@@ -251,6 +284,37 @@ mod tests {
                 "Environment 'preview' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'preview'. Bind one with `analytics = \"<database>\"` in [envs.preview].databases",
                 "Environment 'preview' does not bind database 'main', which 'production', 'staging' bind; the app has no 'main' database in 'preview'. Bind one with `main = \"<database>\"` in [envs.preview].databases",
                 "Environment 'staging' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'staging'. Bind one with `analytics = \"<database>\"` in [envs.staging].databases",
+            ]
+        );
+    }
+
+    #[test]
+    fn warns_when_an_environment_lacks_a_kv_binding_others_have() {
+        let mut config = TakoToml::default();
+        let env = |kv: &[(&str, &str)]| EnvConfig {
+            kv: kv
+                .iter()
+                .map(|(binding, store)| (binding.to_string(), store.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        config.envs.insert(
+            "production".into(),
+            env(&[("sessions", "auth-sessions"), ("flags", "flags")]),
+        );
+        config.envs.insert(
+            "staging".into(),
+            env(&[("sessions", "auth-sessions-staging")]),
+        );
+        let warnings: Vec<String> = validate_tako_toml(&config)
+            .warnings
+            .into_iter()
+            .filter(|w| w.contains("does not bind KV store"))
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                "Environment 'staging' does not bind KV store 'flags', which 'production' binds; the app has no 'flags' KV store in 'staging'. Bind one with `flags = \"<store>\"` in [envs.staging].kv",
             ]
         );
     }

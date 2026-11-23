@@ -494,6 +494,13 @@ pub(crate) fn database_backup_setting(
     {
         return Some((backup, format!("[databases.{database_name}].backup")));
     }
+    if let Some(backup) = config
+        .kv
+        .get(database_name)
+        .and_then(|store| store.backup.clone())
+    {
+        return Some((backup, format!("[kv.{database_name}].backup")));
+    }
     let storage = config.envs.get(env)?.backup.as_ref()?.storage.clone();
     Some((storage, format!("[envs.{env}].backup.storage")))
 }

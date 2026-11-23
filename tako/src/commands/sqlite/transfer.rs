@@ -1,4 +1,5 @@
-//! Importing a local SQLite file into a database, and exporting a copy.
+//! Importing a local SQLite file (or KV export) into a database, and
+//! exporting a copy.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -7,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use tako_core::{Command, DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport, Response};
+use tako_core::{Command, DATABASE_TRANSFER_CHUNK_BYTES, DatabaseEngine, DatabaseExport, Response};
 
 use super::target::Home;
 use crate::management_http::ManagementClient;
@@ -41,17 +42,31 @@ fn sha256_file(path: &Path) -> std::io::Result<(String, u64)> {
     Ok((hex::encode(hasher.finalize()), total))
 }
 
-pub(super) async fn import(
+pub(crate) async fn import(
     home: &Home,
     name: &str,
     file: &Path,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut header = [0u8; 16];
-    std::fs::File::open(file)
-        .and_then(|mut f| f.read_exact(&mut header))
-        .map_err(|e| format!("Read {}: {e}", file.display()))?;
-    if &header != SQLITE_HEADER {
-        return Err(format!("{} is not a SQLite database file.", file.display()).into());
+    match engine {
+        DatabaseEngine::Sqlite => {
+            let mut header = [0u8; 16];
+            std::fs::File::open(file)
+                .and_then(|mut f| f.read_exact(&mut header))
+                .map_err(|e| format!("Read {}: {e}", file.display()))?;
+            if &header != SQLITE_HEADER {
+                return Err(format!("{} is not a SQLite database file.", file.display()).into());
+            }
+        }
+        DatabaseEngine::Kv => {
+            // Checked here too, so a wrong file fails before the upload.
+            let path = file.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                tako_kv::export::Reader::open(&path).and_then(|reader| reader.check())
+            })
+            .await?
+            .map_err(|e| format!("{} is not a Tako KV export: {e}", file.display()))?;
+        }
     }
     let path = file.to_path_buf();
     let (sha256, size) = tokio::task::spawn_blocking(move || sha256_file(&path)).await??;
@@ -115,16 +130,17 @@ pub(super) async fn import(
     }
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "imported": {"database": name, "size_bytes": size, "sha256": sha256}}),
+            serde_json::json!({"ok": true, "command": super::command_name(engine), "imported": {"database": name, "size_bytes": size, "sha256": sha256}}),
         );
     }
     Ok(())
 }
 
-pub(super) async fn export(
+pub(crate) async fn export(
     home: &Home,
     name: &str,
     file: &Path,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if file.exists() {
         return Err(format!("{} already exists.", file.display()).into());
@@ -214,7 +230,7 @@ pub(super) async fn export(
     .await?;
     if output::is_json() {
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite",
+            "ok": true, "command": super::command_name(engine),
             "exported": {"database": name, "path": file, "size_bytes": export.size_bytes, "sha256": export.sha256},
         }));
     }

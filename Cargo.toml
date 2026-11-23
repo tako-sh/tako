@@ -11,6 +11,7 @@ members = [
   "tako-runtime",
   "tako-channels",
   "tako-cache",
+  "tako-kv",
   "tako",
   "tako-server",
   "tako-spawn",

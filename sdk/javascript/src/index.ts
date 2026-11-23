@@ -17,6 +17,7 @@
 
 import { createLogger } from "./logger";
 import { loadDatabases } from "./database";
+import { loadKv } from "./kv";
 import { loadStorages } from "./storage";
 import { loadSecrets } from "./tako/secrets";
 import { cache } from "./cache";
@@ -64,6 +65,11 @@ export interface TakoStorages {}
  * Project-specific database bindings. Augmented by the generated `tako.d.ts` file.
  */
 export interface TakoDatabases {}
+
+/**
+ * Project-specific KV store bindings. Augmented by the generated `tako.d.ts` file.
+ */
+export interface TakoKv {}
 
 /** Environments declared in `tako.toml`, plus `development` and `production`. */
 export type Env = TakoTypeRegistry extends { Env: infer T extends string }
@@ -122,6 +128,18 @@ export const storages = loadStorages<TakoStorages>();
  */
 export const databases = loadDatabases<TakoDatabases>();
 
+/**
+ * Tako-hosted KV stores, typed by project-specific `tako.d.ts` declarations.
+ * Each stores JSON values, with an optional TTL in milliseconds:
+ *
+ * ```ts
+ * await tako.kv.sessions.put("session:42", { user: "u1" }, { ttl: 86_400_000 });
+ * const session = await tako.kv.sessions.get<{ user: string }>("session:42");
+ * await tako.kv.sessions.delete("session:42");
+ * ```
+ */
+export const kv = loadKv<TakoKv>();
+
 /** Primary app runtime surface. */
 export const tako = Object.freeze({
   env,
@@ -137,6 +155,7 @@ export const tako = Object.freeze({
   secrets,
   storages,
   databases,
+  kv,
   cache,
 } as const);
 
@@ -182,6 +201,7 @@ export type {
   TakoStorageBinding,
 } from "./storage";
 export type { TakoDatabase, TakoDatabaseBag } from "./database";
+export type { KvPutOptions, TakoKvBag, TakoKvStore } from "./kv";
 
 /**
  * Extract the payload type from a workflow definition.

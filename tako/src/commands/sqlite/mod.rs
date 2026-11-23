@@ -11,7 +11,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{Args, Subcommand};
 use serde::de::DeserializeOwned;
-use tako_core::{Command, DatabaseInfo, DatabaseSnapshot, Response, SnapshotReason};
+use tako_core::{
+    Command, DatabaseEngine, DatabaseInfo, DatabaseSnapshot, Response, SnapshotReason,
+};
 
 use crate::commands::project_context;
 use crate::commands::project_resources::database_user_label;
@@ -22,7 +24,7 @@ use crate::output;
 
 mod shell;
 pub(crate) mod target;
-mod transfer;
+pub(crate) mod transfer;
 
 use target::{Home, resolve_home};
 
@@ -178,7 +180,10 @@ pub enum MigrationCommands {
 }
 
 /// Reports what a dry run skipped; in JSON mode as `{"dry_run": true, ...}`.
-fn dry_run(message: &str, mut value: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn dry_run(
+    message: &str,
+    mut value: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
     output::dry_run_skip(message);
     if output::is_json() {
         value["dry_run"] = serde_json::Value::Bool(true);
@@ -220,15 +225,37 @@ fn project_network(
     }
 }
 
+/// An environment's bindings of one engine: `databases` or `kv`.
+pub(crate) fn env_bindings(
+    env: &crate::config::EnvConfig,
+    engine: DatabaseEngine,
+) -> &std::collections::HashMap<String, String> {
+    match engine {
+        DatabaseEngine::Sqlite => &env.databases,
+        DatabaseEngine::Kv => &env.kv,
+    }
+}
+
+/// The CLI command that manages databases of `engine`.
+pub(crate) fn command_name(engine: DatabaseEngine) -> &'static str {
+    match engine {
+        DatabaseEngine::Sqlite => "sqlite",
+        DatabaseEngine::Kv => "kv",
+    }
+}
+
 /// Database name → the binding names that point to it, in environments
 /// other than development.
-fn project_bindings(config: &TakoToml) -> BTreeMap<String, BTreeSet<String>> {
+fn project_bindings(
+    config: &TakoToml,
+    engine: DatabaseEngine,
+) -> BTreeMap<String, BTreeSet<String>> {
     let mut bindings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (env, env_config) in &config.envs {
         if env == "development" {
             continue;
         }
-        for (binding, database) in &env_config.databases {
+        for (binding, database) in env_bindings(env_config, engine) {
             bindings
                 .entry(database.clone())
                 .or_default()
@@ -239,12 +266,15 @@ fn project_bindings(config: &TakoToml) -> BTreeMap<String, BTreeSet<String>> {
 }
 
 /// The environments that bind `database`, sorted.
-fn binding_envs<'a>(config: &'a TakoToml, database: &str) -> Vec<&'a str> {
+fn binding_envs<'a>(config: &'a TakoToml, database: &str, engine: DatabaseEngine) -> Vec<&'a str> {
     let mut envs: Vec<&str> = config
         .envs
         .iter()
         .filter(|(env, env_config)| {
-            env.as_str() != "development" && env_config.databases.values().any(|d| d == database)
+            env.as_str() != "development"
+                && env_bindings(env_config, engine)
+                    .values()
+                    .any(|d| d == database)
         })
         .map(|(env, _)| env.as_str())
         .collect();
@@ -268,25 +298,30 @@ impl DatabaseUsers<'_> {
     }
 }
 
-/// Project uses of each database in this network, including replay without an SQL alias.
+/// Project uses of each database of `engine` in this network: its bindings,
+/// and for SQLite also channel replay without an SQL alias.
 fn database_users<'a>(
     config: &'a TakoToml,
     network: &str,
     records: &[DatabaseRecord],
     secrets: &SecretsStore,
     needs_replay: bool,
+    engine: DatabaseEngine,
 ) -> BTreeMap<String, DatabaseUsers<'a>> {
     let mut users = BTreeMap::<String, DatabaseUsers>::new();
     for (env, spec) in &config.envs {
         if env == "development" || spec.network.as_deref().is_some_and(|id| id != network) {
             continue;
         }
-        for name in spec.databases.values() {
+        for name in env_bindings(spec, engine).values() {
             users
                 .entry(name.clone())
                 .or_default()
                 .environments
                 .insert(env);
+        }
+        if engine != DatabaseEngine::Sqlite {
+            continue;
         }
         if let Some(name) =
             super::project_resources::replay_database(config, env, records, secrets, needs_replay)
@@ -300,7 +335,7 @@ fn database_users<'a>(
 }
 
 /// The project and network a command acts in.
-struct Context {
+pub(crate) struct Context {
     project_dir: PathBuf,
     config_path: PathBuf,
     config: TakoToml,
@@ -315,7 +350,7 @@ struct Context {
 }
 
 impl Context {
-    async fn load(
+    pub(crate) async fn load(
         config_path: Option<&Path>,
         network: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -348,7 +383,7 @@ impl Context {
         crate::commands::helpers::is_full_client(&self.network)
     }
 
-    fn require_admin(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn require_admin(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_admin()? {
             Ok(())
         } else {
@@ -380,22 +415,42 @@ impl Context {
         )?)
     }
 
-    /// A database of the network, whether or not its home is still a member.
-    fn record(&self, name: &str) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
-        tako_core::validate_database_name(name)?;
-        Ok(find_record(&self.records()?, name)?.clone())
+    /// A SQLite database of the network and its home server.
+    fn database(&self, name: &str) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
+        self.resource(name, DatabaseEngine::Sqlite)
     }
 
-    /// A database of the network and its home server.
-    fn database(&self, name: &str) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
-        let record = self.record(name)?;
+    /// A database of `engine` and its home server.
+    pub(crate) fn resource(
+        &self,
+        name: &str,
+        engine: DatabaseEngine,
+    ) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
+        let record = self.record_of(name, engine)?;
         let home = self.database_home(&record)?;
         Ok((record, home))
     }
 
     fn database_home(&self, record: &DatabaseRecord) -> Result<Home, Box<dyn std::error::Error>> {
-        self.home(&record.server)
-            .map_err(|error| format!("The server of database '{}': {error}", record.name).into())
+        self.home(&record.server).map_err(|error| {
+            format!(
+                "The server of {} '{}': {error}",
+                record.engine.noun(),
+                record.name
+            )
+            .into()
+        })
+    }
+
+    /// The record of `name`, which must be of `engine`, whether or not its
+    /// home is still a member.
+    fn record_of(
+        &self,
+        name: &str,
+        engine: DatabaseEngine,
+    ) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+        tako_core::validate_database_name(name)?;
+        Ok(find_record_of(&self.records()?, name, engine)?.clone())
     }
 
     fn records(&self) -> Result<Vec<DatabaseRecord>, Box<dyn std::error::Error>> {
@@ -435,6 +490,7 @@ impl Context {
             std::slice::from_ref(record),
             &self.secrets,
             self.needs_replay,
+            record.engine,
         )
         .remove(name)
         .unwrap_or_default();
@@ -476,13 +532,32 @@ impl Context {
     }
 }
 
-fn find_record<'a>(
+/// The record of `name`, which must be of `engine`: databases and KV stores
+/// share the network's names, so the other kind is named in the error.
+fn find_record_of<'a>(
     records: &'a [DatabaseRecord],
     name: &str,
+    engine: DatabaseEngine,
 ) -> Result<&'a DatabaseRecord, String> {
-    records.iter().find(|record| record.name == name).ok_or_else(|| {
-        format!("The network has no database named '{name}'. Run `tako sqlite list` to see its databases.")
-    })
+    let record = records
+        .iter()
+        .find(|record| record.name == name)
+        .ok_or_else(|| {
+            format!(
+                "The network has no {} named '{name}'. Run `tako {} list` to see them.",
+                engine.noun(),
+                command_name(engine)
+            )
+        })?;
+    if record.engine != engine {
+        return Err(format!(
+            "'{name}' is a {}, not a {}; manage it with `tako {}`.",
+            record.engine.noun(),
+            engine.noun(),
+            command_name(record.engine)
+        ));
+    }
+    Ok(record)
 }
 
 /// How a move to another server begins.
@@ -522,7 +597,7 @@ fn choose_snapshot_storage(
 ) -> Result<tako_core::StorageBinding, String> {
     let location = tako_core::BackupDestination::of;
     if storages.is_empty() {
-        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.".into());
+        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage, or `backup` in [databases.<name>] or [kv.<name>], in tako.toml.".into());
     }
     if let Some(source) = source {
         return storages
@@ -549,7 +624,7 @@ fn choose_snapshot_storage(
     if locations.len() > 1 {
         let envs: Vec<_> = storages.iter().map(|(env, _)| env.as_str()).collect();
         return Err(format!(
-            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in [databases.{name}] to the one that does.",
+            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in its [databases.{name}] or [kv.{name}] table to the one that does.",
             envs.join(", ")
         ));
     }
@@ -571,7 +646,11 @@ pub(crate) async fn send<T: DeserializeOwned>(
     }
 }
 
-fn confirm(question: &str, description: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn confirm(
+    question: &str,
+    description: &str,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if yes || !output::is_interactive() {
         if !yes && !output::is_dry_run() {
             return Err(format!("{question} Pass --yes to confirm.").into());
@@ -593,15 +672,15 @@ async fn run_async(
     match args.command {
         SqliteCommands::Create { name, server } => {
             let ctx = Context::load(config_path, network).await?;
-            create(&ctx, &name, server.as_deref()).await
+            create(&ctx, &name, server.as_deref(), DatabaseEngine::Sqlite).await
         }
         SqliteCommands::List => {
             let ctx = Context::load(config_path, network).await?;
-            list(&ctx)
+            list(&ctx, DatabaseEngine::Sqlite)
         }
         SqliteCommands::Status { name } => {
             let ctx = Context::load(config_path, network).await?;
-            status(&ctx, name.as_deref()).await
+            status(&ctx, name.as_deref(), DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Shell { name, sql } => {
             let ctx = Context::load(config_path, network).await?;
@@ -630,11 +709,11 @@ async fn run_async(
         },
         SqliteCommands::Backup { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backup_now(&ctx, &name).await
+            backup_now(&ctx, &name, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Backups { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backups(&ctx, &name).await
+            backups(&ctx, &name, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Restore {
             name,
@@ -644,7 +723,15 @@ async fn run_async(
             yes,
         } => {
             let ctx = Context::load(config_path, network).await?;
-            restore(&ctx, &name, snapshot, server.as_deref(), yes).await
+            restore(
+                &ctx,
+                &name,
+                snapshot,
+                server.as_deref(),
+                yes,
+                DatabaseEngine::Sqlite,
+            )
+            .await
         }
         SqliteCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
@@ -661,7 +748,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::import(&home, &name, &file).await
+            transfer::import(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Export { name, file } => {
             let ctx = Context::load(config_path, network).await?;
@@ -673,7 +760,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::export(&home, &name, &file).await
+            transfer::export(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Reset {
             name,
@@ -690,19 +777,23 @@ async fn run_async(
         SqliteCommands::Delete { name, server, yes } => {
             let ctx = Context::load(config_path, network).await?;
             match server {
-                Some(server) => delete_old_copy(&ctx, &name, &server, yes).await,
-                None => delete(&ctx, &name, yes).await,
+                Some(server) => {
+                    delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Sqlite).await
+                }
+                None => delete(&ctx, &name, yes, DatabaseEngine::Sqlite).await,
             }
         }
     }
 }
 
-async fn create(
+pub(crate) async fn create(
     ctx: &Context,
     name: &str,
     server: Option<&str>,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tako_core::validate_database_name(name)?;
+    let noun = engine.noun();
     ctx.require_admin()?;
     let home = match server {
         Some(server) => ctx.home(server)?,
@@ -723,63 +814,95 @@ async fn create(
                     ctx.home(entry.server_name.as_str())?
                 }
                 _ => {
-                    return Err(
-                        "The network has several servers. Pass --server to choose the database's server."
-                            .into(),
-                    );
+                    return Err(format!(
+                        "The network has several servers. Pass --server to choose the {noun}'s server."
+                    )
+                    .into());
                 }
             }
         }
     };
-    // Names identify databases in the network.
-    if ctx.records()?.iter().any(|record| record.name == name) {
+    // Names identify databases and KV stores alike in the network.
+    if let Some(existing) = ctx
+        .records()?
+        .into_iter()
+        .find(|record| record.name == name)
+    {
+        let key = match existing.engine {
+            DatabaseEngine::Sqlite => "databases",
+            DatabaseEngine::Kv => "kv",
+        };
         return Err(format!(
-            "The network already has a database named '{name}'. To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml; for channel replay, set `database = \"{name}\"` under [envs.<env>.channels]."
+            "The network already has a {} named '{name}'. To use it, add `{key} = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml{}.",
+            existing.engine.noun(),
+            match existing.engine {
+                DatabaseEngine::Sqlite => format!(
+                    "; for channel replay, set `database = \"{name}\"` under [envs.<env>.channels]"
+                ),
+                DatabaseEngine::Kv => String::new(),
+            }
         )
         .into());
     }
     if output::is_dry_run() {
         return dry_run(
-            &format!("Create database {name} on {}", home.name),
-            serde_json::json!({"database": name, "server": home.name}),
+            &format!("Create {noun} {name} on {}", home.name),
+            serde_json::json!({"database": name, "engine": engine, "server": home.name}),
         );
     }
 
-    let _t = output::timed(&format!("Create database {name}"));
+    let _t = output::timed(&format!("Create {noun} {name}"));
     output::with_spinner_async(
         &format!("Creating {name} on {}", home.name),
         &format!("Created {name} on {}", home.name),
         async {
-            create_database(&ctx.alias().map_err(|e| e.to_string())?, &home, name, None)
-                .await
-                .map_err(|e| e.to_string())
+            create_database(
+                &ctx.alias().map_err(|e| e.to_string())?,
+                &home,
+                name,
+                None,
+                engine,
+            )
+            .await
+            .map_err(|e| e.to_string())
         },
     )
     .await?;
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "sqlite",
-            "database": {"name": name, "server": home.name},
+            "command": command_name(engine),
+            "database": {"name": name, "engine": engine, "server": home.name},
         }));
     }
-    output::hint(&format!(
-        "To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`). For channel replay, set `database = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
-    ));
+    output::hint(&match engine {
+        DatabaseEngine::Sqlite => format!(
+            "To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`). For channel replay, set `database = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
+        ),
+        DatabaseEngine::Kv => format!(
+            "To use it, add `kv = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.kv.<binding>`), then deploy."
+        ),
+    });
     Ok(())
 }
 
-/// Create and publish one database generation. Both callers have already
-/// resolved placement and checked for full access.
+/// Create and publish one database or KV store generation. Both callers
+/// have already resolved placement and checked for full access.
 pub(crate) async fn create_database(
     network: &crate::config::LocalNetwork,
     home: &Home,
     name: &str,
     channel_owner: Option<&str>,
+    engine: DatabaseEngine,
 ) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+    let noun = engine.noun();
     let records = || tokio::task::block_in_place(|| crate::network::databases::list(network));
-    if records()?.iter().any(|record| record.name == name) {
-        return Err(format!("The network already has a database named '{name}'.").into());
+    if let Some(existing) = records()?.iter().find(|record| record.name == name) {
+        return Err(format!(
+            "The network already has a {} named '{name}'.",
+            existing.engine.noun()
+        )
+        .into());
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key)?;
@@ -791,12 +914,15 @@ pub(crate) async fn create_database(
         server: home.device_id.clone(),
         generation: hex::encode(generation),
         created_at_unix_secs: unix_now(),
+        engine,
         channel_owner: channel_owner.map(str::to_owned),
     };
+    // Backups are configured by the deploys that bind it.
     send::<DatabaseInfo>(
         home,
         Command::CreateDatabase {
             name: name.to_owned(),
+            engine,
             generation: record.generation.clone(),
             backup_key_base64: backup_key.clone(),
             backup: None,
@@ -818,7 +944,7 @@ pub(crate) async fn create_database(
         )
         .await;
         return Err(format!(
-            "Another client created a database named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
+            "Another client created a {noun} named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
         )
         .into());
     }
@@ -836,7 +962,7 @@ pub(crate) async fn create_database(
             },
         )
         .await;
-        return Err(format!("Could not record the database in the network: {error}").into());
+        return Err(format!("Could not record the {noun} in the network: {error}").into());
     }
     // Another administrator may have created the same name at the same
     // moment. Its key has its own address; the directory record decides.
@@ -857,22 +983,30 @@ pub(crate) async fn create_database(
         )
         .await;
         return Err(format!(
-            "Another client created a database named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
+            "Another client created a {noun} named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
         )
         .into());
     }
     Ok(record)
 }
 
-fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
-    let records = ctx.records()?;
+pub(crate) fn list(
+    ctx: &Context,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let all = ctx.records()?;
     let users = database_users(
         &ctx.config,
         &ctx.network,
-        &records,
+        &all,
         &ctx.secrets,
         ctx.needs_replay,
+        engine,
     );
+    let records: Vec<DatabaseRecord> = all
+        .into_iter()
+        .filter(|record| record.engine == engine)
+        .collect();
     let server_name = |id: &str| {
         ctx.servers
             .servers
@@ -899,14 +1033,24 @@ fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "databases": databases}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "databases": databases}),
         );
     }
     if records.is_empty() {
-        output::info("No databases yet. Create one with `tako sqlite create <name>`.");
+        output::info(&match engine {
+            DatabaseEngine::Sqlite => {
+                "No databases yet. Create one with `tako sqlite create <name>`.".to_string()
+            }
+            DatabaseEngine::Kv => {
+                "No KV stores yet. Create one with `tako kv create <name>`.".to_string()
+            }
+        });
         return Ok(());
     }
-    output::section("Databases");
+    output::section(match engine {
+        DatabaseEngine::Sqlite => "Databases",
+        DatabaseEngine::Kv => "KV stores",
+    });
     for record in &records {
         let project = match users.get(&record.name) {
             Some(db) if !db.channel_replay.is_empty() => {
@@ -924,7 +1068,11 @@ fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn status(
+    ctx: &Context,
+    name: Option<&str>,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     if let Some(name) = name {
         tako_core::validate_database_name(name)?;
@@ -936,6 +1084,7 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
         &records,
         &ctx.secrets,
         ctx.needs_replay,
+        engine,
     );
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_owned()],
@@ -943,7 +1092,7 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
     };
     let mut infos = Vec::new();
     for name in &names {
-        let home = ctx.database_home(find_record(&records, name)?)?;
+        let home = ctx.database_home(find_record_of(&records, name, engine)?)?;
         let value: serde_json::Value = send(
             &home,
             Command::DatabaseStatus {
@@ -968,11 +1117,11 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
             })
             .collect();
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "databases": databases}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "databases": databases}),
         );
     }
     if infos.is_empty() {
-        output::info("This project uses no databases.");
+        output::info(&format!("This project uses no {}s.", engine.noun()));
     }
     for (name, server, info) in &infos {
         output::section(name);
@@ -1017,9 +1166,13 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn backup_now(
+    ctx: &Context,
+    name: &str,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (_, home) = ctx.resource(name, engine)?;
     if output::is_dry_run() {
         return dry_run(
             &format!("Snapshot {name}"),
@@ -1046,7 +1199,7 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     .await?;
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "result": value}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "result": value}),
         );
     }
     if let Ok(snapshot) = serde_json::from_value::<DatabaseSnapshot>(value["snapshot"].clone()) {
@@ -1059,9 +1212,13 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn backups(
+    ctx: &Context,
+    name: &str,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (_, home) = ctx.resource(name, engine)?;
     let value: serde_json::Value = send(
         &home,
         Command::ListDatabaseSnapshots {
@@ -1072,7 +1229,7 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
     let snapshots: Vec<DatabaseSnapshot> = serde_json::from_value(value["snapshots"].clone())?;
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "database": name, "snapshots": snapshots}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "database": name, "snapshots": snapshots}),
         );
     }
     if snapshots.is_empty() {
@@ -1098,20 +1255,22 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-async fn restore(
+pub(crate) async fn restore(
     ctx: &Context,
     name: &str,
     snapshot: Option<String>,
     server: Option<&str>,
     yes: bool,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let record = ctx.record(name)?;
+    let command = command_name(engine);
+    let record = ctx.record_of(name, engine)?;
     // A home server removed from the network is gone: recovery restores the
     // database onto another server from its snapshots.
     let home = ctx.home(&record.server).ok();
     let requested = server.map(|server| ctx.home(server)).transpose()?;
-    let (target, moving) = restore_target(name, home.as_ref(), requested)?;
+    let (target, moving) = restore_target(name, home.as_ref(), requested, command)?;
     let home_name = home
         .as_ref()
         .map_or("its removed server", |home| home.name.as_str());
@@ -1124,7 +1283,14 @@ async fn restore(
     }
     confirm(
         &format!("Restore {name} from {which} on {}?", target.name),
-        "Apps' requests to the database pause while it is replaced. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible.",
+        match engine {
+            DatabaseEngine::Sqlite => {
+                "Apps' requests to the database pause while it is replaced. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible."
+            }
+            DatabaseEngine::Kv => {
+                "Apps keep using the current keys until the restore replaces them all at once. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible."
+            }
+        },
         yes,
     )?;
     if output::is_dry_run() {
@@ -1178,6 +1344,7 @@ async fn restore(
                 send::<DatabaseInfo>(
                     &target,
                     Command::CreateDatabase {
+                        engine,
                         name: name.to_owned(),
                         generation: record.generation.clone(),
                         backup_key_base64: backup_key.clone(),
@@ -1244,7 +1411,7 @@ async fn restore(
             }
             if moving && !created {
                 return Err(format!(
-                    "{error}\nThe copy of {name} on {} is kept. Run the same command again to finish the move, or remove the copy with `tako sqlite delete {name} --server {}` to abandon it.",
+                    "{error}\nThe copy of {name} on {} is kept. Run the same command again to finish the move, or remove the copy with `tako {command} delete {name} --server {}` to abandon it.",
                     target.name, target.name
                 )
                 .into());
@@ -1261,7 +1428,7 @@ async fn restore(
         // running the command again finishes the move.
         if let Err(error) = ctx.publish(&moved, None) {
             return Err(format!(
-                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
+                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako {command} delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
                 target.name, target.name, target.name
             )
             .into());
@@ -1271,7 +1438,7 @@ async fn restore(
                 "{name} now lives on {}. Deploy every app that binds it.",
                 target.name
             ));
-            return finish_restore(&value);
+            return finish_restore(&value, engine);
         };
         // The old copy, when its server is still up, would keep taking
         // snapshots into the same place and pruning the new copy's.
@@ -1285,17 +1452,17 @@ async fn restore(
         .await;
         if stopped.is_ok() {
             output::hint(&format!(
-                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
+                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako {command} delete {name} --server {}`.",
                 home.name, home.name
             ));
         } else {
             output::hint(&format!(
-                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako sqlite delete {name} --server {}`.",
+                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako {command} delete {name} --server {}`.",
                 home.name, home.name
             ));
         }
     }
-    finish_restore(&value)
+    finish_restore(&value, engine)
 }
 
 /// Where a restore runs, and whether it moves the database there. Without a
@@ -1304,6 +1471,7 @@ fn restore_target(
     name: &str,
     home: Option<&Home>,
     requested: Option<Home>,
+    command: &str,
 ) -> Result<(Home, bool), String> {
     match (home, requested) {
         (Some(home), None) => Ok((home.clone(), false)),
@@ -1312,12 +1480,15 @@ fn restore_target(
             Ok((target, moving))
         }
         (None, None) => Err(format!(
-            "The server of database '{name}' is no longer in this network. Restore it onto another server with `tako sqlite restore {name} --server <server>`."
+            "The server of '{name}' is no longer in this network. Restore it onto another server with `tako {command} restore {name} --server <server>`."
         )),
     }
 }
 
-fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+fn finish_restore(
+    value: &serde_json::Value,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     for warning in value["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {
             output::warning(warning);
@@ -1325,22 +1496,43 @@ fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::E
     }
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "result": value}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "result": value}),
         );
     }
     Ok(())
 }
 
-async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn delete(
+    ctx: &Context,
+    name: &str,
+    yes: bool,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.database(name)?;
-    check_replay_delete(
-        &ctx.config,
-        &ctx.network,
-        &record,
-        &ctx.secrets,
-        ctx.needs_replay,
-    )?;
+    let noun = engine.noun();
+    // A KV store whose server left the network can be forgotten: without
+    // backups to restore it from, its record would hold the name forever.
+    if engine == DatabaseEngine::Kv {
+        let record = ctx.record_of(name, engine)?;
+        let member = ctx.servers.servers.values().any(|entry| {
+            entry.native.as_ref().is_some_and(|native| {
+                native.network.id == ctx.network && native.server_id.to_string() == record.server
+            })
+        });
+        if !member {
+            return forget_lost_store(ctx, &record, yes);
+        }
+    }
+    let (record, home) = ctx.resource(name, engine)?;
+    if engine == DatabaseEngine::Sqlite {
+        check_replay_delete(
+            &ctx.config,
+            &ctx.network,
+            &record,
+            &ctx.secrets,
+            ctx.needs_replay,
+        )?;
+    }
     let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
     // A delete whose network record could not be removed leaves the record
     // behind; deleting again finishes it.
@@ -1375,15 +1567,22 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
             granted.join(", ")
         ));
     }
-    confirm(
-        &format!("Delete database {name} and its snapshots?"),
-        "The database and every snapshot of it are deleted permanently. Apps must not bind it anymore.",
-        yes,
-    )?;
+    match engine {
+        DatabaseEngine::Sqlite => confirm(
+            &format!("Delete database {name} and its snapshots?"),
+            "The database and every snapshot of it are deleted permanently. Apps must not bind it anymore.",
+            yes,
+        )?,
+        DatabaseEngine::Kv => confirm(
+            &format!("Delete KV store {name}?"),
+            "The store and every key in it are deleted permanently. Apps must not bind it anymore.",
+            yes,
+        )?,
+    }
     if output::is_dry_run() {
         return dry_run(
-            &format!("Delete database {name}"),
-            serde_json::json!({"database": name}),
+            &format!("Delete {noun} {name}"),
+            serde_json::json!({"database": name, "engine": engine}),
         );
     }
     if hosted.is_some() {
@@ -1410,9 +1609,45 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
     remove_leftover_copies(ctx, name, &record.generation, &home).await?;
     let alias = ctx.alias()?;
     tokio::task::block_in_place(|| crate::network::databases::remove(&alias, &record))?;
-    TakoToml::remove_database_from_file(&ctx.config_path, name, &ctx.network)?;
+    match engine {
+        DatabaseEngine::Sqlite => {
+            TakoToml::remove_database_from_file(&ctx.config_path, name, &ctx.network)?
+        }
+        DatabaseEngine::Kv => TakoToml::remove_kv_from_file(&ctx.config_path, name, &ctx.network)?,
+    }
     if output::is_json() {
-        return output::json_success("sqlite");
+        return output::json_success(command_name(engine));
+    }
+    Ok(())
+}
+
+/// Removes the record and bindings of a KV store whose server is no longer
+/// a member of the network, which took the store's data with it.
+fn forget_lost_store(
+    ctx: &Context,
+    record: &DatabaseRecord,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = &record.name;
+    output::warning(&format!(
+        "KV store {name} lived on a server that is no longer in this network. If it had backups, restore it onto another server with `tako kv restore {name} --latest --server <server>` instead; otherwise its data is gone."
+    ));
+    confirm(
+        &format!("Forget KV store {name}?"),
+        "Its network record and this project's bindings to it are removed, so the name can be created again.",
+        yes,
+    )?;
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Forget KV store {name}"),
+            serde_json::json!({"database": name, "engine": DatabaseEngine::Kv}),
+        );
+    }
+    let alias = ctx.alias()?;
+    tokio::task::block_in_place(|| crate::network::databases::remove(&alias, record))?;
+    TakoToml::remove_kv_from_file(&ctx.config_path, name, &ctx.network)?;
+    if output::is_json() {
+        return output::json_success(command_name(DatabaseEngine::Kv));
     }
     Ok(())
 }
@@ -1430,6 +1665,7 @@ fn check_replay_delete(
         std::slice::from_ref(record),
         secrets,
         needs_replay,
+        DatabaseEngine::Sqlite,
     );
     if let Some(db) = users.get(&record.name)
         && !db.channel_replay.is_empty()
@@ -1501,18 +1737,20 @@ async fn remove_leftover_copies(
 
 /// Deletes the copy of a database that `restore --server` left on its old
 /// server. The database, its network record, and its snapshots stay.
-async fn delete_old_copy(
+pub(crate) async fn delete_old_copy(
     ctx: &Context,
     name: &str,
     server: &str,
     yes: bool,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.database(name)?;
+    let command = command_name(engine);
+    let (record, home) = ctx.resource(name, engine)?;
     let old = ctx.home(server)?;
     if old.device_id == home.device_id {
         return Err(format!(
-            "{name} lives on {}; `tako sqlite delete {name}` deletes it. `--server` only removes a copy left on another server.",
+            "{name} lives on {}; `tako {command} delete {name}` deletes it. `--server` only removes a copy left on another server.",
             home.name
         )
         .into());
@@ -1567,7 +1805,7 @@ async fn delete_old_copy(
     .await?;
     print_warnings(&deleted);
     if output::is_json() {
-        return output::json_success("sqlite");
+        return output::json_success(command);
     }
     output::success(&format!("Deleted the copy of {name} on {}", old.name));
     Ok(())
@@ -1618,7 +1856,7 @@ async fn migrate(
     database: Option<&str>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut bound = project_bindings(&ctx.config);
+    let mut bound = project_bindings(&ctx.config, DatabaseEngine::Sqlite);
     if let Some(database) = database {
         let bindings = bound.remove(database).ok_or_else(|| {
             format!("No environment of this project binds database '{database}'.")
@@ -1636,7 +1874,7 @@ async fn migrate(
         let app = if full {
             None
         } else {
-            let deployable = binding_envs(&ctx.config, &database)
+            let deployable = binding_envs(&ctx.config, &database, DatabaseEngine::Sqlite)
                 .into_iter()
                 .map(|env| tako_core::deployment_app_id(&owner, env))
                 .find(|app| {
@@ -1927,6 +2165,7 @@ async fn reset(
             std::slice::from_ref(&record),
             &ctx.secrets,
             ctx.needs_replay,
+            DatabaseEngine::Sqlite,
         )
         .get(name)
         .is_some_and(|db| db.environments.contains("production"))
@@ -1950,7 +2189,7 @@ async fn reset(
     // The project's migrations for this database are applied to the empty
     // one before it replaces the current contents.
     let owner = migration_owner(ctx)?;
-    let bindings = project_bindings(&ctx.config)
+    let bindings = project_bindings(&ctx.config, DatabaseEngine::Sqlite)
         .remove(name)
         .unwrap_or_default();
     let selected = crate::database_migrations::by_database(
@@ -2023,22 +2262,22 @@ mod tests {
         };
         let home = server("old");
         assert!(
-            matches!(restore_target("shop", Some(&home), None), Ok((target, false)) if target.name == "old")
+            matches!(restore_target("shop", Some(&home), None, "sqlite"), Ok((target, false)) if target.name == "old")
         );
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("old"))),
+            restore_target("shop", Some(&home), Some(server("old")), "sqlite"),
             Ok((_, false))
         ));
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("new"))),
+            restore_target("shop", Some(&home), Some(server("new")), "sqlite"),
             Ok((target, true)) if target.name == "new"
         ));
         // The home server left the network: --server names the recovery target.
         assert!(matches!(
-            restore_target("shop", None, Some(server("new"))),
+            restore_target("shop", None, Some(server("new")), "sqlite"),
             Ok((target, true)) if target.name == "new"
         ));
-        let Err(error) = restore_target("shop", None, None) else {
+        let Err(error) = restore_target("shop", None, None, "sqlite") else {
             panic!("a restore without a home needs --server");
         };
         assert!(error.contains("--server"), "{error}");
@@ -2176,13 +2415,33 @@ mod tests {
             "name = \"shop\"\n[envs.development]\ndatabases = { main = \"local\" }\n[envs.production]\nroute = \"a.example.com\"\ndatabases = { main = \"shop\", events = \"shop\" }\n[envs.staging]\nroute = \"b.example.com\"\ndatabases = { main = \"shop_staging\" }\n",
         )
         .unwrap();
-        let bound = project_bindings(&config);
+        let bound = project_bindings(&config, DatabaseEngine::Sqlite);
         assert_eq!(
             bound["shop"],
             BTreeSet::from(["events".to_owned(), "main".to_owned()])
         );
         assert!(bound.contains_key("shop_staging") && !bound.contains_key("local"));
-        assert_eq!(binding_envs(&config, "shop"), ["production"]);
+        assert_eq!(
+            binding_envs(&config, "shop", DatabaseEngine::Sqlite),
+            ["production"]
+        );
+    }
+
+    #[test]
+    fn kv_bindings_are_kept_apart_from_database_bindings() {
+        let config = TakoToml::parse(
+            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\ndatabases = { main = \"shop\" }\nkv = { auth = \"sessions\" }\n[envs.staging]\nroute = \"b.example.com\"\nkv = { auth = \"sessions\" }\n",
+        )
+        .unwrap();
+        let stores = project_bindings(&config, DatabaseEngine::Kv);
+        assert_eq!(stores.keys().collect::<Vec<_>>(), ["sessions"]);
+        assert!(!project_bindings(&config, DatabaseEngine::Sqlite).contains_key("sessions"));
+        assert_eq!(
+            binding_envs(&config, "sessions", DatabaseEngine::Kv),
+            ["production", "staging"]
+        );
+        assert!(binding_envs(&config, "sessions", DatabaseEngine::Sqlite).is_empty());
+        assert_eq!(command_name(DatabaseEngine::Kv), "kv");
     }
 
     #[test]
@@ -2212,6 +2471,7 @@ channels.database = "local"
             server: "edge".into(),
             generation: "g".into(),
             created_at_unix_secs: 0,
+            engine: DatabaseEngine::Sqlite,
             channel_owner: owner.map(str::to_owned),
         };
         let records = [
@@ -2220,13 +2480,20 @@ channels.database = "local"
             record("retired", Some("shop/production")),
         ];
         let none = SecretsStore::default();
-        let users = database_users(&config, network, &records, &none, true);
+        let users = database_users(
+            &config,
+            network,
+            &records,
+            &none,
+            true,
+            DatabaseEngine::Sqlite,
+        );
         assert_eq!(users.len(), 2);
         for (db, env) in [("events", "production"), ("generated", "staging")] {
             assert_eq!(users[db].environments, BTreeSet::from([env]));
             assert_eq!(users[db].channel_replay, BTreeSet::from([env]));
         }
-        assert!(project_bindings(&config).is_empty());
+        assert!(project_bindings(&config, DatabaseEngine::Sqlite).is_empty());
         assert!(
             check_replay_delete(&config, network, &records[0], &none, true)
                 .unwrap_err()
@@ -2253,7 +2520,15 @@ channels.database = "local"
             .unwrap();
         assert!(check_replay_delete(&config, network, &records[1], &postgres, true).is_ok());
         assert!(
-            !database_users(&config, network, &records, &postgres, true).contains_key("generated")
+            !database_users(
+                &config,
+                network,
+                &records,
+                &postgres,
+                true,
+                DatabaseEngine::Sqlite
+            )
+            .contains_key("generated")
         );
     }
 }

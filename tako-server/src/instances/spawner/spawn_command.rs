@@ -187,12 +187,14 @@ pub(super) fn spawn_child_process(
     // The OwnedFd must stay alive until after spawn (fork copies the fd table).
     // Return the writer so delivery runs asynchronously under the startup timeout.
     let databases = crate::databases::connections(&config.databases);
+    let kv = crate::databases::kv_connections(&config.databases);
     let (bootstrap_pipe, bootstrap_writer) = create_bootstrap_pipe(
         token,
         tako_core::bootstrap::Bindings {
             secrets,
             storages: &config.storages,
             databases: &databases,
+            kv: &kv,
         },
     )?;
     #[cfg(unix)]

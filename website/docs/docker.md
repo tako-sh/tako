@@ -37,13 +37,13 @@ Tako builds with Podman, starts the image's default command, probes the app, and
 | Health checks                 | SDK-authenticated internal `/status`.                            |
 | Variables and logs            | App environment variables, `TAKO_BUILD`, captured stdout/stderr. |
 | Native fd 3 / fd 4            | Not passed into HTTP containers.                                 |
-| `TAKO_SHARED_DATA_DIR` | Shared data mounted at `/tako/shared-data` on this server. |
-| `TAKO_DATA_DIR`               | Persistent app directory mounted at `/tako/data` by default.      |
+| `TAKO_SHARED_DATA_DIR`        | Shared data mounted at `/tako/shared-data` on this server.       |
+| `TAKO_DATA_DIR`               | Persistent app directory mounted at `/tako/data` by default.     |
 | Internal workflow socket      | Not mounted into HTTP containers in v0.                          |
 
 Using an SDK preserves the runtime contract; binding port 3000 alone is insufficient. Rust/Axum and Go apps use their SDK servers. JavaScript fetch apps start through the packaged SDK entrypoint shown in [Dockerfiles](/dockerfile/).
 
-HTTP containers receive the app data directory, including across replacement and rollback. Manual app-data archives include this directory; SQLite files in it are copied through a consistent SQLite snapshot. Container and Compose releases cannot bind [hosted databases](/databases/) yet. Each server has its own data, and instances on that server share the app directory. App deletion removes this data. Workflow RPC calls from the HTTP process need the internal socket and therefore cannot be assumed to work in this v0 container path. Separate [container workflow workers](/docker-workflows/) receive the socket and the same data mount.
+HTTP containers receive the app data directory, including across replacement and rollback. Manual app-data archives include this directory; SQLite files in it are copied through a consistent SQLite snapshot. Container and Compose releases cannot bind [hosted databases](/databases/) or [KV stores](/kv/) yet. Each server has its own data, and instances on that server share the app directory. App deletion removes this data. Workflow RPC calls from the HTTP process need the internal socket and therefore cannot be assumed to work in this v0 container path. Separate [container workflow workers](/docker-workflows/) receive the socket and the same data mount.
 
 ## Existing images and runtime options
 

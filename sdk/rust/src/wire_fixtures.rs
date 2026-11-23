@@ -227,6 +227,53 @@ fn store_invalidation_with_build_matches_wire_fixture() {
 }
 
 #[test]
+fn kv_commands_match_the_wire_fixtures() {
+    let socket = WireSocket::serve(&[
+        "replies/ok-null.json",
+        "replies/ok-null.json",
+        "replies/cache-hit-null.json",
+        "replies/ok-null.json",
+        "replies/ok-null.json",
+        "replies/error-unavailable.json",
+    ]);
+    let endpoint = crate::kv::Endpoint {
+        socket: socket.path.clone(),
+        app: APP.into(),
+    };
+    let sessions = crate::Kv::new("kv-token-example");
+    sessions
+        .put_blocking_at(
+            &endpoint,
+            "session:1",
+            &json!({"user": "u1"}),
+            Some(Duration::from_secs(86_400)),
+        )
+        .unwrap();
+    sessions
+        .put_blocking_at(&endpoint, "settings", &1, None)
+        .unwrap();
+    // JSON null is a value; a null reply means the key is not set.
+    let stored: Option<Option<String>> = sessions.get_blocking_at(&endpoint, "session:1").unwrap();
+    assert_eq!(stored, Some(None));
+    let missing: Option<Value> = sessions.get_blocking_at(&endpoint, "session:1").unwrap();
+    assert_eq!(missing, None);
+    sessions.delete_blocking_at(&endpoint, "session:1").unwrap();
+    let refused = sessions
+        .put_blocking_at(&endpoint, "session:1", &1, None)
+        .unwrap_err();
+    assert_eq!(ErrorCode::of(&refused), Some(ErrorCode::Unavailable));
+    assert!(
+        refused.to_string().contains("rejected: unavailable"),
+        "{refused}"
+    );
+    let received = socket.received();
+    let expected = ["kv-put", "kv-put-no-ttl", "kv-get", "kv-get", "kv-delete"];
+    for (got, name) in received.iter().zip(expected) {
+        assert_eq!(got, &fixture(&format!("commands/{name}.json")), "{name}");
+    }
+}
+
+#[test]
 fn error_reply_fixtures_map_to_error_codes() {
     let expected = [
         ("error.json", None),
@@ -301,4 +348,8 @@ fn bootstrap_fixture_parses() {
     assert_eq!(main.url(), expected["url"]);
     assert_eq!(main.auth_token(), expected["authToken"]);
     assert!(!format!("{main:?}").contains(main.auth_token()));
+    let sessions = bootstrap.kv("sessions").unwrap();
+    let token = fixture("bootstrap.json")["kv"]["sessions"]["token"].clone();
+    assert_eq!(sessions, &crate::Kv::new(token.as_str().unwrap()));
+    assert!(!format!("{sessions:?}").contains(token.as_str().unwrap()));
 }

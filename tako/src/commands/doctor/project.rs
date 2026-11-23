@@ -145,7 +145,7 @@ pub(super) fn checks(
             }
         }
 
-        if !env.databases.is_empty() {
+        if !env.databases.is_empty() || !env.kv.is_empty() {
             match env
                 .network_id
                 .as_ref()
@@ -161,6 +161,12 @@ pub(super) fn checks(
                     for binding in env.databases.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
                             "{}: {} uses {}, which has no network record; create it with `tako sqlite create {}`",
+                            env.name, binding.usage.label(), binding.database, binding.database
+                        ));
+                    }
+                    for binding in env.kv.iter().filter(|db| db.server.is_none()) {
+                        databases.warnings.push(format!(
+                            "{}: {} binds KV store {}, which has no network record; create it with `tako kv create {}`",
                             env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }
@@ -262,6 +268,7 @@ mod tests {
                 database: "orders".into(),
                 server: database_server.map(str::to_owned),
             }],
+            kv: vec![],
             note: None,
         }
     }
