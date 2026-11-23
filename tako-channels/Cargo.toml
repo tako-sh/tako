@@ -15,7 +15,7 @@ subtle = "2.6"
 pingora-core = { version = "0.9", default-features = false, features = ["openssl"] }
 pingora-proxy = { version = "0.9", default-features = false, features = ["openssl"] }
 pingora-http = "0.9"
-jsonschema = { version = "0.60.0", default-features = false }
+jsonschema = { version = "0.63.0", default-features = false }
 parking_lot = "0.13"
 percent-encoding = "2.3"
 postgres = "0.19"
