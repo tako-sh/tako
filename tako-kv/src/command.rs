@@ -389,7 +389,10 @@ pub(crate) enum Cmd {
         kind: Option<Option<KeyType>>,
     },
     DbSize,
-    Flush,
+    /// `FLUSHDB`/`FLUSHALL`; `ASYNC` frees the old data in the background.
+    Flush {
+        lazy: bool,
+    },
     HSet {
         key: Bytes,
         pairs: Vec<(Bytes, Bytes)>,
@@ -530,7 +533,7 @@ impl Cmd {
             Self::HMGet { key, fields } | Self::HDel { key, fields } => {
                 std::iter::once(key).chain(fields.iter()).collect()
             }
-            Self::Keys(_) | Self::Scan { .. } | Self::DbSize | Self::Flush => Vec::new(),
+            Self::Keys(_) | Self::Scan { .. } | Self::DbSize | Self::Flush { .. } => Vec::new(),
         }
     }
 
@@ -761,7 +764,9 @@ fn parse_args(name: &'static str, args: &[Bytes]) -> Result<Cmd, Reply> {
             if a.len() > 2 || a.get(1).is_some_and(|m| !is(m, "sync") && !is(m, "async")) {
                 return Err(err(SYNTAX));
             }
-            Cmd::Flush
+            Cmd::Flush {
+                lazy: a.get(1).is_some_and(|m| is(m, "async")),
+            }
         }
         "hset" | "hmset" => Cmd::HSet {
             key: a[1].clone(),

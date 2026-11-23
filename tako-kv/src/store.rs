@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use redb::{
-    ConcurrencyMode, Database, ReadableDatabase, ReadableTable, Table, TableDefinition,
-    backends::FileBackend,
+    ConcurrencyMode, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table,
+    TableDefinition, backends::FileBackend,
 };
 
 use crate::command::{
@@ -29,14 +29,76 @@ use crate::command::{
 use crate::glob;
 use crate::resp::Reply;
 
+// The data tables are named for the store's generation, as `keys.0` and
+// so on. `FLUSHDB` moves the store to a new generation of empty tables and
+// deletes the old ones: at once, or with `ASYNC`, a step at a time in the
+// background, so other writes do not wait for them.
+
 /// Keys by `slot || key`, where the slot is a hash of the key, so `SCAN`
 /// cursors are numbers. Values encode the key's type, expiry and version.
-const KEYS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("keys");
-/// Hash fields by `len(key) || key || field`.
-const FIELDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("fields");
+const KEYS: &str = "keys";
+/// Hash fields by `len(key) || key || slot || field`.
+const FIELDS: &str = "fields";
 /// Keys with an expiry, by `expires_at || key`.
-const EXPIRY: TableDefinition<&[u8], ()> = TableDefinition::new("expiry");
+const EXPIRY: &str = "expiry";
+/// Totals, the current generation, and the generation being freed.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+
+type DataTable<'n> = TableDefinition<'n, &'static [u8], &'static [u8]>;
+type IndexTable<'n> = TableDefinition<'n, &'static [u8], ()>;
+
+/// A data table's name in `generation`.
+fn table_name(table: &str, generation: u64) -> String {
+    format!("{table}.{generation}")
+}
+
+fn open_data<'t>(
+    txn: &'t redb::WriteTransaction,
+    table: &str,
+    generation: u64,
+) -> Result<Table<'t, &'static [u8], &'static [u8]>> {
+    txn.open_table(DataTable::new(&table_name(table, generation)))
+        .map_err(storage)
+}
+
+fn open_index(
+    txn: &redb::WriteTransaction,
+    generation: u64,
+) -> Result<Table<'_, &'static [u8], ()>> {
+    txn.open_table(IndexTable::new(&table_name(EXPIRY, generation)))
+        .map_err(storage)
+}
+
+/// Deletes a generation's tables, which must not be open.
+fn delete_generation(txn: &redb::WriteTransaction, generation: u64) -> Result<()> {
+    for table in [KEYS, FIELDS] {
+        txn.delete_table(DataTable::new(&table_name(table, generation)))
+            .map_err(storage)?;
+    }
+    txn.delete_table(IndexTable::new(&table_name(EXPIRY, generation)))
+        .map_err(storage)?;
+    Ok(())
+}
+
+/// Removes entries from the front of `table` while `budget` (entries,
+/// bytes) lasts. Returns whether the table is empty.
+fn drain_table<V: redb::Value + 'static>(
+    table: &mut Table<'_, &'static [u8], V>,
+    budget: &mut (usize, usize),
+) -> Result<bool> {
+    let mut removed = table.extract_if(.., |_, _| true).map_err(storage)?;
+    while budget.0 > 0 && budget.1 > 0 {
+        let Some(item) = removed.next() else {
+            break;
+        };
+        let (key, value) = item.map_err(storage)?;
+        let size = key.value().len() + V::as_bytes(&value.value()).as_ref().len();
+        budget.0 -= 1;
+        budget.1 = budget.1.saturating_sub(size);
+    }
+    removed.close().map_err(storage)?;
+    table.is_empty().map_err(storage)
+}
 
 const ENTRY_HEADER: usize = 17;
 /// Overhead charged for each key and each hash field, so many tiny entries
@@ -60,6 +122,12 @@ const SWEEP_BYTES: usize = 1024 * 1024;
 /// Bytes of fields `RENAME` moves at a time, so a large hash is never all
 /// in memory.
 const MOVE_CHUNK: usize = 1024 * 1024;
+/// Entries of a generation `FLUSHDB ASYNC` left behind that are freed
+/// alongside other writes, and by a periodic step, with at most
+/// `DRAIN_BYTES` of keys and values in a step.
+const DRAIN_WITH_WRITES: usize = 1_000;
+const DRAIN_ALONE: usize = 10_000;
+const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -446,10 +514,10 @@ fn open_database(path: &Path, cache_bytes: usize) -> Result<Database> {
         .create_with_backend(FileBackend::new(file))
         .map_err(storage)?;
     let txn = db.begin_write().map_err(storage)?;
-    txn.open_table(KEYS).map_err(storage)?;
-    txn.open_table(FIELDS).map_err(storage)?;
-    txn.open_table(EXPIRY).map_err(storage)?;
-    txn.open_table(META).map_err(storage)?;
+    let (generation, _) = read_generations(&txn.open_table(META).map_err(storage)?)?;
+    open_data(&txn, KEYS, generation)?;
+    open_data(&txn, FIELDS, generation)?;
+    open_index(&txn, generation)?;
     txn.commit().map_err(storage)?;
     Ok(db)
 }
@@ -699,6 +767,14 @@ fn each_key<T: ReadableTable<&'static [u8], &'static [u8]>>(
     Ok(())
 }
 
+/// The store's current generation, and the one being freed, if any.
+fn read_generations<T: ReadableTable<&'static str, u64>>(meta: &T) -> Result<(u64, Option<u64>)> {
+    let get = |name: &str| -> Result<Option<u64>> {
+        Ok(meta.get(name).map_err(storage)?.map(|v| v.value()))
+    };
+    Ok((get("generation")?.unwrap_or(0), get("trash")?))
+}
+
 fn read_stats<T: ReadableTable<&'static str, u64>>(meta: &T) -> Result<Stats> {
     let get = |name: &str| -> Result<u64> {
         Ok(meta.get(name).map_err(storage)?.map_or(0, |v| v.value()))
@@ -720,10 +796,16 @@ struct ReadView {
 impl ReadView {
     fn open(db: &Database) -> Result<Self> {
         let txn = db.begin_read().map_err(storage)?;
+        let meta = txn.open_table(META).map_err(storage)?;
+        let (generation, _) = read_generations(&meta)?;
+        let open = |table: &str| {
+            txn.open_table(DataTable::new(&table_name(table, generation)))
+                .map_err(storage)
+        };
         Ok(Self {
-            keys: txn.open_table(KEYS).map_err(storage)?,
-            fields: txn.open_table(FIELDS).map_err(storage)?,
-            stats: read_stats(&txn.open_table(META).map_err(storage)?)?,
+            keys: open(KEYS)?,
+            fields: open(FIELDS)?,
+            stats: read_stats(&meta)?,
         })
     }
 }
@@ -747,6 +829,11 @@ impl View for ReadView {
 }
 
 struct WriteView<'t> {
+    txn: &'t redb::WriteTransaction,
+    /// The generation `keys`, `fields` and `expiry` belong to, and the one
+    /// an `ASYNC` flush left to free, if any.
+    generation: u64,
+    trash: Option<u64>,
     keys: Table<'t, &'static [u8], &'static [u8]>,
     fields: Table<'t, &'static [u8], &'static [u8]>,
     expiry: Table<'t, &'static [u8], ()>,
@@ -781,10 +868,14 @@ impl<'t> WriteView<'t> {
     fn open(txn: &'t redb::WriteTransaction) -> Result<Self> {
         let meta = txn.open_table(META).map_err(storage)?;
         let stats = read_stats(&meta)?;
+        let (generation, trash) = read_generations(&meta)?;
         Ok(Self {
-            keys: txn.open_table(KEYS).map_err(storage)?,
-            fields: txn.open_table(FIELDS).map_err(storage)?,
-            expiry: txn.open_table(EXPIRY).map_err(storage)?,
+            txn,
+            generation,
+            trash,
+            keys: open_data(txn, KEYS, generation)?,
+            fields: open_data(txn, FIELDS, generation)?,
+            expiry: open_index(txn, generation)?,
             meta,
             stats,
             dirty: false,
@@ -810,9 +901,15 @@ impl<'t> WriteView<'t> {
                 ("keys", self.stats.keys),
                 ("expires", self.stats.expires),
                 ("seq", self.stats.seq),
+                ("generation", self.generation),
             ] {
                 self.meta.insert(name, value).map_err(storage)?;
             }
+            match self.trash {
+                Some(trash) => self.meta.insert("trash", trash).map(drop),
+                None => self.meta.remove("trash").map(drop),
+            }
+            .map_err(storage)?;
         }
         Ok(())
     }
@@ -945,17 +1042,50 @@ impl<'t> WriteView<'t> {
         Ok(true)
     }
 
-    fn flush_all(&mut self) -> Result<()> {
+    /// Empties the store by moving it to a new generation of empty tables.
+    /// The old generation's tables are deleted now, or when `lazy`, left
+    /// for [`Self::drain`]. Only one generation waits to be freed: one an
+    /// earlier flush left is deleted now.
+    fn flush_all(&mut self, lazy: bool) -> Result<()> {
         self.dirty = true;
-        self.keys.retain(|_, _| false).map_err(storage)?;
-        self.fields.retain(|_, _| false).map_err(storage)?;
-        self.expiry.retain(|_, _| false).map_err(storage)?;
+        let old = self.generation;
+        self.generation += 1;
+        // Assigning closes the old tables, so they can be deleted.
+        self.keys = open_data(self.txn, KEYS, self.generation)?;
+        self.fields = open_data(self.txn, FIELDS, self.generation)?;
+        self.expiry = open_index(self.txn, self.generation)?;
+        if let Some(trash) = self.trash.take() {
+            delete_generation(self.txn, trash)?;
+        }
+        if lazy {
+            self.trash = Some(old);
+        } else {
+            delete_generation(self.txn, old)?;
+        }
         self.stats = Stats {
             seq: self.stats.seq + 1,
             ..Stats::default()
         };
         self.flushed = Some(self.stats.seq);
         Ok(())
+    }
+
+    /// Frees up to `limit` entries of the generation an `ASYNC` flush left,
+    /// and its tables once they are empty. Returns whether any is left.
+    fn drain(&mut self, limit: usize) -> Result<bool> {
+        let Some(trash) = self.trash else {
+            return Ok(false);
+        };
+        self.dirty = true;
+        let mut budget = (limit, DRAIN_BYTES);
+        let mut empty = drain_table(&mut open_data(self.txn, KEYS, trash)?, &mut budget)?;
+        empty &= drain_table(&mut open_data(self.txn, FIELDS, trash)?, &mut budget)?;
+        empty &= drain_table(&mut open_index(self.txn, trash)?, &mut budget)?;
+        if empty {
+            delete_generation(self.txn, trash)?;
+            self.trash = None;
+        }
+        Ok(!empty)
     }
 
     /// Removes up to `limit` expired keys. Returns whether more remain.
@@ -1352,20 +1482,176 @@ fn read<V: View + ?Sized>(
     })
 }
 
-fn grows(cmd: &Cmd) -> bool {
-    matches!(
-        cmd,
-        Cmd::Set { .. }
-            | Cmd::SetNx { .. }
-            | Cmd::MSet { .. }
-            | Cmd::Append { .. }
-            | Cmd::IncrBy { .. }
-            | Cmd::IncrByFloat { .. }
-            | Cmd::HSet { .. }
-            | Cmd::HSetNx { .. }
-            | Cmd::HIncrBy { .. }
-            | Cmd::HIncrByFloat { .. }
-    )
+/// The bytes a key holds, its hash fields included.
+fn stored_weight(key: &[u8], entry: &Entry) -> u64 {
+    key_weight(key, entry)
+        + match entry.kind {
+            KeyType::Hash => entry.fields().1,
+            KeyType::String => 0,
+        }
+}
+
+/// What setting `key` to a string of `len` bytes adds, replacing `old`.
+fn string_growth(key: &[u8], len: usize, old: Option<&Entry>) -> i64 {
+    let added = KEY_OVERHEAD + 2 * key.len() as u64 + len as u64;
+    added as i64 - old.map_or(0, |old| stored_weight(key, old)) as i64
+}
+
+/// What setting a hash field to a value of `len` bytes adds, replacing
+/// `old`.
+fn field_growth(key: &[u8], field: &[u8], len: usize, old: Option<&[u8]>) -> i64 {
+    let added = FIELD_OVERHEAD + (key.len() + field.len() + len) as u64;
+    added as i64 - old.map_or(0, |old| field_weight(key, field, old)) as i64
+}
+
+/// The bytes a command that can add data would add if it ran now, less
+/// what it would free; 0 when it would fail or change nothing. A full
+/// store runs such a command only when this is at most 0, so overwriting a
+/// value with one no larger still works. Other commands add nothing.
+fn growth<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64) -> Result<i64> {
+    Ok(match cmd {
+        Cmd::Set {
+            key,
+            value,
+            condition,
+            get,
+            ..
+        } => {
+            let old = live(view, key, now)?;
+            let applies = match condition {
+                SetCondition::Always => true,
+                SetCondition::IfMissing => old.is_none(),
+                SetCondition::IfExists => old.is_some(),
+            };
+            let wrong_type = *get && old.as_ref().is_some_and(|old| old.kind != KeyType::String);
+            if applies && !wrong_type {
+                string_growth(key, value.len(), old.as_ref())
+            } else {
+                0
+            }
+        }
+        Cmd::SetNx { key, value } => match live(view, key, now)? {
+            Some(_) => 0,
+            None => string_growth(key, value.len(), None),
+        },
+        Cmd::MSet { pairs, only_new } => {
+            // The last value given for a key is the one it keeps.
+            let last: HashMap<&[u8], usize> = pairs
+                .iter()
+                .map(|(key, value)| (key.as_ref(), value.len()))
+                .collect();
+            let mut total = 0;
+            for (key, len) in last {
+                let old = live(view, key, now)?;
+                if *only_new && old.is_some() {
+                    return Ok(0);
+                }
+                total += string_growth(key, len, old.as_ref());
+            }
+            total
+        }
+        Cmd::Append { key, value } => match live(view, key, now)? {
+            Some(old) if old.kind == KeyType::String => value.len() as i64,
+            Some(_) => 0,
+            None => string_growth(key, value.len(), None),
+        },
+        Cmd::IncrBy { key, by } => match live(view, key, now)? {
+            Some(old) if old.kind == KeyType::String => command::int(&old.data)
+                .and_then(|current| current.checked_add(*by))
+                .map_or(0, |next| {
+                    next.to_string().len() as i64 - old.data.len() as i64
+                }),
+            Some(_) => 0,
+            None => string_growth(key, by.to_string().len(), None),
+        },
+        Cmd::IncrByFloat { key, by } => {
+            let old = match live(view, key, now)? {
+                Some(old) if old.kind != KeyType::String => return Ok(0),
+                old => old,
+            };
+            let current = match &old {
+                Some(old) => command::float(&old.data),
+                None => Some(0.0),
+            };
+            match current.map(|current| current + by) {
+                Some(next) if next.is_finite() => {
+                    string_growth(key, format_float(next).len(), old.as_ref())
+                }
+                _ => 0,
+            }
+        }
+        Cmd::HSet { key, .. }
+        | Cmd::HSetNx { key, .. }
+        | Cmd::HIncrBy { key, .. }
+        | Cmd::HIncrByFloat { key, .. } => {
+            let hash = match live(view, key, now)? {
+                Some(old) if old.kind != KeyType::Hash => return Ok(0),
+                hash => hash,
+            };
+            let field = |field: &[u8]| -> Result<Option<Vec<u8>>> {
+                match hash {
+                    Some(_) => view.field(key, field),
+                    None => Ok(None),
+                }
+            };
+            // A new hash adds its key as well as its fields.
+            let mut total = match hash {
+                Some(_) => 0,
+                None => key_weight(key, &Entry::hash()) as i64,
+            };
+            match cmd {
+                Cmd::HSet { pairs, .. } => {
+                    let last: HashMap<&[u8], usize> = pairs
+                        .iter()
+                        .map(|(field, value)| (field.as_ref(), value.len()))
+                        .collect();
+                    for (name, len) in last {
+                        total += field_growth(key, name, len, field(name)?.as_deref());
+                    }
+                }
+                Cmd::HSetNx {
+                    field: name, value, ..
+                } => {
+                    if field(name)?.is_some() {
+                        return Ok(0);
+                    }
+                    total += field_growth(key, name, value.len(), None);
+                }
+                Cmd::HIncrBy {
+                    field: name, by, ..
+                } => {
+                    let old = field(name)?;
+                    let next = match &old {
+                        Some(old) => command::int(old).and_then(|current| current.checked_add(*by)),
+                        None => Some(*by),
+                    };
+                    let Some(next) = next else {
+                        return Ok(0);
+                    };
+                    total += field_growth(key, name, next.to_string().len(), old.as_deref());
+                }
+                Cmd::HIncrByFloat {
+                    field: name, by, ..
+                } => {
+                    let old = field(name)?;
+                    let current = match &old {
+                        Some(old) => command::float(old),
+                        None => Some(0.0),
+                    };
+                    let Some(next) = current
+                        .map(|current| current + by)
+                        .filter(|n| n.is_finite())
+                    else {
+                        return Ok(0);
+                    };
+                    total += field_growth(key, name, format_float(next).len(), old.as_deref());
+                }
+                _ => unreachable!(),
+            }
+            total
+        }
+        _ => 0,
+    })
 }
 
 fn invalid_expire(name: &str) -> Reply {
@@ -1383,7 +1669,7 @@ fn write(
     if !cmd.writes() {
         return read(w, cmd, now, config, page);
     }
-    if grows(cmd) && w.stats.bytes >= config.max_bytes {
+    if w.stats.bytes >= config.max_bytes && growth(&*w, cmd, now)? > 0 {
         return Ok(Reply::error(OOM));
     }
     let max_value = config.limits.max_value_bytes;
@@ -1624,8 +1910,8 @@ fn write(
             w.put(to, None, moved)?;
             if *only_new { Reply::Int(1) } else { Reply::Ok }
         }
-        Cmd::Flush => {
-            w.flush_all()?;
+        Cmd::Flush { lazy } => {
+            w.flush_all(*lazy)?;
             Reply::Ok
         }
         Cmd::HSet { key, pairs, ok } => {
@@ -1795,7 +2081,7 @@ fn writer(
             }
         }
         let sweep = Instant::now() >= next_sweep;
-        if batch.is_empty() && (!sweep || !has_expired(&db, (config.clock)())) {
+        if batch.is_empty() && (!sweep || !has_cleanup(&db, (config.clock)())) {
             if sweep {
                 next_sweep = Instant::now() + SWEEP_INTERVAL;
             }
@@ -1833,10 +2119,17 @@ fn writer(
     }
 }
 
-fn has_expired(db: &Database, now: u64) -> bool {
+/// Whether a sweep has work: expired keys, or a flushed generation to free.
+fn has_cleanup(db: &Database, now: u64) -> bool {
     let check = || -> Result<bool> {
         let txn = db.begin_read().map_err(storage)?;
-        let expiry = txn.open_table(EXPIRY).map_err(storage)?;
+        let (generation, trash) = read_generations(&txn.open_table(META).map_err(storage)?)?;
+        if trash.is_some() {
+            return Ok(true);
+        }
+        let expiry = txn
+            .open_table(IndexTable::new(&table_name(EXPIRY, generation)))
+            .map_err(storage)?;
         Ok(expiry.first().map_err(storage)?.is_some_and(|(id, _)| {
             let id = id.value();
             u64::from_be_bytes(id[..8].try_into().unwrap()) <= now
@@ -1913,14 +2206,13 @@ fn apply(
                 }
             });
         }
-        let more = w.sweep(
-            now,
-            if sweep {
-                SWEEP_ALONE
-            } else {
-                SWEEP_WITH_WRITES
-            },
-        )? && sweep;
+        let (expired, trash) = if sweep {
+            (SWEEP_ALONE, DRAIN_ALONE)
+        } else {
+            (SWEEP_WITH_WRITES, DRAIN_WITH_WRITES)
+        };
+        let more = w.sweep(now, expired)? && sweep;
+        let more = w.drain(trash)? || more;
         w.flush()?;
         (w.dirty, more, std::mem::take(&mut w.removed), w.flushed)
     };

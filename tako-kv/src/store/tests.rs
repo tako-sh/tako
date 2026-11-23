@@ -311,8 +311,11 @@ async fn large_hashes_and_expiring_keys_move_in_bounded_steps() {
 }
 
 #[tokio::test]
-async fn full_stores_refuse_growth_but_allow_removal() {
+async fn full_stores_refuse_only_writes_that_would_grow_them() {
     let f = fixture(4096);
+    f.run("SET n 10").await;
+    f.run("SET float 1.5").await;
+    f.run("HSET h a xx c 5").await;
     let value = "x".repeat(500);
     let mut refused = false;
     for i in 0..20 {
@@ -327,9 +330,165 @@ async fn full_stores_refuse_growth_but_allow_removal() {
         }
     }
     assert!(refused);
-    assert_eq!(f.run("HSET h a b").await, Reply::error(OOM));
+    let full = f.stats().await.bytes;
+    assert!(full >= 4096);
+    // Overwrites that are no larger work; larger ones and new keys do not.
+    assert_eq!(
+        f.run(&format!("SET k0 {}", "y".repeat(500))).await,
+        Reply::Ok
+    );
+    assert_eq!(
+        f.run(&format!("SET k0 {}", "x".repeat(400))).await,
+        Reply::Ok
+    );
+    assert_eq!(f.stats().await.bytes, full - 100);
+    let oom = Reply::error(OOM);
+    assert_eq!(f.run(&format!("SET k0 {}", "x".repeat(401))).await, oom);
+    assert_eq!(f.run("SET new v").await, oom);
+    // Writes that would change nothing reply as usual.
+    assert_eq!(f.run("SET k1 v NX").await, Reply::Nil);
+    assert_eq!(f.run("SET new v XX").await, Reply::Nil);
+    assert_eq!(f.run("SETNX k1 v").await, Reply::Int(0));
+    // MSET counts each key's last value, and its keys together.
+    let (big, small) = ("x".repeat(600), "x".repeat(400));
+    assert_eq!(f.run(&format!("MSET k1 {big} k1 {value}")).await, Reply::Ok);
+    assert_eq!(f.run(&format!("MSET k1 {small} k2 {big}")).await, Reply::Ok);
+    assert_eq!(f.run(&format!("MSET k3 {big}")).await, oom);
+    assert_eq!(f.run("MSET new v").await, oom);
+    // Counters may keep or lose digits, not gain them.
+    assert_eq!(f.run("INCR n").await, Reply::Int(11));
+    assert_eq!(f.run("DECRBY n 2").await, Reply::Int(9));
+    assert_eq!(f.run("INCRBY n 1000").await, oom);
+    assert_eq!(f.run("INCRBYFLOAT float 1").await, bulk("2.5"));
+    assert_eq!(f.run("INCRBYFLOAT float 0.25").await, oom);
+    assert_eq!(f.run("APPEND k0 x").await, oom);
+    // Hash fields work the same way.
+    assert_eq!(f.run("HSET h a yy").await, Reply::Int(0));
+    assert_eq!(f.run("HSET h b z").await, oom);
+    assert_eq!(f.run("HSETNX h a q").await, Reply::Int(0));
+    assert_eq!(f.run("HINCRBY h c 1").await, Reply::Int(6));
+    assert_eq!(f.run("HINCRBY h c 10").await, oom);
+    assert_eq!(f.run("HSET g a b").await, oom);
+    assert_eq!(f.run("HGET h a").await, bulk("yy"));
+    // Removing keys makes room again.
     assert!(matches!(f.run("DEL k0 k1 k2").await, Reply::Int(3)));
     assert_eq!(f.run(&format!("SET k0 {value}")).await, Reply::Ok);
+    assert_eq!(f.run("HSET g a b").await, Reply::Int(1));
+}
+
+/// Strings, a hash and expiries: entries in every data table.
+async fn fill(f: &Fixture, keys: usize) {
+    for chunk in 0..keys / 100 {
+        let pairs: Vec<String> = (0..100)
+            .map(|i| format!("k{} v", chunk * 100 + i))
+            .collect();
+        f.run(&format!("MSET {}", pairs.join(" "))).await;
+    }
+    let fields: Vec<String> = (0..100).map(|i| format!("f{i} v")).collect();
+    f.run(&format!("HSET h {}", fields.join(" "))).await;
+    for i in 0..100 {
+        f.run(&format!("EXPIRE k{i} 100")).await;
+    }
+}
+
+/// The current generation, the one being freed, and the tables in the file.
+fn layout(db: &Database) -> (u64, Option<u64>, BTreeSet<String>) {
+    use redb::TableHandle;
+    let txn = db.begin_read().unwrap();
+    let (generation, trash) = read_generations(&txn.open_table(META).unwrap()).unwrap();
+    let tables = txn
+        .list_tables()
+        .unwrap()
+        .map(|table| table.name().to_string())
+        .collect();
+    (generation, trash, tables)
+}
+
+fn tables_of(generations: &[u64]) -> BTreeSet<String> {
+    let mut tables = BTreeSet::from(["meta".to_string()]);
+    for &generation in generations {
+        for table in [KEYS, FIELDS, EXPIRY] {
+            tables.insert(table_name(table, generation));
+        }
+    }
+    tables
+}
+
+#[tokio::test]
+async fn flushes_empty_the_store_at_once_and_free_the_old_tables() {
+    let f = fixture(1 << 30);
+    fill(&f, 3_000).await;
+    // SYNC deletes the old tables before it replies.
+    assert_eq!(f.run("FLUSHDB").await, Reply::Ok);
+    assert_eq!(layout(&f.store.db().unwrap()), (1, None, tables_of(&[1])));
+    fill(&f, 3_000).await;
+    // ASYNC empties the store as it replies, and frees the old tables in
+    // the background.
+    assert_eq!(f.run("FLUSHALL ASYNC").await, Reply::Ok);
+    assert_eq!(f.run("DBSIZE").await, Reply::Int(0));
+    assert_eq!(f.run("GET k0").await, Reply::Nil);
+    assert_eq!(f.run("HGET h f0").await, Reply::Nil);
+    let stats = f.stats().await;
+    assert_eq!((stats.keys, stats.expires, stats.bytes), (0, 0, 0));
+    assert_eq!(f.run("SET k0 new").await, Reply::Ok);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while layout(&f.store.db().unwrap()).1.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the flushed tables were not freed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(layout(&f.store.db().unwrap()), (2, None, tables_of(&[2])));
+    assert_eq!(f.run("GET k0").await, bulk("new"));
+    assert_eq!(f.run("DBSIZE").await, Reply::Int(1));
+}
+
+/// Runs `work` in a write transaction and commits it.
+fn step(db: &Database, work: impl FnOnce(&mut WriteView<'_>) -> Result<bool>) -> bool {
+    let txn = db.begin_write().unwrap();
+    let more = {
+        let mut w = WriteView::open(&txn).unwrap();
+        let more = work(&mut w).unwrap();
+        w.flush().unwrap();
+        more
+    };
+    txn.commit().unwrap();
+    more
+}
+
+#[tokio::test]
+async fn flushed_tables_are_freed_a_bounded_step_at_a_time() {
+    let f = fixture(1 << 30);
+    // 2,501 keys, 100 fields and 100 expiries.
+    fill(&f, 2_500).await;
+    f.store.close().await;
+    let db = open_database(&f.path, 1 << 20).unwrap();
+    step(&db, |w| w.flush_all(true).map(|()| false));
+    assert_eq!(layout(&db), (1, Some(0), tables_of(&[0, 1])));
+    let mut steps = 1;
+    while step(&db, |w| w.drain(1_000)) {
+        steps += 1;
+    }
+    assert_eq!(steps, 3);
+    assert_eq!(layout(&db), (1, None, tables_of(&[1])));
+    // Only one generation waits: a flush while one does deletes it.
+    step(&db, |w| w.flush_all(true).map(|()| false));
+    step(&db, |w| w.flush_all(true).map(|()| false));
+    assert_eq!(layout(&db), (3, Some(2), tables_of(&[2, 3])));
+    drop(db);
+    // A store reopened with a generation to free goes on freeing it.
+    let store = Store::open(&f.path, config(&f.now, 1 << 30)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while layout(&store.db().unwrap()).1.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the flushed tables were not freed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(layout(&store.db().unwrap()), (3, None, tables_of(&[3])));
+    assert_eq!(store.stats().await.unwrap().keys, 0);
 }
 
 /// Reads `keys` for a transaction, as `WATCH` does.
