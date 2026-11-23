@@ -1,61 +1,8 @@
 //! A run waiting on another run's outcome (a parent on its child): woken by
-//! every transition that finishes the child, never missed in a race. Every
-//! contract runs against SQLite, the hosted store and, when
-//! `TAKO_TEST_POSTGRES_URL` is set, Postgres.
+//! every transition that finishes the child, never missed in a race.
 
 use super::*;
 use tako_core::ErrorCode;
-
-type Open<'a> = &'a dyn Fn() -> RunsDb;
-
-macro_rules! every_store {
-    ($($name:ident),* $(,)?) => {
-        mod sqlite_store {
-            use super::RunsDb;
-            $(
-                #[test]
-                fn $name() {
-                    let dir = tempfile::tempdir().unwrap();
-                    let path = dir.path().join("runs.sqlite");
-                    super::$name(&|| RunsDb::open(&path).unwrap());
-                }
-            )*
-        }
-        mod hosted_store {
-            $(
-                #[test]
-                fn $name() {
-                    let fixture = crate::enqueue::HostedFixture::start();
-                    super::$name(&|| fixture.open("app"));
-                }
-            )*
-        }
-        mod postgres_store {
-            use super::RunsDb;
-            $(
-                #[test]
-                fn $name() {
-                    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-                        return;
-                    };
-                    let app = format!("child-wait-test/{}", nanoid::nanoid!());
-                    super::$name(&|| RunsDb::open_postgres(&url, &app).unwrap());
-                }
-            )*
-        }
-    };
-}
-
-every_store!(
-    a_parent_is_woken_with_the_outcome_when_its_child_succeeds,
-    every_finishing_transition_wakes_the_parent,
-    a_child_retry_does_not_wake_the_parent,
-    a_finished_missing_or_foreign_child_satisfies_the_wait_at_once,
-    an_expired_wait_saves_null,
-    a_child_finishing_while_the_parent_parks_always_wakes_it,
-    a_child_finishing_after_the_deadline_leaves_the_wait_timed_out,
-    a_child_that_finished_after_the_deadline_times_out_a_late_registered_wait,
-);
 
 const PARENT: &str = "parent";
 const CHILD: &str = "child";
@@ -91,7 +38,10 @@ fn outcome(db: &RunsDb) -> serde_json::Value {
     run.step_state["outcome"].clone()
 }
 
-fn a_parent_is_woken_with_the_outcome_when_its_child_succeeds(open: Open) {
+#[test]
+fn a_parent_is_woken_with_the_outcome_when_its_child_succeeds() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let (parent, child) = park_parent(&db, "ok", None);
     let waits = db.get_run(&parent).unwrap().unwrap().waits;
@@ -108,7 +58,10 @@ fn a_parent_is_woken_with_the_outcome_when_its_child_succeeds(open: Open) {
     assert!(db.get_run(&parent).unwrap().unwrap().waits.is_empty());
 }
 
-fn every_finishing_transition_wakes_the_parent(open: Open) {
+#[test]
+fn every_finishing_transition_wakes_the_parent() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
 
     let (_, child) = park_parent(&db, "bail", None);
@@ -153,7 +106,10 @@ fn claim_owner(db: &RunsDb, id: &str) -> String {
         .unwrap_or_default()
 }
 
-fn a_child_retry_does_not_wake_the_parent(open: Open) {
+#[test]
+fn a_child_retry_does_not_wake_the_parent() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let (parent, child) = park_parent(&db, "retry", None);
     let run = claim(&db, CHILD).unwrap();
@@ -169,7 +125,10 @@ fn a_child_retry_does_not_wake_the_parent(open: Open) {
     assert_eq!(db.get_run(&parent).unwrap().unwrap().waits.len(), 1);
 }
 
-fn a_finished_missing_or_foreign_child_satisfies_the_wait_at_once(open: Open) {
+#[test]
+fn a_finished_missing_or_foreign_child_satisfies_the_wait_at_once() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let child = enqueue(&db, CHILD, "done-child", None);
     let run = claim(&db, CHILD).unwrap();
@@ -215,7 +174,10 @@ fn a_finished_missing_or_foreign_child_satisfies_the_wait_at_once(open: Open) {
     assert_eq!(error.socket_code(), Some(ErrorCode::InvalidRequest));
 }
 
-fn an_expired_wait_saves_null(open: Open) {
+#[test]
+fn an_expired_wait_saves_null() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let child = enqueue(&db, CHILD, "slow-child", None);
     let parent = enqueue(&db, PARENT, "impatient", None);
@@ -240,7 +202,10 @@ fn an_expired_wait_saves_null(open: Open) {
 
 /// A parent parking and its child finishing on separate connections, in
 /// either order: the parent must end up due with the child's outcome.
-fn a_child_finishing_while_the_parent_parks_always_wakes_it(open: Open) {
+#[test]
+fn a_child_finishing_while_the_parent_parks_always_wakes_it() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let parent_db = open();
     let child_db = open();
     for round in 0..40 {
@@ -284,7 +249,10 @@ fn a_child_finishing_while_the_parent_parks_always_wakes_it(open: Open) {
 
 /// A wait past its deadline times out even when the child finishes before
 /// the parent is claimed: the outcome may not depend on claim latency.
-fn a_child_finishing_after_the_deadline_leaves_the_wait_timed_out(open: Open) {
+#[test]
+fn a_child_finishing_after_the_deadline_leaves_the_wait_timed_out() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let child = enqueue(&db, CHILD, "late-child", None);
     let parent = enqueue(&db, PARENT, "late-parent", None);
@@ -308,7 +276,10 @@ fn a_child_finishing_after_the_deadline_leaves_the_wait_timed_out(open: Open) {
 /// The parent registers its wait after its deadline (a worker still
 /// finishing sibling steps): a child that finished in time gives its
 /// outcome, one that finished after the deadline leaves the wait timed out.
-fn a_child_that_finished_after_the_deadline_times_out_a_late_registered_wait(open: Open) {
+#[test]
+fn a_child_that_finished_after_the_deadline_times_out_a_late_registered_wait() {
+    let store = HostedFixture::start();
+    let open = || store.open("app");
     let db = open();
     let late = enqueue(&db, CHILD, "finished-late", None);
     let run = claim(&db, CHILD).unwrap();

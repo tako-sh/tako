@@ -5,7 +5,7 @@
       "additionalProperties": false,
       "properties": {
         "storage": {
-          "description": "Private S3-compatible storage resource used for app data backups.",
+          "description": "Private S3-compatible storage resource that receives the backups of\nthe hosted databases and KV stores this environment binds, unless\n`[db.<name>]` or `[kv.<name>]` names another.",
           "type": "string"
         }
       },
@@ -197,7 +197,7 @@
       "properties": {
         "backup": {
           "$ref": "#/$defs/BackupConfig",
-          "description": "Private storage for manual app-directory archives (`tako backup now`)."
+          "description": "Default backup storage of the hosted databases and KV stores this\nenvironment binds."
         },
         "channels": {
           "$ref": "#/$defs/ChannelsConfig",
@@ -269,6 +269,10 @@
           "default": {},
           "description": "Storage bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.storages.<key>`.\nValue = backing storage resource name from `[storages.<value>]`, or\nthe built-in `local` resource.",
           "type": "object"
+        },
+        "workflows": {
+          "$ref": "#/$defs/WorkflowsEnvConfig",
+          "description": "Workflow storage settings for this environment."
         }
       },
       "type": "object"
@@ -457,6 +461,18 @@
       "propertyNames": {
         "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
       },
+      "type": "object"
+    },
+    "WorkflowsEnvConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "db": {
+          "description": "Hosted database name for workflow runs, separate from app database bindings.",
+          "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+          "type": "string"
+        }
+      },
+      "required": ["db"],
       "type": "object"
     }
   },

@@ -8,3 +8,6 @@ servers = ["prod"]
 
 [envs.production.channels]
 db = "channel-replay"
+
+[envs.production.workflows]
+db = "channel-replay"

@@ -7,6 +7,8 @@ workflows enqueued by `web` and run by `worker`, a cron schedule, `tako.dataDir`
 across deploys and a server restart, that a secret rotation replaces only the
 SDK services, and rollback.
 
-Both server deployments use `[envs.production.channels].db = "channel-replay"`.
-The full client creates that database once on Ubuntu before deploying; the
-AlmaLinux SDK services publish through their local broker to the same home.
+Both server deployments use `[envs.production.channels].db` and
+`[envs.production.workflows].db` set to `"channel-replay"`, so channel replay
+and workflow runs share one database. The full client creates it once on Ubuntu
+before deploying; the AlmaLinux SDK services publish through their local broker
+to the same home, and both servers work from the same workflow runs.

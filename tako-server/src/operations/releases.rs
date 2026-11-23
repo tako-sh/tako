@@ -170,9 +170,6 @@ impl crate::ServerState {
             Ok(guard) => guard,
             Err(message) => return Response::error(message),
         };
-        if let Some(response) = self.refuse_unresolved_restore(app_name) {
-            return response;
-        }
 
         let env_vars = match env_vars_from_release_dir(&release_path) {
             Ok(vars) => vars,
@@ -371,9 +368,6 @@ impl crate::ServerState {
             Ok(guard) => guard,
             Err(error) => return Response::error(error),
         };
-        if let Some(response) = self.refuse_unresolved_restore(app_name) {
-            return response;
-        }
         let release_preexisted =
             app_release_root(&self.runtime.data_dir, app_name, version).is_dir();
         let pending_preexisted = self
@@ -485,11 +479,9 @@ impl crate::ServerState {
                 routes,
                 source_ip,
                 secrets: None,
-                runtime_credentials: None,
                 storages: None,
                 databases: None,
                 ssl,
-                backup: super::deploy::BackupUpdate::Preserve,
                 force: false,
             })
             .await;

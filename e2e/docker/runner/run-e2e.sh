@@ -654,7 +654,7 @@ create_fixture_databases() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
   databases=$(bun -e '
     const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
-    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db].filter(Boolean))].join("\n"));
+    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db, env.workflows?.db].filter(Boolean))].join("\n"));
   ' "$PROJECT_DIR/tako.toml")
   [[ -n "$databases" ]] || return 0
   while IFS= read -r database; do
@@ -663,11 +663,13 @@ create_fixture_databases() {
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     "${tako[@]}" --json db list | jq -e --arg home "$server_host" '
       (.databases | any(.name == "messages" and .in_project)) and
-      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"]))
+      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"])) and
+      (.databases | any(.name == "workflow-runs" and .server == $home and .workflow_envs == ["production"]))
     ' >/dev/null
     "${tako[@]}" --dry-run --json deploy --env production | jq -e --arg home "$server_host" '
       .dry_run and .create_databases == [] and
-      .channel_database == {name: "channel-replay", server: $home, implicit: false}
+      .channel_database == {name: "channel-replay", server: $home, implicit: false} and
+      .workflows_database == {name: "workflow-runs", server: $home, implicit: false}
     ' >/dev/null
   fi
 }

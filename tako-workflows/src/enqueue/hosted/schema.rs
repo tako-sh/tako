@@ -1,6 +1,6 @@
 //! Tables of the hosted workflow store. Every name starts with
 //! `tako_workflow_` and every table is keyed by `app`, so several apps, and
-//! the app's own SQL, can share one database. Mirrors the Postgres schema.
+//! the app's own SQL, can share one database.
 
 use tako_db::client::Statement;
 
@@ -81,8 +81,12 @@ const TABLES: &[&str] = &[
         ON tako_workflow_event_waiters (app, event_name)",
     "CREATE INDEX IF NOT EXISTS tako_workflow_event_waiters_expiry
         ON tako_workflow_event_waiters (app, expires_at) WHERE expires_at IS NOT NULL",
-    // Signals addressed to one run that arrived before it waited for them;
-    // see the SQLite schema. Pruned with their run.
+    // Signals addressed to one run (`signal(name, payload, { runId })`)
+    // that arrived before the run waited for them. The wait consumes a
+    // matching row as its step result in the transaction that would park
+    // the run. One value per event name: the first signal wins.
+    // `payload_bytes` is the JSON text length, so the per-run budget is one
+    // primary-key range read. Pruned with their run.
     "CREATE TABLE IF NOT EXISTS tako_workflow_run_inbox (
         app TEXT NOT NULL,
         run_id TEXT NOT NULL,

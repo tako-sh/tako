@@ -4,7 +4,6 @@ use tempfile::TempDir;
 
 #[test]
 fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
-    let project = TempDir::new().unwrap();
     let mut config = TakoToml::default();
     config
         .envs
@@ -14,8 +13,7 @@ fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
     secrets
         .set("production", "API_KEY", "encrypted".into())
         .unwrap();
-    let initial =
-        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    let initial = validate_release_secret_snapshot(&config, &secrets, "production", 1, true);
     assert!(
         !initial.has_errors(),
         "The initial snapshot should be valid"
@@ -31,14 +29,8 @@ fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
         .unwrap()
         .expires_on = Some("2000-01-01".into());
     for configure in [false, true] {
-        let result = validate_release_secret_snapshot(
-            project.path(),
-            &config,
-            &secrets,
-            "production",
-            1,
-            configure,
-        );
+        let result =
+            validate_release_secret_snapshot(&config, &secrets, "production", 1, configure);
         assert!(
             result
                 .errors
@@ -51,7 +43,6 @@ fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
 
 #[test]
 fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators() {
-    let project = TempDir::new().unwrap();
     let mut config = TakoToml::default();
     config.envs.insert(
         "production".into(),
@@ -69,8 +60,7 @@ fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators
             crate::config::EncryptedSecretValue::new("encrypted".into(), None),
         )
         .unwrap();
-    let initial =
-        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    let initial = validate_release_secret_snapshot(&config, &secrets, "production", 1, true);
     assert!(
         !initial.has_errors(),
         "The initial snapshot should be valid"
@@ -78,8 +68,7 @@ fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators
     secrets
         .remove_credential("production", crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME)
         .unwrap();
-    let result =
-        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    let result = validate_release_secret_snapshot(&config, &secrets, "production", 1, true);
     assert!(
         result
             .errors
@@ -89,15 +78,7 @@ fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators
     );
     // Scoped deployment clients reuse the server's provisioned credentials.
     assert!(
-        !validate_release_secret_snapshot(
-            project.path(),
-            &config,
-            &secrets,
-            "production",
-            1,
-            false,
-        )
-        .has_errors()
+        !validate_release_secret_snapshot(&config, &secrets, "production", 1, false,).has_errors()
     );
 }
 

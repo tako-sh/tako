@@ -222,7 +222,6 @@ fn test_deploy_command_serialization_includes_scaling() {
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
-        backup: None,
         force: false,
     };
     let json = serde_json::to_string(&cmd).unwrap();
@@ -245,7 +244,6 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
             provider: SslProvider::Cloudflare,
             cloudflare_api_token: Some("token".to_string()),
         },
-        backup: None,
         force: false,
     };
 
@@ -253,188 +251,6 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
 
     assert!(json.contains(r#""ssl":{"provider":"cloudflare""#));
     assert!(json.contains(r#""cloudflare_api_token":"token""#));
-}
-
-#[test]
-fn backup_binding_serializes_backup_keys() {
-    let binding = BackupBinding {
-        storage: StorageBinding {
-            provider: crate::StorageProvider::S3,
-            resource: None,
-            bucket: Some("bucket".to_string()),
-            endpoint: Some("https://s3.example.com".to_string()),
-            region: Some("auto".to_string()),
-            access_key_id: Some("access".to_string()),
-            secret_access_key: Some("secret".to_string()),
-            force_path_style: false,
-            public_base_url: None,
-            path: None,
-            signing_key: None,
-        },
-        backup_keys: vec![BackupKeyBinding {
-            id: "backup-key-0123456789abcdef".to_string(),
-            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-        }],
-        retention_days: DEFAULT_BACKUP_RETENTION_DAYS,
-    };
-
-    let json = serde_json::to_string(&binding).unwrap();
-    assert!(json.contains(r#""backup_keys":[{"id":"backup-key-0123456789abcdef""#));
-    let parsed: BackupBinding = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.backup_keys.len(), 1);
-    assert_eq!(parsed.backup_keys[0].id, "backup-key-0123456789abcdef");
-}
-
-#[test]
-fn backup_info_serializes_encryption_metadata() {
-    let info = BackupInfo {
-        id: "b1".to_string(),
-        app: "demo".to_string(),
-        environment: "production".to_string(),
-        server: "la".to_string(),
-        created_at_unix_secs: 1_778_220_000,
-        size_bytes: 123,
-        sha256_hex: "abc".to_string(),
-        archive_key: "_tako/backups/demo/production/la/b1.tar.zst.enc".to_string(),
-        manifest_key: "_tako/backups/demo/production/la/b1.json".to_string(),
-        encryption: BackupEncryptionInfo {
-            algorithm: "aes-256-gcm".to_string(),
-            key_id: "backup-key-0123456789abcdef".to_string(),
-            nonce_base64: "nonce".to_string(),
-            tag_base64: "tag".to_string(),
-        },
-        kind: BackupKind::Full,
-        database_digest: None,
-        databases: Vec::new(),
-    };
-
-    let json = serde_json::to_string(&info).unwrap();
-    assert!(json.contains(r#""algorithm":"aes-256-gcm""#));
-    assert!(json.contains(r#""kind":"full""#));
-    assert!(!json.contains("database_digest"));
-    assert!(json.contains(r#""key_id":"backup-key-0123456789abcdef""#));
-    let parsed: BackupInfo = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        parsed.encryption.key_id.as_str(),
-        "backup-key-0123456789abcdef"
-    );
-}
-
-#[test]
-fn backup_info_requires_encryption_metadata() {
-    let json = r#"{
-        "id":"b1",
-        "app":"demo",
-        "environment":"production",
-        "server":"la",
-        "created_at_unix_secs":1778220000,
-        "size_bytes":123,
-        "sha256_hex":"abc",
-        "archive_key":"_tako/backups/demo/production/la/b1.tar.zst.enc",
-        "manifest_key":"_tako/backups/demo/production/la/b1.json"
-    }"#;
-
-    assert!(serde_json::from_str::<BackupInfo>(json).is_err());
-}
-
-#[test]
-fn backup_info_without_kind_reads_as_full_archive() {
-    let json = r#"{
-        "id":"b1", "app":"demo", "environment":"production", "server":"la",
-        "created_at_unix_secs":1778220000, "size_bytes":123, "sha256_hex":"abc",
-        "archive_key":"a", "manifest_key":"m",
-        "encryption":{"algorithm":"aes-256-gcm","key_id":"k","nonce_base64":"n","tag_base64":"t"}
-    }"#;
-    let parsed: BackupInfo = serde_json::from_str(json).unwrap();
-    assert_eq!(parsed.kind, BackupKind::Full);
-    assert_eq!(parsed.database_digest, None);
-
-    let mut snapshot = parsed;
-    snapshot.kind = BackupKind::Databases;
-    snapshot.database_digest = Some("digest".into());
-    let json = serde_json::to_value(&snapshot).unwrap();
-    assert_eq!(json["kind"], "databases");
-    assert_eq!(json["database_digest"], "digest");
-    assert!(json.get("databases").is_none());
-
-    snapshot.databases = vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()];
-    let json = serde_json::to_value(&snapshot).unwrap();
-    assert_eq!(
-        json["databases"],
-        serde_json::json!(["app/data.sqlite", "tako/workflows.sqlite"])
-    );
-}
-
-/// The download is saved in the current directory under this name, so it
-/// never comes from the storage index, which anyone with bucket write
-/// access can edit.
-#[test]
-fn backup_archive_file_name_is_built_from_the_validated_id_and_kind() {
-    let mut info: BackupInfo = serde_json::from_value(serde_json::json!({
-        "id": "d1800000000-abc_DEF-9", "app": "demo", "environment": "production", "server": "la",
-        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
-        "archive_key": "_tako/backups/demo/production/la/.envrc",
-        "manifest_key": "m", "kind": "databases",
-        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
-    }))
-    .unwrap();
-    assert_eq!(
-        info.archive_file_name().unwrap(),
-        "d1800000000-abc_DEF-9.databases.tar.zst.enc"
-    );
-    info.kind = BackupKind::Full;
-    info.id = "b1800000000-abcdefgh".into();
-    assert_eq!(
-        info.archive_file_name().unwrap(),
-        "b1800000000-abcdefgh.tar.zst.enc"
-    );
-    for id in [
-        "", "Makefile", "b", "b-abc", "b1-", "b1abc", "b1-../x", "b1-a/b", "b1-a.b", "x1-abc",
-        // The kind letter must match the kind.
-        "d1-abc", "b1-abc\n",
-    ] {
-        info.id = id.into();
-        assert!(info.archive_file_name().is_err(), "{id:?}");
-    }
-}
-
-#[test]
-fn backup_restore_response_reports_database_changes_only_for_snapshots() {
-    let backup: BackupInfo = serde_json::from_value(serde_json::json!({
-        "id": "b1", "app": "demo", "environment": "production", "server": "la",
-        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
-        "archive_key": "a", "manifest_key": "m",
-        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
-    }))
-    .unwrap();
-    let full = BackupRestoreResponse {
-        backup: backup.clone(),
-        databases: None,
-    };
-    let json = serde_json::to_value(&full).unwrap();
-    assert!(json.get("databases").is_none());
-    assert_eq!(json["backup"]["id"], "b1");
-
-    let restored = BackupRestoreResponse {
-        backup,
-        databases: Some(RestoredDatabases {
-            replaced: vec!["app/data.sqlite".into()],
-            created: vec!["app/new.sqlite".into()],
-            untouched: vec!["app/other.sqlite".into()],
-        }),
-    };
-    let parsed: BackupRestoreResponse =
-        serde_json::from_value(serde_json::to_value(&restored).unwrap()).unwrap();
-    assert_eq!(parsed, restored);
-}
-
-#[test]
-fn backup_status_omits_absent_schedule() {
-    let status: BackupStatusResponse =
-        serde_json::from_str(r#"{"app":"demo/production","enabled":true}"#).unwrap();
-    assert!(status.last_backup.is_none());
-    let json = serde_json::to_value(status).unwrap();
-    assert!(json.get("next_backup_at_unix_secs").is_none());
 }
 
 #[test]
@@ -449,7 +265,6 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
-        backup: None,
         force: false,
     };
 
@@ -474,7 +289,6 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
             secrets_digest,
             storages,
             ssl,
-            backup,
             force,
             ..
         } => {
@@ -482,7 +296,6 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
             assert!(secrets_digest.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
-            assert!(backup.is_none());
             assert!(!force);
         }
         _ => panic!("Expected deploy command"),
@@ -890,7 +703,6 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
-        backup: None,
         force: false,
     };
     let json = serde_json::to_string(&cmd).unwrap();
@@ -901,14 +713,12 @@ fn test_deploy_with_none_secrets_keeps_existing() {
             secrets_digest,
             storages,
             ssl,
-            backup,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets_digest.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
-            assert!(backup.is_none());
         }
         _ => panic!("Expected deploy command"),
     }
@@ -1171,12 +981,10 @@ fn workflow_run_operator_responses_roundtrip() {
     };
     let list = ListWorkflowRunsResponse {
         app: "a/b".into(),
-        store: WorkflowStoreKind::Postgres,
         runs: vec![summary],
         has_more: false,
     };
     let json = serde_json::to_value(&list).unwrap();
-    assert_eq!(json["store"], "postgres");
     assert_eq!(json["runs"][0]["status"], "pending");
     assert!(json["runs"][0]["run_at_ms"].is_null());
     assert_eq!(
@@ -1192,7 +1000,6 @@ fn workflow_run_operator_responses_roundtrip() {
     };
     let detail = GetWorkflowRunResponse {
         app: "a/b".into(),
-        store: WorkflowStoreKind::Sqlite,
         run: Some(WorkflowRunDetail {
             id: "run-1".into(),
             name: "send-email".into(),
@@ -1243,7 +1050,6 @@ fn workflow_run_operator_responses_roundtrip() {
 
     let transition = WorkflowRunTransition {
         app: "a/b".into(),
-        store: WorkflowStoreKind::Sqlite,
         id: "run-1".into(),
         previous_status: WorkflowRunStatus::Dead,
         status: WorkflowRunStatus::Pending,

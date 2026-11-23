@@ -80,27 +80,19 @@ fn migrate_schema_on(
         )?;
     }
 
-    if from_version < 7 {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS app_backups (
-                app TEXT NOT NULL PRIMARY KEY,
-                encrypted_data BLOB NOT NULL
-            );",
-        )?;
-    }
-
-    if from_version < 8 {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS app_runtime_credentials (
-                app TEXT NOT NULL PRIMARY KEY,
-                encrypted_data BLOB NOT NULL
-            );",
-        )?;
-    }
-
     if from_version < 15 {
         // Continuous WAL capture was replaced by hosted database snapshots.
         tx.execute_batch("DROP TABLE IF EXISTS database_replicas;")?;
+    }
+
+    if from_version < 17 {
+        // App data directory archives were removed; hosted databases keep
+        // their own backup settings. Workflow and channel stores moved from
+        // a Postgres credential to hosted databases.
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS app_backups;
+             DROP TABLE IF EXISTS app_runtime_credentials;",
+        )?;
     }
 
     ensure_schema_objects(tx)?;
@@ -169,11 +161,6 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             encrypted_data BLOB NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS app_runtime_credentials (
-            app TEXT NOT NULL PRIMARY KEY,
-            encrypted_data BLOB NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS app_compose_tokens (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
@@ -233,11 +220,6 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
         );
 
         CREATE TABLE IF NOT EXISTS database_grants (
-            app TEXT NOT NULL PRIMARY KEY,
-            encrypted_data BLOB NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS app_backups (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
         );",

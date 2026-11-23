@@ -3,39 +3,11 @@ use super::*;
 #[path = "../../../../test-support/history.rs"]
 mod history;
 
-/// A durable store that a history reopens after every transition, as a
-/// restarted server would.
-enum Durable {
-    Sqlite(tempfile::TempDir),
-    Hosted(Box<HostedFixture>),
-}
-
-impl Durable {
-    fn sqlite() -> Self {
-        Self::Sqlite(tempfile::tempdir().unwrap())
-    }
-
-    fn open(&self) -> RunsDb {
-        match self {
-            Self::Sqlite(dir) => RunsDb::open(&dir.path().join("workflows.sqlite")).unwrap(),
-            Self::Hosted(fixture) => fixture.open("app"),
-        }
-    }
-
-    /// Checkpoints must survive a host crash, not just a process exit.
-    fn assert_durable(&self, db: &RunsDb) {
-        if let Self::Sqlite(_) = self {
-            assert_eq!(
-                db.raw_query_values("PRAGMA synchronous", ()),
-                vec![Value::Integer(2)]
-            );
-        }
-    }
-}
-
-fn lifecycle_history(seed: u64, store: fn() -> Durable) -> Vec<String> {
-    let store = store();
-    let mut db = store.open();
+/// A history reopens the store after every transition, as a restarted
+/// server would.
+fn lifecycle_history(seed: u64) -> Vec<String> {
+    let store = HostedFixture::start();
+    let mut db = store.open("app");
     let mut random = history::Seed(seed);
     let mut trace = Vec::new();
     for turn in 0..12 {
@@ -82,8 +54,7 @@ fn lifecycle_history(seed: u64, store: fn() -> Durable) -> Vec<String> {
             _ => db.defer(&id, "old", Some(0)).unwrap(),
         }
         drop(db);
-        db = store.open();
-        store.assert_durable(&db);
+        db = store.open("app");
         let run = db.claim("new", &["work".into()], 60_000).unwrap().unwrap();
         assert_eq!(run.id, id);
         assert_eq!(run.step_state["saved"], payload);
@@ -147,85 +118,16 @@ fn lifecycle_history(seed: u64, store: fn() -> Durable) -> Vec<String> {
     trace
 }
 
-fn assert_histories_are_reproducible(store: fn() -> Durable) {
+#[test]
+fn workflow_lifecycle_histories_are_reproducible() {
     for seed in history::seeds() {
-        let first =
-            std::panic::catch_unwind(|| lifecycle_history(seed, store)).unwrap_or_else(|error| {
-                panic!("workflow history failed: seed={seed}, error={error:?}")
-            });
+        let first = std::panic::catch_unwind(|| lifecycle_history(seed)).unwrap_or_else(|error| {
+            panic!("workflow history failed: seed={seed}, error={error:?}")
+        });
         assert_eq!(
             first,
-            lifecycle_history(seed, store),
+            lifecycle_history(seed),
             "seed={seed}: logical trace changed"
         );
     }
-}
-
-#[test]
-fn workflow_lifecycle_histories_are_reproducible() {
-    assert_histories_are_reproducible(Durable::sqlite);
-}
-
-#[test]
-fn hosted_workflow_lifecycle_histories_are_reproducible() {
-    assert_histories_are_reproducible(|| Durable::Hosted(Box::new(HostedFixture::start())));
-}
-
-#[test]
-fn workflow_crash_recovery() {
-    const CHILD_PATH: &str = "TAKO_TEST_WORKFLOW_CRASH_PATH";
-    if let Some(path) = std::env::var_os(CHILD_PATH) {
-        let db = RunsDb::open(std::path::Path::new(&path)).unwrap();
-        db.enqueue(
-            "work",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                id: Some("acknowledged".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        db.claim("exited", &["work".into()], 60_000)
-            .unwrap()
-            .unwrap();
-        db.save_step(
-            "acknowledged",
-            "exited",
-            "checkpoint",
-            &serde_json::json!(42),
-        )
-        .unwrap();
-        // Exit without Rust destructors or a SQLite close/checkpoint. This
-        // verifies process-crash recovery, not physical power-loss behavior.
-        std::process::exit(23);
-    }
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("workflows.sqlite");
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "enqueue::tests::histories::workflow_crash_recovery",
-            "--nocapture",
-        ])
-        .env(CHILD_PATH, &path)
-        .status()
-        .unwrap();
-    assert_eq!(status.code(), Some(23));
-    let db = RunsDb::open(&path).unwrap();
-    assert_eq!(
-        db.raw_query_values("PRAGMA synchronous", ()),
-        vec![Value::Integer(2)]
-    );
-    db.raw_execute("UPDATE runs SET lease_until=0", ());
-    assert_eq!(db.reclaim_expired().unwrap(), 1);
-    let run = db
-        .claim("replacement", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.id, "acknowledged");
-    assert_eq!(run.step_state["checkpoint"], 42);
-    assert!(matches!(
-        db.complete(&run.id, "exited", &serde_json::Value::Null),
-        Err(RunsDbError::StaleWorker)
-    ));
 }

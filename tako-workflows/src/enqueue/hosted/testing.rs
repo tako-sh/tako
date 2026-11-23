@@ -1,7 +1,11 @@
-//! A hosted workflow store served from an in-process database host, for
-//! tests of every backend-generic contract.
+//! A workflow store served from an in-process database host, for tests.
+//!
+//! The store's client blocks, so open and use it off the async runtime:
+//! from a plain `#[test]`, or inside `tokio::task::block_in_place` on a
+//! multi-threaded test runtime.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tako_db::testing::TestServer;
 
@@ -31,14 +35,22 @@ impl HostedFixture {
         WorkflowStoreConfig::hosted(self.server.url.clone(), self.token.clone(), app_id)
     }
 
+    /// A store resolver for a `WorkflowManager`: every app gets this
+    /// database, scoped by its own name.
+    #[allow(dead_code)]
+    pub(crate) fn resolver(&self) -> crate::manager::StoreResolver {
+        let (url, token) = (self.server.url.clone(), self.token.clone());
+        Arc::new(move |app| Some(WorkflowStoreConfig::hosted(url.clone(), token.clone(), app)))
+    }
+
     /// A new handle for `app_id`, as another server would open it.
     pub(crate) fn open(&self, app_id: &str) -> RunsDb {
-        RunsDb::open_config(self.config(app_id)).unwrap()
+        RunsDb::open(self.config(app_id)).unwrap()
     }
 
     /// A handle on a server whose clock is `clock`.
     #[allow(dead_code)]
     pub(crate) fn open_with_clock(&self, app_id: &str, clock: fn() -> i64) -> RunsDb {
-        RunsDb::open_hosted_with_clock(&self.server.url, &self.token, app_id, clock).unwrap()
+        RunsDb::open_with_clock(self.config(app_id), clock).unwrap()
     }
 }

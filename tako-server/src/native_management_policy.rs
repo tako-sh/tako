@@ -78,11 +78,6 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::FinalizeRelease { app, .. }
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
-        | Command::BackupNow { app, .. }
-        | Command::ListBackups { app }
-        | Command::BackupStatus { app }
-        | Command::BackupDownloadUrl { app, .. }
-        | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
         | Command::Start { app, .. }
         | Command::Stop { app, .. }
@@ -234,7 +229,7 @@ pub(crate) fn authorize_command(
     validate_managed_directories(context.data_dir, &releases)?;
     let archives = app_root.join("archives");
     validate_managed_directories(context.data_dir, &archives)?;
-    // Backup, workflow and runtime handlers also access these app-owned roots.
+    // Workflow and runtime handlers also access these app-owned roots.
     validate_managed_directories(context.data_dir, &app_root.join("data/app"))?;
     validate_managed_directories(context.data_dir, &app_root.join("data/tako"))?;
     // Exhaustive again: adding a variant requires reviewing its extra effects,
@@ -328,12 +323,7 @@ pub(crate) fn authorize_command(
                 return Err(PATH_DENIED);
             }
         }
-        Command::BackupNow { .. }
-        | Command::ListBackups { .. }
-        | Command::BackupStatus { .. }
-        | Command::BackupDownloadUrl { .. }
-        | Command::RestoreBackup { .. }
-        | Command::Scale { .. }
+        Command::Scale { .. }
         | Command::Start { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
@@ -599,7 +589,6 @@ mod tests {
                 .entry("ssl")
                 .or_insert(json!(tako_core::SslBinding::default()));
             object.entry("secrets").or_insert(json!({}));
-            object.entry("backup_id").or_insert(json!("backup-1"));
             object.entry("reason").or_insert(json!("release"));
             object.entry("command_line").or_insert(json!("true"));
             object.entry("payload").or_insert(json!({}));
@@ -628,12 +617,7 @@ mod tests {
         "finalize_release",
         "run_release",
         "deploy",
-        "backup_now",
         "snapshot_database",
-        "list_backups",
-        "backup_status",
-        "backup_download_url",
-        "restore_backup",
         "scale",
         "stop",
         "delete",
@@ -821,7 +805,7 @@ mod tests {
     }
 
     /// Everything else in an app environment needs full access, including
-    /// backups, scaling, deletion, workflow commands and logs.
+    /// scaling, deletion, workflow commands and logs.
     const DEPLOY_CLIENT_COMMANDS: &[&str] = &[
         "prepare_release",
         "prepare_release_upload",
@@ -1034,7 +1018,6 @@ mod tests {
                 "command": name,
                 "routes": ["new.example.test", "*.example.test"],
                 "ssl": {"provider": "cloudflare"},
-                "backup": backup(),
                 "storages": {"files": storage(), "media": s3()},
             }));
             assert_eq!(f.authorize(&command), Ok(()), "{name}");
@@ -1193,7 +1176,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn backup_and_runtime_data_roots_cannot_redirect_to_another_deployment() {
+    fn runtime_data_roots_cannot_redirect_to_another_deployment() {
         use std::os::unix::fs::symlink;
         for relative in ["data", "data/app", "data/tako"] {
             // Confinement applies to every client; full access reaches every command.
@@ -1202,13 +1185,7 @@ mod tests {
             let link = f.dir.path().join("apps/demo/staging").join(relative);
             std::fs::create_dir_all(link.parent().unwrap()).unwrap();
             symlink(f.dir.path().join("apps/other/staging"), &link).unwrap();
-            for name in [
-                "backup_now",
-                "restore_backup",
-                "enqueue_run",
-                "deploy",
-                "run_release",
-            ] {
+            for name in ["enqueue_run", "deploy", "run_release"] {
                 assert_eq!(
                     f.authorize(&f.command(name)),
                     Err(MANAGED_PATH_DENIED),
@@ -1230,13 +1207,6 @@ mod tests {
             "provider":"s3","resource":"media","bucket":"demo-media","endpoint":"https://storage.example.test"
         }))
         .unwrap()
-    }
-
-    fn backup() -> tako_core::BackupBinding {
-        serde_json::from_value(json!({
-            "storage":{"provider":"s3","resource":"backups","bucket":"demo-staging","endpoint":"https://storage.example.test"},
-            "backup_keys":[],"retention_days":7
-        })).unwrap()
     }
 
     #[test]
@@ -1284,7 +1254,7 @@ mod tests {
         f.permissions = Permissions::Full;
         let command = f.decode_command(json!({"command":"deploy", "routes":["new.example.test"],
             "ssl":{"provider":"cloudflare","cloudflare_api_token":"admin-token"},
-            "storages":{"files":storage()}, "backup":backup()}));
+            "storages":{"files":storage()}}));
         assert_eq!(f.authorize(&command), Ok(()));
         assert_eq!(
             f.authorize(&f.decode_command(

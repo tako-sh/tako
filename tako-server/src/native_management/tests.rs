@@ -394,7 +394,6 @@ fn deploy_clients_make_first_deploys_and_failed_state_reads_deny() {
         secrets_digest: None,
         storages: None,
         databases: None,
-        backup: None,
         force: false,
     };
     let check = || authorize_command(&state, &scoped(), Some(&scope), &command);

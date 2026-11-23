@@ -4,15 +4,14 @@
 //! Each operation is one request holding one transaction ([`Client::batch`]
 //! or [`Client::read_batch`]). SQLite's single writer is never held across
 //! network round trips, so no Rust runs between the statements of a
-//! transaction. Where the SQLite store decides in Rust between statements,
-//! this store decides in SQL: guarded writes, `INSERT ... SELECT ... WHERE`,
-//! upserts and `RETURNING`, and later statements that are no-ops when an
-//! earlier guard failed. Rust only reads the returned rows to tell the
-//! outcomes apart.
+//! transaction. Every decision is made in SQL instead: guarded writes,
+//! `INSERT ... SELECT ... WHERE`, upserts and `RETURNING`, and later
+//! statements that are no-ops when an earlier guard failed. Rust only reads
+//! the returned rows to tell the outcomes apart.
 //!
-//! Leases are written and judged by the database clock, as in the Postgres
-//! store; scheduling and history timestamps use this server's clock. Every
-//! table is scoped by `app`.
+//! Leases are written and judged by the database clock; scheduling and
+//! history timestamps use this server's clock. Every table is scoped by
+//! `app`.
 
 mod schema;
 #[cfg(test)]
@@ -303,7 +302,7 @@ impl HostedRunsDb {
         ]);
         // Every statement picks the same candidate: nothing before the claim
         // itself changes which run is due first. Expired waits time out and
-        // the checkpoints are read in the claim's transaction, as in SQLite.
+        // the checkpoints are read in the claim's transaction.
         let candidate = "(SELECT id FROM tako_workflow_runs
             WHERE app = ?1 AND status = 'pending' AND run_at <= ?4
               AND name IN (SELECT value FROM json_each(?5))

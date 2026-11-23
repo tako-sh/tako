@@ -18,7 +18,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use tako_core::{
     GetWorkflowRunResponse, ListWorkflowRunsResponse, WORKFLOW_RUNS_DEFAULT_LIMIT,
-    WORKFLOW_RUNS_MAX_LIMIT, WorkflowRunStatus, WorkflowRunTransition, WorkflowStoreKind,
+    WORKFLOW_RUNS_MAX_LIMIT, WorkflowRunStatus, WorkflowRunTransition,
 };
 
 use super::cron::{self, CronTickerHandle};
@@ -30,8 +30,6 @@ use super::enqueue_socket::{
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
-
-const WORKFLOWS_DB_FILENAME: &str = "workflows.sqlite";
 
 /// The single Tako internal socket. Named after its env var
 /// (`TAKO_INTERNAL_SOCKET`) and shared by all server-side SDK RPCs
@@ -112,7 +110,7 @@ pub struct WorkflowManager {
     /// Per-app sockets that serve only their app, keyed by app, with the
     /// symlink path each one owns.
     pinned_sockets: parking_lot::Mutex<HashMap<String, (PathBuf, EnqueueSocketHandle)>>,
-    postgres_url: parking_lot::Mutex<Option<PostgresUrlResolver>>,
+    store_resolver: parking_lot::Mutex<Option<StoreResolver>>,
     /// Server-side channel `publish` relay used by SDK channel handles.
     /// Snapshotted at `start_socket` time and passed into the socket's
     /// accept loop.
@@ -187,7 +185,9 @@ impl Drop for OperatorLease {
     }
 }
 
-type PostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// The workflow store of an app, or `None` when the app has no workflow
+/// database.
+pub type StoreResolver = Arc<dyn Fn(&str) -> Option<WorkflowStoreConfig> + Send + Sync>;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DrainStatus {
@@ -213,6 +213,9 @@ pub enum WorkflowManagerError {
     InvalidRequest(String),
     #[error("workflow storage task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
+    /// The store resolver has no workflow database for the app.
+    #[error("{0} has no workflow database; deploy a release that uses workflows")]
+    NoStore(String),
 }
 
 /// The store an operator command reads or changes, and the app's active
@@ -281,7 +284,7 @@ impl WorkflowManager {
             apps: Arc::new(RwLock::new(HashMap::new())),
             socket: parking_lot::Mutex::new(None),
             pinned_sockets: parking_lot::Mutex::new(HashMap::new()),
-            postgres_url: parking_lot::Mutex::new(None),
+            store_resolver: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
             cache: parking_lot::Mutex::new(None),
@@ -317,32 +320,21 @@ impl WorkflowManager {
         *self.cache.lock() = Some(cache);
     }
 
-    pub fn set_postgres_url_resolver(&self, resolver: PostgresUrlResolver) {
-        *self.postgres_url.lock() = Some(resolver);
+    /// Where each app's workflow store is. Set before the first `ensure` or
+    /// operator command.
+    pub fn set_store_resolver(&self, resolver: StoreResolver) {
+        *self.store_resolver.lock() = Some(resolver);
     }
 
-    pub fn app_dir(&self, app: &str) -> PathBuf {
-        self.data_dir.join("apps").join(app)
+    /// The app's workflow store, or `None` when it has no workflow database.
+    pub fn workflow_store_config(&self, app: &str) -> Option<WorkflowStoreConfig> {
+        let resolver = self.store_resolver.lock().clone()?;
+        resolver(app)
     }
 
-    pub fn app_tako_dir(&self, app: &str) -> PathBuf {
-        self.app_dir(app).join("data").join("tako")
-    }
-
-    pub fn workflows_db_path(&self, app: &str) -> PathBuf {
-        self.app_tako_dir(app).join(WORKFLOWS_DB_FILENAME)
-    }
-
-    pub fn workflow_store_config(&self, app: &str) -> WorkflowStoreConfig {
-        if let Some(url) = self
-            .postgres_url
-            .lock()
-            .as_ref()
-            .and_then(|resolver| resolver(app))
-        {
-            return WorkflowStoreConfig::postgres(url, app.to_string());
-        }
-        WorkflowStoreConfig::sqlite(self.workflows_db_path(app))
+    fn store_config(&self, app: &str) -> Result<WorkflowStoreConfig, WorkflowManagerError> {
+        self.workflow_store_config(app)
+            .ok_or_else(|| WorkflowManagerError::NoStore(app.to_string()))
     }
 
     /// Server-wide socket path. SDKs connect here.
@@ -448,14 +440,15 @@ impl WorkflowManager {
         (lookup, publisher, route)
     }
 
-    /// Configure or reconfigure workflows for an app. Called on deploy.
-    /// The replacement runtime is built before swapping it into the lookup map,
-    /// so a failed replacement keeps the existing runtime active.
+    /// Configure or reconfigure workflows for an app, against the store the
+    /// resolver gives it. Called on deploy. The replacement runtime is built
+    /// before swapping it into the lookup map, so a failed replacement keeps
+    /// the existing runtime active.
     pub async fn ensure(
         &self,
         app: &str,
         retention_ms: Option<i64>,
-        spec_fn: impl FnOnce(PathBuf) -> WorkerSpec,
+        spec: WorkerSpec,
     ) -> Result<(), WorkflowManagerError> {
         // Serialize concurrent ensures of the same app (rare, but a deploy
         // race can otherwise start two supervisors + two cron tickers and
@@ -464,20 +457,9 @@ impl WorkflowManager {
         // same app cannot interleave.
         let _gate = self.ensure_gate.lock().await;
 
-        let store_config = self.workflow_store_config(app);
-        let db_path = match &store_config {
-            WorkflowStoreConfig::Sqlite { path } => path.clone(),
-            WorkflowStoreConfig::Postgres { .. } | WorkflowStoreConfig::Hosted { .. } => {
-                self.workflows_db_path(app)
-            }
-        };
+        let store_config = self.store_config(app)?;
         let prepared = self
-            .prepare(
-                store_config,
-                retention_ms,
-                spec_fn(db_path),
-                ScheduleActivation::Deploy,
-            )
+            .prepare(store_config, retention_ms, spec, ScheduleActivation::Deploy)
             .await?;
         if let Err(error) = prepared.supervisor.start().await {
             prepared.supervisor.shutdown(Duration::ZERO).await;
@@ -495,10 +477,10 @@ impl WorkflowManager {
         spec: WorkerSpec,
         activation: ScheduleActivation,
     ) -> Result<PreparedWorkflow, WorkflowManagerError> {
-        // The synchronous Postgres client cannot connect on a runtime thread.
+        // Opening the store blocks on the database.
         let build = spec.env.get("TAKO_BUILD").cloned();
         let (db, in_flight) = crate::blocking::run(move || {
-            let mut db = RunsDb::open_config(store_config)?;
+            let mut db = RunsDb::open(store_config)?;
             db.prepare_schedule_registration(build, activation)?;
             let in_flight = db.in_flight_by_worker();
             Ok::<_, RunsDbError>((db, in_flight))
@@ -630,7 +612,8 @@ impl WorkflowManager {
         paths
     }
 
-    /// Stop the worker but keep the DB around (app is paused).
+    /// Stop the app's workflow runtime (the app is paused). Its runs stay in
+    /// the store.
     pub async fn stop(&self, app: &str, drain_timeout: Duration) {
         let Some(entry) = self.begin_draining(app) else {
             return;
@@ -676,7 +659,7 @@ impl WorkflowManager {
     /// process holds no handle on the app's store. Workers still running
     /// after `drain_timeout` are killed. Operator commands are refused until
     /// the returned guard is dropped. Fails when a handle outlives the stop,
-    /// so callers never replace store files underneath an open connection.
+    /// so a restore never replaces the store under a runtime still using it.
     pub async fn close_store(
         &self,
         app: &str,
@@ -781,19 +764,10 @@ impl WorkflowManager {
         });
     }
 
-    /// Stop the worker and remove per-app data files entirely.
-    pub async fn delete(&self, app: &str, drain_timeout: Duration) {
-        self.stop(app, drain_timeout).await;
-        let path = self.workflows_db_path(app);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-wal")));
-        let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-shm")));
-    }
-
     /// Use the active runtime's store, or open the app's store for this call
-    /// so stopped apps stay inspectable. `None` when this server has no
-    /// SQLite store for the app; opening one would create an empty file.
-    fn operator_store(&self, app: &str) -> Result<Option<OperatorStore>, WorkflowManagerError> {
+    /// so stopped apps, and apps another server runs, stay inspectable.
+    /// Blocks on the database; call it off the runtime.
+    fn operator_store(&self, app: &str) -> Result<OperatorStore, WorkflowManagerError> {
         let lease = {
             let mut gate = self.store_gate.lock();
             if gate.closed.contains(app) {
@@ -808,33 +782,17 @@ impl WorkflowManager {
             }
         };
         if let Some(handlers) = self.apps.read().get(app).map(AppWorkflow::handlers) {
-            return Ok(Some(OperatorStore {
+            return Ok(OperatorStore {
                 db: handlers.db.clone(),
                 handlers: Some(handlers),
                 _lease: lease,
-            }));
+            });
         }
-        let config = self.workflow_store_config(app);
-        if let WorkflowStoreConfig::Sqlite { path } = &config
-            && !path.exists()
-        {
-            return Ok(None);
-        }
-        Ok(Some(OperatorStore {
-            db: Arc::new(RunsDb::open_config(config)?),
+        Ok(OperatorStore {
+            db: Arc::new(RunsDb::open(self.store_config(app)?)?),
             handlers: None,
             _lease: lease,
-        }))
-    }
-
-    fn store_kind(&self, app: &str) -> WorkflowStoreKind {
-        match self.workflow_store_config(app) {
-            WorkflowStoreConfig::Sqlite { .. } => WorkflowStoreKind::Sqlite,
-            // TODO(hosted): WorkflowStoreKind is removed with the old backends.
-            WorkflowStoreConfig::Postgres { .. } | WorkflowStoreConfig::Hosted { .. } => {
-                WorkflowStoreKind::Postgres
-            }
-        }
+        })
     }
 
     /// Newest runs first. `limit` defaults to 50 and must be 1–200.
@@ -854,17 +812,9 @@ impl WorkflowManager {
         let manager = self.clone();
         let app = app.to_string();
         crate::blocking::run(move || {
-            let Some(store) = manager.operator_store(&app)? else {
-                return Ok(ListWorkflowRunsResponse {
-                    store: manager.store_kind(&app),
-                    app,
-                    runs: Vec::new(),
-                    has_more: false,
-                });
-            };
+            let store = manager.operator_store(&app)?;
             let (runs, has_more) = store.db.list_runs(status, name.as_deref(), limit)?;
             Ok(ListWorkflowRunsResponse {
-                store: store.db.store_kind(),
                 app,
                 runs,
                 has_more,
@@ -881,15 +831,8 @@ impl WorkflowManager {
         let manager = self.clone();
         let (app, id) = (app.to_string(), id.to_string());
         crate::blocking::run(move || {
-            let Some(store) = manager.operator_store(&app)? else {
-                return Ok(GetWorkflowRunResponse {
-                    store: manager.store_kind(&app),
-                    app,
-                    run: None,
-                });
-            };
+            let store = manager.operator_store(&app)?;
             Ok(GetWorkflowRunResponse {
-                store: store.db.store_kind(),
                 run: store.db.get_run(&id)?,
                 app,
             })
@@ -906,15 +849,12 @@ impl WorkflowManager {
         let manager = self.clone();
         let (app, id) = (app.to_string(), id.to_string());
         crate::blocking::run(move || {
-            let store = manager
-                .operator_store(&app)?
-                .ok_or_else(|| RunsDbError::RunNotFound { id: id.clone() })?;
+            let store = manager.operator_store(&app)?;
             let previous_status = store.db.retry_run(&id)?;
             if let Some(handlers) = &store.handlers {
                 (handlers.on_enqueue)();
             }
             Ok(WorkflowRunTransition {
-                store: store.db.store_kind(),
                 app,
                 id,
                 previous_status,
@@ -934,15 +874,12 @@ impl WorkflowManager {
         let manager = self.clone();
         let (app, id) = (app.to_string(), id.to_string());
         crate::blocking::run(move || {
-            let store = manager
-                .operator_store(&app)?
-                .ok_or_else(|| RunsDbError::RunNotFound { id: id.clone() })?;
+            let store = manager.operator_store(&app)?;
             let cancelled = store.db.cancel_run(&id)?;
             if let (Some(handlers), Some(worker_id)) = (&store.handlers, &cancelled.worker_id) {
                 handlers.limiter.release_claim(worker_id);
             }
             Ok(WorkflowRunTransition {
-                store: store.db.store_kind(),
                 app,
                 id,
                 previous_status: cancelled.previous_status,
@@ -1074,11 +1011,25 @@ pub fn worker_spec_for_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::POSTGRES_WORKFLOWS_SCHEMA;
+    use crate::enqueue::HostedFixture;
     use crate::enqueue_socket::{HealthCheck, OnClaimed};
     use std::collections::HashMap as StdHashMap;
 
-    fn dummy_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
+    /// A manager whose apps all keep their runs in one hosted database,
+    /// with that database (keep it alive for the test).
+    fn manager(data_dir: &Path) -> (WorkflowManager, HostedFixture) {
+        let store = HostedFixture::start();
+        let m = WorkflowManager::new(data_dir);
+        m.set_store_resolver(store.resolver());
+        (m, store)
+    }
+
+    /// The store client blocks; tests run it beside the async runtime.
+    fn blocking<T>(operation: impl FnOnce() -> T) -> T {
+        tokio::task::block_in_place(operation)
+    }
+
+    fn dummy_spec(cwd: PathBuf) -> WorkerSpec {
         WorkerSpec {
             app: "t".into(),
             workers: 0,
@@ -1098,14 +1049,22 @@ mod tests {
         }
     }
 
+    fn invalid_start_spec(cwd: PathBuf) -> WorkerSpec {
+        WorkerSpec {
+            workers: 1,
+            command: Vec::new(),
+            ..dummy_spec(cwd)
+        }
+    }
+
     #[tokio::test]
     async fn external_workers_use_a_pinned_socket_and_only_the_release_registers() {
         use tako_socket::{read_json_line, write_json_line};
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, store) = manager(tmp.path());
         let prepared = m
             .prepare(
-                WorkflowStoreConfig::sqlite(tmp.path().join("workflows.sqlite")),
+                store.config("shop/production"),
                 None,
                 WorkerSpec::external("shop/production", "v2"),
                 ScheduleActivation::Deploy,
@@ -1173,27 +1132,7 @@ mod tests {
         m.shutdown_all(Duration::from_secs(1)).await;
     }
 
-    fn invalid_start_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
-        WorkerSpec {
-            app: "t".into(),
-            workers: 1,
-            concurrency: 1,
-            idle_timeout_ms: 0,
-            command: Vec::new(),
-            cwd,
-            env: StdHashMap::new(),
-            secrets: StdHashMap::new(),
-            storages: StdHashMap::new(),
-            databases: StdHashMap::new(),
-            kv: StdHashMap::new(),
-            log_sink: None,
-            isolation: None,
-            lanes: Vec::new(),
-            external: false,
-        }
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn fresh_cron_runtime_registers_without_a_run_and_returns_to_zero() {
         const CHILD_SOCKET: &str = "TAKO_TEST_CRON_CHILD_SOCKET";
         if let Ok(path) = std::env::var(CHILD_SOCKET) {
@@ -1228,35 +1167,30 @@ mod tests {
         }
 
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
         m.start_socket().unwrap();
-        m.ensure("cron", None, |db| {
-            let mut spec = dummy_spec(tmp.path().into(), db);
-            spec.env
-                .insert(CHILD_SOCKET.into(), m.socket_path().display().to_string());
-            spec.env.insert("TAKO_BUILD".into(), "v1".into());
-            spec.command = vec![
-                std::env::current_exe().unwrap().into(),
-                "--exact".into(),
-                "manager::tests::fresh_cron_runtime_registers_without_a_run_and_returns_to_zero"
-                    .into(),
-            ];
-            spec.lanes = ["default", "email"]
-                .into_iter()
-                .map(|name| crate::WorkerLane {
-                    name: name.into(),
-                    workers: 0,
-                    concurrency: 1,
-                })
-                .collect();
-            spec
-        })
-        .await
-        .unwrap();
+        let mut spec = dummy_spec(tmp.path().into());
+        spec.env
+            .insert(CHILD_SOCKET.into(), m.socket_path().display().to_string());
+        spec.env.insert("TAKO_BUILD".into(), "v1".into());
+        spec.command = vec![
+            std::env::current_exe().unwrap().into(),
+            "--exact".into(),
+            "manager::tests::fresh_cron_runtime_registers_without_a_run_and_returns_to_zero".into(),
+        ];
+        spec.lanes = ["default", "email"]
+            .into_iter()
+            .map(|name| crate::WorkerLane {
+                name: name.into(),
+                workers: 0,
+                concurrency: 1,
+            })
+            .collect();
+        m.ensure("cron", None, spec).await.unwrap();
         let db = m.apps.read()["cron"].handlers.db.clone();
         let supervisor = m.supervisor_for("cron").unwrap();
         tokio::time::timeout(Duration::from_secs(8), async {
-            while db.list_schedules().unwrap().is_empty() || supervisor.is_running() {
+            while blocking(|| db.list_schedules().unwrap().is_empty()) || supervisor.is_running() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -1267,23 +1201,25 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("starts")).unwrap(),
             "default\n"
         );
-        let registered = &db.list_schedules().unwrap()[0];
-        assert_eq!(registered.name, "nightly");
-        assert_eq!(db.pending_count().unwrap(), 0);
-        assert_eq!(
-            cron::tick_once(&db, registered.last_run_at.unwrap() + 86_400_000).unwrap(),
-            1
-        );
-        assert_eq!(db.pending_count().unwrap(), 1);
+        blocking(|| {
+            let registered = &db.list_schedules().unwrap()[0];
+            assert_eq!(registered.name, "nightly");
+            assert_eq!(db.pending_count().unwrap(), 0);
+            assert_eq!(
+                cron::tick_once(&db, registered.last_run_at.unwrap() + 86_400_000).unwrap(),
+                1
+            );
+            assert_eq!(db.pending_count().unwrap(), 1);
+        });
         m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]
     async fn server_drain_stops_claims_and_backgrounds_and_can_resume_without_socket() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
         for name in ["a", "b"] {
-            m.ensure(name, None, |db| dummy_spec(tmp.path().into(), db))
+            m.ensure(name, None, dummy_spec(tmp.path().into()))
                 .await
                 .unwrap();
         }
@@ -1301,7 +1237,7 @@ mod tests {
         .unwrap();
         assert_eq!(m.force_server_drain(), (0, 0));
         assert!(m.has("a"));
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        m.ensure("a", None, dummy_spec(tmp.path().into()))
             .await
             .unwrap();
         assert!(
@@ -1318,18 +1254,15 @@ mod tests {
     #[tokio::test]
     async fn stop_keeps_handlers_registered_until_workers_exit() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = Arc::new(WorkflowManager::new(tmp.path()));
-        m.ensure("a", None, |db| {
-            let mut spec = dummy_spec(tmp.path().into(), db);
-            spec.command = vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "trap 'sleep 0.5; exit 0' TERM; touch ready; while :; do sleep 0.05; done".into(),
-            ];
-            spec
-        })
-        .await
-        .unwrap();
+        let (m, _store) = manager(tmp.path());
+        let m = Arc::new(m);
+        let mut spec = dummy_spec(tmp.path().into());
+        spec.command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "trap 'sleep 0.5; exit 0' TERM; touch ready; while :; do sleep 0.05; done".into(),
+        ];
+        m.ensure("a", None, spec).await.unwrap();
         m.supervisor_for("a").unwrap().wake().unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while !tmp.path().join("ready").exists() {
@@ -1353,21 +1286,23 @@ mod tests {
         assert!(!m.has("a"));
     }
 
+    fn stubborn_spec(cwd: PathBuf) -> WorkerSpec {
+        let mut spec = dummy_spec(cwd);
+        spec.command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "trap '' TERM; touch ready; exec sleep 60".into(),
+        ];
+        spec
+    }
+
     #[tokio::test]
     async fn server_drain_includes_retired_release_workers() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-        m.ensure("a", None, |db| {
-            let mut spec = dummy_spec(tmp.path().into(), db);
-            spec.command = vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "trap '' TERM; touch ready; exec sleep 60".into(),
-            ];
-            spec
-        })
-        .await
-        .unwrap();
+        let (m, _store) = manager(tmp.path());
+        m.ensure("a", None, stubborn_spec(tmp.path().into()))
+            .await
+            .unwrap();
         let old = m.supervisor_for("a").unwrap();
         old.wake().unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1379,7 +1314,7 @@ mod tests {
         .unwrap();
         let next_release = tmp.path().join("next");
         std::fs::create_dir(&next_release).unwrap();
-        m.ensure("a", None, |db| dummy_spec(next_release.clone(), db))
+        m.ensure("a", None, dummy_spec(next_release.clone()))
             .await
             .unwrap();
         assert_eq!(
@@ -1409,18 +1344,12 @@ mod tests {
     #[tokio::test]
     async fn close_store_stops_retired_workers_and_releases_every_store_handle() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = Arc::new(WorkflowManager::new(tmp.path()));
-        let stubborn = |db| {
-            let mut spec = dummy_spec(tmp.path().into(), db);
-            spec.command = vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "trap '' TERM; touch ready; exec sleep 60".into(),
-            ];
-            spec
-        };
+        let (m, _store) = manager(tmp.path());
+        let m = Arc::new(m);
         let start_retired = || async {
-            m.ensure("a", None, stubborn).await.unwrap();
+            m.ensure("a", None, stubborn_spec(tmp.path().into()))
+                .await
+                .unwrap();
             let old = m.supervisor_for("a").unwrap();
             old.wake().unwrap();
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -1431,7 +1360,7 @@ mod tests {
             .await
             .unwrap();
             std::fs::remove_file(tmp.path().join("ready")).unwrap();
-            m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            m.ensure("a", None, dummy_spec(tmp.path().into()))
                 .await
                 .unwrap();
             let store = Arc::downgrade(&m.retired.lock().last().unwrap().db.upgrade().unwrap());
@@ -1466,23 +1395,23 @@ mod tests {
         );
 
         // A restart may bring the runtime back while the store is closed.
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        m.ensure("a", None, dummy_spec(tmp.path().into()))
             .await
             .unwrap();
         drop(closed);
         assert!(m.list_runs("a", None, None, None).await.is_ok());
-        m.delete("a", Duration::from_secs(1)).await;
+        m.stop("a", Duration::from_secs(1)).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn close_store_waits_for_operator_commands_and_fails_on_a_lingering_handle() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        let (m, _store) = manager(tmp.path());
+        m.ensure("a", None, dummy_spec(tmp.path().into()))
             .await
             .unwrap();
         let lingering = m.apps.read()["a"].handlers.db.clone();
-        let lease = m.operator_store("a").unwrap().unwrap();
+        let lease = m.operator_store("a").unwrap();
         drop(lingering);
         let close = m.close_store("a", Duration::from_millis(100));
         tokio::pin!(close);
@@ -1496,7 +1425,7 @@ mod tests {
         let closed = close.await.unwrap();
         drop(closed);
 
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        m.ensure("a", None, dummy_spec(tmp.path().into()))
             .await
             .unwrap();
         let _lingering = m.apps.read()["a"].handlers.db.clone();
@@ -1507,20 +1436,61 @@ mod tests {
             .unwrap();
         assert!(error.to_string().contains("is still open"), "{error}");
         // The failed close reopens the store for operator commands.
-        assert!(m.operator_store("a").is_ok());
+        assert!(blocking(|| m.operator_store("a")).is_ok());
     }
 
+    /// Without a workflow database an app has no runtime and nothing to
+    /// inspect; every command says why instead of creating anything.
     #[tokio::test]
-    async fn operator_commands_use_the_active_runtime_or_the_stored_runs() {
+    async fn apps_without_a_workflow_database_are_refused_with_a_reason() {
         let tmp = tempfile::tempdir().unwrap();
         let m = Arc::new(WorkflowManager::new(tmp.path()));
-
-        // No store on this server: nothing to show, and no file is created.
-        let list = m.list_runs("a", None, None, None).await.unwrap();
+        assert_eq!(m.workflow_store_config("a"), None);
+        let expected = "a has no workflow database; deploy a release that uses workflows";
+        let error = m
+            .ensure("a", None, dummy_spec(tmp.path().into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WorkflowManagerError::NoStore(_)));
+        assert_eq!(error.to_string(), expected);
+        assert!(!m.has("a"));
         assert_eq!(
-            (list.store, list.runs.len()),
-            (WorkflowStoreKind::Sqlite, 0)
+            m.list_runs("a", None, None, None)
+                .await
+                .unwrap_err()
+                .to_string(),
+            expected
         );
+        for error in [
+            m.get_run("a", "r1").await.unwrap_err(),
+            m.retry_run("a", "r1").await.unwrap_err(),
+            m.cancel_run("a", "r1").await.unwrap_err(),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+
+        // The resolver decides per app.
+        let store = HostedFixture::start();
+        let shop = store.config("shop/production");
+        m.set_store_resolver(Arc::new(move |app| {
+            (app == "shop/production").then(|| shop.clone())
+        }));
+        assert_eq!(
+            m.workflow_store_config("shop/production"),
+            Some(store.config("shop/production"))
+        );
+        assert_eq!(m.workflow_store_config("a"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn operator_commands_use_the_active_runtime_or_the_stored_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, _store) = manager(tmp.path());
+        let m = Arc::new(m);
+
+        // An app this server never ran still has a store to inspect.
+        let list = m.list_runs("a", None, None, None).await.unwrap();
+        assert!(list.runs.is_empty() && !list.has_more);
         assert!(m.get_run("a", "r1").await.unwrap().run.is_none());
         for error in [
             m.retry_run("a", "r1").await.unwrap_err(),
@@ -1528,7 +1498,6 @@ mod tests {
         ] {
             assert_eq!(error.to_string(), "db error: Workflow run not found: r1");
         }
-        assert!(!m.workflows_db_path("a").exists());
         for limit in [0, WORKFLOW_RUNS_MAX_LIMIT + 1] {
             assert_eq!(
                 m.list_runs("a", None, None, Some(limit))
@@ -1539,25 +1508,27 @@ mod tests {
             );
         }
 
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        m.ensure("a", None, dummy_spec(tmp.path().into()))
             .await
             .unwrap();
         let handlers = m.apps.read()["a"].handlers();
-        for id in ["r1", "r2"] {
-            let options = tako_core::EnqueueOpts {
-                id: Some(id.into()),
-                ..Default::default()
-            };
+        let claimed = blocking(|| {
+            for id in ["r1", "r2"] {
+                let options = tako_core::EnqueueOpts {
+                    id: Some(id.into()),
+                    ..Default::default()
+                };
+                handlers
+                    .db
+                    .enqueue("work", &serde_json::json!({}), &options)
+                    .unwrap();
+            }
             handlers
-                .db
-                .enqueue("work", &serde_json::json!({}), &options)
-                .unwrap();
-        }
-        let claimed = handlers
-            .limiter
-            .claim(&handlers.db, "worker", &["work".into()], 60_000)
-            .unwrap()
-            .unwrap();
+                .limiter
+                .claim(&handlers.db, "worker", &["work".into()], 60_000)
+                .unwrap()
+                .unwrap()
+        });
         assert_eq!(handlers.limiter.count("worker"), 1);
 
         // Cancelling the running attempt frees its concurrency slot.
@@ -1587,232 +1558,150 @@ mod tests {
         );
     }
 
-    /// Two servers share one Postgres store. The server that does not run
-    /// the attempt can still cancel it, and the attempt is fenced.
-    #[tokio::test]
-    async fn operator_commands_reach_runs_of_other_servers_in_a_shared_postgres_store() {
-        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-            return;
-        };
-        let app = format!("operator-{}", nanoid::nanoid!(8, &['a', 'b', 'c', 'd']));
+    /// Two servers share one app's store. The server that does not run the
+    /// attempt can still cancel it, and the attempt is fenced.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn operator_commands_reach_runs_of_other_servers_sharing_the_store() {
+        let store = HostedFixture::start();
         let servers: Vec<_> = (0..2)
             .map(|_| {
                 let tmp = tempfile::tempdir().unwrap();
                 let m = Arc::new(WorkflowManager::new(tmp.path()));
-                let url = url.clone();
-                m.set_postgres_url_resolver(Arc::new(move |_| Some(url.clone())));
+                m.set_store_resolver(store.resolver());
                 (tmp, m)
             })
             .collect();
         let (running, operator) = (&servers[0].1, &servers[1].1);
+        let app = "shop/production";
         running
-            .ensure(&app, None, |db| dummy_spec(servers[0].0.path().into(), db))
+            .ensure(app, None, dummy_spec(servers[0].0.path().into()))
             .await
             .unwrap();
-        let handlers = running.apps.read()[&app].handlers();
-        // The synchronous Postgres client must stay off runtime threads.
-        let blocking = |f: Box<dyn FnOnce(&RunsDb) -> String + Send>| {
-            let db = handlers.db.clone();
-            async move { tokio::task::spawn_blocking(move || f(&db)).await.unwrap() }
-        };
-        let id = blocking(Box::new(|db| {
-            db.enqueue("work", &serde_json::json!({}), &Default::default())
+        let handlers = running.apps.read()[app].handlers();
+        let (id, owner) = blocking(|| {
+            let id = handlers
+                .db
+                .enqueue("work", &serde_json::json!({}), &Default::default())
                 .unwrap()
-                .id
-        }))
-        .await;
-        let owner = blocking(Box::new(|db| {
-            db.claim("worker", &["work".into()], 60_000)
+                .id;
+            let owner = handlers
+                .db
+                .claim("worker", &["work".into()], 60_000)
                 .unwrap()
                 .unwrap()
-                .worker_id
-        }))
-        .await;
+                .worker_id;
+            (id, owner)
+        });
 
-        let list = operator.list_runs(&app, None, None, None).await.unwrap();
-        assert_eq!(list.store, WorkflowStoreKind::Postgres);
+        let list = operator.list_runs(app, None, None, None).await.unwrap();
         assert_eq!(list.runs[0].id, id);
-        let cancelled = operator.cancel_run(&app, &id).await.unwrap();
+        let cancelled = operator.cancel_run(app, &id).await.unwrap();
         assert_eq!(cancelled.previous_status, WorkflowRunStatus::Running);
-        let (late_id, late_owner) = (id.clone(), owner.clone());
-        let late = blocking(Box::new(move |db| {
-            db.save_step(&late_id, &late_owner, "late", &serde_json::json!(1))
+        let late = blocking(|| {
+            handlers
+                .db
+                .save_step(&id, &owner, "late", &serde_json::json!(1))
                 .unwrap_err()
-                .to_string()
-        }))
-        .await;
-        assert_eq!(late, RunsDbError::StaleWorker.to_string());
+        });
+        assert!(matches!(late, RunsDbError::StaleWorker), "{late}");
         assert_eq!(
-            running
-                .get_run(&app, &id)
-                .await
-                .unwrap()
-                .run
-                .unwrap()
-                .status,
+            running.get_run(app, &id).await.unwrap().run.unwrap().status,
             WorkflowRunStatus::Cancelled
         );
-        running.stop(&app, Duration::from_secs(1)).await;
-        // The last store handle is released in async code.
-        drop(handlers);
-
-        tokio::task::spawn_blocking(move || {
-            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-            for table in ["steps", "event_waiters", "runs"] {
-                client
-                    .execute(
-                        &format!("DELETE FROM {POSTGRES_WORKFLOWS_SCHEMA}.{table} WHERE app_id=$1"),
-                        &[&app],
-                    )
-                    .unwrap();
-            }
-        })
-        .await
-        .unwrap();
+        // Another app sharing the database sees none of it.
+        assert!(
+            operator
+                .list_runs("blog/production", None, None, None)
+                .await
+                .unwrap()
+                .runs
+                .is_empty()
+        );
+        running.stop(app, Duration::from_secs(1)).await;
     }
 
-    /// The synchronous Postgres client panics when it closes on a runtime
-    /// thread. Each lifecycle path below releases the store's last handle
-    /// in async code.
-    #[tokio::test]
-    async fn postgres_store_survives_every_lifecycle_path_that_releases_it() {
-        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-            return;
-        };
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_opens_the_store_and_starts_a_supervisor() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-        m.set_postgres_url_resolver(Arc::new(move |_| Some(url.clone())));
-        let app = format!("lifecycle-{}", nanoid::nanoid!(8, &['a', 'b', 'c', 'd']));
-        let cwd = tmp.path().to_path_buf();
-        let start = || m.ensure(&app, None, |db| dummy_spec(cwd.clone(), db));
-
-        // A replacement that fails to start is the only holder of its store.
-        m.ensure(&app, None, |db| invalid_start_spec(cwd.clone(), db))
-            .await
-            .unwrap_err();
-
-        start().await.unwrap();
-        m.stop(&app, Duration::from_secs(1)).await;
-
-        start().await.unwrap();
-        start().await.unwrap();
-        let replaced = m.retired.lock().pop().unwrap();
-        replaced.task.await.unwrap();
-
-        m.retire(&app);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while m.has(&app) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
-
-        start().await.unwrap();
-        m.shutdown_all(Duration::from_secs(1)).await;
-    }
-
-    #[tokio::test]
-    async fn ensure_creates_db_and_supervisor() {
-        let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-        let cwd = tmp.path().to_path_buf();
-
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
-        })
+        let (m, store) = manager(tmp.path());
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(tmp.path().into()),
+        )
         .await
         .unwrap();
         assert!(m.has("a"));
-        assert_eq!(
-            m.workflows_db_path("a"),
-            tmp.path()
-                .join("apps")
-                .join("a")
-                .join("data")
-                .join("tako")
-                .join("workflows.sqlite")
-        );
-        assert!(m.workflows_db_path("a").exists());
-
-        m.delete("a", Duration::from_secs(1)).await;
+        assert!(m.supervisor_for("a").is_some());
+        let db = m.apps.read()["a"].handlers.db.clone();
+        let tables = blocking(|| {
+            db.test_query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name LIKE 'tako_workflow_%'",
+                vec![],
+            )
+        });
+        assert_eq!(tables, vec![serde_json::json!(7)]);
+        // Nothing of the store lives in the server's data directory.
+        assert!(!tmp.path().join("apps").exists());
+        drop(store);
+        m.stop("a", Duration::from_secs(1)).await;
     }
 
-    #[test]
-    fn workflow_store_config_uses_local_sqlite_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_replaces_existing_runtime_and_keeps_its_runs() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-
-        assert_eq!(
-            m.workflow_store_config("a"),
-            WorkflowStoreConfig::Sqlite {
-                path: tmp
-                    .path()
-                    .join("apps")
-                    .join("a")
-                    .join("data")
-                    .join("tako")
-                    .join("workflows.sqlite"),
-            },
-        );
-    }
-
-    #[test]
-    fn workflow_store_config_uses_postgres_when_resolver_returns_url() {
-        let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
-        m.set_postgres_url_resolver(Arc::new(|_| Some("postgres://db".to_string())));
-
-        assert_eq!(
-            m.workflow_store_config("a/production"),
-            WorkflowStoreConfig::Postgres {
-                url: "postgres://db".to_string(),
-                schema: POSTGRES_WORKFLOWS_SCHEMA.to_string(),
-                app_id: "a/production".to_string(),
-            },
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_replaces_existing_runtime_without_deleting_db() {
-        let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
-        })
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(cwd.clone()),
+        )
         .await
         .unwrap();
         let first = m.supervisor_for("a").unwrap();
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
-        })
+        let db = m.apps.read()["a"].handlers.db.clone();
+        blocking(|| {
+            db.enqueue("work", &serde_json::json!({}), &Default::default())
+                .unwrap()
+        });
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(cwd.clone()),
+        )
         .await
         .unwrap();
         let second = m.supervisor_for("a").unwrap();
         assert!(m.has("a"));
         assert!(!Arc::ptr_eq(&first, &second));
-        assert!(m.workflows_db_path("a").exists());
-        m.delete("a", Duration::from_secs(1)).await;
+        let db = m.apps.read()["a"].handlers.db.clone();
+        assert_eq!(blocking(|| db.pending_count().unwrap()), 1);
+        m.stop("a", Duration::from_secs(1)).await;
     }
 
     #[tokio::test]
     async fn ensure_keeps_existing_runtime_when_replacement_fails_to_start() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
-        })
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(cwd.clone()),
+        )
         .await
         .unwrap();
         let first = m.supervisor_for("a").unwrap();
         let err = m
-            .ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-                invalid_start_spec(cwd.clone(), db)
-            })
+            .ensure(
+                "a",
+                Some(crate::DEFAULT_RETENTION_MS),
+                invalid_start_spec(cwd.clone()),
+            )
             .await
             .unwrap_err();
 
@@ -1820,44 +1709,62 @@ mod tests {
         let current = m.supervisor_for("a").unwrap();
         assert!(Arc::ptr_eq(&first, &current));
         assert!(m.has("a"));
-        m.delete("a", Duration::from_secs(1)).await;
+        m.stop("a", Duration::from_secs(1)).await;
     }
 
     #[tokio::test]
-    async fn stop_keeps_db_file_delete_removes_it() {
+    async fn stop_keeps_the_runs_for_the_next_runtime() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
+        let m = Arc::new(m);
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(cwd.clone()),
+        )
+        .await
+        .unwrap();
+        let db = m.apps.read()["a"].handlers.db.clone();
+        let id = crate::blocking::run(move || {
+            db.enqueue("work", &serde_json::json!({}), &Default::default())
+                .unwrap()
+                .id
         })
         .await
         .unwrap();
         m.stop("a", Duration::from_secs(1)).await;
         assert!(!m.has("a"));
-        assert!(m.workflows_db_path("a").exists());
+        assert!(m.get_run("a", &id).await.unwrap().run.is_some());
 
-        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
-            dummy_spec(cwd.clone(), db)
-        })
+        m.ensure(
+            "a",
+            Some(crate::DEFAULT_RETENTION_MS),
+            dummy_spec(cwd.clone()),
+        )
         .await
         .unwrap();
-        m.delete("a", Duration::from_secs(1)).await;
-        assert!(!m.workflows_db_path("a").exists());
+        assert_eq!(
+            m.list_runs("a", None, None, None).await.unwrap().runs[0].id,
+            id
+        );
+        m.stop("a", Duration::from_secs(1)).await;
     }
 
     #[tokio::test]
     async fn shutdown_all_clears_every_app_and_socket() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = WorkflowManager::new(tmp.path());
+        let (m, _store) = manager(tmp.path());
         m.start_socket().unwrap();
         let cwd = tmp.path().to_path_buf();
 
         for name in ["a", "b", "c"] {
-            m.ensure(name, Some(crate::DEFAULT_RETENTION_MS), |db| {
-                dummy_spec(cwd.clone(), db)
-            })
+            m.ensure(
+                name,
+                Some(crate::DEFAULT_RETENTION_MS),
+                dummy_spec(cwd.clone()),
+            )
             .await
             .unwrap();
         }
@@ -1870,13 +1777,11 @@ mod tests {
 
     #[test]
     fn app_workflow_reuses_prebuilt_handlers() {
-        let db = Arc::new(RunsDb::open_in_memory().unwrap());
+        let store = HostedFixture::start();
+        let db = Arc::new(store.open("app"));
         let limiter = Arc::new(InFlightLimiter::new(1));
         let accepting_new_work = Arc::new(AtomicBool::new(true));
-        let supervisor = Arc::new(WorkerSupervisor::new(dummy_spec(
-            std::env::temp_dir(),
-            std::env::temp_dir().join("workflows.sqlite"),
-        )));
+        let supervisor = Arc::new(WorkerSupervisor::new(dummy_spec(std::env::temp_dir())));
         let on_enqueue: OnEnqueue = Arc::new(|| {});
         let health_check: HealthCheck = Arc::new(|| Ok(()));
         let on_claimed: OnClaimed = Arc::new(|| {});

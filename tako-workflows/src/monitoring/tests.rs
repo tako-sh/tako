@@ -1,164 +1,52 @@
 use super::*;
-use crate::{RunsDb, WorkerSpec, WorkflowStoreConfig};
+use crate::WorkerSpec;
+use crate::enqueue::HostedFixture;
+use std::time::Duration;
 use tako_core::EnqueueOpts;
 
-#[test]
-fn postgres_samples_due_work_and_pinned_snapshots_and_recovers_from_failure() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let schema = format!(
-        "monitor_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let open = |app: &str| {
-        RunsDb::open_config(WorkflowStoreConfig::Postgres {
-            url: url.clone(),
-            schema: schema.clone(),
-            app_id: app.into(),
-        })
-        .unwrap()
-    };
-    let db = open("a");
-    let other = open("b");
-    assert!(
-        db.monitoring
-            .reader
-            .as_ref()
-            .unwrap()
-            .lock()
-            .client
-            .is_none()
-    );
-    assert!(db.monitoring.claims.get().is_none());
-    db.monitoring.enable("test", "a");
-    let now = crate::enqueue::now_ms();
-    for due in [now - 60_000, now + 60_000, i64::MAX] {
-        db.enqueue(
-            "work",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                run_at_ms: Some(due),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    }
-    other
-        .enqueue(
-            "work",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                run_at_ms: Some(now - 120_000),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let mut holder = Client::connect(&url, NoTls).unwrap();
-    holder
-        .batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT pg_current_snapshot()")
-        .unwrap();
-    // Advance transaction IDs after the snapshot so xmin age is observable.
-    other
-        .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
-    db.monitoring.sample().unwrap();
-    let first = db.monitoring.health.read();
-    let values = first.values.as_ref().unwrap();
-    assert!(first.success);
-    assert_eq!(values[0], 1.0);
-    assert!(values[1] >= 60.0 && values[1] < 90.0);
-    assert!(values[4] > 0.0 && values[5] > 0.0);
-    assert!(values[7] > 0.0); // Visible transaction age, excluding sampler.
-    assert!(values[8] > 0.0); // Pinned backend xmin age, measured in transactions.
-    let timestamp = first.timestamp;
-    drop(first);
-    holder.batch_execute("ROLLBACK; BEGIN").unwrap();
-    holder
-        .batch_execute(&format!(
-            "LOCK TABLE {schema}.runs IN ACCESS EXCLUSIVE MODE"
-        ))
-        .unwrap();
-    assert!(db.monitoring.sample().is_err()); // Bounded lock timeout, not a hang.
-    assert!(!db.monitoring.health.read().success);
-    assert_eq!(db.monitoring.health.read().timestamp, timestamp);
-    assert_eq!(db.monitoring.health.read().values.as_ref().unwrap()[0], 1.0);
-    holder.batch_execute("ROLLBACK").unwrap();
-    db.claim("worker", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    db.monitoring.sample().unwrap();
-    assert!(db.monitoring.health.read().success);
-    assert_eq!(db.monitoring.health.read().values.as_ref().unwrap()[0], 0.0);
-
-    let mut reader = db.monitoring.reader.as_ref().unwrap().lock();
-    let client = reader.client.as_mut().unwrap();
-    let read_only: String = client
-        .query_one("SHOW default_transaction_read_only", &[])
-        .unwrap()
-        .get(0);
-    assert_eq!(read_only, "on");
-    drop(reader);
-    holder
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .unwrap();
-    assert!(db.claim("worker", &["work".into()], 60_000).is_err());
-    assert_eq!(
-        db.monitoring.claims.get().unwrap().outcomes[2].get_sample_count(),
-        1
-    );
-}
-
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
     let dir = tempfile::tempdir().unwrap();
+    let store = HostedFixture::start();
     let manager = Arc::new(WorkflowManager::new(dir.path()));
+    manager.set_store_resolver(store.resolver());
     let registry = Registry::new();
-    register(
-        &manager,
-        "test",
-        &registry,
-        &tokio::runtime::Handle::current(),
-    )
-    .unwrap();
+    register(&manager, "test", &registry).unwrap();
     for app in ["a", "b"] {
-        manager
-            .ensure(app, None, |_| WorkerSpec {
-                app: app.into(),
-                workers: 0,
-                concurrency: 1,
-                idle_timeout_ms: 0,
-                command: vec!["sleep".into(), "10".into()],
-                cwd: dir.path().into(),
-                env: Default::default(),
-                secrets: Default::default(),
-                storages: Default::default(),
-                databases: Default::default(),
-                kv: Default::default(),
-                log_sink: None,
-                isolation: None,
-                lanes: Vec::new(),
-                external: false,
-            })
-            .await
-            .unwrap();
+        let spec = WorkerSpec {
+            app: app.into(),
+            workers: 0,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: vec!["sleep".into(), "10".into()],
+            cwd: dir.path().into(),
+            env: Default::default(),
+            secrets: Default::default(),
+            storages: Default::default(),
+            databases: Default::default(),
+            kv: Default::default(),
+            log_sink: None,
+            isolation: None,
+            lanes: Vec::new(),
+            external: false,
+        };
+        manager.ensure(app, None, spec).await.unwrap();
     }
-    registry.gather(); // Enables in-memory timers, no health connection.
+    registry.gather(); // Enables in-memory timers.
     let stores = manager.monitored_stores();
     let db = &stores.iter().find(|(app, _)| app == "a").unwrap().1;
-    db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
-    db.claim("worker", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    assert!(
+    tokio::task::block_in_place(|| {
+        db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap();
         db.claim("worker", &["work".into()], 60_000)
             .unwrap()
-            .is_none()
-    );
+            .unwrap();
+        assert!(
+            db.claim("worker", &["work".into()], 60_000)
+                .unwrap()
+                .is_none()
+        );
+    });
     let families = registry.gather();
     let claims = families.iter().find(|f| f.name() == CLAIM_NAME).unwrap();
     for outcome in ["claimed", "empty"] {
@@ -176,11 +64,8 @@ async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
             .unwrap();
         assert_eq!(sample.get_histogram().get_sample_count(), 1);
     }
-    assert!(
-        !families
-            .iter()
-            .any(|f| f.name() == "tako_workflow_pg_runs_dead_tuples")
-    );
+    // Only claim timings: no gauge is sampled from the store.
+    assert!(families.iter().all(|f| f.name() == CLAIM_NAME));
     manager.stop("a", Duration::ZERO).await;
     assert!(
         registry
@@ -197,29 +82,20 @@ async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
     assert!(registry.gather().is_empty());
 }
 
-/// The synchronous Postgres client panics when it closes on a runtime
-/// thread. A store and its sampled health reader must release their
-/// connections off the runtime wherever their last handle is dropped.
-#[tokio::test]
-async fn postgres_store_and_health_reader_can_be_dropped_in_async_code() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let db = crate::blocking::run(move || {
-        let db = RunsDb::open_postgres(&url, "monitor-drop").unwrap();
-        db.monitoring.sample().unwrap();
-        db
-    })
-    .await
-    .unwrap();
-    assert!(
-        db.monitoring
-            .reader
-            .as_ref()
-            .unwrap()
-            .lock()
-            .client
-            .is_some()
+#[test]
+fn claims_record_nothing_until_monitoring_observes_the_store() {
+    let store = HostedFixture::start();
+    let db = store.open("app");
+    db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap();
+    db.claim("worker", &["work".into()], 60_000).unwrap();
+    assert!(db.monitoring.claims.get().is_none());
+    db.monitoring.enable("test", "app");
+    // A failing claim is timed as an error.
+    drop(store);
+    assert!(db.claim("worker", &["work".into()], 60_000).is_err());
+    assert_eq!(
+        db.monitoring.claims.get().unwrap().outcomes[2].get_sample_count(),
+        1
     );
-    drop(db);
 }

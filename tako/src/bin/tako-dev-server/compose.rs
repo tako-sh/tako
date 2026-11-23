@@ -169,9 +169,11 @@ pub(crate) async fn ensure_workflows(
     let app = sdk.app_name.clone();
     let build = sdk.build.clone();
     if let Err(error) = workflows
-        .ensure(&app, retention_ms, |_| {
-            tako_workflows::WorkerSpec::external(&app, &build)
-        })
+        .ensure(
+            &app,
+            retention_ms,
+            tako_workflows::WorkerSpec::external(&app, &build),
+        )
         .await
     {
         tracing::warn!(app = %app, %error, "failed to register Compose workflows");

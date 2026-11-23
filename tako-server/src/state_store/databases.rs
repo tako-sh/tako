@@ -185,35 +185,16 @@ impl SqliteStateStore {
         }
     }
 
-    /// A deploy commits these together. Reading them in separate queries can
-    /// see neither backend during a switch and mistakenly start a local file.
+    /// The app environment's channel replay binding, which a deploy of a
+    /// release that uses channels commits.
     pub(crate) fn channel_credentials(
         &self,
         app: &str,
-    ) -> Result<(Option<tako_core::DatabaseConnection>, Option<String>), StateStoreError> {
-        let (databases, credentials): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            self.lock_conn()?.query_row(
-                "SELECT (SELECT encrypted_data FROM app_databases WHERE app = ?1),
-                        (SELECT encrypted_data FROM app_runtime_credentials WHERE app = ?1)",
-                [app],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-        let hosted = databases
-            .map(|bytes| self.decrypt_json::<HashMap<String, AppDatabase>>(&bytes))
-            .transpose()?
-            .and_then(|bindings| {
-                bindings
-                    .get(tako_core::CHANNEL_REPLAY_BINDING)
-                    .map(crate::databases::connection)
-            });
-        if hosted.is_some() {
-            return Ok((hosted, None));
-        }
-        let postgres = credentials
-            .map(|bytes| self.decrypt_json::<HashMap<String, String>>(&bytes))
-            .transpose()?
-            .and_then(|mut credentials| credentials.remove("postgres_url"));
-        Ok((hosted, postgres))
+    ) -> Result<Option<tako_core::DatabaseConnection>, StateStoreError> {
+        Ok(self
+            .get_app_databases(app)?
+            .get(tako_core::CHANNEL_REPLAY_BINDING)
+            .map(crate::databases::connection))
     }
 
     /// Replaces an app environment's grant and returns its key, which stays

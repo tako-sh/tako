@@ -124,9 +124,6 @@ pub struct ServerState {
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
     pub(crate) direct_channel_stores: Arc<crate::channels::DirectChannelStores>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub(crate) manual_backup_states:
-        SyncRwLock<HashMap<String, crate::operations::ManualBackupState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,
@@ -134,7 +131,7 @@ pub struct ServerState {
     pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     /// A standby's shared lease on the standby lock, held for as long as
-    /// this process may run app instances; a restore refuses while any
+    /// this process may run app instances; release cleanup skips while any
     /// standby holds one.
     pub(crate) standby_lock: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     pub(crate) drain_observer_started: AtomicBool,

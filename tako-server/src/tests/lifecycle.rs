@@ -351,7 +351,6 @@ async fn deploy_preserves_scaled_instance_count() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -361,7 +360,7 @@ async fn deploy_preserves_scaled_instance_count() {
 }
 
 #[tokio::test]
-async fn rollback_keeps_the_provisioned_backup_binding() {
+async fn rollback_extracts_a_removed_release_from_its_archive() {
     let temp = TempDir::new().unwrap();
     let state = ServerState::new(
         temp.path().to_path_buf(),
@@ -411,12 +410,6 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
         .routes
         .write()
         .set_app_routes(app_id.into(), vec!["my-app.localhost".into()]);
-    let backup = serde_json::from_value(serde_json::json!({
-        "storage": {"provider": "s3", "bucket": "archive"},
-        "backup_keys": [{"id": "key-1", "key_base64": "stored-key"}]
-    }))
-    .unwrap();
-    state.state_store.set_backup(app_id, Some(&backup)).unwrap();
     let response = state
         .handle_command(Command::Rollback {
             app: app_id.into(),
@@ -432,10 +425,6 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
         )
         .unwrap(),
         std::fs::read(&archive_path).unwrap(),
-    );
-    assert!(
-        state.state_store.get_backup(app_id).unwrap() == Some(backup),
-        "rollback should preserve the provisioned backup binding"
     );
     state.app_manager.stop_app(app_id).await.unwrap();
 }
@@ -549,7 +538,6 @@ async fn deploy_on_demand_validates_startup_and_fails_for_unhealthy_build() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -714,7 +702,6 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;

@@ -106,9 +106,7 @@ mod tests {
             version: "private".into(),
             ..public.clone()
         };
-        store
-            .commit_deployment(&private, &[], &Default::default(), None, None, None)
-            .unwrap();
+        store.commit_deployment(&private, &[], None, None).unwrap();
         let expected = ReleaseRouting::new(
             vec!["demo.example".into()],
             SourceIpMode::Direct,
@@ -125,14 +123,7 @@ mod tests {
         store.lock_conn().unwrap().execute_batch("CREATE TRIGGER fail_commit BEFORE UPDATE ON apps BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
         assert!(
             store
-                .commit_deployment(
-                    &public,
-                    &["changed.example".into()],
-                    &Default::default(),
-                    None,
-                    None,
-                    None
-                )
+                .commit_deployment(&public, &["changed.example".into()], None, None)
                 .is_err()
         );
         assert_eq!(

@@ -1,5 +1,3 @@
-mod backup;
-
 /// Who sent a management command. A deploy client may not add a route that
 /// shares requests with another app environment's route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,14 +5,6 @@ pub(crate) enum Caller {
     Full,
     Deploy,
 }
-pub(crate) use backup::{
-    METADATA_TIMEOUT, backup_store, decrypt_backup_file, download_object, encrypt_backup_file,
-    put_json_object, upload_file, with_deadline,
-};
-pub(crate) use backup::{
-    ManualBackupState, RecoveryMode, measure_database_tree, recover_interrupted_restores,
-    run_restore_worker, snapshot_data_tree, snapshot_database_tree, sweep_backup_work_dirs,
-};
 mod compose;
 mod deploy;
 mod dispatch;
@@ -24,7 +14,7 @@ mod lifecycle;
 pub(crate) mod logs;
 mod queries;
 mod release_artifacts;
-pub(crate) use release_artifacts::{available_bytes, sweep_release_staging_dirs};
+pub(crate) use release_artifacts::{RecoveryMode, available_bytes, sweep_release_staging_dirs};
 mod releases;
 #[cfg(test)]
 pub(crate) use releases::ReleaseRun;

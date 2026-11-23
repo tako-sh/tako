@@ -201,11 +201,10 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    // Before any app or workflow store opens app data: at a normal start, a
-    // restore that the previous server's death interrupted is rolled back to
-    // the original data. A standby, an upgrade reload, a promotion child, and
-    // a normal start while another server process (such as a hot standby)
-    // serves this data directory never roll one back.
+    // Only a normal start while no other server process (such as a hot
+    // standby) serves this data directory removes what interrupted release
+    // uploads left. A standby, an upgrade reload and a promotion child never
+    // do.
     let (recovery_mode, recovery_lease) = startup_recovery_mode(
         &data_dir,
         if standby {
@@ -216,13 +215,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             crate::operations::RecoveryMode::Primary
         },
     );
-    crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
     crate::operations::sweep_release_staging_dirs(&data_dir, recovery_mode);
-    if recovery_mode != crate::operations::RecoveryMode::Standby {
-        // A backup or restore that still runs, in another server process,
-        // holds the lock in its work directory.
-        crate::operations::sweep_backup_work_dirs(&data_dir, recovery_mode);
-    }
     // This process takes its own shared lease below.
     drop(recovery_lease);
     let state = Arc::new(if let Some(reload_owner) = reload_owner {
@@ -325,7 +318,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if standby {
-        state.clone().start_unresolved_restore_watch(rt.handle());
         spawn_standby_monitor(
             &rt,
             StandbyPromotionConfig {
@@ -371,7 +363,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             &state.workflows,
             metrics::server(),
             prometheus::default_registry(),
-            rt.handle(),
         )?;
     }
     if !should_skip_cloudflare_ip_refresh() {
@@ -417,11 +408,11 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// What startup recovery of backup restores may do. A normal start rolls
-/// back only while no other server process serves this data directory:
+/// What startup cleanup may do. A normal start removes what interrupted
+/// work left only while no other server process serves this data directory:
 /// each holds a shared drain activity lease, a hot standby included, whose
-/// app instances use the same app data. The returned exclusive lease keeps
-/// any from starting to serve until recovery is done.
+/// app instances use the same releases. The returned exclusive lease keeps
+/// any from starting to serve until cleanup is done.
 fn startup_recovery_mode(
     data_dir: &std::path::Path,
     mode: crate::operations::RecoveryMode,
@@ -437,13 +428,13 @@ fn startup_recovery_mode(
         Ok(Some(lease)) => (mode, Some(lease)),
         Ok(None) => {
             tracing::warn!(
-                "Another server process serves this data directory; this start only reports unfinished backup restores"
+                "Another server process serves this data directory; this start leaves interrupted release uploads in place"
             );
             (RecoveryMode::Successor, None)
         }
         Err(error) => {
             tracing::error!(
-                "Cannot tell whether another server process serves this data directory ({error}); this start only reports unfinished backup restores"
+                "Cannot tell whether another server process serves this data directory ({error}); this start leaves interrupted release uploads in place"
             );
             (RecoveryMode::Successor, None)
         }

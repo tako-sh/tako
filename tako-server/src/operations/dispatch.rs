@@ -16,9 +16,6 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::ListReleases { .. }
             | Command::Routes
             | Command::GetSecretsHash { .. }
-            | Command::ListBackups { .. }
-            | Command::BackupStatus { .. }
-            | Command::BackupDownloadUrl { .. }
             | Command::CheckDeploySpace { .. }
             | Command::ListWorkflowRuns { .. }
             | Command::GetWorkflowRun { .. }
@@ -70,7 +67,6 @@ impl crate::ServerState {
                         "release_history".to_string(),
                         "rollback".to_string(),
                         "management_http_uploads".to_string(),
-                        "backups".to_string(),
                         "server_drain_resume".to_string(),
                     ],
                     server_identity: self.runtime_config().server_identity.clone(),
@@ -224,7 +220,6 @@ impl crate::ServerState {
                 mut storages,
                 databases,
                 mut ssl,
-                mut backup,
                 force,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -241,8 +236,8 @@ impl crate::ServerState {
                 }
                 // Clients never send secret values. Fill them from the pinned
                 // snapshot, or keep what this server last applied.
-                strip_secret_parts(&mut storages, &mut ssl, &mut backup);
-                let (secrets, runtime_credentials) = match secrets_digest.as_deref() {
+                strip_secret_parts(&mut storages, &mut ssl);
+                let secrets = match secrets_digest.as_deref() {
                     Some(digest) => {
                         let resolved = match crate::secret_snapshot::resolve(
                             &self.runtime.data_dir,
@@ -264,18 +259,13 @@ impl crate::ServerState {
                         {
                             return Response::error(error);
                         }
-                        if let Some(backup) = backup.as_deref_mut()
-                            && let Err(error) = resolved.fill_backup(backup)
-                        {
-                            return Response::error(error);
-                        }
-                        (Some(resolved.app.clone()), Some(resolved.runtime_credentials()))
+                        Some(resolved.app.clone())
                     }
                     None => {
-                        if let Err(error) = self.keep_applied_secret_parts(&app, &mut storages, &mut backup) {
+                        if let Err(error) = self.keep_applied_secret_parts(&app, &mut storages) {
                             return Response::error(error);
                         }
-                        (None, None)
+                        None
                     }
                 };
                 self.deploy_app(super::deploy::DeployRequest {
@@ -285,81 +275,12 @@ impl crate::ServerState {
                     routes,
                     source_ip,
                     secrets,
-                    runtime_credentials,
                     storages,
                     databases,
                     ssl,
-                    backup: super::deploy::BackupUpdate::Replace(backup),
                     force,
                 })
                 .await
-            }
-            Command::BackupNow {
-                app,
-                mut backup,
-                secrets_digest,
-            } => {
-                if let Err(msg) = validate_app_name(&app) {
-                    return Response::error(msg);
-                }
-                if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
-                    return resp;
-                }
-                if let Some(binding) = backup.as_deref_mut() {
-                    binding.storage.access_key_id = None;
-                    binding.storage.secret_access_key = None;
-                    binding.backup_keys.clear();
-                    // Every server backs up with the snapshot the client pinned.
-                    // Only the backup target's keys and the backup keys need
-                    // to be current; expired app secrets don't block a backup.
-                    let resolved = match crate::secret_snapshot::resolve(
-                        &self.runtime.data_dir,
-                        &app,
-                        secrets_digest.as_deref(),
-                        &[],
-                    )
-                    .await
-                    {
-                        Ok(resolved) => resolved,
-                        Err(error) => return Response::error(error),
-                    };
-                    if let Err(error) = resolved.fill_backup(binding) {
-                        return Response::error(error);
-                    }
-                }
-                if let Some(backup) = backup.as_deref()
-                    && let Err(error) = self.state_store.set_backup(&app, Some(backup))
-                {
-                    return Response::error(format!("Failed to store backup config: {error}"));
-                }
-                self.backup_now(&app).await
-            }
-            Command::ListBackups { app } => {
-                if let Err(msg) = validate_app_name(&app) {
-                    return Response::error(msg);
-                }
-                self.list_backups(&app).await
-            }
-            Command::BackupStatus { app } => {
-                if let Err(msg) = validate_app_name(&app) {
-                    return Response::error(msg);
-                }
-                self.backup_status(&app).await
-            }
-            Command::BackupDownloadUrl { app, backup_id } => {
-                if let Err(msg) = validate_app_name(&app) {
-                    return Response::error(msg);
-                }
-                self.backup_download_url(&app, &backup_id).await
-            }
-            Command::RestoreBackup { app, backup_id } => {
-                if let Err(msg) = validate_app_name(&app) {
-                    return Response::error(msg);
-                }
-                if let Some(resp) = self.reject_mutating_when_upgrading("restore-backup").await {
-                    return resp;
-                }
-                self.restore_backup(&app, &backup_id).await
             }
             Command::Scale { app, instances, service, reset } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -589,7 +510,6 @@ impl crate::ServerState {
 fn strip_secret_parts(
     storages: &mut Option<HashMap<String, tako_core::StorageBinding>>,
     ssl: &mut tako_core::SslBinding,
-    backup: &mut Option<Box<tako_core::BackupBinding>>,
 ) {
     ssl.cloudflare_api_token = None;
     for binding in storages
@@ -600,11 +520,6 @@ fn strip_secret_parts(
             binding.access_key_id = None;
             binding.secret_access_key = None;
         }
-    }
-    if let Some(backup) = backup.as_deref_mut() {
-        backup.storage.access_key_id = None;
-        backup.storage.secret_access_key = None;
-        backup.backup_keys.clear();
     }
 }
 
@@ -659,7 +574,6 @@ impl crate::ServerState {
         &self,
         app: &str,
         storages: &mut Option<HashMap<String, tako_core::StorageBinding>>,
-        backup: &mut Option<Box<tako_core::BackupBinding>>,
     ) -> Result<(), String> {
         let same = |a: &tako_core::StorageBinding, b: &tako_core::StorageBinding| {
             a.provider == b.provider
@@ -686,17 +600,6 @@ impl crate::ServerState {
                 binding.access_key_id = previous.access_key_id.clone();
                 binding.secret_access_key = previous.secret_access_key.clone();
             }
-        }
-        if let Some(binding) = backup.as_deref_mut() {
-            let previous = self
-                .state_store
-                .get_backup(app)
-                .map_err(|error| format!("Failed to read backup config: {error}"))?
-                .filter(|previous| same(&previous.storage, &binding.storage))
-                .ok_or("The backup target needs its keys; deploy it with a secret snapshot.")?;
-            binding.storage.access_key_id = previous.storage.access_key_id;
-            binding.storage.secret_access_key = previous.storage.secret_access_key;
-            binding.backup_keys = previous.backup_keys;
         }
         Ok(())
     }

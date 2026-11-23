@@ -396,7 +396,7 @@ fn a_store_written_by_a_newer_schema_is_refused() {
         "UPDATE tako_workflow_meta SET value = 99 WHERE name = 'schema_version'",
         vec![],
     );
-    match RunsDb::open_config(fixture.config("app")) {
+    match RunsDb::open(fixture.config("app")) {
         Err(RunsDbError::UnsupportedBackend(message)) => assert!(message.contains("99")),
         Err(error) => panic!("{error}"),
         Ok(_) => panic!("opened a newer store"),

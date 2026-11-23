@@ -19,7 +19,7 @@ use parking_lot::{Mutex, RwLock};
 use tako_core::{
     CHANNEL_REPLAY_BINDING, DatabaseBinding, DatabaseConnection, DatabaseEngine, DatabaseInfo,
     DatabaseQueryResult, KvConnection, Response, StorageBinding, StorageProvider,
-    channel_replay_grant_scope,
+    WORKFLOWS_BINDING, channel_replay_grant_scope,
 };
 use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
@@ -28,6 +28,8 @@ use crate::instances::{AppConfig, AppLaunch};
 use crate::state_store::{AppDatabase, DatabaseSecrets, StoredDatabase};
 
 pub(crate) mod backups;
+mod encryption;
+mod objects;
 pub(crate) mod snapshots;
 mod transfer;
 
@@ -347,6 +349,7 @@ impl Databases {
         let mut seen = BTreeSet::new();
         let mut bindings = Vec::new();
         let mut replay = Vec::new();
+        let mut workflows = Vec::new();
         let mut kv = Vec::new();
         for set in sets {
             for (alias, binding) in set {
@@ -359,10 +362,10 @@ impl Databases {
                         let Ok(database) = DatabaseId::parse(&binding.binding.name) else {
                             continue;
                         };
-                        let target = if alias == CHANNEL_REPLAY_BINDING {
-                            &mut replay
-                        } else {
-                            &mut bindings
+                        let target = match alias.as_str() {
+                            CHANNEL_REPLAY_BINDING => &mut replay,
+                            WORKFLOWS_BINDING => &mut workflows,
+                            _ => &mut bindings,
                         };
                         target.push(Binding {
                             token_hash: tako_db::hash_token(&binding.token),
@@ -396,6 +399,8 @@ impl Databases {
         if !scope.ends_with(RELEASE_SCOPE_SUFFIX) {
             self.host
                 .set_bindings(&channel_replay_grant_scope(scope), replay);
+            self.host
+                .set_bindings(&tako_core::workflows_grant_scope(scope), workflows);
         }
     }
 
@@ -419,7 +424,12 @@ impl Databases {
         let own = self.server_id();
         let mut prepared = HashMap::new();
         for (name, binding) in requested {
-            if name == CHANNEL_REPLAY_BINDING {
+            if tako_core::is_runtime_binding(&name) {
+                let (service, needs) = if name == CHANNEL_REPLAY_BINDING {
+                    ("channel replay", "Channel replay")
+                } else {
+                    ("workflow storage", "Workflow storage")
+                };
                 let sdk = match (&config.compose, &config.launch) {
                     (Some(compose), _) => compose.has_sdk_services(),
                     (None, AppLaunch::Container { .. }) => config.container_options.sdk,
@@ -427,11 +437,11 @@ impl Databases {
                     (None, AppLaunch::Compose) => false,
                 };
                 if !sdk {
-                    return Err("Hosted channel replay requires an SDK-enabled release.".into());
+                    return Err(format!("Hosted {service} requires an SDK-enabled release."));
                 }
                 if binding.engine != DatabaseEngine::Sqlite {
                     return Err(format!(
-                        "Channel replay needs a SQLite database; {} is a KV store.",
+                        "{needs} needs a SQLite database; {} is a KV store.",
                         binding.name
                     ));
                 }
@@ -469,13 +479,15 @@ impl Databases {
             if binding.peer_key.is_none() {
                 binding.peer_key = existing.and_then(|existing| existing.binding.peer_key.clone());
             }
-            if name == CHANNEL_REPLAY_BINDING
+            if tako_core::is_runtime_binding(&name)
                 && !local
                 && binding.peer_key.as_deref().is_none_or(str::is_empty)
             {
-                return Err(
-                    "Remote channel replay requires a database grant from a full client.".into(),
-                );
+                return Err(if name == CHANNEL_REPLAY_BINDING {
+                    "Remote channel replay requires a database grant from a full client.".into()
+                } else {
+                    "Remote workflow storage requires a database grant from a full client.".into()
+                });
             }
             prepared.insert(name, AppDatabase { binding, token });
         }
@@ -495,6 +507,9 @@ impl Databases {
         let mut requested = requested;
         if requested.contains_key(CHANNEL_REPLAY_BINDING) {
             return Err("Release commands cannot use the channel replay binding.".into());
+        }
+        if requested.contains_key(WORKFLOWS_BINDING) {
+            return Err("Release commands cannot use the workflow storage binding.".into());
         }
         for (name, binding) in &mut requested {
             if binding.peer_key.is_none()
@@ -547,11 +562,25 @@ pub(crate) fn connections(
     bindings
         .iter()
         .filter(|(name, binding)| {
-            name.as_str() != CHANNEL_REPLAY_BINDING
-                && binding.binding.engine == DatabaseEngine::Sqlite
+            !tako_core::is_runtime_binding(name) && binding.binding.engine == DatabaseEngine::Sqlite
         })
         .map(|(name, binding)| (name.clone(), connection(binding)))
         .collect()
+}
+
+/// The hosted store of an app's workflow runs, from its `@workflows`
+/// binding. tako-server is its only client.
+pub(crate) fn workflow_store(
+    app: &str,
+    bindings: &HashMap<String, AppDatabase>,
+) -> Option<tako_workflows::WorkflowStoreConfig> {
+    bindings.get(WORKFLOWS_BINDING).map(|binding| {
+        tako_workflows::WorkflowStoreConfig::hosted(
+            connection(binding).url,
+            binding.token.clone(),
+            app,
+        )
+    })
 }
 
 pub(crate) fn connection(binding: &AppDatabase) -> DatabaseConnection {
@@ -584,7 +613,6 @@ impl ServerState {
     pub fn channel_replay_database(&self, app: &str) -> Result<Option<DatabaseConnection>, String> {
         self.state_store
             .channel_credentials(app)
-            .map(|(hosted, _)| hosted)
             .map_err(|_| "channel database binding unavailable".into())
     }
 
@@ -1233,11 +1261,10 @@ impl ServerState {
         let mut record = |scope: &str, set: &HashMap<String, AppDatabase>| {
             for (alias, binding) in set {
                 if self.databases.binds_here(&binding.binding, &stored.name) {
-                    bindings.insert(if alias == CHANNEL_REPLAY_BINDING {
-                        channel_replay_grant_scope(scope)
-                    } else {
-                        scope.to_owned()
-                    });
+                    bindings.insert(
+                        tako_core::runtime_grant_scope(alias, scope)
+                            .unwrap_or_else(|| scope.to_owned()),
+                    );
                 }
             }
         };
@@ -1341,7 +1368,10 @@ impl ServerState {
         ids: Vec<String>,
         keep_existing: bool,
     ) -> Result<serde_json::Value, String> {
-        let base = app.strip_suffix("#channels").unwrap_or(app);
+        let base = app
+            .strip_suffix("#channels")
+            .or_else(|| app.strip_suffix("#workflows"))
+            .unwrap_or(app);
         base.parse::<tako_network::AppEnv>()
             .map_err(|_| "Grants name an app environment as `<app>/<env>`.".to_owned())?;
         crate::release::validate_app_name(base)?;
@@ -1385,7 +1415,7 @@ impl ServerState {
             .get_app_databases(app)
             .is_ok_and(|bindings| {
                 bindings.iter().any(|(name, binding)| {
-                    name != CHANNEL_REPLAY_BINDING
+                    !tako_core::is_runtime_binding(name)
                         && self.databases.binds_here(&binding.binding, id)
                 })
             });

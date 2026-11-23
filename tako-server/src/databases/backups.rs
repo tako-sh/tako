@@ -22,8 +22,8 @@ use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageB
 use tako_db::DatabaseId;
 
 use super::now_unix_secs;
+use super::objects::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
 use crate::ServerState;
-use crate::operations::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
 use crate::state_store::StoredDatabase;
 
 const SCHEDULER_TICK: Duration = tako_backup::SYNC_INTERVAL;
@@ -1889,8 +1889,8 @@ async fn replace_inner(
         .database_dir(&stored.name)
         .join("previous.sqlite");
     let swapped = tokio::task::spawn_blocking(move || {
-        rotate_replay_epochs(&replacement)
-            .map_err(|e| format!("prepare restored channel replay epochs: {e}"))?;
+        prepare_runtime_state(&replacement)
+            .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
         tako_db::replace_database(&path, &replacement, &previous)
     })
     .await
@@ -1929,26 +1929,56 @@ async fn replace_inner(
 
 /// Cursors issued before a restore cannot refer to the restored timeline.
 /// Change the staged copy only, before its main file is renamed into place.
-fn rotate_replay_epochs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Readies Tako's own tables in a database about to replace the live one.
+///
+/// Channel replay gets new epochs, so clients holding cursors into the old
+/// contents resync. Running workflow runs lose their leases: workers that
+/// claimed them before the replacement cannot save steps or finish them,
+/// and the runs are claimed again from their last step saved in the new
+/// contents.
+fn prepare_runtime_state(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use rusqlite::{Connection, OpenFlags, config::DbConfig};
 
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
-    let replay: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-           WHERE type = 'table' AND name = 'tako_replay_apps' COLLATE NOCASE AND rootpage > 0)
-         AND (SELECT count(*) FROM pragma_table_info('tako_replay_apps')
-              WHERE name COLLATE NOCASE IN ('app', 'epoch') AND type = 'TEXT' COLLATE NOCASE) = 2",
-        [],
-        |row| row.get(0),
-    )?;
+    let has_columns = |table: &str, columns: &[&str]| -> rusqlite::Result<bool> {
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&table, &table];
+        params.extend(columns.iter().map(|column| column as &dyn rusqlite::ToSql));
+        db.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+                   WHERE type = 'table' AND name = ?1 COLLATE NOCASE AND rootpage > 0)
+                 AND (SELECT count(*) FROM pragma_table_info(?2)
+                      WHERE name COLLATE NOCASE IN ({placeholders})) = {}",
+                columns.len()
+            ),
+            params.as_slice(),
+            |row| row.get(0),
+        )
+    };
+    let replay = has_columns("tako_replay_apps", &["app", "epoch"])?;
     if replay {
         db.execute(
             "UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
             [],
         )?;
-        // The swap moves only the main file; make the new epochs durable in it.
+    }
+    let workflows = has_columns(
+        "tako_workflow_runs",
+        &["status", "worker_id", "lease_until"],
+    )?;
+    if workflows {
+        db.execute(
+            "UPDATE main.tako_workflow_runs
+             SET status = 'pending', worker_id = NULL, lease_until = NULL
+             WHERE status = 'running'",
+            [],
+        )?;
+    }
+    if replay || workflows {
+        // The swap moves only the main file; make the changes durable in it.
         let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
         if busy != 0 {
             return Err("could not checkpoint the replacement database".into());

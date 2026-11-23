@@ -135,18 +135,16 @@ impl ServerState {
         }
         {
             let state_store = state_store.clone();
-            workflows.set_postgres_url_resolver(Arc::new(move |app| {
-                state_store
-                    .get_runtime_credentials(app)
-                    .ok()
-                    .and_then(|credentials| credentials.get("postgres_url").cloned())
+            workflows.set_store_resolver(Arc::new(move |app| {
+                let bindings = state_store.get_app_databases(app).ok()?;
+                crate::databases::workflow_store(app, &bindings)
             }));
         }
 
         // Server-side channel `.publish()` writes straight to the channel
         // store for the deployed app id via the shared internal socket.
         // Stores are opened lazily and cached so repeated publishes reuse
-        // the same SQLite connection. The proxy shares the registry, so
+        // the same handle as the proxy. The proxy shares the registry, so
         // publish params are checked against what subscribers are checked with.
         let channel_registry = Arc::new(crate::channels::registry::ChannelRegistry::new());
         let direct_channel_stores = Arc::new(crate::channels::DirectChannelStores::default());
@@ -160,7 +158,6 @@ impl ServerState {
                 })
                 .transpose()
                 .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
-            let data_dir = data_dir.clone();
             let registry = channel_registry.clone();
             let stores = direct_channel_stores.clone();
             workflows.set_channel_publisher(std::sync::Arc::new(
@@ -171,14 +168,8 @@ impl ServerState {
                         return publisher.publish(app, &publication);
                     }
                     let app = crate::native_channel_client::app_scope(app)?;
-                    let target = resolve(app.as_str()).map_err(|error| {
-                        tako_core::SocketError::new(tako_core::ErrorCode::Unavailable, error)
-                    })?;
-                    let (store, _) = stores.open(
-                        crate::channels::app_channels_db_path(&data_dir, app.as_str()),
-                        &app,
-                        &target,
-                    )?;
+                    let target = resolve(app.as_str())?;
+                    let store = stores.open(&app, &target)?;
                     store
                         .publish_trusted(&publication)
                         .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
@@ -252,8 +243,6 @@ impl ServerState {
             channel_registry,
             direct_channel_stores,
             deploy_locks: AsyncRwLock::new(HashMap::new()),
-            backup_locks: SyncRwLock::new(HashMap::new()),
-            manual_backup_states: SyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start,
             state_store,
@@ -272,28 +261,28 @@ impl ServerState {
 }
 
 /// How long a start waits for a lease another server process holds
-/// exclusively: a restore's standby lock, or the drain activity lease of a
-/// normal start that recovers backup restores.
+/// exclusively: release cleanup's standby lock, or the drain activity lease
+/// of a normal start that sweeps the data directory.
 const STARTUP_LEASE_WAIT: Duration = if cfg!(test) {
     Duration::from_secs(2)
 } else {
     Duration::from_secs(5 * 60)
 };
 
-/// A standby runs the apps of the data directory, so it never starts while
-/// a restore holds the standby lock: it waits for the restore to end, up to
-/// [`STARTUP_LEASE_WAIT`], then fails its start.
+/// A standby runs the releases of the data directory, so it never starts
+/// while release cleanup holds the standby lock: it waits for the cleanup
+/// to end, up to [`STARTUP_LEASE_WAIT`], then fails its start.
 fn standby_lock_at_start(
     data_dir: &std::path::Path,
 ) -> Result<crate::state_store::DrainLease, StateStoreError> {
     crate::state_store::wait_for_lease(
         STARTUP_LEASE_WAIT,
-        "a backup restore on this data directory to finish before this standby runs apps",
+        "release cleanup on this data directory to finish before this standby runs apps",
         || crate::state_store::DrainLease::try_standby_in(data_dir, false),
     )?
     .ok_or_else(|| {
         StateStoreError::InvalidData(format!(
-            "a backup restore on this data directory still runs after {} s, and a standby never runs apps during a restore; retry startup once the restore has finished",
+            "release cleanup on this data directory still runs after {} s, and a standby never runs apps during release cleanup; retry startup once it has finished",
             STARTUP_LEASE_WAIT.as_secs()
         ))
     })
@@ -301,9 +290,8 @@ fn standby_lock_at_start(
 
 /// The shared drain activity lease, and whether a drain is requested, in
 /// which case this start takes no lease. A normal start holds the lease
-/// exclusively while it recovers backup restores and sweeps work
-/// directories, which can take minutes, and a drain holds it briefly when
-/// it finishes: wait for either, up to [`STARTUP_LEASE_WAIT`].
+/// exclusively while it sweeps work directories, and a drain holds it
+/// briefly when it finishes: wait for either, up to [`STARTUP_LEASE_WAIT`].
 fn drain_activity_at_start(
     state_store: &SqliteStateStore,
 ) -> Result<(Option<crate::state_store::DrainLease>, bool), StateStoreError> {
@@ -318,7 +306,7 @@ fn drain_activity_at_start(
     )?
     .ok_or_else(|| {
         StateStoreError::InvalidData(format!(
-            "another server process held the drain activity lease exclusively for {} s (a normal start recovering backup restores on this data directory, or a server drain finishing); retry startup",
+            "another server process held the drain activity lease exclusively for {} s (a normal start sweeping this data directory, or a server drain finishing); retry startup",
             STARTUP_LEASE_WAIT.as_secs()
         ))
     })

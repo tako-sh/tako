@@ -97,7 +97,6 @@ async fn deploy_without_secrets_keeps_existing() {
             storages: None,
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -175,7 +174,6 @@ async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
             storages: Some(storages),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -635,6 +633,7 @@ async fn restore_from_state_store_restarts_internal_socket_for_apps_with_workflo
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = super::workflows::serve_workflows(&state_b);
     state_b.restore_from_state_store().await.unwrap();
 
     assert!(

@@ -39,7 +39,9 @@ fn test_workflows() -> Arc<tako_workflows::WorkflowManager> {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp).ok();
-    Arc::new(tako_workflows::WorkflowManager::new(&tmp))
+    let workflows = tako_workflows::WorkflowManager::new(&tmp);
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
+    Arc::new(workflows)
 }
 
 async fn query_control_clients(state: Arc<Mutex<State>>) -> u32 {
@@ -237,6 +239,7 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
         }
     });
     let workflows = tako_workflows::WorkflowManager::new(tmp.path());
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     crate::network::install(&state, &workflows);
     workflows.start_socket().unwrap();
     for (caller, address) in [

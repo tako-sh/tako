@@ -296,6 +296,17 @@ impl TakoToml {
                     )));
                 }
             }
+            if let Some(workflows) = &env_config.workflows {
+                tako_core::validate_database_name(&workflows.db).map_err(|error| {
+                    ConfigError::Validation(format!("[envs.{env_name}.workflows].db: {error}"))
+                })?;
+                if env_config.kv.values().any(|store| *store == workflows.db) {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.workflows].db names '{}', which this environment binds as a KV store; workflow runs need a SQLite database",
+                        workflows.db
+                    )));
+                }
+            }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
             }

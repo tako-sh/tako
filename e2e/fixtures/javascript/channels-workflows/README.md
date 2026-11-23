@@ -50,10 +50,11 @@ refreshed read. Store loaders are never called during type generation.
 
 `just e2e e2e/fixtures/javascript/channels-workflows` deploys `cw-e2e/production`
 first to Ubuntu, then to AlmaLinux in the same two-member network. The full client
-creates `channel-replay` on Ubuntu once (`tako db create channel-replay --server server-ubuntu`).
-`[envs.production.channels].db` selects it on both deployments. App
+creates `channel-replay` and `workflow-runs` on Ubuntu once (`tako db create <name> --server server-ubuntu`).
+`[envs.production.channels].db` and `[envs.production.workflows].db` select them
+on both deployments, so both servers share replay and workflow runs. App
 instances and release commands see only the `messages` SQL binding. After the
 Store export/import checks, both nodes publish to `demo`; subscribers resume
 through the other node without a reset. `tako db status` checks the
 replay-only binding and peer grant; `tako db shell` matches each returned
-cursor and message to its row. No Postgres credential is set in this fixture.
+cursor and message to its row.

@@ -12,3 +12,6 @@ release = """node -e 'require("node:assert/strict").deepEqual(Object.keys(JSON.p
 
 [envs.production.channels]
 db = "channel-replay"
+
+[envs.production.workflows]
+db = "workflow-runs"

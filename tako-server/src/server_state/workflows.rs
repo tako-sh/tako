@@ -6,7 +6,9 @@ pub(crate) struct WorkflowBindings<'a> {
     pub(crate) storages: &'a HashMap<String, tako_core::StorageBinding>,
     pub(crate) databases: &'a HashMap<String, tako_core::DatabaseConnection>,
     pub(crate) kv: &'a HashMap<String, tako_core::KvConnection>,
-    pub(crate) postgres_url: Option<&'a String>,
+    /// The hosted store of the app's workflow runs, from its `@workflows`
+    /// binding. A release that defines workflows gets no runtime without it.
+    pub(crate) store: Option<tako_workflows::WorkflowStoreConfig>,
 }
 
 impl ServerState {
@@ -44,7 +46,6 @@ impl ServerState {
         let bindings = self.state_store.get_app_databases(app_name)?;
         let databases = self.databases.connections(&bindings);
         let kv = crate::databases::kv_connections(&bindings);
-        let runtime_credentials = self.state_store.get_runtime_credentials(app_name)?;
         let prepared = self
             .prepare_app_workflows(
                 app_name,
@@ -55,7 +56,9 @@ impl ServerState {
                     storages: &storages,
                     databases: &databases,
                     kv: &kv,
-                    postgres_url: runtime_credentials.get("postgres_url"),
+                    // The committed binding, through the same resolver
+                    // operator commands use.
+                    store: self.workflows.workflow_store_config(app_name),
                 },
                 ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
             )
@@ -119,11 +122,9 @@ impl ServerState {
                 .filter(|build| !build.is_empty())
                 .cloned()
                 .unwrap_or_else(|| manifest.version.clone());
-            let store = match bindings.postgres_url {
-                Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
-                None => tako_workflows::WorkflowStoreConfig::sqlite(
-                    self.workflows.workflows_db_path(app_name),
-                ),
+            let Some(store) = bindings.store else {
+                warn_without_store(app_name);
+                return Ok(None);
             };
             return self
                 .workflows
@@ -144,7 +145,7 @@ impl ServerState {
             storages,
             databases,
             kv,
-            postgres_url,
+            store,
         } = bindings;
         let mut worker_env = manifest.env_vars.clone();
         // Older manifests can omit the version. Their release directory still
@@ -306,11 +307,9 @@ impl ServerState {
         };
 
         self.ensure_internal_socket_started()?;
-        let store = match postgres_url {
-            Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
-            None => tako_workflows::WorkflowStoreConfig::sqlite(
-                self.workflows.workflows_db_path(app_name),
-            ),
+        let Some(store) = store else {
+            warn_without_store(app_name);
+            return Ok(None);
         };
         let mut spec = crate::workflows::worker_spec_for_command(
             app_name,
@@ -337,4 +336,13 @@ impl ServerState {
             .map(Some)
             .map_err(|error| StateStoreError::InvalidData(error.to_string()))
     }
+}
+
+/// A release defines workflows, but its environment has no workflow
+/// database: deploys from a full client provision one.
+fn warn_without_store(app: &str) {
+    tracing::warn!(
+        app,
+        "Skipping workflow engine: the environment has no workflow database; deploy it again from a full client"
+    );
 }

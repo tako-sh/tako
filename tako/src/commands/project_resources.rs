@@ -9,11 +9,10 @@ use serde::Serialize;
 use crate::config::{
     LocalNetworks, SSL_CLOUDFLARE_CREDENTIAL_NAME, SecretsStore, ServerInventory, TakoToml,
 };
-use crate::network::databases::DatabaseRecord;
+use crate::network::databases::{DatabaseRecord, ServiceOwner};
 
 /// Why a deploy client sees no secrets.
-pub(crate) const DEPLOY_CLIENT_NOTE: &str =
-    "Secrets, credentials and backup keys need a full client.";
+pub(crate) const DEPLOY_CLIENT_NOTE: &str = "Secrets and credentials need a full client.";
 
 /// This device's access to an environment's network state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,6 +40,7 @@ pub(crate) struct StorageBinding {
 pub(crate) enum DatabaseUsage {
     Binding { binding: String },
     ChannelReplay,
+    Workflows,
 }
 
 impl DatabaseUsage {
@@ -48,6 +48,7 @@ impl DatabaseUsage {
         match self {
             Self::Binding { binding } => binding,
             Self::ChannelReplay => "channel replay",
+            Self::Workflows => "workflow runs",
         }
     }
 }
@@ -74,7 +75,6 @@ pub(crate) struct EnvResources {
     pub secrets: Option<usize>,
     pub credentials: Option<Vec<String>>,
     pub storages: Vec<StorageBinding>,
-    pub backup_key: Option<bool>,
     pub databases: Vec<ProjectDatabase>,
     /// KV store bindings, which share the databases' network records.
     pub kv: Vec<ProjectDatabase>,
@@ -121,6 +121,7 @@ impl ProjectResources {
                             DatabaseUsage::ChannelReplay => {
                                 tako_core::channel_replay_grant_scope(&scope)
                             }
+                            DatabaseUsage::Workflows => tako_core::workflows_grant_scope(&scope),
                         });
                     }
                     if env.kv.iter().any(|store| store.database == record.name) {
@@ -145,6 +146,7 @@ pub(crate) fn load(
     let secrets = context.load_secrets().unwrap_or_default();
     let aliases = LocalNetworks::load().ok();
     let needs_replay = super::deploy::project_needs_channel_replay(&context.project_dir, &config);
+    let needs_workflows = super::deploy::project_needs_workflows(&context.project_dir, &config);
 
     let mut databases = BTreeMap::new();
     let mut envs = Vec::new();
@@ -192,6 +194,7 @@ pub(crate) fn load(
             &config,
             &secrets,
             needs_replay,
+            needs_workflows,
             access,
             servers,
             alias.map(|alias| alias.alias).or(network_id.clone()),
@@ -246,6 +249,7 @@ pub(crate) fn env_resources(
     config: &TakoToml,
     secrets: &SecretsStore,
     needs_replay: bool,
+    needs_workflows: bool,
     access: Access,
     servers: Result<Vec<String>, String>,
     network: Option<String>,
@@ -305,9 +309,16 @@ pub(crate) fn env_resources(
     };
     let mut databases = env.map(|env| bindings(&env.databases)).unwrap_or_default();
     let kv = env.map(|env| bindings(&env.kv)).unwrap_or_default();
-    if let Some(database) = replay_database(config, name, records, secrets, needs_replay) {
+    if let Some(database) = replay_database(config, name, records, needs_replay) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::ChannelReplay,
+            server: database_servers.get(database).cloned(),
+            database: database.to_owned(),
+        });
+    }
+    if let Some(database) = workflows_database(config, name, records, needs_workflows) {
+        databases.push(ProjectDatabase {
+            usage: DatabaseUsage::Workflows,
             server: database_servers.get(database).cloned(),
             database: database.to_owned(),
         });
@@ -331,12 +342,6 @@ pub(crate) fn env_resources(
         secrets: readable.then(|| secrets.get_env(name).map_or(0, |values| values.len())),
         credentials,
         storages,
-        backup_key: readable.then(|| {
-            secrets
-                .environments
-                .get(name)
-                .is_some_and(|env| !env.backup_keys.is_empty())
-        }),
         databases,
         kv,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
@@ -345,39 +350,71 @@ pub(crate) fn env_resources(
 
 /// Hosted replay uses a database without creating an app SQL binding. Like
 /// deploy planning, the generated database is selected only while the
-/// project's code uses channels (`needs_replay`) and no `postgres_url` is set;
-/// otherwise it stays in the directory unused.
+/// project's code uses channels (`needs_replay`); otherwise it stays in the
+/// directory unused.
 pub(crate) fn replay_database<'a>(
     config: &'a TakoToml,
     env: &str,
     records: &'a [DatabaseRecord],
-    secrets: &SecretsStore,
     needs_replay: bool,
+) -> Option<&'a str> {
+    service_database(config, env, records, needs_replay, ServiceOwner::Channels)
+}
+
+/// The database holding `env`'s workflow runs: the one named in
+/// `[envs.<env>.workflows]`, or the generated one a deploy created.
+pub(crate) fn workflows_database<'a>(
+    config: &'a TakoToml,
+    env: &str,
+    records: &'a [DatabaseRecord],
+    needs_workflows: bool,
+) -> Option<&'a str> {
+    service_database(
+        config,
+        env,
+        records,
+        needs_workflows,
+        ServiceOwner::Workflows,
+    )
+}
+
+fn service_database<'a>(
+    config: &'a TakoToml,
+    env: &str,
+    records: &'a [DatabaseRecord],
+    needed: bool,
+    service: ServiceOwner,
 ) -> Option<&'a str> {
     if env == "development" {
         return None;
     }
-    if let Some(channels) = &config.envs.get(env)?.channels {
-        return Some(&channels.db);
-    }
-    if !needs_replay
-        || secrets
-            .get_credential(env, crate::config::POSTGRES_CREDENTIAL_NAME)
-            .is_some()
-    {
-        return None;
+    let spec = config.envs.get(env)?;
+    let configured = match service {
+        ServiceOwner::Channels => spec.channels.as_ref().map(|c| c.db.as_str()),
+        ServiceOwner::Workflows => spec.workflows.as_ref().map(|w| w.db.as_str()),
+    };
+    if configured.is_some() || !needed {
+        return configured;
     }
     let owner = tako_core::deployment_app_id(config.name.as_deref()?, env);
     records.iter().find_map(|record| {
-        (record.channel_owner.as_deref() == Some(owner.as_str())).then_some(record.name.as_str())
+        let recorded = match service {
+            ServiceOwner::Channels => record.channel_owner.as_deref(),
+            ServiceOwner::Workflows => record.workflows_owner.as_deref(),
+        };
+        (recorded == Some(owner.as_str())).then_some(record.name.as_str())
     })
 }
 
-/// Display a server-reported SQL or internal channel grant scope.
+/// Display a server-reported SQL, channel replay or workflow grant scope.
 pub(crate) fn database_user_label(scope: &str) -> String {
-    scope
-        .strip_suffix("#channels")
-        .map_or_else(|| scope.to_owned(), |app| format!("{app} (channel replay)"))
+    if let Some(app) = scope.strip_suffix("#channels") {
+        format!("{app} (channel replay)")
+    } else if let Some(app) = scope.strip_suffix("#workflows") {
+        format!("{app} (workflow runs)")
+    } else {
+        scope.to_owned()
+    }
 }
 
 /// Whether the environment's routes need `ssl.cloudflare` and it isn't set.

@@ -20,8 +20,8 @@ Rust crate for the remote Tako runtime and proxy.
 - Validate app ids, release ids, and deploy paths at the management socket boundary.
 - Persist app runtime registration (config/routes + release metadata) to SQLite and restore it on restart.
 - Read non-secret env vars from release `app.json` and secrets from encrypted SQLite state, then pass the shared bootstrap envelope to native processes on fd 3 or containers through `TAKO_BOOTSTRAP_DATA`.
-- Create, encrypt, index, prune, download, and restore private app data backups when an app environment enables backups.
-- Serve durable channel pub-sub over shared WebSockets at `/_tako/channels/ws`, dedicated WebSockets at `/_tako/channels/ws/<name>`, and SSE at `/_tako/channels/sse/<name>`, with bounded app/env replay history in local SQLite or shared Postgres.
+- Back up hosted databases continuously and KV stores with snapshots, encrypted, to private S3-compatible storage, and restore them.
+- Serve durable channel pub-sub over shared WebSockets at `/_tako/channels/ws`, dedicated WebSockets at `/_tako/channels/ws/<name>`, and SSE at `/_tako/channels/sse/<name>`, with bounded app/env replay history in a hosted database.
 - Serve public optimized WebP image URLs under `/_tako/image`, with optional AVIF when configured, request guardrails, short-lived source caching, queued isolated child-process transforms, same-key in-flight dedupe, and a pruned origin disk cache for successful variants.
 - Persist server upgrade mode in SQLite and reject mutating commands while upgrading.
 - Use a single-owner durable upgrade lock so only one upgrade controller can enter upgrading mode at a time.

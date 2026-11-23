@@ -17,7 +17,7 @@ use tako_core::{
 
 use crate::commands::project_context;
 use crate::commands::project_resources::database_user_label;
-use crate::config::{SecretsStore, ServerInventory, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::network::databases::DatabaseRecord;
 use crate::output;
@@ -292,26 +292,44 @@ fn binding_envs<'a>(config: &'a TakoToml, database: &str, engine: DatabaseEngine
 struct DatabaseUsers<'a> {
     environments: BTreeSet<&'a str>,
     channel_replay: BTreeSet<&'a str>,
+    workflows: BTreeSet<&'a str>,
 }
 
 impl DatabaseUsers<'_> {
     fn replay_env_names(&self) -> String {
-        self.channel_replay
-            .iter()
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ")
+        join_envs(&self.channel_replay)
+    }
+
+    fn workflow_env_names(&self) -> String {
+        join_envs(&self.workflows)
+    }
+
+    /// The server-owned uses, for listings: "channel replay for production".
+    fn services(&self) -> Vec<String> {
+        let mut uses = Vec::new();
+        if !self.channel_replay.is_empty() {
+            uses.push(format!("channel replay for {}", self.replay_env_names()));
+        }
+        if !self.workflows.is_empty() {
+            uses.push(format!("workflow runs for {}", self.workflow_env_names()));
+        }
+        uses
     }
 }
 
+fn join_envs(envs: &BTreeSet<&str>) -> String {
+    envs.iter().copied().collect::<Vec<_>>().join(", ")
+}
+
 /// Project uses of each database of `engine` in this network: its bindings,
-/// and for SQLite also channel replay without an SQL alias.
+/// and for SQLite also channel replay and workflow runs, which have no SQL
+/// alias.
 fn database_users<'a>(
     config: &'a TakoToml,
     network: &str,
     records: &[DatabaseRecord],
-    secrets: &SecretsStore,
     needs_replay: bool,
+    needs_workflows: bool,
     engine: DatabaseEngine,
 ) -> BTreeMap<String, DatabaseUsers<'a>> {
     let mut users = BTreeMap::<String, DatabaseUsers>::new();
@@ -330,11 +348,18 @@ fn database_users<'a>(
             continue;
         }
         if let Some(name) =
-            super::project_resources::replay_database(config, env, records, secrets, needs_replay)
+            super::project_resources::replay_database(config, env, records, needs_replay)
         {
             let database = users.entry(name.to_owned()).or_default();
             database.environments.insert(env);
             database.channel_replay.insert(env);
+        }
+        if let Some(name) =
+            super::project_resources::workflows_database(config, env, records, needs_workflows)
+        {
+            let database = users.entry(name.to_owned()).or_default();
+            database.environments.insert(env);
+            database.workflows.insert(env);
         }
     }
     users
@@ -347,12 +372,12 @@ pub(crate) struct Context {
     config: TakoToml,
     network: String,
     servers: ServerInventory,
-    /// Tells a retired generated replay database (the environment now uses
-    /// Postgres) from an active one. Unreadable secrets count as none.
-    secrets: SecretsStore,
     /// Whether the project's code still uses channels, so its generated
     /// replay databases are in use.
     needs_replay: bool,
+    /// Whether the project still runs workflows, so its generated workflow
+    /// databases are in use.
+    needs_workflows: bool,
 }
 
 impl Context {
@@ -365,17 +390,18 @@ impl Context {
         let network = project_network(&config, network)?;
         let servers =
             crate::commands::helpers::load_management_servers(Some(vec![network.clone()])).await?;
-        let secrets = SecretsStore::load_from_dir(&project.project_dir).unwrap_or_default();
         let needs_replay =
             crate::commands::deploy::project_needs_channel_replay(&project.project_dir, &config);
+        let needs_workflows =
+            crate::commands::deploy::project_needs_workflows(&project.project_dir, &config);
         Ok(Self {
             project_dir: project.project_dir,
             config_path: project.config_path,
             config,
             network: network.id,
             servers,
-            secrets,
             needs_replay,
+            needs_workflows,
         })
     }
 
@@ -494,8 +520,8 @@ impl Context {
             &self.config,
             &self.network,
             std::slice::from_ref(record),
-            &self.secrets,
             self.needs_replay,
+            self.needs_workflows,
             record.engine,
         )
         .remove(name)
@@ -903,9 +929,15 @@ pub(crate) async fn create_database(
     network: &crate::config::LocalNetwork,
     home: &Home,
     name: &str,
-    channel_owner: Option<&str>,
+    owner: Option<(crate::network::databases::ServiceOwner, &str)>,
     engine: DatabaseEngine,
 ) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+    use crate::network::databases::ServiceOwner;
+    let owned_by = |service: ServiceOwner| {
+        owner
+            .filter(|(kind, _)| *kind == service)
+            .map(|(_, app)| app.to_owned())
+    };
     let noun = engine.noun();
     let records = || tokio::task::block_in_place(|| crate::network::databases::list(network));
     if let Some(existing) = records()?.iter().find(|record| record.name == name) {
@@ -926,7 +958,8 @@ pub(crate) async fn create_database(
         generation: hex::encode(generation),
         created_at_unix_secs: unix_now(),
         engine,
-        channel_owner: channel_owner.map(str::to_owned),
+        channel_owner: owned_by(ServiceOwner::Channels),
+        workflows_owner: owned_by(ServiceOwner::Workflows),
     };
     // Backups are configured by the deploys that bind it.
     send::<DatabaseInfo>(
@@ -1010,8 +1043,8 @@ pub(crate) fn list(
         &ctx.config,
         &ctx.network,
         &all,
-        &ctx.secrets,
         ctx.needs_replay,
+        ctx.needs_workflows,
         engine,
     );
     let records: Vec<DatabaseRecord> = all
@@ -1040,6 +1073,8 @@ pub(crate) fn list(
                     "in_project": users.contains_key(&record.name),
                     "channel_replay_envs": users.get(&record.name).unwrap_or(&empty).channel_replay,
                     "channel_owner": record.channel_owner,
+                    "workflow_envs": users.get(&record.name).unwrap_or(&empty).workflows,
+                    "workflows_owner": record.workflows_owner,
                 })
             })
             .collect();
@@ -1064,9 +1099,7 @@ pub(crate) fn list(
     });
     for record in &records {
         let project = match users.get(&record.name) {
-            Some(db) if !db.channel_replay.is_empty() => {
-                format!(" · channel replay for {}", db.replay_env_names())
-            }
+            Some(db) if !db.services().is_empty() => format!(" · {}", db.services().join(" · ")),
             Some(_) => String::new(),
             None => " · not in this project".to_owned(),
         };
@@ -1093,8 +1126,8 @@ pub(crate) async fn status(
         &ctx.config,
         &ctx.network,
         &records,
-        &ctx.secrets,
         ctx.needs_replay,
+        ctx.needs_workflows,
         engine,
     );
     let names: Vec<String> = match name {
@@ -1124,6 +1157,7 @@ pub(crate) async fn status(
                 serde_json::json!({
                     "name": name, "server": server, "status": info,
                     "channel_replay_envs": project.get(name).unwrap_or(&empty).channel_replay,
+                    "workflow_envs": project.get(name).unwrap_or(&empty).workflows,
                 })
             })
             .collect();
@@ -1140,10 +1174,12 @@ pub(crate) async fn status(
             "{} on {server}",
             output::format_size(info.size_bytes)
         ));
-        if let Some(db) = project.get(name)
-            && !db.channel_replay.is_empty()
-        {
-            output::info(&format!("Channel replay for {}", db.replay_env_names()));
+        if let Some(db) = project.get(name) {
+            for service in db.services() {
+                let mut chars = service.chars();
+                let first = chars.next().map(|c| c.to_ascii_uppercase());
+                output::info(&format!("{}{}", first.unwrap_or_default(), chars.as_str()));
+            }
         }
         let users: BTreeSet<_> = info
             .bindings
@@ -1602,12 +1638,12 @@ pub(crate) async fn delete(
     }
     let (record, home) = ctx.resource(name, engine)?;
     if engine == DatabaseEngine::Sqlite {
-        check_replay_delete(
+        check_service_delete(
             &ctx.config,
             &ctx.network,
             &record,
-            &ctx.secrets,
             ctx.needs_replay,
+            ctx.needs_workflows,
         )?;
     }
     let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
@@ -1729,29 +1765,36 @@ fn forget_lost_store(
     Ok(())
 }
 
-fn check_replay_delete(
+/// Refuses to delete a database the project's channels or workflows still
+/// use on the app's behalf.
+fn check_service_delete(
     config: &TakoToml,
     network: &str,
     record: &DatabaseRecord,
-    secrets: &SecretsStore,
     needs_replay: bool,
+    needs_workflows: bool,
 ) -> Result<(), String> {
     let users = database_users(
         config,
         network,
         std::slice::from_ref(record),
-        secrets,
         needs_replay,
+        needs_workflows,
         DatabaseEngine::Sqlite,
     );
-    if let Some(db) = users.get(&record.name)
-        && !db.channel_replay.is_empty()
-    {
-        let envs = db.replay_env_names();
-        return Err(format!(
-            "{} is the channel replay database for {envs}. Select a replacement with [envs.<env>.channels].db and deploy it, or remove the retired environment from this project before deleting the database.",
-            record.name
-        ));
+    let Some(db) = users.get(&record.name) else {
+        return Ok(());
+    };
+    for (envs, noun, table) in [
+        (db.replay_env_names(), "channel replay", "channels"),
+        (db.workflow_env_names(), "workflow", "workflows"),
+    ] {
+        if !envs.is_empty() {
+            return Err(format!(
+                "{} is the {noun} database for {envs}. Select a replacement with [envs.<env>.{table}].db and deploy it, or remove the retired environment from this project before deleting the database.",
+                record.name
+            ));
+        }
     }
     Ok(())
 }
@@ -2240,8 +2283,8 @@ async fn reset(
             &ctx.config,
             &ctx.network,
             std::slice::from_ref(&record),
-            &ctx.secrets,
             ctx.needs_replay,
+            ctx.needs_workflows,
             DatabaseEngine::Sqlite,
         )
         .get(name)
@@ -2322,7 +2365,23 @@ pub(crate) fn unix_now() -> u64 {
 }
 
 fn format_time(unix: u64) -> String {
-    crate::commands::backups::format_backup_time(unix as i64)
+    static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
+    let offset = *LOCAL_OFFSET
+        .get_or_init(|| time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
+    time::OffsetDateTime::from_unix_timestamp(unix as i64)
+        .map(|dt| {
+            let dt = dt.to_offset(offset);
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                dt.year(),
+                dt.month() as u8,
+                dt.day(),
+                dt.hour(),
+                dt.minute(),
+                dt.second()
+            )
+        })
+        .unwrap_or_else(|_| "-".to_string())
 }
 
 #[cfg(test)]
@@ -2584,19 +2643,19 @@ channels.db = "local"
             created_at_unix_secs: 0,
             engine: DatabaseEngine::Sqlite,
             channel_owner: owner.map(str::to_owned),
+            workflows_owner: None,
         };
         let records = [
             record("events", None),
             record("generated", Some("shop/staging")),
             record("retired", Some("shop/production")),
         ];
-        let none = SecretsStore::default();
         let users = database_users(
             &config,
             network,
             &records,
-            &none,
             true,
+            false,
             DatabaseEngine::Sqlite,
         );
         assert_eq!(users.len(), 2);
@@ -2606,40 +2665,39 @@ channels.db = "local"
         }
         assert!(project_bindings(&config, DatabaseEngine::Sqlite).is_empty());
         assert!(
-            check_replay_delete(&config, network, &records[0], &none, true)
+            check_service_delete(&config, network, &records[0], true, false)
                 .unwrap_err()
                 .contains("production")
         );
         assert!(
-            check_replay_delete(&config, network, &records[1], &none, true)
+            check_service_delete(&config, network, &records[1], true, false)
                 .unwrap_err()
                 .contains("staging")
         );
-        assert!(check_replay_delete(&config, network, &records[2], &none, true).is_ok());
+        assert!(check_service_delete(&config, network, &records[2], true, false).is_ok());
         // Once the code drops its channels, only the explicit selection is in use.
-        assert!(check_replay_delete(&config, network, &records[0], &none, false).is_err());
-        assert!(check_replay_delete(&config, network, &records[1], &none, false).is_ok());
-        // Once staging uses Postgres, its generated database can be deleted.
-        let mut postgres = SecretsStore::default();
-        postgres.ensure_env_key_id("staging").unwrap();
-        postgres
-            .set_credential(
-                "staging",
-                crate::config::POSTGRES_CREDENTIAL_NAME,
-                crate::config::EncryptedSecretValue::new("encrypted".into(), None),
-            )
-            .unwrap();
-        assert!(check_replay_delete(&config, network, &records[1], &postgres, true).is_ok());
-        assert!(
-            !database_users(
-                &config,
-                network,
-                &records,
-                &postgres,
-                true,
-                DatabaseEngine::Sqlite
-            )
-            .contains_key("generated")
+        assert!(check_service_delete(&config, network, &records[0], false, false).is_err());
+        assert!(check_service_delete(&config, network, &records[1], false, false).is_ok());
+        // A generated workflow database is protected the same way.
+        let runs = DatabaseRecord {
+            channel_owner: None,
+            workflows_owner: Some("shop/staging".into()),
+            ..record("runs", None)
+        };
+        let users = database_users(
+            &config,
+            network,
+            std::slice::from_ref(&runs),
+            false,
+            true,
+            DatabaseEngine::Sqlite,
         );
+        assert_eq!(users["runs"].workflows, BTreeSet::from(["staging"]));
+        assert!(
+            check_service_delete(&config, network, &runs, false, true)
+                .unwrap_err()
+                .contains("workflow database for staging")
+        );
+        assert!(check_service_delete(&config, network, &runs, false, false).is_ok());
     }
 }

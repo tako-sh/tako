@@ -27,11 +27,6 @@ impl crate::ServerState {
         let Some(app) = self.app_manager.get_app(app_name) else {
             return Response::error(format!("App not found: {app_name}"));
         };
-        if (running || service.is_some())
-            && let Some(response) = self.refuse_unresolved_restore(app_name)
-        {
-            return response;
-        }
         let previous = app.config.read().clone();
         if previous.compose.is_some() {
             return self.set_compose_running(previous, service, running).await;
@@ -145,9 +140,6 @@ impl crate::ServerState {
             Some(app) => app,
             None => return Response::error(format!("App not found: {}", app_name)),
         };
-        if let Some(response) = self.refuse_unresolved_restore(app_name) {
-            return response;
-        }
 
         let previous_config = app.config.read().clone();
         if previous_config.compose.is_some() {
@@ -307,11 +299,12 @@ impl crate::ServerState {
         let lock = self.get_deploy_lock(app_name).await;
         let _guard = lock.lock().await;
 
-        // Drain workflow resources (worker, cron, enqueue socket) + remove
-        // workflow state BEFORE we nuke app_root — the manager owns those files.
+        // Drain workflow resources (worker, cron, enqueue socket). Runs stay
+        // in the workflow database until it is deleted with `tako db delete`.
         self.workflows
-            .delete(app_name, Duration::from_secs(120))
+            .stop(app_name, Duration::from_secs(120))
             .await;
+        self.workflows.retire(app_name);
 
         let app_root = app_root(&self.runtime.data_dir, app_name);
         let owns_compose = app_root.join("compose").is_dir()
@@ -346,7 +339,6 @@ impl crate::ServerState {
 
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);
-        self.manual_backup_states.write().remove(app_name);
         self.restore_failures.write().remove(app_name);
 
         {

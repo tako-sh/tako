@@ -35,6 +35,7 @@ async fn plain_app_can_register_when_internal_socket_startup_fails() {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
     let (state, tmp) = test_state();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(tmp.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     std::fs::create_dir(workflows.socket_path()).unwrap(); // prevent publishing the socket
     state.lock().unwrap().workflows = Some(workflows.clone());
     start_internal_socket(&state, &workflows);
@@ -97,6 +98,7 @@ async fn register_app_starts_workflow_engine_when_worker_command_provided() {
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
     let internal_socket = workflows.socket_path();
 
@@ -176,6 +178,7 @@ async fn restart_app_reconfigures_workflow_runtime_when_worker_command_registere
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
     let internal_socket = workflows.socket_path();
 
@@ -253,6 +256,7 @@ async fn register_app_without_worker_command_stops_existing_workflow_runtime() {
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
     let internal_socket = workflows.socket_path();
 
@@ -331,6 +335,7 @@ async fn register_app_with_new_name_stops_previous_workflow_runtime() {
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
     let internal_socket = workflows.socket_path();
 
@@ -396,6 +401,7 @@ async fn unregister_app_stops_workflow_runtime() {
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
     let internal_socket = workflows.socket_path();
 
@@ -467,6 +473,7 @@ async fn register_app_skips_workflow_engine_when_no_workflows_dir() {
 
     let workflows_dir = tempfile::TempDir::new().unwrap();
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     workflows.start_socket().unwrap();
 
     let st = State::new(

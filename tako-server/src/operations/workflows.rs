@@ -1,8 +1,8 @@
 //! Operator commands for an app's workflow runs.
 //!
-//! They act on this server's view of the app's workflow store: its local
-//! SQLite store, or the shared Postgres store every server of the app uses.
-//! Stopped apps keep their store, so their runs stay inspectable.
+//! They act on the app's workflow store, the hosted database every server of
+//! the environment shares. Stopped apps keep their store, so their runs stay
+//! inspectable.
 
 use crate::socket::Response;
 use crate::workflows::WorkflowManagerError;

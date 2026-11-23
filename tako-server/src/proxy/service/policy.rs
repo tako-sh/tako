@@ -279,9 +279,6 @@ impl TakoProxy {
             let Some(app) = self.lb.app_manager().get_app(&app_name) else {
                 return native::reject(session, 404).await;
             };
-            // Restore swaps the data tree under this gate. Finish each storage
-            // operation before that swap, even when no app worker is running.
-            let _storage = app.lifecycle_gate.read().await;
             let bindings = app.config.read().storages.clone();
             let paths =
                 crate::release::app_runtime_data_paths(self.lb.app_manager().data_dir(), &app_name);

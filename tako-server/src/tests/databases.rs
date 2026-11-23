@@ -294,7 +294,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         .unwrap();
     original
         .state_store
-        .commit_deployment(&config, &[], &HashMap::new(), None, None, None)
+        .commit_deployment(&config, &[], None, None)
         .unwrap();
     let connection = original.channel_replay_database(APP).unwrap().unwrap();
     assert!(

@@ -10,11 +10,6 @@ use crate::release::{
 use crate::socket::{AppState, Response};
 use std::collections::HashMap;
 
-pub(super) enum BackupUpdate {
-    Preserve,
-    Replace(Option<Box<tako_core::BackupBinding>>),
-}
-
 pub(crate) struct DeployRequest<'a> {
     pub(crate) app_name: &'a str,
     pub(crate) version: &'a str,
@@ -22,11 +17,9 @@ pub(crate) struct DeployRequest<'a> {
     pub(crate) routes: Vec<String>,
     pub(crate) source_ip: tako_core::SourceIpMode,
     pub(crate) secrets: Option<HashMap<String, String>>,
-    pub(crate) runtime_credentials: Option<HashMap<String, String>>,
     pub(crate) storages: Option<HashMap<String, tako_core::StorageBinding>>,
     pub(crate) databases: Option<HashMap<String, tako_core::DatabaseBinding>>,
     pub(crate) ssl: tako_core::SslBinding,
-    pub(super) backup: BackupUpdate,
     pub(crate) force: bool,
 }
 
@@ -48,11 +41,9 @@ impl crate::ServerState {
             routes,
             source_ip,
             secrets,
-            runtime_credentials,
             storages,
             databases,
             ssl,
-            backup,
             force,
         } = request;
 
@@ -87,10 +78,6 @@ impl crate::ServerState {
             Err(msg) => return Response::error(msg),
         };
 
-        if let Some(response) = self.refuse_unresolved_restore(app_name) {
-            return response;
-        }
-
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
             Ok(paths) => paths,
             Err(error) => {
@@ -112,16 +99,6 @@ impl crate::ServerState {
             match self.state_store.get_secrets(app_name) {
                 Ok(secrets) => secrets,
                 Err(error) => return Response::error(format!("Failed to read secrets: {error}")),
-            }
-        };
-        let runtime_credentials = if let Some(new_runtime_credentials) = runtime_credentials {
-            new_runtime_credentials
-        } else {
-            match self.state_store.get_runtime_credentials(app_name) {
-                Ok(credentials) => credentials,
-                Err(error) => {
-                    return Response::error(format!("Failed to read runtime credentials: {error}"));
-                }
             }
         };
         let storages = if let Some(mut new_storages) = storages {
@@ -149,15 +126,6 @@ impl crate::ServerState {
         }
 
         let existing = self.app_manager.get_app(app_name);
-        let backup = match backup {
-            BackupUpdate::Preserve => match self.state_store.get_backup(app_name) {
-                Ok(binding) => binding,
-                Err(error) => {
-                    return Response::error(format!("Failed to read backup config: {error}"));
-                }
-            },
-            BackupUpdate::Replace(binding) => binding.map(|binding| *binding),
-        };
         let mut config = existing.as_ref().map_or_else(
             || {
                 let (name, environment) = requested_deployment_identity(app_name);
@@ -232,9 +200,7 @@ impl crate::ServerState {
                 .deploy_compose(super::compose::ComposeDeployment {
                     config,
                     routes,
-                    runtime_credentials,
                     ssl,
-                    backup,
                 })
                 .await;
         }
@@ -245,6 +211,10 @@ impl crate::ServerState {
         config.apply_internal_defaults();
         let database_connections = self.databases.connections(&config.databases);
         let kv_connections = crate::databases::kv_connections(&config.databases);
+        // The workflow store opens with the new binding's token, so the host
+        // must know it first; the previous release's tokens stay valid.
+        self.databases
+            .apply_bindings(app_name, &[&previous_databases, &config.databases]);
         let workflows = match self
             .prepare_app_workflows(
                 app_name,
@@ -255,7 +225,7 @@ impl crate::ServerState {
                     storages: &config.storages,
                     databases: &database_connections,
                     kv: &kv_connections,
-                    postgres_url: runtime_credentials.get("postgres_url"),
+                    store: crate::databases::workflow_store(app_name, &config.databases),
                 },
                 tako_workflows::manager::ScheduleActivation::Deploy,
             )
@@ -263,6 +233,8 @@ impl crate::ServerState {
         {
             Ok(prepared) => prepared,
             Err(error) => {
+                self.databases
+                    .apply_bindings(app_name, &[&previous_databases]);
                 return Response::error(format!("Deploy failed to prepare workflows: {error}"));
             }
         };
@@ -280,9 +252,7 @@ impl crate::ServerState {
             if let Err(error) = self.state_store.commit_deployment(
                 &config,
                 &routes,
-                &runtime_credentials,
                 ssl.as_ref(),
-                backup.as_ref(),
                 workflows
                     .as_ref()
                     .and_then(|runtime| runtime.schedule_revision()),
@@ -352,9 +322,7 @@ impl crate::ServerState {
                     .commit_deployment(
                         &config,
                         &routes,
-                        &runtime_credentials,
                         ssl.as_ref(),
-                        backup.as_ref(),
                         workflows
                             .as_ref()
                             .and_then(|runtime| runtime.schedule_revision()),
