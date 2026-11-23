@@ -269,6 +269,10 @@ fn generated_corrosion_toml_uses_exact_local_api_and_mutual_tls() {
         value["gossip"]["idle_timeout_secs"].as_integer(),
         Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
     );
+    assert_eq!(
+        value["perf"]["max_sync_backoff"].as_integer(),
+        Some(tako_network::corrosion::MAX_SYNC_BACKOFF_SECS.into())
+    );
     assert_eq!(value["gossip"]["tls"]["insecure"].as_bool(), Some(false));
     assert_eq!(
         value["gossip"]["tls"]["key_file"],
@@ -433,6 +437,10 @@ fn isolated_repair_config_uses_only_loopback_and_no_gossip_seeds() {
     assert_eq!(
         config["gossip"]["idle_timeout_secs"].as_integer(),
         Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
+    );
+    assert_eq!(
+        config["perf"]["max_sync_backoff"].as_integer(),
+        Some(tako_network::corrosion::MAX_SYNC_BACKOFF_SECS.into())
     );
     assert_eq!(config["gossip"]["tls"]["insecure"].as_bool(), Some(false));
     assert_eq!(

@@ -212,6 +212,7 @@ fn write_corrosion_at(
          idle_timeout_secs = {}\n\
          [gossip.tls]\ncert_file = {}\nkey_file = {}\nca_file = {}\ninsecure = false\n\
          [gossip.tls.client]\ncert_file = {}\nkey_file = {}\n\
+         [perf]\nmax_sync_backoff = {}\n\
          [admin]\npath = {}\n[log]\nformat = \"json\"\n",
         q(&path("corrosion.db")?)?,
         q(&path("corrosion.schema.sql")?)?,
@@ -224,6 +225,7 @@ fn write_corrosion_at(
         q(&path("corrosion-ca.pem")?)?,
         q(&path(&config.files.gossip_certificate)?)?,
         q(&path(&config.files.gossip_private_key)?)?,
+        tako_network::corrosion::MAX_SYNC_BACKOFF_SECS,
         q(&path("corrosion-admin.sock")?)?
     ));
     directory.write("corrosion-ca.pem", bundle.as_bytes())?;

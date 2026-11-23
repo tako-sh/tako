@@ -47,16 +47,19 @@ for file, const in [
         r"pub const " + const + r': &str = (".*?");', text, re.DOTALL
     ).group(1)
     schema.append(ast.literal_eval(literal.replace("\\\n", "")))
-# Servers generate their Corrosion config with this gossip idle timeout.
-idle_timeout = int(
-    re.search(
-        r"pub const GOSSIP_IDLE_TIMEOUT_SECS: u32 = (\d+);",
-        (repository / "tako-network" / "src" / "corrosion.rs").read_text(),
-    ).group(1)
-)
+# Servers generate their Corrosion config with these gossip and sync settings.
+corrosion_source = (repository / "tako-network" / "src" / "corrosion.rs").read_text()
+
+
+def setting(name):
+    return int(re.search(r"pub const " + name + r": u32 = (\d+);", corrosion_source).group(1))
+
+
+idle_timeout = setting("GOSSIP_IDLE_TIMEOUT_SECS")
+max_sync_backoff = setting("MAX_SYNC_BACKOFF_SECS")
 # A deploy waits 30 s for a server to hold the secrets it published
 # (tako-server/src/secret_snapshot.rs). A crashed server must catch up sooner.
-CRASH_CATCH_UP_SECONDS = 25
+CRASH_CATCH_UP_SECONDS = 28
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -118,6 +121,8 @@ client_addr = "127.0.0.1:0"
 bootstrap = ["127.0.0.1:{ports[1 - i][1]}"]
 plaintext = true
 idle_timeout_secs = {idle_timeout}
+[perf]
+max_sync_backoff = {max_sync_backoff}
 [admin]
 path = "{d}/admin.sock"
 ''')
