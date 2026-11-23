@@ -6713,6 +6713,7 @@ dependencies = [
  "rand 0.10.4",
  "ratatui",
  "rcgen",
+ "redb",
  "reqwest",
  "rmcp",
  "rmp-serde",

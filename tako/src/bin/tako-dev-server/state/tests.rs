@@ -2,29 +2,15 @@ use super::*;
 
 fn temp_store() -> (tempfile::TempDir, DevStateStore) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = DevStateStore::open(tmp.path().join("dev-server.sqlite")).unwrap();
+    let store = DevStateStore::open(tmp.path().join("dev-server.redb")).unwrap();
     (tmp, store)
 }
 
 #[test]
-fn open_creates_db_and_schema() {
-    let (_tmp, store) = temp_store();
+fn open_creates_an_empty_store() {
+    let (tmp, store) = temp_store();
     assert!(store.list().unwrap().is_empty());
-
-    let columns = table_columns(&store.conn, "apps").unwrap();
-    assert_eq!(
-        columns,
-        vec![
-            "config_path".to_string(),
-            "config_file".to_string(),
-            "project_dir".to_string(),
-            "name".to_string(),
-            "variant".to_string(),
-            "is_enabled".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-        ]
-    );
+    assert!(tmp.path().join("dev-server.redb").is_file());
 }
 
 #[test]
@@ -53,25 +39,18 @@ fn environment_registrations_survive_cleanup_and_stop_independently() {
 }
 
 #[test]
-fn adding_config_file_preserves_registrations_for_orphan_cleanup() {
+fn registrations_survive_a_restart_for_orphan_cleanup() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("dev-server.sqlite");
+    let db_path = tmp.path().join("dev-server.redb");
     let config = tmp.path().join("preview.toml");
     let config = config.to_str().unwrap();
     let project = tmp.path().to_str().unwrap();
-    let conn = tako_sqlite::open_local(&db_path).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE apps (config_path TEXT PRIMARY KEY, project_dir TEXT NOT NULL,
-         name TEXT NOT NULL, variant TEXT, is_enabled INTEGER NOT NULL DEFAULT 1,
-         created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);",
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO apps VALUES (?1, ?2, 'app', 'preview', 0, 123, 456)",
-        (config, project),
-    )
-    .unwrap();
-    drop(conn);
+    let store = DevStateStore::open(&db_path).unwrap();
+    store
+        .register(config, config, project, "app", Some("preview"))
+        .unwrap();
+    store.set_enabled(config, false).unwrap();
+    drop(store);
     let mut child = std::process::Command::new("sleep")
         .arg("60")
         .spawn()
@@ -88,16 +67,9 @@ fn adding_config_file_preserves_registrations_for_orphan_cleanup() {
     assert!(!child.wait().unwrap().success());
     assert_eq!(apps.len(), 1);
     assert_eq!(apps[0].config_file, config);
-    assert_eq!(apps[0].config_path, config);
     assert_eq!(apps[0].variant.as_deref(), Some("preview"));
     assert!(!apps[0].is_enabled);
-    assert_eq!((apps[0].created_at, apps[0].updated_at), (123, 456));
     assert!(read_pid_file(project, config).is_none());
-    drop(store);
-    assert_eq!(
-        DevStateStore::open(db_path).unwrap().list().unwrap().len(),
-        1
-    );
 }
 
 #[test]

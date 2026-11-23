@@ -63,7 +63,7 @@ async fn query_control_clients(state: Arc<Mutex<State>>) -> u32 {
 
 fn test_state() -> (Arc<Mutex<State>>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("dev-server.sqlite");
+    let db_path = tmp.path().join("dev-server.redb");
     let db = state::DevStateStore::open(db_path).unwrap();
 
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);

@@ -206,10 +206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     st.workflows = Some(workflows.clone());
 
-    // Open the SQLite state store (persistent registrations only; runtime state is in-memory).
+    // Open the state store (persistent registrations only; runtime state is in-memory).
     let db_path = paths::tako_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("dev-server.sqlite");
+        .join("dev-server.redb");
     match state::DevStateStore::open(db_path) {
         Ok(db) => {
             // Kill any orphaned app processes from a previous (crashed) server run.
