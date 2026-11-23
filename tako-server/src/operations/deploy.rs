@@ -249,6 +249,8 @@ impl crate::ServerState {
             if existing.is_some()
                 && let Err(error) = self.app_manager.stop_app(app_name).await
             {
+                self.databases
+                    .apply_bindings(app_name, &[&previous_databases]);
                 return Response::error(format!("Could not stop previous release: {error}"));
             }
             if let Err(error) = self.state_store.commit_deployment(
@@ -259,6 +261,8 @@ impl crate::ServerState {
                     .as_ref()
                     .and_then(|runtime| runtime.schedule_revision()),
             ) {
+                self.databases
+                    .apply_bindings(app_name, &[&previous_databases]);
                 return Response::error(format!("Could not commit stopped deployment: {error}"));
             }
             self.databases
