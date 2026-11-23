@@ -222,7 +222,16 @@ mod tests {
         String::from_utf8(got).unwrap()
     }
 
+    /// The daemon's server is one per process, and its listener runs on the
+    /// runtime that first starts it. Each `#[tokio::test]` has its own
+    /// runtime, which ends with the test, so every test that uses the
+    /// server runs in this one.
     #[tokio::test]
+    async fn registrations() {
+        registrations_share_files_and_keep_tokens().await;
+        failed_registrations_close_the_files_they_opened().await;
+    }
+
     async fn registrations_share_files_and_keep_tokens() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir
@@ -252,8 +261,7 @@ mod tests {
         assert!(!is_open(&file).await);
     }
 
-    /// Whether the daemon has `file` open. Other tests share the daemon, so
-    /// tests check only their own files.
+    /// Whether the daemon has `file` open.
     async fn is_open(file: &str) -> bool {
         SERVER
             .get()
@@ -265,7 +273,6 @@ mod tests {
             .contains_key(Path::new(file))
     }
 
-    #[tokio::test]
     async fn failed_registrations_close_the_files_they_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = |name: &str| dir.path().join(name).display().to_string();
