@@ -794,6 +794,60 @@ async fn a_restore_point_uses_the_backups_configured_when_it_runs() {
 }
 
 #[tokio::test]
+async fn a_restore_that_stopped_before_clearing_its_marker_backs_up() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    state.open_databases(Some("server-a".into())).await.unwrap();
+    create(&state, ID, Some("swap-crash-bucket")).await;
+    assert!(crate::databases::backups::is_unrestored(&state, ID).unwrap());
+    // A restore renamed another file into place, then the server stopped
+    // before it removed the marker.
+    let path = state.databases.database_path(ID);
+    let staged = path.with_extension("staged");
+    std::fs::copy(&path, &staged).unwrap();
+    std::fs::rename(&staged, &path).unwrap();
+    assert!(!crate::databases::backups::is_unrestored(&state, ID).unwrap());
+    assert!(
+        !state.databases.database_dir(ID).join("unrestored").exists(),
+        "the stale marker is cleared"
+    );
+}
+
+#[tokio::test]
+async fn a_replacement_during_an_outage_keeps_its_restore_point() {
+    const BUCKET: &str = "outage-bucket";
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some(BUCKET)).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&state, ID, "INSERT INTO items VALUES ('before the reset')").await;
+    crate::databases::backups::back_up(&state, ID).await;
+    // Storage goes down; the reset still replaces the database.
+    crate::databases::backups::set_down(BUCKET, true);
+    let reset = ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    assert!(
+        reset["warnings"].to_string().contains("could not back up"),
+        "{reset}"
+    );
+    // Back up, the point naming the replaced contents is published.
+    crate::databases::backups::set_down(BUCKET, false);
+    crate::databases::backups::back_up(&state, ID).await;
+    assert!(
+        snapshot_reasons(&state)
+            .await
+            .contains(&"restore".to_owned())
+    );
+}
+
+#[tokio::test]
 async fn import_and_export_round_trip_a_file() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

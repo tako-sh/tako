@@ -71,6 +71,9 @@ pub(crate) struct BackupState {
 #[derive(Default)]
 pub(crate) struct Slot {
     open: Option<Open>,
+    /// Points of a capture that closed before their segments were uploaded,
+    /// for the capture that opens next on the same spool.
+    waiting: Vec<Point>,
     /// After a failure, remote work waits until then; capture continues.
     retry_at: Option<Instant>,
     backoff: Duration,
@@ -179,12 +182,13 @@ async fn read_claim(remote: &dyn ObjectStore, key: &ObjectPath) -> Result<Option
     .await
 }
 
-/// Replaces `claim` with a holder naming `server`, or none, unless the
-/// holder changed since `claim` was read. Returns whether it replaced it.
-async fn replace_claim(
+/// Records a holder naming `server`, or none, in place of `read`: the claim
+/// read before, or no holder at all. Unless the holder is still what was
+/// read, it writes nothing and returns false.
+async fn write_claim(
     remote: &dyn ObjectStore,
     key: &ObjectPath,
-    claim: Claim,
+    read: Option<Claim>,
     server: Option<&str>,
 ) -> Result<bool, String> {
     let holder = Holder {
@@ -193,13 +197,18 @@ async fn replace_claim(
     };
     let body = serde_json::to_vec(&holder).map_err(|e| e.to_string())?;
     let options = object_store::PutOptions {
-        mode: object_store::PutMode::Update(claim.version),
+        mode: read.map_or(object_store::PutMode::Create, |claim| {
+            object_store::PutMode::Update(claim.version)
+        }),
         ..Default::default()
     };
     with_deadline(METADATA_TIMEOUT, async {
         match remote.put_opts(key, body.into(), options).await {
             Ok(_) => Ok(true),
-            Err(object_store::Error::Precondition { .. }) => Ok(false),
+            Err(
+                object_store::Error::Precondition { .. }
+                | object_store::Error::AlreadyExists { .. },
+            ) => Ok(false),
             Err(error) => Err(format!("record the database's holder: {error}")),
         }
     })
@@ -266,9 +275,38 @@ fn unrestored_marker(state: &ServerState, name: &str) -> PathBuf {
     state.databases.database_dir(name).join("unrestored")
 }
 
+/// The marker records the empty file's inode: a restore, import or reset
+/// renames another file into place, so a marker that a crash left after
+/// such a swap no longer matches and is cleared (see [`is_unrestored`]).
 pub(crate) fn mark_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
-    write_durably(&unrestored_marker(state, name), b"")
-        .map_err(|e| format!("mark the new copy of {name}: {e}"))
+    let marked = file_id(&state.databases.database_path(name))
+        .and_then(|id| write_durably(&unrestored_marker(state, name), id.to_string().as_bytes()));
+    marked.map_err(|e| format!("mark the new copy of {name}: {e}"))
+}
+
+fn file_id(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(std::fs::metadata(path)?.ino())
+}
+
+/// Whether this copy still holds the empty file `CreateDatabase` made.
+pub(crate) fn is_unrestored(state: &ServerState, name: &str) -> Result<bool, String> {
+    let marker = unrestored_marker(state, name);
+    let recorded = match std::fs::read_to_string(&marker) {
+        Ok(recorded) => recorded,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("read the restore marker of {name}: {error}")),
+    };
+    let current = file_id(&state.databases.database_path(name)).ok();
+    match (recorded.trim().parse::<u64>().ok(), current) {
+        (Some(recorded), Some(current)) if recorded != current => {
+            // Another file was swapped in; the server stopped before it
+            // removed the marker.
+            clear_unrestored(state, name)?;
+            Ok(false)
+        }
+        _ => Ok(true),
+    }
 }
 
 /// Writes `bytes` to `path` through a synced temporary file renamed over
@@ -302,11 +340,15 @@ fn remove_marker(path: &Path) -> Result<(), String> {
 }
 
 fn clear_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
-    match std::fs::remove_file(unrestored_marker(state, name)) {
-        Ok(()) => Ok(()),
+    let marker = unrestored_marker(state, name);
+    let removed = match std::fs::remove_file(&marker) {
+        Ok(()) => marker
+            .parent()
+            .map_or(Ok(()), |dir| std::fs::File::open(dir)?.sync_all()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("clear the restore marker of {name}: {error}")),
-    }
+        Err(error) => Err(error),
+    };
+    removed.map_err(|error| format!("clear the restore marker of {name}: {error}"))
 }
 
 /// Gives up this server's claim on the database's backups, when it holds
@@ -328,7 +370,7 @@ pub(crate) async fn release_holder(
         return Ok(());
     }
     // A newer claim from another server stands.
-    replace_claim(remote.as_ref(), &key, claim, None)
+    write_claim(remote.as_ref(), &key, Some(claim), None)
         .await
         .map(|_| ())
         .map_err(|e| format!("release the backups of {}: {e}", stored.name))
@@ -366,7 +408,7 @@ fn store(binding: &StorageBinding) -> Result<Arc<dyn ObjectStore>, String> {
 /// like storage that accepts connections but stops answering.
 #[cfg(test)]
 pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
-    if bucket == "unreachable" {
+    if bucket == "unreachable" || DOWN.lock().contains(bucket) {
         return Err("backup storage is unreachable".into());
     }
     static STORES: std::sync::OnceLock<
@@ -382,6 +424,21 @@ pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
         return Ok(Arc::new(StalledStore(store)));
     }
     Ok(store)
+}
+
+/// Buckets a test has taken down, which fail like `unreachable` until it
+/// brings them back.
+#[cfg(test)]
+static DOWN: parking_lot::Mutex<std::collections::BTreeSet<String>> =
+    parking_lot::Mutex::new(std::collections::BTreeSet::new());
+
+#[cfg(test)]
+pub(crate) fn set_down(bucket: &str, down: bool) {
+    if down {
+        DOWN.lock().insert(bucket.to_owned());
+    } else {
+        DOWN.lock().remove(bucket);
+    }
 }
 
 /// Serves reads from the store it wraps; writes wait forever.
@@ -540,13 +597,15 @@ async fn ensure_open(
         // Another destination, or a database created again: its history
         // starts over there.
         close(slot).await;
+        slot.waiting.clear();
         wipe_spool(state, &stored.name)?;
     }
     let spool = spool_dir(state, &stored.name);
     if !spool_matches(&spool, stored, backup) {
+        slot.waiting.clear();
         wipe_spool(state, &stored.name)?;
     }
-    let unrestored = unrestored_marker(state, &stored.name).exists();
+    let unrestored = is_unrestored(state, &stored.name)?;
     let fenced = fenced_marker(state, &stored.name);
     let positioned = tako_backup::spool_has_segments(&spool).map_err(|e| e.to_string())?;
     let floor = if positioned && !unrestored && !fenced.exists() {
@@ -606,11 +665,14 @@ async fn ensure_open(
         changed_since_base: false,
         // Names the full image, with its capture time: storage may take it
         // much later.
-        points: vec![Point {
-            created_at_ms: captured_at_ms,
-            txid: base,
-            reason: reason_name(SnapshotReason::Scheduled).into(),
-        }],
+        points: std::mem::take(&mut slot.waiting)
+            .into_iter()
+            .chain([Point {
+                created_at_ms: captured_at_ms,
+                txid: base,
+                reason: reason_name(SnapshotReason::Scheduled).into(),
+            }])
+            .collect(),
         checked: false,
     });
     Ok(())
@@ -1568,20 +1630,32 @@ pub(crate) async fn restore(
     let own = state.databases.server_id();
     let previous = match &own {
         Some(own) => {
-            let previous = read_holder(remote.as_ref(), &stored).await?;
+            let key = ObjectPath::parse(holder_key(&stored)).map_err(|e| e.to_string())?;
+            let claim = read_claim(remote.as_ref(), &key).await?;
+            let previous = claim.as_ref().and_then(|claim| claim.server.clone());
             if previous.as_deref() != Some(own.as_str()) {
-                claim_holder(remote.as_ref(), &stored, own)
+                // Conditional on the holder just read: of two restores that
+                // start together on different servers, one claims and the
+                // other stops here.
+                let claimed = write_claim(remote.as_ref(), &key, claim, Some(own))
                     .await
                     .map_err(|e| {
                         format!("record this server as the holder of {}: {e}", stored.name)
                     })?;
+                if !claimed {
+                    return Err(format!(
+                        "Another server claimed {} as this restore started; nothing was changed. Run the restore again once the other one has finished.",
+                        stored.name
+                    ));
+                }
             }
             Some(previous)
         }
         None => None,
     };
     let moved = matches!((&previous, &own), (Some(previous), Some(own)) if previous.as_deref() != Some(own.as_str()));
-    let restored = restore_from(state, &stored, &replica, target, moved).await;
+    let holder = own.as_deref().map(|own| (remote.as_ref(), own));
+    let restored = restore_from(state, &stored, &replica, target, moved, holder).await;
     if let (Err(error), Some(previous)) = (&restored, previous)
         && previous != own
     {
@@ -1599,7 +1673,7 @@ pub(crate) async fn restore(
                 ));
             }
         };
-        let given_back = replace_claim(remote.as_ref(), &key, claim, previous.as_deref()).await;
+        let given_back = write_claim(remote.as_ref(), &key, Some(claim), previous.as_deref()).await;
         if let Err(revert) = given_back {
             return Err(format!(
                 "{error} (and the database's previous holder could not be recorded again: {revert})"
@@ -1616,6 +1690,7 @@ async fn restore_from(
     replica: &Replica,
     target: Target,
     moved: bool,
+    holder: Option<(&dyn ObjectStore, &str)>,
 ) -> Result<serde_json::Value, String> {
     let segments = with_deadline(METADATA_TIMEOUT, async {
         replica
@@ -1665,6 +1740,16 @@ async fn restore_from(
         Ok::<_, String>(space)
     })
     .await?;
+    // A restore on another server that claimed the database after this one
+    // started keeps it: this one replaces nothing.
+    if let Some((remote, own)) = holder
+        && read_holder(remote, stored).await?.as_deref() != Some(own)
+    {
+        return Err(format!(
+            "Another server claimed {} during this restore; nothing was replaced.",
+            stored.name
+        ));
+    }
     let warnings =
         replace_inner(state, stored, restored, "database is being restored", moved).await?;
     tracing::info!(database = %stored.name, transaction = txid, "Restored database");
@@ -1790,6 +1875,12 @@ async fn replace_inner(
             ));
         }
     }
+    // Points not yet published, such as the one naming what is replaced when
+    // storage is down, go to the capture that resumes on this spool.
+    if let Some(open) = slot.open.as_mut() {
+        let waiting = std::mem::take(&mut open.points);
+        slot.waiting.extend(waiting);
+    }
     // Capture holds the file open; the swap checkpoints it alone.
     close(&mut slot).await;
     let path = guard.path().to_path_buf();
@@ -1813,6 +1904,7 @@ async fn replace_inner(
     }
     if moved {
         slot.open = None;
+        slot.waiting.clear();
         if let Err(error) = wipe_spool(state, &stored.name) {
             warnings.push(error);
         }
@@ -2076,7 +2168,18 @@ mod tests {
         // Another server claims after this one read its own claim.
         let read = read_claim(&remote, &key).await.unwrap().unwrap();
         remote.put(&key, claim("server-b").into()).await.unwrap();
-        assert!(!replace_claim(&remote, &key, read, None).await.unwrap());
+        assert!(!write_claim(&remote, &key, Some(read), None).await.unwrap());
+        assert_eq!(
+            holder_named(&remote, &key).await.as_deref(),
+            Some("server-b")
+        );
+
+        // A claim made where no holder was read loses to one made meanwhile.
+        assert!(
+            !write_claim(&remote, &key, None, Some("server-c"))
+                .await
+                .unwrap()
+        );
         assert_eq!(
             holder_named(&remote, &key).await.as_deref(),
             Some("server-b")
@@ -2084,7 +2187,7 @@ mod tests {
 
         // Unchanged, the claim is given up, and the holder names no server.
         let read = read_claim(&remote, &key).await.unwrap().unwrap();
-        assert!(replace_claim(&remote, &key, read, None).await.unwrap());
+        assert!(write_claim(&remote, &key, Some(read), None).await.unwrap());
         assert_eq!(holder_named(&remote, &key).await, None);
     }
 }
