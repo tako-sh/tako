@@ -38,8 +38,11 @@ const IDLE_SYNC: Duration = Duration::from_secs(60);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How often retention runs for a database.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// How long stopping waits for each database's final upload.
+/// How long stopping waits for the databases' final uploads.
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
+/// Objects deleted per request when a database's backups are deleted, the
+/// most an S3 `DeleteObjects` request takes.
+const DELETE_BATCH: usize = 1000;
 /// A work directory this old belongs to an operation that a restart or crash
 /// interrupted: restores and exports finish well within it, and import and
 /// export sessions expire after an hour.
@@ -970,9 +973,6 @@ impl Drop for Pending {
 /// One periodic backup step for a database: capture, upload, a daily full
 /// image, and retention.
 pub(crate) async fn back_up(state: &ServerState, name: &str) {
-    let Ok(stored) = state.hosted_database(name) else {
-        return;
-    };
     let Ok(id) = DatabaseId::parse(name) else {
         return;
     };
@@ -982,6 +982,10 @@ pub(crate) async fn back_up(state: &ServerState, name: &str) {
     let slot = slot(state, name);
     // A restore point or a replacement has it; this tick has nothing to add.
     let Ok(mut slot) = slot.try_lock() else {
+        return;
+    };
+    // Read under the slot's lock (see `current`).
+    let Ok(stored) = state.hosted_database(name) else {
         return;
     };
     let Some(backup) = stored.secrets.backup.clone() else {
@@ -1111,6 +1115,21 @@ fn require_backup(stored: &StoredDatabase) -> Result<StorageBinding, String> {
         .ok_or_else(|| format!("Backups are not configured for database {}.", stored.name))
 }
 
+/// The database's configuration as it is now, read while holding its slot's
+/// lock. A change of backups takes that lock before it takes effect (see
+/// `forget`), so work under the lock never uploads to a destination the
+/// database no longer has.
+fn current(state: &ServerState, stored: &StoredDatabase) -> Result<StoredDatabase, String> {
+    let current = state.hosted_database(&stored.name)?;
+    if current.generation != stored.generation {
+        return Err(format!(
+            "Database {} was deleted and created again meanwhile.",
+            stored.name
+        ));
+    }
+    Ok(current)
+}
+
 /// Captures and uploads everything so far, then names the transaction it
 /// reached, as before a release command or migrations.
 pub(crate) async fn mark(
@@ -1118,9 +1137,10 @@ pub(crate) async fn mark(
     stored: &StoredDatabase,
     reason: SnapshotReason,
 ) -> Result<DatabaseSnapshot, String> {
-    let backup = require_backup(stored)?;
     let slot = slot(state, &stored.name);
     let mut slot = slot.lock().await;
+    let stored = &current(state, stored)?;
+    let backup = require_backup(stored)?;
     let result = async {
         ensure_open(state, stored, &backup, &mut slot).await?;
         let txid = sync(state, stored, &mut slot, true).await?;
@@ -1155,9 +1175,10 @@ pub(crate) async fn full_snapshot(
     stored: &StoredDatabase,
     reason: SnapshotReason,
 ) -> Result<DatabaseSnapshot, String> {
-    let backup = require_backup(stored)?;
     let slot = slot(state, &stored.name);
     let mut slot = slot.lock().await;
+    let stored = &current(state, stored)?;
+    let backup = require_backup(stored)?;
     let result = async {
         let opened = slot.open.is_none();
         ensure_open(state, stored, &backup, &mut slot).await?;
@@ -1232,8 +1253,10 @@ pub(crate) async fn forget(state: &ServerState, name: &str, wipe: bool) -> Resul
 }
 
 /// Captures and uploads what each database still has, then stops capture,
-/// before this process hands over or exits.
+/// before this process hands over or exits. The databases share one
+/// deadline, [`STOP_TIMEOUT`], and up to [`CONCURRENCY`] stop at once.
 pub(crate) async fn stop_all(state: &ServerState) {
+    use futures_util::StreamExt;
     let slots: Vec<(String, Arc<tokio::sync::Mutex<Slot>>)> = state
         .databases
         .slots
@@ -1241,8 +1264,9 @@ pub(crate) async fn stop_all(state: &ServerState) {
         .iter()
         .map(|(name, slot)| (name.clone(), slot.clone()))
         .collect();
-    for (name, slot) in slots {
-        let stopped = tokio::time::timeout(STOP_TIMEOUT, async {
+    let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
+    let stop = |(name, slot): (String, Arc<tokio::sync::Mutex<Slot>>)| async move {
+        let stopped = tokio::time::timeout_at(deadline, async {
             let mut slot = slot.lock().await;
             if slot.open.is_none() {
                 return;
@@ -1263,7 +1287,10 @@ pub(crate) async fn stop_all(state: &ServerState) {
         if stopped.is_err() {
             tracing::warn!(database = %name, "Final database backup did not finish in time; it resumes on the next start");
         }
-    }
+    };
+    futures_util::stream::iter(slots)
+        .for_each_concurrent(CONCURRENCY, stop)
+        .await;
 }
 
 /// Every full image and named transaction of a database, with the windows of
@@ -1473,15 +1500,26 @@ pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String>
         .into_iter()
         .partition(|key| key.as_ref().contains("/points/"));
     let mut deleted = 0;
-    for key in points.into_iter().chain(data) {
+    // In batches, which S3 deletes in one request each.
+    let keys = [points, data];
+    for batch in keys.iter().flat_map(|keys| keys.chunks(DELETE_BATCH)) {
         with_deadline(METADATA_TIMEOUT, async {
-            match remote.delete(&key).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                Err(error) => Err(format!("delete {key}: {error}")),
+            use futures_util::StreamExt;
+            // The store takes a stream that owns its paths.
+            let paths: Vec<ObjectPath> = batch.to_vec();
+            let mut deletions =
+                remote.delete_stream(futures_util::stream::iter(paths.into_iter().map(Ok)).boxed());
+            for _ in batch {
+                match deletions.next().await {
+                    Some(Ok(_) | Err(object_store::Error::NotFound { .. })) => {}
+                    Some(Err(error)) => return Err(format!("delete database backups: {error}")),
+                    None => return Err("the store did not acknowledge every deletion".into()),
+                }
             }
+            Ok(())
         })
         .await?;
-        deleted += 1;
+        deleted += batch.len();
     }
     Ok(deleted)
 }

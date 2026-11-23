@@ -757,6 +757,41 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
 }
 
 #[tokio::test]
+async fn a_restore_point_uses_the_backups_configured_when_it_runs() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("stale-config-bucket")).await;
+    // Read before backups were turned off, as by a command that then waited
+    // for the database.
+    let read_before = state.hosted_database(ID).unwrap();
+    ok(
+        &state,
+        Command::ConfigureDatabaseBackup {
+            name: ID.into(),
+            backup: None,
+        },
+    )
+    .await;
+    for reason in [SnapshotReason::Release, SnapshotReason::Manual] {
+        let refused = match reason {
+            SnapshotReason::Manual => {
+                crate::databases::backups::full_snapshot(&state, &read_before, reason).await
+            }
+            _ => crate::databases::backups::mark(&state, &read_before, reason).await,
+        }
+        .unwrap_err();
+        assert!(refused.contains("not configured"), "{refused}");
+    }
+    let store = crate::databases::backups::test_store("stale-config-bucket").unwrap();
+    let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
+    let uploaded: Vec<_> =
+        futures_util::TryStreamExt::try_collect::<Vec<_>>(store.list(Some(&prefix)))
+            .await
+            .unwrap();
+    assert!(uploaded.is_empty(), "nothing went to the old bucket");
+}
+
+#[tokio::test]
 async fn import_and_export_round_trip_a_file() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

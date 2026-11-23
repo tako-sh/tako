@@ -836,12 +836,15 @@ impl std::fmt::Display for TooEarly {
 
 impl std::error::Error for TooEarly {}
 
-/// The newest transaction of `window` captured at or before `at`.
+/// The newest transaction of `window` that includes nothing captured after
+/// `at`. Capture times grow with transactions unless the clock was set
+/// back, so the run stops at the first capture dated later.
 fn newest_at(window: &Window, at: i64) -> Option<u64> {
-    // Capture times grow with transactions.
     let captured = window
         .members
-        .partition_point(|stored| stored.captured_at_ms <= at);
+        .iter()
+        .position(|stored| stored.captured_at_ms > at)
+        .unwrap_or(window.members.len());
     captured
         .checked_sub(1)
         .map(|last| window.members[last].txid())
@@ -1011,6 +1014,21 @@ mod tests {
             early.downcast_ref::<TooEarly>(),
             Some(&TooEarly { earliest_ms: 10 })
         );
+    }
+
+    #[test]
+    fn a_clock_set_back_never_restores_a_later_capture() {
+        // Transaction 3 was captured at 30, then the clock went back.
+        let segments = [
+            stored(9, 1, 1, 10),
+            stored(0, 2, 2, 20),
+            stored(0, 3, 3, 30),
+            stored(0, 4, 4, 15),
+        ];
+        let resolve = |at| Replica::resolve(&segments, Target::Time(at)).unwrap();
+        assert_eq!(resolve(25), 2);
+        assert_eq!(resolve(15), 1);
+        assert_eq!(resolve(30), 4);
     }
 
     #[test]
