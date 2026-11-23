@@ -298,6 +298,57 @@ describe("callInternal error wrapping", () => {
     }
   }, 5_000);
 
+  test("stalled KV calls leave lanes free for workflows and channels", async () => {
+    const sock = join(dir, "kv-pool.sock");
+    let entered = 0;
+    let stalled!: () => void;
+    const allStalled = new Promise<void>((resolve) => {
+      stalled = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString();
+        for (;;) {
+          const nl = buffer.indexOf("\n");
+          if (nl < 0) return;
+          const request = JSON.parse(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+          void (async () => {
+            if (request.command === "kv") {
+              // A store on an unreachable server answers only when released.
+              if (++entered === 64) stalled();
+              await gate;
+              socket.write(JSON.stringify({ status: "ok", data: request.key }) + "\n");
+            } else {
+              socket.write(JSON.stringify({ status: "ok", data: { id: "run" } }) + "\n");
+            }
+          })();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    try {
+      const kv = (key: string) => callInternal(sock, { command: "kv", key });
+      const calls = Array.from({ length: 64 }, (_, i) => kv(`k${i}`));
+      await allStalled;
+      // Another KV call waits for a lane rather than failing.
+      const queued = kv("queued");
+      expect(await callInternal(sock, { command: "enqueue_run" })).toEqual({ id: "run" });
+      expect(entered).toBe(64);
+      release();
+      expect(await queued).toBe("queued");
+      expect(await Promise.all(calls)).toHaveLength(64);
+    } finally {
+      closeInternalSocketPoolsForTests();
+      server.close();
+    }
+  }, 5_000);
+
   test("preserves UTF-8 characters split across response chunks and reused lanes", async () => {
     const sock = join(dir, "unicode.sock");
     const data = { text: "A🙂é東京Z" };
