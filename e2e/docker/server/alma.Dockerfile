@@ -1,4 +1,4 @@
-FROM docker:28.5.2-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac AS docker
+FROM docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c AS docker
 
 FROM almalinux:10@sha256:ccf217024b3d5e268cc208d1edb384a1edee6359370cf6ea1ecbc42254e57375
 
@@ -27,8 +27,9 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     && rm -rf /var/cache/dnf
 
 # The disposable host runs its own engine; never mount the executor's socket.
+# Docker 29 dind ships no containerd binary; dockerd starts its embedded one.
 COPY --from=docker /usr/local/bin/docker /usr/bin/docker
-COPY --from=docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
+COPY --from=docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
 
 # Pre-install tako-server (with dummy binary, installer creates user/service)
