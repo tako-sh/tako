@@ -92,6 +92,7 @@ impl ServerRuntimeConfig {
             metrics_port: self.metrics_port,
             server_name: self.server_name.clone(),
             server_identity: self.server_identity.clone(),
+            host: None,
         }
     }
 }
@@ -285,6 +286,9 @@ impl ServerState {
 
     pub async fn runtime_info(&self) -> ServerRuntimeInfo {
         let mode = *self.server_mode.read().await;
-        self.runtime.to_runtime_info(mode)
+        let mut info = self.runtime.to_runtime_info(mode);
+        let host = crate::host_stats::read(&self.runtime.data_dir);
+        info.host = (!host.is_empty()).then_some(host);
+        info
     }
 }

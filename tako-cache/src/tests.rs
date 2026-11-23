@@ -14,12 +14,44 @@ fn get(key: &str) -> CacheRequest {
 }
 
 #[test]
+#[ignore = "release-mode interleaved cache probe"]
+fn bench_interleaved_stores() {
+    for n in [8, 9, 32, 65] {
+        let dirs: Vec<_> = (0..n).map(|_| tempdir().unwrap()).collect();
+        let caches = Caches::default();
+        for dir in &dirs {
+            caches
+                .execute(dir.path(), put("k", "42", 600_000), false)
+                .unwrap();
+        }
+        let mut samples = Vec::new();
+        for dir in dirs.iter().cycle().take(n + 180) {
+            let start = std::time::Instant::now();
+            let result = caches.execute(dir.path(), get("k"), false).unwrap();
+            samples.push(start.elapsed());
+            assert_eq!(result.as_deref(), Some("42"));
+        }
+        let samples = &mut samples[n..]; // one warm-up lap
+        samples.sort_unstable();
+        eprintln!("{n} stores: p50 {:?}, p95 {:?}", samples[89], samples[170]);
+    }
+}
+
+fn open_test_writer(path: &Path) -> Database {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    open_writer(FileBackend::new(file)).unwrap()
+}
+
+#[test]
 fn eviction_and_expiry_update_both_indexes_and_accounting() {
     let dir = tempdir().unwrap();
-    let db = Caches::default()
-        .database(dir.path(), true)
-        .unwrap()
-        .unwrap();
+    let db = open_test_writer(&dir.path().join(FILE_NAME));
     let run = |r, now| execute(&db, r, || now, 2 * weight("a", "0")).unwrap();
     run(put("a", "1", 1), 10);
     assert_eq!(run(get("a"), 11), None);
@@ -97,38 +129,41 @@ fn invalid_cache_requests_never_open_a_store() {
 }
 
 #[test]
-fn page_cache_budget_is_shared_across_apps() {
-    let dirs: Vec<_> = (0..=HOT_STORES).map(|_| tempdir().unwrap()).collect();
+fn handle_pools_stay_bounded_and_cache_interleaved_reads() {
+    let dirs: Vec<_> = (0..32).map(|_| tempdir().unwrap()).collect();
     let caches = Caches::default();
-    let mut busy: Vec<_> = dirs[..HOT_STORES]
-        .iter()
-        .map(|d| caches.database(d.path(), true).unwrap().unwrap())
-        .collect();
-    assert!(
+    for dir in &dirs {
         caches
-            .database(dirs[HOT_STORES].path(), false)
-            .unwrap()
-            .is_none()
-    );
-    assert!(caches.database(dirs[HOT_STORES].path(), true).is_err());
-    assert!(!dirs[HOT_STORES].path().join(FILE_NAME).exists());
-    drop(busy.pop());
-    assert!(
+            .execute(dir.path(), put("k", "42", 60_000), false)
+            .unwrap();
+    }
+    for _ in 0..2 {
+        for dir in &dirs {
+            assert_eq!(
+                caches
+                    .execute(dir.path(), get("k"), false)
+                    .unwrap()
+                    .as_deref(),
+                Some("42")
+            );
+        }
+    }
+    // Reads keep one handle per store, so a round-robin sweep never reopens.
+    assert_eq!(
         caches
-            .database(dirs[HOT_STORES].path(), true)
-            .unwrap()
-            .is_some()
+            .readers
+            .opens
+            .load(std::sync::atomic::Ordering::Relaxed),
+        dirs.len()
     );
-    assert_eq!(caches.0.lock().unwrap().len(), HOT_STORES);
+    assert_eq!(caches.readers.len(), dirs.len());
+    assert_eq!(caches.writers.len(), WRITERS);
 }
 
 #[test]
 fn disk_pages_are_reused_under_sustained_churn() {
     let dir = tempdir().unwrap();
-    let db = Caches::default()
-        .database(dir.path(), true)
-        .unwrap()
-        .unwrap();
+    let db = open_test_writer(&dir.path().join(FILE_NAME));
     let payload = format!("\"{}\"", "x".repeat(16 * 1024));
     let mut sizes = Vec::new();
     for epoch in 0..4 {

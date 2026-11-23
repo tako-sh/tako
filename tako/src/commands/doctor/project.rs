@@ -123,7 +123,7 @@ pub(super) fn checks(
         } else {
             if missing_cloudflare_token(&project.config, &project.secrets, &env.name) {
                 ssl.warnings.push(format!(
-                    "{env}: its routes need ssl.cloudflare; run `tako credentials set ssl.cloudflare --env {env}`",
+                    "{env}: its routes need ssl.cloudflare; run `tako credential set ssl.cloudflare --env {env}`",
                     env = env.name
                 ));
             }
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(ssl.status, CheckStatus::Warning);
         assert!(
             ssl.message
-                .contains("tako credentials set ssl.cloudflare --env production")
+                .contains("tako credential set ssl.cloudflare --env production")
         );
         let expiring = by_id(&checks, "expiring_values");
         assert_eq!(expiring.status, CheckStatus::Warning);

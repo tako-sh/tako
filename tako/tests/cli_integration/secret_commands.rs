@@ -48,11 +48,11 @@ main = "index.ts"
     )
     .unwrap();
 
-    let output = run_tako(&["secrets", "list"], &project_dir);
+    let output = run_tako(&["secret", "list"], &project_dir);
 
     assert!(
         output.status.success(),
-        "tako secrets list failed: {}",
+        "tako secret list failed: {}",
         stderr_str(&output)
     );
 
@@ -74,7 +74,7 @@ fn test_secret_ls_prints_table_without_section_heading() {
     write_secret_test_tako_toml(&project_dir);
 
     let set_output = run_tako_with_stdin_and_env(
-        &["secrets", "set", "API_KEY", "--env", "production"],
+        &["secret", "set", "API_KEY", "--env", "production"],
         &project_dir,
         "secret123\n",
         &home,
@@ -87,12 +87,12 @@ fn test_secret_ls_prints_table_without_section_heading() {
         stderr_str(&set_output)
     );
 
-    let output = run_tako_with_env(&["secrets", "list"], &project_dir, &home, &tako_home);
+    let output = run_tako_with_env(&["secret", "list"], &project_dir, &home, &tako_home);
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
 
     assert!(
         output.status.success(),
-        "tako secrets list failed: {}",
+        "tako secret list failed: {}",
         combined
     );
     assert!(
@@ -120,7 +120,7 @@ fn test_secret_set_reads_from_stdin() {
     // Set a secret - value comes from stdin
     let output = run_tako_with_stdin(
         &[
-            "secrets",
+            "secret",
             "set",
             "API_KEY",
             "--env",
@@ -172,7 +172,7 @@ fn test_secret_set_reads_multiline_value_from_stdin() {
 
     let secret_value = "-----BEGIN TOKEN-----\nline-one\nline-two\n-----END TOKEN-----\n";
     let output = run_tako_with_stdin_and_env(
-        &["secrets", "set", "PRIVATE_TOKEN", "--env", "production"],
+        &["secret", "set", "PRIVATE_TOKEN", "--env", "production"],
         &project_dir,
         secret_value,
         &home,
@@ -211,7 +211,7 @@ fn test_secret_set_omits_expiry_when_not_provided() {
     write_secret_test_tako_toml(&project_dir);
 
     let output = run_tako_with_stdin(
-        &["secrets", "set", "API_KEY", "--env", "production"],
+        &["secret", "set", "API_KEY", "--env", "production"],
         &project_dir,
         "secret123\n",
     );
@@ -241,7 +241,7 @@ fn test_secret_set_requires_env_when_non_interactive() {
 
     write_secret_test_tako_toml(&project_dir);
 
-    let output = run_tako_with_stdin(&["secrets", "set", "API_KEY"], &project_dir, "secret123\n");
+    let output = run_tako_with_stdin(&["secret", "set", "API_KEY"], &project_dir, "secret123\n");
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
 
     assert!(
@@ -301,7 +301,7 @@ fn test_secret_key_import_reads_bundle_from_stdin() {
     let bundle = format!("{}\n", BASE64_URL.encode(payload));
 
     let output = run_tako_with_stdin_and_env(
-        &["secrets", "key", "import"],
+        &["secret", "key", "import"],
         &project_dir,
         &bundle,
         &home,
@@ -366,7 +366,7 @@ fn test_secret_key_import_accepts_env_for_exported_key() {
     let bundle = format!("{}\n", BASE64_URL.encode(payload));
 
     let output = run_tako_with_stdin_and_env(
-        &["secrets", "key", "import", "--env", "production"],
+        &["secret", "key", "import", "--env", "production"],
         &project_dir,
         &bundle,
         &home,
@@ -404,7 +404,7 @@ fn test_secret_key_import_passphrase_initializes_environment_key() {
 
     let output = run_tako_with_stdin_and_env(
         &[
-            "secrets",
+            "secret",
             "key",
             "import",
             "--passphrase",
@@ -453,7 +453,7 @@ fn test_secret_sync_requires_network_even_without_local_secrets() {
     let temp = TempDir::new().unwrap();
     write_secret_test_tako_toml(temp.path());
     let output = run_tako_with_env(
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         temp.path(),
         temp.path(),
         &temp.path().join("tako-home"),
@@ -479,7 +479,7 @@ fn test_secret_sync_reports_network_failure_and_preserves_draft() {
     )
     .unwrap();
     let output = run_tako_with_stdin_and_env(
-        &["secrets", "set", "API_KEY", "--env", "production"],
+        &["secret", "set", "API_KEY", "--env", "production"],
         project,
         "local-draft",
         &fixture.home,
@@ -498,7 +498,7 @@ fn test_secret_sync_reports_network_failure_and_preserves_draft() {
         fixture.profile.snapshot.network.id.to_string()
     );
     let output = run_tako_with_env(
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         project,
         &fixture.home,
         &fixture.tako_home,

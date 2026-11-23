@@ -57,7 +57,7 @@ pub enum BackupCommands {
 
     /// Download a backup archive
     Download {
-        /// Backup id from `tako backups list`
+        /// Backup id from `tako backup list`
         backup_id: String,
         /// Environment to query (defaults to production)
         #[arg(long)]
@@ -72,7 +72,7 @@ pub enum BackupCommands {
 
     /// Restore app data from a backup archive
     Restore {
-        /// Backup id from `tako backups list`
+        /// Backup id from `tako backup list`
         backup_id: String,
         /// Environment to restore (defaults to production)
         #[arg(long)]
@@ -344,7 +344,7 @@ async fn list_backups(
         }
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "backups",
+            "command": "backup",
             "app": target.app_name,
             "environment": target.env,
             "servers": servers_json,
@@ -430,7 +430,7 @@ async fn backup_status(
         }
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "backups",
+            "command": "backup",
             "app": target.app_name,
             "environment": target.env,
             "servers": servers_json,
@@ -539,7 +539,7 @@ async fn download_backup(
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "backups",
+            "command": "backup",
             "app": target.app_name,
             "environment": target.env,
             "server": server_name,
@@ -628,7 +628,7 @@ async fn restore_backup(
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "backups",
+            "command": "backup",
             "app": target.app_name,
             "environment": target.env,
             "server": server_name,

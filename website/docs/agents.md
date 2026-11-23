@@ -106,7 +106,7 @@ Use `docs/framework-guides` to select a framework-specific topic. Use `docs/dock
 
 Tools have named arguments generated from the CLI's command definitions. Examples
 include `tako_doctor`, `tako_status`, `tako_logs`, `tako_deploy`, `tako_dev_list`,
-`tako_dev_logs`, `tako_secrets_set`, `tako_releases_rollback`, and `tako_run`. Tool descriptions and
+`tako_dev_logs`, `tako_secret_set`, `tako_release_rollback`, and `tako_run`. Tool descriptions and
 schemas document flags, required arguments, and read/write annotations. CLI help
 and aliases remain available in a terminal.
 

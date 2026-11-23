@@ -176,7 +176,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     ));
     output::info(&format!(
         "3. Run {} to add secrets",
-        output::strong("tako secrets set")
+        output::strong("tako secret set")
     ));
     output::info(&format!(
         "4. Run {} to deploy your app",

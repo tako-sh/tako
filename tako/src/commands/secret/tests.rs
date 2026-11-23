@@ -89,7 +89,7 @@ fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
         let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+            "Unable to decrypt production secrets. Run `tako secret key import` to import an exported key or passphrase."
         );
     });
 }
@@ -107,7 +107,7 @@ fn ensure_secret_key_available_errors_when_credentials_have_no_key() {
         let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+            "Unable to decrypt production secrets. Run `tako secret key import` to import an exported key or passphrase."
         );
     });
 }
@@ -116,7 +116,7 @@ fn ensure_secret_key_available_errors_when_credentials_have_no_key() {
 fn missing_secret_key_message_names_environment_and_import_command() {
     assert_eq!(
         missing_secret_key_message("production"),
-        "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+        "Unable to decrypt production secrets. Run `tako secret key import` to import an exported key or passphrase."
     );
 }
 
@@ -176,7 +176,7 @@ fn load_or_create_key_for_set_errors_when_credentials_have_no_key() {
 
         assert_eq!(
             err.to_string(),
-            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+            "Unable to decrypt production secrets. Run `tako secret key import` to import an exported key or passphrase."
         );
     });
 }

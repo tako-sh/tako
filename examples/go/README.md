@@ -23,12 +23,12 @@ go run .
 Example values are not stored in Git. Set local development values as needed:
 
 ```bash
-tako -c examples/go/basic/tako.toml secrets set API_KEY --env development
-tako -c examples/go/basic/tako.toml secrets set DATABASE_URL --env development
-tako -c examples/go/basic/tako.toml secrets set EXAMPLE_SECRET --env development
+tako -c examples/go/basic/tako.toml secret set API_KEY --env development
+tako -c examples/go/basic/tako.toml secret set DATABASE_URL --env development
+tako -c examples/go/basic/tako.toml secret set EXAMPLE_SECRET --env development
 tako -c examples/go/basic/tako.toml generate
 ```
 
 For deployment, enroll this machine with a network invitation and put the network
 ID in the production environment of `tako.toml`. Set production values locally;
-deploy or `secrets sync --env production` publishes them to shared encrypted state.
+deploy or `secret sync --env production` publishes them to shared encrypted state.

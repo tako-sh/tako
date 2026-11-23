@@ -129,7 +129,7 @@ For a controlled update test, write a recognizable record through your app, reco
 ```bash
 tako deploy --env production
 tako status --json
-tako releases list --env production --json
+tako release list --env production --json
 tako logs --env production --days 1 --json
 ```
 

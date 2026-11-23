@@ -335,11 +335,11 @@ fixture_has_secrets_for_env() {
 
 seed_fixture_secrets() {
   if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
-    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
+    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secret set SDK_FIXTURE_SECRET --env production
   fi
   if [[ "$FIXTURE_REL" == examples/go/* ]]; then
     for name in API_KEY DATABASE_URL EXAMPLE_SECRET; do
-      printf '%s' 'tako-example-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set "$name" --env production
+      printf '%s' 'tako-example-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secret set "$name" --env production
     done
   fi
 }
@@ -752,13 +752,13 @@ run_cli_post_deploy_checks() {
   require_file_contains "$status_log" "$route_host" "tako status"
   require_file_contains "$status_log" "healthy" "tako status"
 
-  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" releases list --env production >"$releases_log" 2>&1; then
-    echo "tako releases list failed on $server_host" >&2
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" release list --env production >"$releases_log" 2>&1; then
+    echo "tako release list failed on $server_host" >&2
     cat "$releases_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$releases_log" "$release_version" "tako releases list"
-  require_file_contains "$releases_log" "[current]" "tako releases list"
+  require_file_contains "$releases_log" "$release_version" "tako release list"
+  require_file_contains "$releases_log" "[current]" "tako release list"
 
   ssh_exec "$server_host" "mkdir -p '$remote_log_dir' && printf '%s [out] [e2e] ${log_marker}\n' \"\$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')\" >> '$remote_log_file' && grep -F '$log_marker' '$remote_log_file' >/dev/null"
 
@@ -869,7 +869,7 @@ run_compose_lifecycle_checks() {
   compose_assert_response 'Updated Bun release!'
   web_id=$(compose_container_id web)
   # Secret changes apply on the next deploy: publish one and redeploy the same release.
-  printf '%s' 'rotated$VALUE' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set ROTATION_TOKEN --env production
+  printf '%s' 'rotated$VALUE' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secret set ROTATION_TOKEN --env production
   compose_probe_start
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
   compose_probe_finish
@@ -892,7 +892,7 @@ run_compose_lifecycle_checks() {
   compose_assert_redis_unchanged
   [[ $(compose_container_id web) == "$web_id" ]]
   compose_probe_start
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" release rollback "$first_release" --env production --yes
   compose_probe_finish
   compose_assert_redis_unchanged
   compose_assert_release
@@ -934,7 +934,7 @@ run_compose_lifecycle_checks() {
   sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
   # Drop the rotation secret too, so later runs of this fixture don't treat it
   # as an app with injected secrets. The next deploy publishes the removal.
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets rm ROTATION_TOKEN --env production --yes
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secret rm ROTATION_TOKEN --env production --yes
 
   desired_web=2
   compose_probe_start
@@ -966,7 +966,7 @@ run_archive_rollback_checks() {
   ssh_exec "$server_host" "test ! -e '$root/releases/$first_release' && test -f '$root/archives/$second_release/release.tar.zst'"
   [[ "$(ssh_exec "$server_host" "sha256sum '$archive'")" == "$original_hash" ]]
 
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" release rollback "$first_release" --env production --yes
   [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$first_release" ]]
   ssh_exec "$server_host" "test ! -e '$root/releases/$second_release' && test -f '$root/releases/$first_release/app.json'"
   ssh_exec "$server_host" "find '$root/releases/$first_release' -type d -name node_modules -print -quit" | grep -q node_modules
@@ -978,7 +978,7 @@ run_archive_rollback_checks() {
   [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$second_release" ]]
   ssh_exec "$server_host" "find '$root/releases/$second_release' -type d -name node_modules -print -quit" | grep -q node_modules
   run_universal_http_checks "$server_host" "$route_host" "$root/releases/$second_release"
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" release rollback "$first_release" --env production --yes
   mv "$TMP_ROOT/archive-original-index.ts" "$PROJECT_DIR/index.ts"
 }
 
@@ -1065,7 +1065,7 @@ run_compose_sdk_checks() {
   worker_id=$(sdk_container_ids worker)
   redis_id=$(sdk_container_ids redis)
   nginx_id=$(sdk_container_ids nginx)
-  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
+  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secret set SDK_FIXTURE_SECRET --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
   [[ $(sdk_container_ids web) != "$web_id" ]]
   [[ $(sdk_container_ids worker) != "$worker_id" ]]
@@ -1075,7 +1075,7 @@ run_compose_sdk_checks() {
   run_channels_workflows_checks "$server_host" "$route_host"
 
   # Rollback restores the first release, its runtime, and the same data.
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" release rollback "$first_release" --env production --yes
   [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$first_release" ]]
   sdk_get /
   jq -e --arg build "$first_release" '.build == $build' "$body" >/dev/null
@@ -1192,8 +1192,8 @@ run_admin_recovery_checks() {
   mkdir -p "$source"
   printf 'name = "admin-recovery"\n[envs.production]\nroute = "recovery.example.test"\nnetwork = "%s"\n' "$NETWORK_ID" > "$source/tako.toml"
   printf '%s' 'recovery-fixture-value' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
-    "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
-  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
+    "$TAKO_BIN" --ci --config "$source/tako.toml" secret set RECOVERY_TOKEN --env production
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secret sync --env production
   for host in server-ubuntu server-alma; do
     if ssh_exec "$host" /usr/local/bin/tako-server client invite "recovered-$host" >/dev/null 2>&1; then
       echo "Service account issued a recovery invitation" >&2
@@ -1218,9 +1218,9 @@ run_admin_recovery_checks() {
     # Materializing a fresh worktree exercises decryption with the new device's
     # wrapped key, without importing the original laptop's environment key.
     HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \
-      --config "$project/tako.toml" secrets sync --env production
+      --config "$project/tako.toml" secret sync --env production
     HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
-      --config "$project/tako.toml" secrets list > "$client_home/secrets.json"
+      --config "$project/tako.toml" secret list > "$client_home/secrets.json"
     jq -e 'any(.secrets[]; .name == "RECOVERY_TOKEN")' "$client_home/secrets.json" >/dev/null
   done
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \

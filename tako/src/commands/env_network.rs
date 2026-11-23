@@ -125,7 +125,7 @@ fn choose(
                     .map_err(|error| error.to_string())?
                     {
                         return Err(format!(
-                            "This checkout has unpublished {env} secrets for network {from}. Publish them with `tako secrets sync --env {env}` before moving {env}, or remove them."
+                            "This checkout has unpublished {env} secrets for network {from}. Publish them with `tako secret sync --env {env}` before moving {env}, or remove them."
                         ));
                     }
                     confirm_move(config_path, env, &from, &local)?;

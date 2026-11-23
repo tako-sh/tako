@@ -12,7 +12,7 @@ describe("tako --help", () => {
     expect(screen).toContain("init");
     expect(screen).toContain("dev");
     expect(screen).toContain("servers");
-    expect(screen).toContain("secrets");
+    expect(screen).toContain("secret");
     expect(screen).toContain("gen");
     expect(screen).toContain("Options:");
     expect(screen).toContain("--verbose");

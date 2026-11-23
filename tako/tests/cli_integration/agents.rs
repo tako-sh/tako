@@ -153,12 +153,12 @@ fn mcp_serves_tools_documentation_and_cli_results_over_stdio() {
         "tako_doctor",
         "tako_deploy",
         "tako_run",
-        "tako_secrets_set",
-        "tako_backups_restore",
-        "tako_workflows_list",
-        "tako_workflows_show",
-        "tako_workflows_retry",
-        "tako_workflows_cancel",
+        "tako_secret_set",
+        "tako_backup_restore",
+        "tako_workflow_list",
+        "tako_workflow_show",
+        "tako_workflow_retry",
+        "tako_workflow_cancel",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == name),

@@ -403,7 +403,7 @@ Durable channels and Store invalidations use the environment's replay database. 
 | Production configuration | What deploy does |
 | --- | --- |
 | `[envs.<env>.channels].database` names a hosted SQLite database | Uses that database for channels, even if `postgres_url` is set for workflows. |
-| No channel database; `postgres_url` configured | Keeps shared Postgres (`tako_channels`) for channels. Set the provider credential with `tako credentials set postgres_url --env production`. |
+| No channel database; `postgres_url` configured | Keeps shared Postgres (`tako_channels`) for channels. Set the provider credential with `tako credential set postgres_url --env production`. |
 | Neither configured; channel-capable release | Uses a generated database name owned by this app/environment. A full client's deploy creates it automatically if the network has exactly one trusted server. An existing matching record keeps its recorded home when the network grows. |
 
 **On a network with several servers**, deploy won't guess where a missing database belongs, even when this app targets just one server. A full client chooses the home, configures the name, and deploys:

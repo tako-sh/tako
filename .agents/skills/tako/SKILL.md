@@ -66,7 +66,7 @@ checks exercise the same configuration the application deploys with.
    `tako_dev_list` to confirm the app is registered and the URL is correct. Read
    local app logs with `tako_dev_logs`; pass its `next_after` as `after` to fetch
    new entries on the next call.
-3. For production, inspect `tako_status`, `tako_releases_list`, and `tako_logs`.
+3. For production, inspect `tako_status`, `tako_release_list`, and `tako_logs`.
    In a project, `tako_status` also lists each environment's resources
    (secret count, credentials, storage, backup key, databases and their
    servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
@@ -74,7 +74,7 @@ checks exercise the same configuration the application deploys with.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.
    For a failing or stuck workflow run, read its stored state with
-   `tako_workflows_list` (filter `status: "dead"`) and `tako_workflows_show`:
+   `tako_workflow_list` (filter `status: "dead"`) and `tako_workflow_show`:
    the saved steps show the last checkpoint and the stored error shows what
    failed after it. Retry only after fixing the cause; cancel stops a running
    handler at its next checkpoint, not immediately. Both are writes that need
@@ -115,7 +115,7 @@ network from the global `--network <alias-or-id>`, then the recorded network, th
 this machine's only network, then a terminal prompt; without a terminal it fails
 and lists the aliases. Inside a project, pass only `--env`. `tako deploy` records
 the network it uses and asks to move the environment when `--network` differs
-from the record (failing without a terminal). `tako secrets set/rm/sync` record
+from the record (failing without a terminal). `tako secret set/rm/sync` record
 the network only when none is recorded yet. Every other `--network` applies for
 that run only. A recorded network this machine
 hasn't joined fails until it joins or passes `--network`. `development` never has a
@@ -151,24 +151,24 @@ run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored.
 Each worktree has separate secret drafts. Set/remove changes remain local until
-deploy or `secrets sync` publishes the selected environment; an environment with
+deploy or `secret sync` publishes the selected environment; an environment with
 no network yet keeps them local until its first deploy or sync picks one.
-`secrets sync` without `--env` syncs the environments that have a recorded network. `secrets clear --env <env>` is the exception: it deletes
+`secret sync` without `--env` syncs the environments that have a recorded network. `secret clear --env <env>` is the exception: it deletes
 every app secret of that environment from its network at once, keeping credentials,
 storage keys, and backup keys. Use it when an environment is retired or moves to
 another network; `tako delete` never removes secrets. Moving an environment does
 not copy its secrets to the new network: set them with
-`tako secrets set --env <env> --network <new>` before `tako deploy --env <env> --network <new>`.
+`tako secret set --env <env> --network <new>` before `tako deploy --env <env> --network <new>`.
 A checkout whose drafts are all published follows the move; unpublished drafts for
 the old network block the move until published there
-(`tako secrets sync --env <env> --network <old>`) or removed. `network sync` only refreshes the device cache. Sync
+(`tako secret sync --env <env> --network <old>`) or removed. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. Network state retains only each key's current encrypted
 value and a versioned deletion marker. Backup encryption keys have distinct IDs and
 remain available for retained backups. A publication request can be retried for
 seven days; after expiry, review preserved drafts before explicitly publishing
-with `secrets sync --retry-expired`. That action can overwrite remote changes.
+with `secret sync --retry-expired`. That action can overwrite remote changes.
 An invitation cannot recover unpublished drafts.
 
 When every full client is lost, run `sudo tako-server client invite` from a
@@ -193,10 +193,10 @@ identity, keeping Tako installed for a later `server add`; `--uninstall` also
 removes Tako. It refuses the network's last server without `--yes`; confirm with
 the user before removing one.
 
-For legacy tracked secrets, `secrets migrate` requires the original local keys,
+For legacy tracked secrets, `secret migrate` requires the original local keys,
 retains an ignored recovery copy, and removes the tracked file. Commit that
 deletion and publish through the intended network. Recover missing original keys
-with `secrets key import` before migration; import validates local ciphertext
+with `secret key import` before migration; import validates local ciphertext
 without first materializing the shared cache. Do not replace missing keys or
 rewrite history as part of ordinary migration. App-data backups do not include
 network membership, shared secret records, or device keys; protect those separately.

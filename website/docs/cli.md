@@ -24,13 +24,13 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                           |
 | `--network <NETWORK>`           | Network to act on, by local alias or stable ID. See [Choosing a network](#choosing-a-network).           |
 
-App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`, `status`, and `doctor`.
+App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `release`, `backup`, `delete`, `secret`, `credential`, `storage`, `generate`, and project-context `scale`, `status`, and `doctor`.
 
-Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secrets sync`, `secrets migrate`, `secrets clear`, `backups now/download/restore`, and `workflows retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
+Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secret sync`, `secret migrate`, `secret clear`, `backup now/download/restore`, and `workflow retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
 
 The selected config file supplies environment networks in `[envs.<env>].network`; its parent directory determines the project root and local `.tako/` state. Config files in the same directory have independent network settings but share secret drafts; unpublished drafts cannot move to another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers` and, in a project, `project`; `doctor` includes paths, CA, dev server, apps, proxy checks, and network reachability; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote; `secrets clear` includes `environment`, the `cleared` secret names, and `dry_run`. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers` and, in a project, `project`; `doctor` includes paths, CA, dev server, apps, proxy checks, and network reachability; `network server list`, `secret list`, `credential list`, `dev list`, `backup list`/`status`, and `release list` include their collections; `backup download` and `backup restore` include the backup entry and what they wrote; `secret clear` includes `environment`, the `cleared` secret names, and `dry_run`. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -38,7 +38,7 @@ Installed CLIs send an anonymous event per command so we can count unique users 
 
 Every command accepts the global `--network <alias-or-id>`, before or after the subcommand. It takes this machine's [alias](/networks/#name-networks-on-this-machine) for a network or its stable ID; the shared network name is not looked up. There is no default network.
 
-Project commands pick an environment's network from `--network`, then `[envs.<env>].network` in the selected TOML config, then this machine's only network. Otherwise an interactive terminal asks, and without a terminal the command fails and lists this machine's aliases. Inside a project, pass `--env` and leave the network to the config. `deploy` records the network's stable ID in that config; with a `--network` that differs from the configured ID, it asks to move the environment and fails without a terminal. `secrets set`, `rm`, and `sync` record a network only when the environment has none yet. Other uses of `--network` apply for that run only. `development` never has a network. See [Choose an environment's network](/networks/#choose-an-environments-network).
+Project commands pick an environment's network from `--network`, then `[envs.<env>].network` in the selected TOML config, then this machine's only network. Otherwise an interactive terminal asks, and without a terminal the command fails and lists this machine's aliases. Inside a project, pass `--env` and leave the network to the config. `deploy` records the network's stable ID in that config; with a `--network` that differs from the configured ID, it asks to move the environment and fails without a terminal. `secret set`, `rm`, and `sync` record a network only when the environment has none yet. Other uses of `--network` apply for that run only. `development` never has a network. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
 Network commands take the network as an argument or with `--network`, else use the only network, else ask in a terminal, else fail.
 
@@ -241,12 +241,12 @@ A Compose service cannot be deleted independently: `tako delete --service <servi
 ## Releases
 
 ```bash
-tako releases list [--env <env>]
-tako releases ls [--env <env>]
-tako releases rollback <release-id> [--env <env>] [-y|--yes]
+tako release list [--env <env>]
+tako release ls [--env <env>]
+tako release rollback <release-id> [--env <env>] [-y|--yes]
 ```
 
-Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, `git_dirty`, and `sdk` for each release. `sdk` is `{ "language", "name", "version" }` for the Tako SDK detected at deploy time, or `null` when the release has none.
+Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `release list --json` includes `description`, `commit_message`, `git_dirty`, and `sdk` for each release. `sdk` is `{ "language", "name", "version" }` for the Tako SDK detected at deploy time, or `null` when the release has none.
 
 Lists release/build history or rolls an environment back to a previous release. Rollback uses the standard rolling-update flow and reports partial server failures individually.
 
@@ -311,80 +311,80 @@ tako network server rm [name] [--network <alias-or-id>] [--uninstall] [-y|--yes]
 
 Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, remove). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
-`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. With several networks, an interactive terminal (without `--json`) asks for all networks or one; `--network` narrows it to one, and without a terminal it shows every network. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
+`status` prints a deployment snapshot grouped by server, with compact server summary, resources, routes, and app rows. The summary shows how long the host and the Tako server have been up. `Resources` shows the CPU count and load average, memory use (and swap, when the host has any), and free space on the filesystem holding the server's data directory. Memory and disk use turn yellow at 80% and red at 90%; the 1-minute load turns yellow once it reaches the CPU count. `--json` reports the raw figures under `resources` on each server (`host` stays the server's address), `null` when the server reports none: `{"uptime_secs", "cpu": {"cores", "load_average": [<1m>, <5m>, <15m>]}, "memory": {"total_bytes", "available_bytes", "swap_total_bytes", "swap_free_bytes"}, "disk": {"path", "total_bytes", "used_bytes", "available_bytes"}}`. Disk sizes follow `df`: `used_bytes` excludes the blocks reserved for root. A part the server can't read is left out. With several networks, an interactive terminal (without `--json`) asks for all networks or one; `--network` narrows it to one, and without a terminal it shows every network. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
 
-Inside a project (the current directory's `tako.toml`, or `-c`), `status` also shows its resources without reading or showing any value. Under each server, `Databases` lists the Tako-hosted databases homed there and which of the project's app environments bind them. After the servers, an `App` block lists each environment: its configured network and target servers, the number of app secrets (`tako secrets list` shows their names), which provider credentials are set, its storage bindings and whether S3 credentials exist, whether a backup key exists, and each database binding with its server. A deploy client sees the databases and servers and a note that secrets need a full client. `--json` adds `databases` (`name`, `bound_by`) to each server and a top-level `project` object, `null` outside a project: `{"app", "environments": [{"name", "network", "access": "local"|"full"|"deploy"|"unknown", "servers", "secrets": <count>|null, "credentials": [<name>]|null, "storages": [{"binding", "resource", "credentials": true|false|null}], "backup_key": true|false|null, "databases": [{"binding", "database", "server"}], "note"}]}`. `null` means this device can't see that value.
+Inside a project (the current directory's `tako.toml`, or `-c`), `status` also shows its resources without reading or showing any value. Under each server, `Databases` lists the Tako-hosted databases homed there and which of the project's app environments bind them. After the servers, an `App` block lists each environment: its configured network and target servers, the number of app secrets (`tako secret list` shows their names), which provider credentials are set, its storage bindings and whether S3 credentials exist, whether a backup key exists, and each database binding with its server. A deploy client sees the databases and servers and a note that secrets need a full client. `--json` adds `databases` (`name`, `bound_by`) to each server and a top-level `project` object, `null` outside a project: `{"app", "environments": [{"name", "network", "access": "local"|"full"|"deploy"|"unknown", "servers", "secrets": <count>|null, "credentials": [<name>]|null, "storages": [{"binding", "resource", "credentials": true|false|null}], "backup_key": true|false|null, "databases": [{"binding", "database", "server"}], "note"}]}`. `null` means this device can't see that value.
 
 Maintenance commands accept the exact selector shown by `network server list --json`, `<alias>/<server>`, which names its own network by this machine's alias. Two servers with the same name in one network get `<alias>/<server>/<device-id>`. A bare server name resolves in `--network`, or in the only network; with several networks, pass `--network`. `upgrade` without a name upgrades every server in that network. Without a name, `revoke` and `remove` prompt with that network's servers, or with every `<alias>/<server>` when the machine has several networks and no `--network`; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server revoke` revokes the server's network membership without deleting app data; clients it approved keep theirs. `network server remove` (alias `rm`) takes the server out of the network for good over administrator SSH: it lists the apps on the server, publishes the revocation, then deletes every app, its releases, volumes, databases, and backups on the server, and the server's network identity and state. Tako stays installed, so `network server add` can enroll the machine in any network again; `--uninstall` also removes the service, binaries, and service files. Revocation failure stops before deletion; cleanup failure after revocation reports removal as incomplete and names the helper to finish it over SSH. Offline peers enforce the revocation when they reconnect. Removing the last server of a network requires `--yes`, as do non-interactive runs. `--dry-run` performs neither revocation nor deletion. `--json` reports `{"network", "server", "apps", "uninstalled"}`; `apps` is `null` when the server could not list them.
 
 ## Secrets
 
 ```bash
-tako secrets set <NAME> [--env <env>] [--expires-on <when>]
-tako secrets add <NAME> ...
-tako secrets rm <NAME> [--env <env>] [--yes]
-tako secrets list
-tako secrets sync [--env <env>] [--network <alias-or-id>] [--retry-expired]
-tako secrets clear --env <env> [--yes]
-tako secrets migrate
-tako secrets key export [--env <env>]
-tako secrets key import [--env <env>] [--passphrase]
+tako secret set <NAME> [--env <env>] [--expires-on <when>]
+tako secret add <NAME> ...
+tako secret rm <NAME> [--env <env>] [--yes]
+tako secret list
+tako secret sync [--env <env>] [--network <alias-or-id>] [--retry-expired]
+tako secret clear --env <env> [--yes]
+tako secret migrate
+tako secret key export [--env <env>]
+tako secret key import [--env <env>] [--passphrase]
 ```
 
-Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/state.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. An environment without a network keeps them as drafts until its first deploy or `secrets sync` picks a network, records it, and publishes them; `--network` on set or remove binds the draft to that network instead, recording it when the environment has none. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. `secrets sync` without `--env` syncs every environment that has a recorded network. Sync does not restart running apps; deploy to apply values. `secrets list` reads local state only. For each environment it shows `[set] by <device>` with the device that published the current value, `[draft]` for a change in this worktree that is not published yet, or `[set]` when the environment has no network; `--json` adds the same per environment as `last_changed`. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
+Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/state.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. An environment without a network keeps them as drafts until its first deploy or `secret sync` picks a network, records it, and publishes them; `--network` on set or remove binds the draft to that network instead, recording it when the environment has none. Deploy and `secret sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. `secret sync` without `--env` syncs every environment that has a recorded network. Sync does not restart running apps; deploy to apply values. `secret list` reads local state only. For each environment it shows `[set] by <device>` with the device that published the current value, `[draft]` for a change in this worktree that is not published yet, or `[set]` when the environment has no network; `--json` adds the same per environment as `last_changed`. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
 
-`secrets clear` deletes every app secret of one environment from that environment's network (or the `--network` one, for that run) and publishes the deletions immediately, unlike `set` and `rm`. It first pulls published state, so values published from other devices or worktrees are deleted too, and it discards this worktree's unpublished app drafts for the environment. Another worktree's unpublished edit to a cleared name is published again by that worktree's next sync or deploy. If clearing stops partway, its deletions remain saved drafts; rerun it, or the next sync or deploy publishes them. Other unpublished drafts, such as provider credentials, stay local. Storage credentials and backup keys are kept. Interactive runs list the names and ask for confirmation; non-interactive runs require `--yes`. `--dry-run` previews from local drafts and the device cache without contacting the network. Running apps keep their values until their next deployment.
+`secret clear` deletes every app secret of one environment from that environment's network (or the `--network` one, for that run) and publishes the deletions immediately, unlike `set` and `rm`. It first pulls published state, so values published from other devices or worktrees are deleted too, and it discards this worktree's unpublished app drafts for the environment. Another worktree's unpublished edit to a cleared name is published again by that worktree's next sync or deploy. If clearing stops partway, its deletions remain saved drafts; rerun it, or the next sync or deploy publishes them. Other unpublished drafts, such as provider credentials, stay local. Storage credentials and backup keys are kept. Interactive runs list the names and ask for confirmation; non-interactive runs require `--yes`. `--dry-run` previews from local drafts and the device cache without contacting the network. Running apps keep their values until their next deployment.
 
 Secret state retains the current value per key and versioned deletions. Pending publication requests expire after seven days; `--retry-expired` explicitly replaces expired requests with the current local drafts as new changes. Review the drafts first, since they can overwrite remote changes to those keys.
 
-`secrets migrate` validates the original environment keys, writes local state, and removes the old `.tako/secrets.json` after retaining an ignored recovery copy. Commit the tracked file's deletion. Historical commits remain unchanged. See [Secrets](/secrets/) for conflicts, worktrees, and recovery.
+`secret migrate` validates the original environment keys, writes local state, and removes the old `.tako/secrets.json` after retaining an ignored recovery copy. Commit the tracked file's deletion. Historical commits remain unchanged. See [Secrets](/secrets/) for conflicts, worktrees, and recovery.
 
-`secrets key import` can recover the original environment key before local drafts are merged with the cached network state. It accepts an exported key through a masked prompt or stdin; use `--passphrase --env <env>` to derive the original key from its passphrase instead. It rejects keys that cannot decrypt existing values. An invitation restores access to published values, but does not recover unpublished drafts or legacy environment keys.
+`secret key import` can recover the original environment key before local drafts are merged with the cached network state. It accepts an exported key through a masked prompt or stdin; use `--passphrase --env <env>` to derive the original key from its passphrase instead. It rejects keys that cannot decrypt existing values. An invitation restores access to published values, but does not recover unpublished drafts or legacy environment keys.
 
 Expiry accepts `YYYY-MM-DD` or `in N days`. Leave it blank for no expiry. Deploy fails on expired selected-environment secrets and warns when they expire within 30 days.
 
 ## Provider Credentials
 
 ```bash
-tako credentials set [name] [--env <env>] [--expires-on <when>]
+tako credential set [name] [--env <env>] [--expires-on <when>]
 tako creds set ...
-tako credentials rm <name> [--env <env>]
-tako credentials list
+tako credential rm <name> [--env <env>]
+tako credential list
 ```
 
-Running `tako credentials` without a subcommand lists credentials. Set and remove prompt for an environment when `--env` is omitted; non-interactive use requires `--env`.
+Running `tako credential` without a subcommand lists credentials. Set and remove prompt for an environment when `--env` is omitted; non-interactive use requires `--env`.
 
-Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in the local state and the network state, never exposed to app code, and published by `tako secrets sync` or deploy. Running processes receive the new bindings on deploy.
+Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in the local state and the network state, never exposed to app code, and published by `tako secret sync` or deploy. Running processes receive the new bindings on deploy.
 
 `ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` selects shared Postgres for workflows and, unless `[envs.<env>.channels].database` selects hosted SQLite, for channels, presence and Store invalidations. Selecting a replay database does not change workflow storage or migrate existing history. Multi-server workflows need Postgres unless every workflow opts into local execution. Neither provider credential is exposed to app code.
 
 ## Storage
 
 ```bash
-tako storages add <binding> [--env <env>] [--resource <resource>] [--provider s3|local] [--bucket <bucket>] [--endpoint <https-url>] [--region <region>] [--access-key-id <value>] [--secret-access-key <value>] [--expires-on <when>] [--force-path-style] [--public-base-url <https-url>]
-tako storages credentials <resource> [--env <env>] [--access-key-id <value>] [--secret-access-key <value>] [--expires-on <when>]
+tako storage add <binding> [--env <env>] [--resource <resource>] [--provider s3|local] [--bucket <bucket>] [--endpoint <https-url>] [--region <region>] [--access-key-id <value>] [--secret-access-key <value>] [--expires-on <when>] [--force-path-style] [--public-base-url <https-url>]
+tako storage credentials <resource> [--env <env>] [--access-key-id <value>] [--secret-access-key <value>] [--expires-on <when>]
 ```
 
 Storage commands default to `--env production` and `--provider s3`.
 
-`storages add` writes the app binding to `tako.toml`. For S3 resources it also writes resource metadata and encrypted credentials. `storages credentials` rotates credentials for an existing top-level S3 resource without adding an app binding, which is useful for backup-only resources.
+`storage add` writes the app binding to `tako.toml`. For S3 resources it also writes resource metadata and encrypted credentials. `storage credentials` rotates credentials for an existing top-level S3 resource without adding an app binding, which is useful for backup-only resources.
 
 ## Backups
 
 ```bash
-tako backups now [--env <env>] [--server <server>]
-tako backups list [--env <env>] [--server <server>]
-tako backups ls [--env <env>] [--server <server>]
-tako backups status [--env <env>]
-tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]
-tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
+tako backup now [--env <env>] [--server <server>]
+tako backup list [--env <env>] [--server <server>]
+tako backup ls [--env <env>] [--server <server>]
+tako backup status [--env <env>]
+tako backup download <backup-id> [--env <env>] [--server <server>] [--output <path>]
+tako backup restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
 ```
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
 
-`backups now` creates a manual full app-directory archive; deploys and timers do not create one. `backups list` lists these archives and older `databases` archives. `backups status` shows the last archive, the last failed attempt, retention, and unfinished restores.
+`backup now` creates a manual full app-directory archive; deploys and timers do not create one. `backup list` lists these archives and older `databases` archives. `backup status` shows the last archive, the last failed attempt, retention, and unfinished restores.
 
-`backups restore <backup-id>` restores a manual archive, including workflow state when present, and pauses the owning app. Use `--server` when multiple servers are mapped. `download` saves an encrypted archive. Hosted databases have their own snapshots; use `tako sqlite backups` and `tako sqlite restore`. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
+`backup restore <backup-id>` restores a manual archive, including workflow state when present, and pauses the owning app. Use `--server` when multiple servers are mapped. `download` saves an encrypted archive. Hosted databases have their own snapshots; use `tako sqlite backups` and `tako sqlite restore`. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
 
 ## Databases
 
@@ -394,9 +394,9 @@ tako sqlite list
 tako sqlite ls
 tako sqlite status [<name>]
 tako sqlite shell <name> [<sql>]
-tako sqlite migrations new <name> [--binding <binding>]
-tako sqlite migrations list [<database>] [--local]
-tako sqlite migrations apply [<database>] [--local]
+tako sqlite migration new <name> [--binding <binding>]
+tako sqlite migration list [<database>] [--local]
+tako sqlite migration apply [<database>] [--local]
 tako sqlite backup <name>
 tako sqlite backups <name>
 tako sqlite restore <name> (--latest|--snapshot <snapshot-id>) [--server <server>] [-y|--yes]
@@ -407,24 +407,24 @@ tako sqlite delete <name> [--server <server>] [-y|--yes]
 tako sqlite rm ...
 ```
 
-`tako db` is an alias for `tako sqlite`. A database belongs to a network: `--network`, else the network configured in the selected TOML file's environments, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments configure several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migrations` need permission to deploy some app; the others require network and server administrator permission.
+`tako db` is an alias for `tako sqlite`. A database belongs to a network: `--network`, else the network configured in the selected TOML file's environments, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments configure several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migration` need permission to deploy some app; the others require network and server administrator permission.
 
 `create` makes the database on `--server` (optional on a one-server network) and records its home. Bind it to app code with `[envs.<env>].databases` or select it for runtime replay with `[envs.<env>.channels].database`. `list --json` shows its home and the project's `channel_replay_envs`; `channel_owner` identifies an automatically owned replay database. `status` asks the home for size, users, and backup state, for every database the project uses if no name is given. In its JSON `bindings` and `remote_grants`, `<app>/<env>#channels` denotes runtime replay access. Snapshots require an environment `backup.storage` or `[databases.<name>].backup`.
 
-`migrations new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time (or the next number no migration in the folder uses) and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migrations list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migrations apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
+`migration new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time (or the next number no migration in the folder uses) and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migration list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migration apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
 
 `shell` runs one statement when `<sql>` is given and otherwise reads statements from stdin, with `.tables`, `.schema [table]`, and `.quit` in an interactive terminal. Results stop at 1,000 rows and 8 MiB. Each statement commits on its own, so `BEGIN` is rejected. `backup` takes a snapshot now; `backups` lists snapshots with their reason (`scheduled`, `manual`, `before release`, `before migrations`, `before restore`). `restore` replaces the database with a snapshot; `--latest` picks the newest one that is not a `before restore` safety copy. With `--server` it recovers the database onto another server, which becomes its server, and removes the new copy again if the restore fails (keeping the snapshots); a move that stopped after its restore is finished by running the same command again; the old copy stops taking snapshots: at once if its server is up, otherwise once that server is back and sees the move. `import` replaces the database with a local SQLite file; `export` writes a consistent copy and refuses to overwrite an existing file. `delete` removes the database file, its snapshots, its network records, its `tako.toml` entries, and copies an unfinished move left on other servers of the network. It refuses while apps on the database's server bind it, and revokes grants to app environments on other servers after naming them in a warning. `delete --server <server>` removes only the copy `restore --server` left on an old server, keeping the database, its record, and its snapshots. `restore`, `import`, `reset`, and `delete` ask for confirmation; non-interactive runs need `--yes`.
 
-Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, `migrations` for `migrations list` and `apply`, `path` for `migrations new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
+Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, `migrations` for `migration list` and `apply`, `path` for `migration new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
 
 ## Workflows
 
 ```bash
-tako workflows list [--env <env>] [--server <server>] [--status <status>] [--name <workflow>] [--limit <n>]
-tako workflows ls ...
-tako workflows show <run-id> [--env <env>] [--server <server>]
-tako workflows retry <run-id> [--env <env>] [--server <server>]
-tako workflows cancel <run-id> [--env <env>] [--server <server>] [-y|--yes]
+tako workflow list [--env <env>] [--server <server>] [--status <status>] [--name <workflow>] [--limit <n>]
+tako workflow ls ...
+tako workflow show <run-id> [--env <env>] [--server <server>]
+tako workflow retry <run-id> [--env <env>] [--server <server>]
+tako workflow cancel <run-id> [--env <env>] [--server <server>] [-y|--yes]
 ```
 
 Workflow commands inspect and repair the durable runs of a deployed environment. They default to `production`, require project context, and target the deployment id `{app}/{env}` on every mapped server, or only on `--server`. They are not available for `development`; use the `tako dev` logs locally.
@@ -435,7 +435,7 @@ Workflow commands inspect and repair the durable runs of a deployed environment.
 
 Without `postgres_url`, each server keeps its own runs, so results are labelled with their server; if two servers hold a run with the same ID, `show`, `retry`, and `cancel` fail and ask for `--server`. With `postgres_url`, every server shares one store: runs are listed once, without a server, and retry or cancel is sent once. A server that cannot be reached is reported as a warning while the others answer; the command fails only when no server answers, or when the run is not found on any server.
 
-Global `--json` prints one object. Every object has `ok`, `command: "workflows"`, `app`, `environment`, `store` (`"sqlite"` or `"postgres"`), and `errors`, an array of `{name, error}` for servers that did not answer.
+Global `--json` prints one object. Every object has `ok`, `command: "workflow"`, `app`, `environment`, `store` (`"sqlite"` or `"postgres"`), and `errors`, an array of `{name, error}` for servers that did not answer.
 
 - `list` adds `runs` and `has_more`. Each run has `id`, `name`, `status`, `attempts`, `max_attempts`, `created_at_ms`, `run_at_ms` (null while waiting for a signal), `finished_at_ms`, `last_error` (capped at 1 KiB), `last_error_truncated`, and `server` (null with Postgres).
 - `show` adds `server` and `run`. `run` has the list fields plus `lease_until_ms`, `worker_id`, `payload`, `result` (null until the run succeeds), `steps` (`name`, `completed_at_ms`, `result`), `steps_total`, and `waits` (`step_name`, `event_name`, `expires_at_ms`). Each value is `{value, truncated, bytes, preview?}`; a truncated value has `value: null` and a `preview` of its JSON text.

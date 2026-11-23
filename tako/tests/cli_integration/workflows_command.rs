@@ -26,18 +26,11 @@ route = "demo.example.com"
 fn workflows_json_failure_without_a_network_is_a_structured_error() {
     let (temp, home, tako_home) = project();
     for args in [
-        &["--json", "workflows", "list", "--env", "production"][..],
+        &["--json", "workflow", "list", "--env", "production"][..],
+        &["--json", "workflow", "show", "run_1", "--env", "production"][..],
         &[
             "--json",
-            "workflows",
-            "show",
-            "run_1",
-            "--env",
-            "production",
-        ][..],
-        &[
-            "--json",
-            "workflows",
+            "workflow",
             "retry",
             "run_1",
             "--env",
@@ -45,7 +38,7 @@ fn workflows_json_failure_without_a_network_is_a_structured_error() {
         ][..],
         &[
             "--json",
-            "workflows",
+            "workflow",
             "cancel",
             "run_1",
             "--env",
@@ -71,10 +64,10 @@ fn workflows_json_failure_without_a_network_is_a_structured_error() {
 fn workflows_refuse_the_development_environment() {
     let (temp, home, tako_home) = project();
     for action in [
-        &["workflows", "list"][..],
-        &["workflows", "show", "run_1"][..],
-        &["workflows", "retry", "run_1"][..],
-        &["workflows", "cancel", "run_1", "--yes"][..],
+        &["workflow", "list"][..],
+        &["workflow", "show", "run_1"][..],
+        &["workflow", "retry", "run_1"][..],
+        &["workflow", "cancel", "run_1", "--yes"][..],
     ] {
         let mut args = vec!["--json"];
         args.extend_from_slice(action);
@@ -94,7 +87,7 @@ fn workflows_refuse_the_development_environment() {
 fn workflows_reject_unknown_environments_and_servers() {
     let (temp, home, tako_home) = project();
     let output = run_tako_with_env(
-        &["--ci", "workflows", "list", "--env", "staging"],
+        &["--ci", "workflow", "list", "--env", "staging"],
         temp.path(),
         &home,
         &tako_home,
@@ -112,7 +105,7 @@ fn workflows_reject_unknown_environments_and_servers() {
         &server.owner_home,
         &project,
         &[
-            "workflows",
+            "workflow",
             "show",
             "run_1",
             "--env",

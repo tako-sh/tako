@@ -203,7 +203,7 @@ Sources may be JPEG, PNG, GIF, WebP, or AVIF. Animated GIF and WebP sources keep
 Attach S3-compatible storage with the Tako CLI, then use `tako.storages.<name>` from server-side app code:
 
 ```bash
-tako storages add uploads \
+tako storage add uploads \
   --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \

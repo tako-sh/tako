@@ -10,8 +10,8 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 - Local development daemon runtime (`tako-dev-server`).
 - macOS dev proxy for loopback-only local ingress (`tako-dev-proxy`).
 - Deployment orchestration (`tako deploy`).
-- Release history and rollback (`tako releases list`, `tako releases rollback`).
-- Remote operational commands (`logs`, `backups`, `delete`, `network`, `secrets`).
+- Release history and rollback (`tako release list`, `tako release rollback`).
+- Remote operational commands (`logs`, `backup`, `delete`, `network`, `secret`).
 - Config loading/validation, runtime detection, and SSH interactions.
 
 ## Command Surface
@@ -26,14 +26,16 @@ Primary subcommands:
 - `doctor`
 - `status`
 - `run`
-- `credentials`
+- `credential`
 - `completions`
 - `version`
 - `network`
-- `secrets`
-- `storages`
-- `backups`
-- `releases`
+- `secret`
+- `storage`
+- `backup`
+- `release`
+- `workflow`
+- `sqlite`
 - `upgrade`
 - `deploy`
 - `delete`
@@ -64,12 +66,12 @@ Operational behavior highlights:
 - Local runtime version resolution runs `<tool> --version` directly, falling back to `latest`.
 - `tako deploy` merges build assets (preset assets + top-level `assets`) into app `public/` after target build, in listed order.
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
-- `tako releases list` shows release/build history for the current app and environment with commit metadata when available.
-- `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
-- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys are encrypted in the network state and this worktree's local state.
+- `tako release list` shows release/build history for the current app and environment with commit metadata when available.
+- `tako release rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
+- `tako backup now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys are encrypted in the network state and this worktree's local state.
 - `tako network server add admin@host --network <network>` installs and enrolls a server over administrator SSH. Native membership supplies server identities and targets; normal management uses signed, pinned HTTPS. Without `--network`, it uses the network chosen with `tako network use`, or the only configured network.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
-- Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.
+- Production environments use Let’s Encrypt certificates by default. Run `tako credential set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.
 - New apps start with one desired instance. Scaling to zero enables on-demand cold starts after the warm instance becomes idle.
 - Official CLI installs send an anonymous event per command (version, OS, arch, command name) so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. CI and `--ci` always disable usage stats, even with `TAKO_TELEMETRY=1`. Local Cargo builds are off unless `TAKO_TELEMETRY=1`. `tako-server` does not send usage stats.
 
@@ -92,12 +94,12 @@ cargo run -p tako-cli --bin tako -- deploy --help
 
 ## Config Requirements
 
-- `tako.toml` is required for `dev`, `deploy`, `logs`, and `secrets` workflows.
+- `tako.toml` is required for `dev`, `deploy`, `logs`, and `secret` workflows.
 - App-scoped commands default to `./tako.toml`; `-c/--config CONFIG` selects another config file and uses its parent directory as project context. Omitting the `.toml` suffix is supported and recommended for brevity.
 - Top-level `name` in `tako.toml` is optional; when omitted, app identity falls back to sanitized project directory name.
 - Setting `name` explicitly is recommended for stable identity and uniqueness per server; renaming identity later creates a new app path and requires manual cleanup of old deployments.
 - Non-development environments must define `route` or `routes`; development defaults to `{app}.test`.
-- `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credentials set ssl.cloudflare`. Deploy checks required Cloudflare credentials from each target server during remote prepare.
+- `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credential set ssl.cloudflare`. Deploy checks required Cloudflare credentials from each target server during remote prepare.
 - Environments with `<app_root>/channels/` or `<app_root>/workflows/` can deploy to one server with local SQLite runtime state. Multi-server channels require the `postgres_url` credential. Multi-server workflows require `postgres_url` unless every JavaScript workflow sets `local: true`; Go workflow deployments always require `postgres_url`. Local workflows use per-server queues and cron.
 - `[workflows].retention` defaults to `"184d"` for completed workflow runs and their steps. Set a positive duration or `"forever"`; the value is carried through local dev registration and deploy manifests.
 

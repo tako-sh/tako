@@ -277,11 +277,11 @@ fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
     for tool in [
         "tako_deploy",
         "tako_scale",
-        "tako_secrets_sync",
-        "tako_secrets_clear",
+        "tako_secret_sync",
+        "tako_secret_clear",
         "tako_network_server_remove",
         "tako_network_server_revoke",
-        "tako_workflows_retry",
+        "tako_workflow_retry",
     ] {
         assert!(
             catalog[tool].tool.input_schema["properties"]
@@ -291,10 +291,10 @@ fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
         );
     }
     for tool in [
-        "tako_secrets_set",
+        "tako_secret_set",
         "tako_network_server_upgrade",
         "tako_network_server_reload",
-        "tako_releases_rollback",
+        "tako_release_rollback",
     ] {
         assert!(
             catalog[tool].tool.input_schema["properties"]
@@ -345,24 +345,24 @@ async fn cancelling_subprocess_prevents_later_child_side_effects() {
 fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
     let catalog = catalog::catalog();
     let annotations = |name: &str| catalog[name].tool.annotations.clone().unwrap();
-    for name in ["tako_workflows_list", "tako_workflows_show"] {
+    for name in ["tako_workflow_list", "tako_workflow_show"] {
         assert_eq!(annotations(name).read_only_hint, Some(true), "{name}");
         assert_eq!(annotations(name).destructive_hint, Some(false), "{name}");
     }
     assert_eq!(
-        annotations("tako_workflows_retry").read_only_hint,
+        annotations("tako_workflow_retry").read_only_hint,
         Some(false)
     );
     assert_eq!(
-        annotations("tako_workflows_retry").destructive_hint,
+        annotations("tako_workflow_retry").destructive_hint,
         Some(false)
     );
     assert_eq!(
-        annotations("tako_workflows_cancel").read_only_hint,
+        annotations("tako_workflow_cancel").read_only_hint,
         Some(false)
     );
     assert_eq!(
-        annotations("tako_workflows_cancel").destructive_hint,
+        annotations("tako_workflow_cancel").destructive_hint,
         Some(true)
     );
     assert_eq!(
@@ -389,14 +389,14 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
     );
     let connect = &catalog["tako_connect"].tool.input_schema["properties"];
     assert!(connect.get("network").is_some() && connect.get("network_flag").is_none());
-    let clear = &catalog["tako_secrets_clear"];
+    let clear = &catalog["tako_secret_clear"];
     assert_eq!(
-        annotations("tako_secrets_clear").destructive_hint,
+        annotations("tako_secret_clear").destructive_hint,
         Some(true)
     );
     assert_eq!(clear.tool.input_schema["required"], json!(["env"]));
 
-    let list = &catalog["tako_workflows_list"];
+    let list = &catalog["tako_workflow_list"];
     assert_eq!(
         list.tool.input_schema["properties"]["status"]["enum"],
         json!(["pending", "running", "succeeded", "cancelled", "dead"])
@@ -413,7 +413,7 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
         )
         .unwrap(),
         [
-            "workflows",
+            "workflow",
             "list",
             "--env=staging",
             "--status=dead",
@@ -429,13 +429,13 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
             .is_err()
     );
     assert_eq!(
-        catalog["tako_workflows_cancel"]
+        catalog["tako_workflow_cancel"]
             .arguments(json!({"run_id":"run_1","yes":true}).as_object().unwrap())
             .unwrap(),
-        ["workflows", "cancel", "--yes", "--", "run_1"]
+        ["workflow", "cancel", "--yes", "--", "run_1"]
     );
     assert!(
-        catalog["tako_workflows_retry"]
+        catalog["tako_workflow_retry"]
             .arguments(&Default::default())
             .is_err()
     );

@@ -431,13 +431,13 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
     server.ok(
         &server.owner_home,
         &publisher,
-        &["secrets", "set", "REMOTE", "--env", "production"],
+        &["secret", "set", "REMOTE", "--env", "production"],
         Some("published"),
     );
     server.ok(
         &server.owner_home,
         &publisher,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     for (name, passphrase, explicit_env) in [
@@ -458,7 +458,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
                 &server.owner_home,
                 &project,
                 &[
-                    "secrets",
+                    "secret",
                     "key",
                     "import",
                     "--passphrase",
@@ -471,7 +471,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
         server.ok(
             &server.owner_home,
             &project,
-            &["secrets", "set", "LEGACY", "--env", "production"],
+            &["secret", "set", "LEGACY", "--env", "production"],
             Some("recovered-local"),
         );
         let local = project.join(".tako/state.local.json");
@@ -492,7 +492,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
         fs::remove_file(&key_path).unwrap();
         fs::write(project.join("tako.toml"), config).unwrap();
 
-        let mut args = vec!["secrets", "key", "import"];
+        let mut args = vec!["secret", "key", "import"];
         if passphrase {
             args.push("--passphrase");
         }
@@ -514,11 +514,11 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
             fs::read(project.join(".tako/secrets.json")).unwrap(),
             legacy
         );
-        server.ok(&server.owner_home, &project, &["secrets", "migrate"], None);
+        server.ok(&server.owner_home, &project, &["secret", "migrate"], None);
         server.ok(
             &server.owner_home,
             &project,
-            &["secrets", "sync", "--env", "production"],
+            &["secret", "sync", "--env", "production"],
             None,
         );
         let migrated: serde_json::Value =
@@ -553,17 +553,17 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
         server.ok(
             &server.owner_home,
             &publisher,
-            &["secrets", "set", key, "--env", "production"],
+            &["secret", "set", key, "--env", "production"],
             Some("fixture-value"),
         );
         server.ok(
             &server.owner_home,
             &publisher,
-            &["secrets", "sync", "--env", "production"],
+            &["secret", "sync", "--env", "production"],
             None,
         );
     }
-    for command in ["deploy", "secrets"] {
+    for command in ["deploy", "secret"] {
         let project = server.project(command);
         fs::write(project.join("alternate.toml"), format!(
             "name='alternate'\nimage='example/alternate:latest'\n[envs.production]\nnetwork='{}'\nroute='alternate.example.test'\nservers=['missing']\n",
@@ -578,7 +578,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
                 "production",
             ]
         } else {
-            vec!["--config", "alternate.toml", "secrets", "list"]
+            vec!["--config", "alternate.toml", "secret", "list"]
         };
         let result = server.run(&server.owner_home, &project, &args, None);
         if command == "deploy" {
@@ -605,7 +605,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             &[
                 "--config",
                 "alternate.toml",
-                "secrets",
+                "secret",
                 "set",
                 "UNPUBLISHED",
                 "--env",
@@ -613,7 +613,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             ],
             Some("local-draft"),
         );
-        let wrong = server.run(&server.owner_home, &project, &["secrets", "list"], None);
+        let wrong = server.run(&server.owner_home, &project, &["secret", "list"], None);
         assert!(!wrong.status.success());
         assert!(
             stderr_str(&wrong).contains("unpublished production secrets for app alternate"),
@@ -626,7 +626,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             &[
                 "--config",
                 "alternate.toml",
-                "secrets",
+                "secret",
                 "sync",
                 "--env",
                 "production",
@@ -802,26 +802,26 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "set", "ALPHA", "--env", "production"],
+        &["secret", "set", "ALPHA", "--env", "production"],
         Some("initial-alpha"),
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "set", "BETA", "--env", "production"],
+        &["secret", "set", "BETA", "--env", "production"],
         Some("initial-beta"),
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["credentials", "set", "postgres_url", "--env", "production"],
+        &["credential", "set", "postgres_url", "--env", "production"],
         Some("postgres://fixture:example@db.example.test/app"),
     );
     assert!(server.store.0.lock().unwrap().1.records.is_empty());
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     let invitation = server.ok(
@@ -841,7 +841,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["network", "join", "--invitation-stdin"],
         Some(&invitation),
     );
-    let listed = server.ok(&client_home, &client, &["secrets", "list"], None);
+    let listed = server.ok(&client_home, &client, &["secret", "list"], None);
     assert_eq!(listed["secrets"].as_array().unwrap().len(), 2);
     for entry in listed["secrets"].as_array().unwrap() {
         let change = &entry["last_changed"]["production"];
@@ -863,19 +863,19 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["secrets", "set", "BETA", "--env", "production"],
+        &["secret", "set", "BETA", "--env", "production"],
         Some("client-draft"),
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "set", "ALPHA", "--env", "production"],
+        &["secret", "set", "ALPHA", "--env", "production"],
         Some("owner-edit"),
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     let before = server.store.0.lock().unwrap().1.records.len();
@@ -885,7 +885,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .run(
                 &client_home,
                 &client,
-                &["secrets", "sync", "--env", "production"],
+                &["secret", "sync", "--env", "production"],
                 None
             )
             .status
@@ -895,7 +895,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     let state = server.store.0.lock().unwrap().1.clone();
@@ -916,7 +916,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["secrets", "set", "GAMMA", "--env", "production"],
+        &["secret", "set", "GAMMA", "--env", "production"],
         Some("uncertain"),
     );
     server.drop_publication.store(true, Ordering::Relaxed);
@@ -925,7 +925,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .run(
                 &client_home,
                 &client,
-                &["secrets", "sync", "--env", "production"],
+                &["secret", "sync", "--env", "production"],
                 None
             )
             .status
@@ -934,13 +934,13 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["secrets", "rm", "GAMMA", "--env", "production", "--yes"],
+        &["secret", "rm", "GAMMA", "--env", "production", "--yes"],
         None,
     );
     server.ok(
         &client_home,
         &client,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     let state = server.store.0.lock().unwrap().1.clone();
@@ -952,11 +952,11 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     assert!(gamma.is_deletion());
     assert_eq!(gamma.revision, 2);
     let untouched = server.project("new-worktree");
-    server.ok(&client_home, &untouched, &["secrets", "list"], None);
+    server.ok(&client_home, &untouched, &["secret", "list"], None);
     server.ok(
         &client_home,
         &untouched,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     assert_eq!(
@@ -995,7 +995,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         "backup = { storage = 'archives' }\n[storages.archives]\nprovider='s3'\nbucket='fixture'\nregion='auto'\nendpoint='https://archives.example.test'\n"
     );
     fs::write(config, contents).unwrap();
-    server.ok(&scoped_home, &scoped_project, &["backups", "now"], None);
+    server.ok(&scoped_home, &scoped_project, &["backup", "now"], None);
     assert!(!scoped_project.join(".tako/state.local.json").exists());
     let devices = fs::read_dir(
         scoped_home
@@ -1019,11 +1019,11 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     let count = server.store.0.lock().unwrap().1.records.len();
     for (command, value) in [
         (
-            ["secrets", "set", "SCOPED", "--env", "production"],
+            ["secret", "set", "SCOPED", "--env", "production"],
             "refused",
         ),
         (
-            ["credentials", "set", "postgres_url", "--env", "production"],
+            ["credential", "set", "postgres_url", "--env", "production"],
             "postgres://fixture:example@db.example.test/forbidden",
         ),
     ] {
@@ -1033,7 +1033,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
                 .run(
                     &scoped_home,
                     &scoped_project,
-                    &["secrets", "sync", "--env", "production"],
+                    &["secret", "sync", "--env", "production"],
                     None
                 )
                 .status
@@ -1210,7 +1210,7 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         server.ok(
             &server.owner_home,
             &project,
-            &["secrets", "set", "TOKEN", "--env", "production"],
+            &["secret", "set", "TOKEN", "--env", "production"],
             Some("first"),
         );
         server.drop_publication.store(true, Ordering::Relaxed);
@@ -1219,7 +1219,7 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
                 .run(
                     &server.owner_home,
                     &project,
-                    &["secrets", "sync", "--env", "production"],
+                    &["secret", "sync", "--env", "production"],
                     None
                 )
                 .status
@@ -1247,14 +1247,14 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         server.ok(
             &server.owner_home,
             &project,
-            &["secrets", "set", "TOKEN", "--env", "production"],
+            &["secret", "set", "TOKEN", "--env", "production"],
             Some("current-draft"),
         );
         let before = server.store.0.lock().unwrap().1.clone();
         let failed = server.run(
             &server.owner_home,
             &project,
-            &["secrets", "sync", "--env", "production"],
+            &["secret", "sync", "--env", "production"],
             None,
         );
         assert!(!failed.status.success());
@@ -1266,7 +1266,7 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         server.ok(
             &server.owner_home,
             &project,
-            &["secrets", "sync", "--env", "production", "--retry-expired"],
+            &["secret", "sync", "--env", "production", "--retry-expired"],
             None,
         );
         let after = server.store.0.lock().unwrap().1.clone();
@@ -1317,46 +1317,46 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
         server.ok(
             &server.owner_home,
             &owner,
-            &["secrets", "set", name, "--env", "production"],
+            &["secret", "set", name, "--env", "production"],
             Some("published"),
         );
     }
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     // Published from another worktree, so it is absent from the owner's drafts.
     server.ok(
         &server.owner_home,
         &other,
-        &["secrets", "set", "GAMMA", "--env", "production"],
+        &["secret", "set", "GAMMA", "--env", "production"],
         Some("from-other-worktree"),
     );
     server.ok(
         &server.owner_home,
         &other,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "set", "DRAFT_ONLY", "--env", "production"],
+        &["secret", "set", "DRAFT_ONLY", "--env", "production"],
         Some("unpublished"),
     );
     // A draft-only removal of a published value is still reported and deleted.
     server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "rm", "BETA", "--env", "production", "--yes"],
+        &["secret", "rm", "BETA", "--env", "production", "--yes"],
         None,
     );
     server.ok(
         &server.owner_home,
         &owner,
-        &["credentials", "set", "postgres_url", "--env", "production"],
+        &["credential", "set", "postgres_url", "--env", "production"],
         Some("postgres://fixture:example@db.example.test/app"),
     );
     let published = server.store.0.lock().unwrap().1.records.len();
@@ -1365,7 +1365,7 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     let unconfirmed = server.run(
         &server.owner_home,
         &owner,
-        &["secrets", "clear", "--env", "production"],
+        &["secret", "clear", "--env", "production"],
         None,
     );
     assert!(!unconfirmed.status.success());
@@ -1378,7 +1378,7 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     let preview = server.ok(
         &server.owner_home,
         &owner,
-        &["--dry-run", "secrets", "clear", "--env", "production"],
+        &["--dry-run", "secret", "clear", "--env", "production"],
         None,
     );
     assert_eq!(preview["cleared"], serde_json::json!(expected));
@@ -1388,10 +1388,10 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     let cleared = server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
-    assert_eq!(cleared["command"], "secrets");
+    assert_eq!(cleared["command"], "secret");
     assert_eq!(cleared["environment"], "production");
     assert_eq!(cleared["cleared"], serde_json::json!(expected));
     assert_eq!(cleared["dry_run"], false);
@@ -1424,17 +1424,17 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     server.ok(
         &server.owner_home,
         &other,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
-    let listed = server.ok(&server.owner_home, &other, &["secrets", "list"], None);
+    let listed = server.ok(&server.owner_home, &other, &["secret", "list"], None);
     assert_eq!(listed["secrets"], serde_json::json!([]));
 
     // Clearing again publishes nothing new.
     let again = server.ok(
         &server.owner_home,
         &owner,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     assert_eq!(again["cleared"], serde_json::json!([]));
@@ -1453,7 +1453,7 @@ fn clearing_requires_an_environment_bound_to_a_network() {
     let result = server.run(
         &server.owner_home,
         &project,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     assert!(!result.status.success());
@@ -1471,33 +1471,33 @@ fn interrupted_clear_keeps_its_deletions_and_finishes_when_rerun() {
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "set", "TOKEN", "--env", "production"],
+        &["secret", "set", "TOKEN", "--env", "production"],
         Some("published"),
     );
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     server.drop_publication.store(true, Ordering::Relaxed);
     let failed = server.run(
         &server.owner_home,
         &project,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     assert!(!failed.status.success());
     let message = format!("{}{}", stderr_str(&failed), stdout_str(&failed));
     assert!(message.contains("did not finish"), "{message}");
     assert!(
-        message.contains("tako secrets clear --env production"),
+        message.contains("tako secret clear --env production"),
         "{message}"
     );
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     let state = server.store.0.lock().unwrap().1.clone();
@@ -1520,19 +1520,19 @@ fn clear_supersedes_expired_app_secret_commands() {
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "set", "TOKEN", "--env", "production"],
+        &["secret", "set", "TOKEN", "--env", "production"],
         Some("published"),
     );
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "set", "TOKEN", "--env", "production"],
+        &["secret", "set", "TOKEN", "--env", "production"],
         Some("uncertain"),
     );
     server.drop_publication.store(true, Ordering::Relaxed);
@@ -1541,7 +1541,7 @@ fn clear_supersedes_expired_app_secret_commands() {
             .run(
                 &server.owner_home,
                 &project,
-                &["secrets", "sync", "--env", "production"],
+                &["secret", "sync", "--env", "production"],
                 None,
             )
             .status
@@ -1558,14 +1558,14 @@ fn clear_supersedes_expired_app_secret_commands() {
     server.ok(
         &server.owner_home,
         &project,
-        &["credentials", "set", "postgres_url", "--env", "production"],
+        &["credential", "set", "postgres_url", "--env", "production"],
         Some("postgres://fixture:example@db.example.test/app"),
     );
 
     let cleared = server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     assert_eq!(cleared["cleared"], serde_json::json!(["TOKEN"]));
@@ -1591,20 +1591,20 @@ fn clear_leaves_other_pending_publications_queued() {
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "set", "TOKEN", "--env", "production"],
+        &["secret", "set", "TOKEN", "--env", "production"],
         Some("published"),
     );
     server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "sync", "--env", "production"],
+        &["secret", "sync", "--env", "production"],
         None,
     );
     // An interrupted sync leaves a credential publication pending, now expired.
     server.ok(
         &server.owner_home,
         &project,
-        &["credentials", "set", "postgres_url", "--env", "production"],
+        &["credential", "set", "postgres_url", "--env", "production"],
         Some("postgres://fixture:example@db.example.test/app"),
     );
     server.drop_publication.store(true, Ordering::Relaxed);
@@ -1613,7 +1613,7 @@ fn clear_leaves_other_pending_publications_queued() {
             .run(
                 &server.owner_home,
                 &project,
-                &["secrets", "sync", "--env", "production"],
+                &["secret", "sync", "--env", "production"],
                 None,
             )
             .status
@@ -1638,7 +1638,7 @@ fn clear_leaves_other_pending_publications_queued() {
     let cleared = server.ok(
         &server.owner_home,
         &project,
-        &["secrets", "clear", "--env", "production", "--yes"],
+        &["secret", "clear", "--env", "production", "--yes"],
         None,
     );
     assert_eq!(cleared["cleared"], serde_json::json!(["TOKEN"]));
