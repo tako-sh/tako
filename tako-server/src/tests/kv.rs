@@ -105,8 +105,9 @@ async fn listen_peers(state: &ServerState) -> std::net::SocketAddr {
     address
 }
 
-/// Sends one forwarded request as another server would and reads the reply.
-async fn forward(address: std::net::SocketAddr, request: Value) -> Value {
+/// Sends one forwarded request as another server would and returns the
+/// reply line as sent.
+async fn forward(address: std::net::SocketAddr, request: Value) -> String {
     let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
     let mut line = serde_json::to_vec(&request).unwrap();
     line.push(b'\n');
@@ -116,7 +117,7 @@ async fn forward(address: std::net::SocketAddr, request: Value) -> Value {
         .read_line(&mut reply)
         .await
         .unwrap();
-    serde_json::from_str(&reply).unwrap()
+    reply.trim_end().to_owned()
 }
 
 /// An app's call through the internal socket.
@@ -591,24 +592,19 @@ async fn grants_reach_the_kv_peer_listener() {
     };
     assert_eq!(
         forward(address, request("sessions", &key)).await,
-        json!({"status": "ok", "data": null})
+        r#"{"status":"ok","data":null}"#
     );
     assert_eq!(get(&state, "sessions", "relayed").await, json!("\"yes\""));
     let refused = forward(address, request("sessions", "wrong")).await;
     assert!(
-        refused["message"]
-            .as_str()
-            .unwrap()
-            .contains("refused this app"),
+        refused.contains("refused this app") && refused.contains(r#""code":"unavailable""#),
         "{refused}"
     );
     // The grant also names the SQLite database, which no KV store serves.
     let unserved = forward(address, request("main", &key)).await;
     assert!(
-        unserved["message"]
-            .as_str()
-            .unwrap()
-            .contains("not serving the KV store"),
+        unserved.contains("not serving the KV store")
+            && unserved.contains(r#""code":"unavailable""#),
         "{unserved}"
     );
     // Deleting the store revokes it from the grant.
@@ -623,10 +619,7 @@ async fn grants_reach_the_kv_peer_listener() {
     .await;
     let revoked = forward(address, request("sessions", &key)).await;
     assert!(
-        revoked["message"]
-            .as_str()
-            .unwrap()
-            .contains("refused this app"),
+        revoked.contains("refused this app") && revoked.contains(r#""code":"unavailable""#),
         "{revoked}"
     );
 }
