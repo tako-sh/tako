@@ -24,7 +24,7 @@ use crate::output;
 
 mod shell;
 pub(crate) mod target;
-mod transfer;
+pub(crate) mod transfer;
 
 use target::{Home, resolve_home};
 
@@ -490,7 +490,7 @@ impl Context {
             std::slice::from_ref(record),
             &self.secrets,
             self.needs_replay,
-            DatabaseEngine::Sqlite,
+            record.engine,
         )
         .remove(name)
         .unwrap_or_default();
@@ -597,7 +597,7 @@ fn choose_snapshot_storage(
 ) -> Result<tako_core::StorageBinding, String> {
     let location = tako_core::BackupDestination::of;
     if storages.is_empty() {
-        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.".into());
+        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage, or `backup` in [databases.<name>] or [kv.<name>], in tako.toml.".into());
     }
     if let Some(source) = source {
         return storages
@@ -624,7 +624,7 @@ fn choose_snapshot_storage(
     if locations.len() > 1 {
         let envs: Vec<_> = storages.iter().map(|(env, _)| env.as_str()).collect();
         return Err(format!(
-            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in [databases.{name}] to the one that does.",
+            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in its [databases.{name}] or [kv.{name}] table to the one that does.",
             envs.join(", ")
         ));
     }
@@ -709,11 +709,11 @@ async fn run_async(
         },
         SqliteCommands::Backup { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backup_now(&ctx, &name).await
+            backup_now(&ctx, &name, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Backups { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backups(&ctx, &name).await
+            backups(&ctx, &name, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Restore {
             name,
@@ -723,7 +723,15 @@ async fn run_async(
             yes,
         } => {
             let ctx = Context::load(config_path, network).await?;
-            restore(&ctx, &name, snapshot, server.as_deref(), yes).await
+            restore(
+                &ctx,
+                &name,
+                snapshot,
+                server.as_deref(),
+                yes,
+                DatabaseEngine::Sqlite,
+            )
+            .await
         }
         SqliteCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
@@ -740,7 +748,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::import(&home, &name, &file).await
+            transfer::import(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Export { name, file } => {
             let ctx = Context::load(config_path, network).await?;
@@ -752,7 +760,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::export(&home, &name, &file).await
+            transfer::export(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
         SqliteCommands::Reset {
             name,
@@ -769,7 +777,9 @@ async fn run_async(
         SqliteCommands::Delete { name, server, yes } => {
             let ctx = Context::load(config_path, network).await?;
             match server {
-                Some(server) => delete_old_copy(&ctx, &name, &server, yes).await,
+                Some(server) => {
+                    delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Sqlite).await
+                }
                 None => delete(&ctx, &name, yes, DatabaseEngine::Sqlite).await,
             }
         }
@@ -1139,9 +1149,6 @@ pub(crate) async fn status(
             )
         });
         match &info.backup {
-            None if engine == DatabaseEngine::Kv => {
-                output::info("No snapshots: the store lives only on its server")
-            }
             None => output::info("Backups not configured"),
             Some(backup) => {
                 let last = backup
@@ -1159,9 +1166,13 @@ pub(crate) async fn status(
     Ok(())
 }
 
-async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn backup_now(
+    ctx: &Context,
+    name: &str,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (_, home) = ctx.resource(name, engine)?;
     if output::is_dry_run() {
         return dry_run(
             &format!("Snapshot {name}"),
@@ -1188,7 +1199,7 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     .await?;
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "result": value}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "result": value}),
         );
     }
     if let Ok(snapshot) = serde_json::from_value::<DatabaseSnapshot>(value["snapshot"].clone()) {
@@ -1201,9 +1212,13 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn backups(
+    ctx: &Context,
+    name: &str,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (_, home) = ctx.resource(name, engine)?;
     let value: serde_json::Value = send(
         &home,
         Command::ListDatabaseSnapshots {
@@ -1214,7 +1229,7 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
     let snapshots: Vec<DatabaseSnapshot> = serde_json::from_value(value["snapshots"].clone())?;
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "database": name, "snapshots": snapshots}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "database": name, "snapshots": snapshots}),
         );
     }
     if snapshots.is_empty() {
@@ -1240,20 +1255,22 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-async fn restore(
+pub(crate) async fn restore(
     ctx: &Context,
     name: &str,
     snapshot: Option<String>,
     server: Option<&str>,
     yes: bool,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let record = ctx.record_of(name, DatabaseEngine::Sqlite)?;
+    let command = command_name(engine);
+    let record = ctx.record_of(name, engine)?;
     // A home server removed from the network is gone: recovery restores the
     // database onto another server from its snapshots.
     let home = ctx.home(&record.server).ok();
     let requested = server.map(|server| ctx.home(server)).transpose()?;
-    let (target, moving) = restore_target(name, home.as_ref(), requested)?;
+    let (target, moving) = restore_target(name, home.as_ref(), requested, command)?;
     let home_name = home
         .as_ref()
         .map_or("its removed server", |home| home.name.as_str());
@@ -1266,7 +1283,14 @@ async fn restore(
     }
     confirm(
         &format!("Restore {name} from {which} on {}?", target.name),
-        "Apps' requests to the database pause while it is replaced. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible.",
+        match engine {
+            DatabaseEngine::Sqlite => {
+                "Apps' requests to the database pause while it is replaced. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible."
+            }
+            DatabaseEngine::Kv => {
+                "Apps keep using the current keys until the restore replaces them all at once. Writes since the snapshot are lost; a snapshot of the current contents is taken first when possible."
+            }
+        },
         yes,
     )?;
     if output::is_dry_run() {
@@ -1320,7 +1344,7 @@ async fn restore(
                 send::<DatabaseInfo>(
                     &target,
                     Command::CreateDatabase {
-                        engine: DatabaseEngine::Sqlite,
+                        engine,
                         name: name.to_owned(),
                         generation: record.generation.clone(),
                         backup_key_base64: backup_key.clone(),
@@ -1387,7 +1411,7 @@ async fn restore(
             }
             if moving && !created {
                 return Err(format!(
-                    "{error}\nThe copy of {name} on {} is kept. Run the same command again to finish the move, or remove the copy with `tako sqlite delete {name} --server {}` to abandon it.",
+                    "{error}\nThe copy of {name} on {} is kept. Run the same command again to finish the move, or remove the copy with `tako {command} delete {name} --server {}` to abandon it.",
                     target.name, target.name
                 )
                 .into());
@@ -1404,7 +1428,7 @@ async fn restore(
         // running the command again finishes the move.
         if let Err(error) = ctx.publish(&moved, None) {
             return Err(format!(
-                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
+                "{name} was restored on {}, but the network still names {home_name} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako {command} delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
                 target.name, target.name, target.name
             )
             .into());
@@ -1414,7 +1438,7 @@ async fn restore(
                 "{name} now lives on {}. Deploy every app that binds it.",
                 target.name
             ));
-            return finish_restore(&value);
+            return finish_restore(&value, engine);
         };
         // The old copy, when its server is still up, would keep taking
         // snapshots into the same place and pruning the new copy's.
@@ -1428,17 +1452,17 @@ async fn restore(
         .await;
         if stopped.is_ok() {
             output::hint(&format!(
-                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
+                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako {command} delete {name} --server {}`.",
                 home.name, home.name
             ));
         } else {
             output::hint(&format!(
-                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako sqlite delete {name} --server {}`.",
+                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako {command} delete {name} --server {}`.",
                 home.name, home.name
             ));
         }
     }
-    finish_restore(&value)
+    finish_restore(&value, engine)
 }
 
 /// Where a restore runs, and whether it moves the database there. Without a
@@ -1447,6 +1471,7 @@ fn restore_target(
     name: &str,
     home: Option<&Home>,
     requested: Option<Home>,
+    command: &str,
 ) -> Result<(Home, bool), String> {
     match (home, requested) {
         (Some(home), None) => Ok((home.clone(), false)),
@@ -1455,12 +1480,15 @@ fn restore_target(
             Ok((target, moving))
         }
         (None, None) => Err(format!(
-            "The server of database '{name}' is no longer in this network. Restore it onto another server with `tako sqlite restore {name} --server <server>`."
+            "The server of '{name}' is no longer in this network. Restore it onto another server with `tako {command} restore {name} --server <server>`."
         )),
     }
 }
 
-fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+fn finish_restore(
+    value: &serde_json::Value,
+    engine: DatabaseEngine,
+) -> Result<(), Box<dyn std::error::Error>> {
     for warning in value["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {
             output::warning(warning);
@@ -1468,7 +1496,7 @@ fn finish_restore(value: &serde_json::Value) -> Result<(), Box<dyn std::error::E
     }
     if output::is_json() {
         return output::json_result(
-            serde_json::json!({"ok": true, "command": "sqlite", "result": value}),
+            serde_json::json!({"ok": true, "command": command_name(engine), "result": value}),
         );
     }
     Ok(())
@@ -1482,8 +1510,8 @@ pub(crate) async fn delete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let noun = engine.noun();
-    // A KV store has no snapshots to move it with, so one whose server left
-    // the network is gone; its record would otherwise hold the name forever.
+    // A KV store whose server left the network can be forgotten: without
+    // backups to restore it from, its record would hold the name forever.
     if engine == DatabaseEngine::Kv {
         let record = ctx.record_of(name, engine)?;
         let member = ctx.servers.servers.values().any(|entry| {
@@ -1602,7 +1630,7 @@ fn forget_lost_store(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = &record.name;
     output::warning(&format!(
-        "KV store {name} lived on a server that is no longer in this network; its data is gone."
+        "KV store {name} lived on a server that is no longer in this network. If it had backups, restore it onto another server with `tako kv restore {name} --latest --server <server>` instead; otherwise its data is gone."
     ));
     confirm(
         &format!("Forget KV store {name}?"),
@@ -1709,18 +1737,20 @@ async fn remove_leftover_copies(
 
 /// Deletes the copy of a database that `restore --server` left on its old
 /// server. The database, its network record, and its snapshots stay.
-async fn delete_old_copy(
+pub(crate) async fn delete_old_copy(
     ctx: &Context,
     name: &str,
     server: &str,
     yes: bool,
+    engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.database(name)?;
+    let command = command_name(engine);
+    let (record, home) = ctx.resource(name, engine)?;
     let old = ctx.home(server)?;
     if old.device_id == home.device_id {
         return Err(format!(
-            "{name} lives on {}; `tako sqlite delete {name}` deletes it. `--server` only removes a copy left on another server.",
+            "{name} lives on {}; `tako {command} delete {name}` deletes it. `--server` only removes a copy left on another server.",
             home.name
         )
         .into());
@@ -1775,7 +1805,7 @@ async fn delete_old_copy(
     .await?;
     print_warnings(&deleted);
     if output::is_json() {
-        return output::json_success("sqlite");
+        return output::json_success(command);
     }
     output::success(&format!("Deleted the copy of {name} on {}", old.name));
     Ok(())
@@ -2232,22 +2262,22 @@ mod tests {
         };
         let home = server("old");
         assert!(
-            matches!(restore_target("shop", Some(&home), None), Ok((target, false)) if target.name == "old")
+            matches!(restore_target("shop", Some(&home), None, "sqlite"), Ok((target, false)) if target.name == "old")
         );
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("old"))),
+            restore_target("shop", Some(&home), Some(server("old")), "sqlite"),
             Ok((_, false))
         ));
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("new"))),
+            restore_target("shop", Some(&home), Some(server("new")), "sqlite"),
             Ok((target, true)) if target.name == "new"
         ));
         // The home server left the network: --server names the recovery target.
         assert!(matches!(
-            restore_target("shop", None, Some(server("new"))),
+            restore_target("shop", None, Some(server("new")), "sqlite"),
             Ok((target, true)) if target.name == "new"
         ));
-        let Err(error) = restore_target("shop", None, None) else {
+        let Err(error) = restore_target("shop", None, None, "sqlite") else {
             panic!("a restore without a home needs --server");
         };
         assert!(error.contains("--server"), "{error}");

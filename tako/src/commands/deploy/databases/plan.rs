@@ -28,8 +28,8 @@ fn implicit_name(app: &str) -> String {
 #[derive(Default)]
 pub(in crate::commands::deploy) struct Plan {
     pub sql: HashMap<String, PlannedBinding>,
-    /// KV store bindings. They take part in grants only: KV stores have no
-    /// backups, snapshots or migrations, and deploys never create them.
+    /// KV store bindings. They are backed up and granted like databases,
+    /// have no migrations, and deploys never create them.
     pub kv: HashMap<String, PlannedBinding>,
     pub replay: Option<PlannedBinding>,
     /// A deploy-only client found no generated replay database it could be

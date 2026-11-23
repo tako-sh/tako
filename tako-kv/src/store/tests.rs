@@ -160,7 +160,7 @@ fn exports_round_trip_into_another_store_and_skip_expired_keys() {
     let other = fixture(1 << 30);
     other.put("old", "1", None).unwrap();
     other.advance(5_000);
-    let imported = other.store.replace_from(&export).unwrap();
+    let imported = other.store.replace_from(&export, None).unwrap();
     // `short` expired before the import; `old` was replaced.
     assert_eq!(imported.keys, 2_501);
     assert_eq!(other.get("old"), None);
@@ -179,7 +179,7 @@ fn imports_reject_other_files_and_oversized_exports_without_changes() {
     let not_export = f.dir.path().join("plain.txt");
     std::fs::write(&not_export, "hello").unwrap();
     assert!(matches!(
-        f.store.replace_from(&not_export),
+        f.store.replace_from(&not_export, None),
         Err(StoreError::Invalid(_))
     ));
     // An export that does not fit this store's limit is refused whole.
@@ -192,7 +192,7 @@ fn imports_reject_other_files_and_oversized_exports_without_changes() {
     big.store.export_to(&export).unwrap();
     let small = fixture(weight("k0", 102) * 10);
     small.put("kept", "1", None).unwrap();
-    assert!(small.store.replace_from(&export).is_err());
+    assert!(small.store.replace_from(&export, None).is_err());
     assert_eq!(small.get("kept").as_deref(), Some("1"));
     assert_eq!(f.get("kept").as_deref(), Some("1"));
 }
@@ -205,7 +205,7 @@ fn replaced_generations_are_freed_in_the_background() {
     }
     let export = f.dir.path().join("empty.redb");
     fixture(1 << 30).store.export_to(&export).unwrap();
-    f.store.replace_from(&export).unwrap();
+    f.store.replace_from(&export, None).unwrap();
     assert_eq!(f.store.stats().unwrap(), Stats::default());
     let db = f.store.db().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -223,4 +223,42 @@ fn replaced_generations_are_freed_in_the_background() {
         drop(txn);
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn snapshots_track_changes_and_replaces_keep_what_they_replace() {
+    let f = fixture(1 << 30);
+    // A store counts as changed when it opens, so a restart snapshots it.
+    assert!(f.store.has_changes());
+    let snapshot = f.dir.path().join("snapshot.redb");
+    f.store.snapshot_to(&snapshot).unwrap();
+    assert!(!f.store.has_changes());
+    // Reads and deletes of missing keys change nothing.
+    f.get("k");
+    f.store.delete("missing").unwrap();
+    assert!(!f.store.has_changes());
+    // A refused write changes nothing either.
+    let small = fixture(KEY_OVERHEAD);
+    small
+        .store
+        .snapshot_to(&small.dir.path().join("s.redb"))
+        .unwrap();
+    assert!(small.put("k", "1", None).is_err());
+    assert!(!small.store.has_changes());
+
+    f.put("kept", "1", None).unwrap();
+    assert!(f.store.has_changes());
+    f.store.snapshot_to(&snapshot).unwrap();
+    f.put("new", "2", None).unwrap();
+
+    // Restoring the snapshot exports the exact contents it replaces.
+    let previous = f.dir.path().join("previous.redb");
+    f.store.replace_from(&snapshot, Some(&previous)).unwrap();
+    assert!(f.store.has_changes());
+    assert_eq!(f.get("new"), None);
+    assert_eq!(f.get("kept").as_deref(), Some("1"));
+    let other = fixture(1 << 30);
+    other.store.replace_from(&previous, None).unwrap();
+    assert_eq!(other.get("new").as_deref(), Some("2"));
+    assert_eq!(other.get("kept").as_deref(), Some("1"));
 }

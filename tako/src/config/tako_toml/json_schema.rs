@@ -197,6 +197,12 @@ pub(super) fn generate() -> Value {
             "propertyNames": { "pattern": DATABASE_NAME_PATTERN },
             "additionalProperties": database,
         },
+        "kv": {
+            "type": "object",
+            "description": "Per-store settings for Tako-hosted KV stores, which environments bind in `[envs.<env>].kv`. Create stores with `tako kv create`.",
+            "propertyNames": { "pattern": DATABASE_NAME_PATTERN },
+            "additionalProperties": database,
+        },
         "servers": {
             "type": "object",
             "description": "Per-server overrides from `[servers.<server>]`. Server names follow the app-name rules.",

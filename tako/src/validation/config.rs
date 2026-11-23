@@ -135,6 +135,16 @@ fn databases_without_backups(config: &TakoToml) -> Vec<String> {
                 ));
             }
         }
+        let mut stores: Vec<&String> = env_config.kv.values().collect();
+        stores.sort();
+        stores.dedup();
+        for store in stores {
+            if crate::commands::storage::database_backup_setting(config, env, store).is_none() {
+                warnings.push(format!(
+                    "KV store '{store}' gets no snapshots in '{env}': set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [kv.{store}], to a private S3 storage."
+                ));
+            }
+        }
     }
     warnings
 }

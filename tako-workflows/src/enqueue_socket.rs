@@ -356,6 +356,7 @@ fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     listener: UnixListener,
     lookup: AppLookup,
@@ -502,6 +503,7 @@ fn write_channel(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_command(
     lookup: &AppLookup,
     channel_publish: Option<&ChannelPublishFn>,

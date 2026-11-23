@@ -311,7 +311,15 @@ impl TakoToml {
         }
 
         for (name, database) in &self.databases {
-            validate_database_resource(self, name, database)?;
+            validate_database_resource(self, "databases", name, database)?;
+        }
+        for (name, store) in &self.kv {
+            validate_database_resource(self, "kv", name, store)?;
+            if self.databases.contains_key(name) {
+                return Err(ConfigError::Validation(format!(
+                    "'{name}' has both [databases.{name}] and [kv.{name}]; a name is one database or one KV store"
+                )));
+            }
         }
 
         Ok(())
@@ -320,6 +328,7 @@ impl TakoToml {
 
 fn validate_database_resource(
     config: &TakoToml,
+    section: &str,
     name: &str,
     database: &DatabaseResourceConfig,
 ) -> Result<()> {
@@ -327,17 +336,17 @@ fn validate_database_resource(
     if let Some(storage) = &database.backup {
         let Some(resource) = config.storages.get(storage) else {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup references missing storage resource '{storage}'"
+                "[{section}.{name}].backup references missing storage resource '{storage}'"
             )));
         };
         if resource.provider != tako_core::StorageProvider::S3 {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup storage '{storage}' must use provider 's3'"
+                "[{section}.{name}].backup storage '{storage}' must use provider 's3'"
             )));
         }
         if resource.public_base_url.is_some() {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup storage '{storage}' must be private; remove public_base_url or use a separate private storage resource"
+                "[{section}.{name}].backup storage '{storage}' must be private; remove public_base_url or use a separate private storage resource"
             )));
         }
     }
@@ -454,6 +463,7 @@ pub(super) const TOP_LEVEL_KEYS: &[&str] = &[
     "envs",
     "storages",
     "databases",
+    "kv",
     "servers",
 ];
 

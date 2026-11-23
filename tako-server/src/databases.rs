@@ -111,6 +111,12 @@ impl Drop for Deleting {
     }
 }
 
+/// A release command's database and KV store connections, by binding.
+pub(crate) type ReleaseConnections = (
+    HashMap<String, DatabaseConnection>,
+    HashMap<String, KvConnection>,
+);
+
 impl Databases {
     pub(crate) fn new(data_dir: &Path) -> Self {
         Self {
@@ -479,13 +485,7 @@ impl Databases {
         app: &str,
         config: &AppConfig,
         requested: HashMap<String, DatabaseBinding>,
-    ) -> Result<
-        (
-            HashMap<String, DatabaseConnection>,
-            HashMap<String, KvConnection>,
-        ),
-        String,
-    > {
+    ) -> Result<ReleaseConnections, String> {
         // Release commands get their own tokens, and the environment's peer
         // keys, which deployers without administration do not send.
         let mut requested = requested;
@@ -816,21 +816,12 @@ impl ServerState {
 
     pub(crate) async fn handle_database_command(&self, command: tako_core::Command) -> Response {
         use tako_core::Command;
-        // Snapshots, SQL, migrations and file transfers are SQLite's.
+        // SQL and migrations are SQLite's; backups and file transfers work
+        // on both engines.
         let sqlite_only = match &command {
-            Command::ConfigureDatabaseBackup { name, .. }
-            | Command::SnapshotDatabase { name, .. }
-            | Command::ListDatabaseSnapshots { name }
-            | Command::RestoreDatabase { name, .. }
-            | Command::QueryDatabase { name, .. }
+            Command::QueryDatabase { name, .. }
             | Command::MigrateDatabase { name, .. }
-            | Command::ResetDatabase { name, .. }
-            | Command::BeginDatabaseImport { name, .. }
-            | Command::DatabaseImportChunk { name, .. }
-            | Command::FinishDatabaseImport { name, .. }
-            | Command::BeginDatabaseExport { name }
-            | Command::DatabaseExportChunk { name, .. }
-            | Command::FinishDatabaseExport { name, .. } => Some(name.as_str()),
+            | Command::ResetDatabase { name, .. } => Some(name.as_str()),
             _ => None,
         };
         if let Some(name) = sqlite_only
@@ -948,9 +939,6 @@ impl ServerState {
         tako_core::validate_database_generation(&generation)?;
         decode_backup_key(&backup_key_base64)?;
         if let Some(backup) = &backup {
-            if engine == DatabaseEngine::Kv {
-                return Err("KV stores have no snapshots.".into());
-            }
             validate_backup_storage(backup)?;
         }
         // Held until the database is recorded and registered, so a concurrent
@@ -1021,8 +1009,17 @@ impl ServerState {
             return Err(format!("open database: {error}"));
         }
         // Nothing to snapshot until something is written.
-        if let Ok(database) = DatabaseId::parse(&id) {
-            self.databases.host.clear_changed(&database);
+        match engine {
+            DatabaseEngine::Sqlite => {
+                if let Ok(database) = DatabaseId::parse(&id) {
+                    self.databases.host.clear_changed(&database);
+                }
+            }
+            DatabaseEngine::Kv => {
+                if let Ok(store) = tako_kv::StoreId::parse(&id) {
+                    self.databases.kv.clear_changed(&store);
+                }
+            }
         }
         tracing::info!(database = %id, engine = ?engine, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)?).expect("info serializes"))

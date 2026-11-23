@@ -439,11 +439,14 @@ impl LocalDatabases {
 /// The app scope local KV bindings belong to: the run's pinned app.
 const LOCAL_KV_SCOPE: &str = "local/development";
 
+/// The host serving local KV stores, and the connections to them.
+type LocalKv = (Option<tako_kv::KvHost>, HashMap<String, KvConnection>);
+
 /// Opens local KV store files and binds them for the run's app.
 fn open_kv(
     project_dir: &Path,
     kv: &BTreeMap<String, String>,
-) -> Result<(Option<tako_kv::KvHost>, HashMap<String, KvConnection>), Box<dyn std::error::Error>> {
+) -> Result<LocalKv, Box<dyn std::error::Error>> {
     if kv.is_empty() {
         return Ok((None, HashMap::new()));
     }

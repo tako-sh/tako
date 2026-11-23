@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -202,9 +203,11 @@ enum Work {
     Delete {
         key: String,
     },
-    /// Replaces every key with the entries of an export file.
+    /// Replaces every key with the entries of an export file, after
+    /// exporting the contents it replaces to `previous`.
     Replace {
         path: PathBuf,
+        previous: Option<PathBuf>,
     },
 }
 
@@ -226,6 +229,9 @@ pub struct Store {
     writer: Mutex<Option<SyncSender<Job>>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     config: Arc<StoreConfig>,
+    /// Whether the contents may differ from the last snapshot. Set when the
+    /// store opens, so the first check after a restart snapshots it.
+    changed: Arc<AtomicBool>,
 }
 
 impl Store {
@@ -233,13 +239,15 @@ impl Store {
     pub fn open(path: &Path, config: StoreConfig) -> Result<Self> {
         let db = Arc::new(open_database(path, config.cache_bytes)?);
         let config = Arc::new(config);
+        let changed = Arc::new(AtomicBool::new(true));
         let (sender, receiver) = sync_channel(QUEUE);
         let thread = {
             let db = db.clone();
             let config = config.clone();
+            let changed = changed.clone();
             std::thread::Builder::new()
                 .name("tako-kv-writer".into())
-                .spawn(move || writer(db, receiver, config))
+                .spawn(move || writer(db, receiver, config, changed))
                 .map_err(storage)?
         };
         Ok(Self {
@@ -248,6 +256,7 @@ impl Store {
             writer: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
             config,
+            changed,
         })
     }
 
@@ -332,32 +341,49 @@ impl Store {
     /// Writes every live key to a new export file at `path`, from one
     /// consistent read of the store.
     pub fn export_to(&self, path: &Path) -> Result<Stats> {
-        let db = self.db()?;
-        let txn = db.begin_read().map_err(storage)?;
-        let (generation, _) = read_generations(&txn.open_table(META).map_err(storage)?)?;
-        let entries = txn
-            .open_table(EntryTable::new(&table_name(ENTRIES, generation)))
-            .map_err(storage)?;
-        let now = (self.config.clock)();
-        let mut writer = export::Writer::create(path)?;
-        for item in entries.iter().map_err(storage)? {
-            let (key, value) = item.map_err(storage)?;
-            let (expires_at, json) = decode(value.value())?;
-            if live(expires_at, now) {
-                writer.insert(key.value(), expires_at, json)?;
-            }
+        export_database(&*self.db()?, path, (self.config.clock)())
+    }
+
+    /// Whether the contents may differ from the last [`Self::snapshot_to`].
+    pub fn has_changes(&self) -> bool {
+        self.changed.load(Ordering::Relaxed)
+    }
+
+    /// Records that the contents differ from the last snapshot, as after a
+    /// snapshot that was not kept.
+    pub fn mark_changed(&self) {
+        self.changed.store(true, Ordering::Relaxed);
+    }
+
+    /// Records that the contents match the last snapshot, as a new, empty
+    /// store does.
+    pub fn clear_changed(&self) {
+        self.changed.store(false, Ordering::Relaxed);
+    }
+
+    /// [`Self::export_to`] for a backup: the store counts as unchanged until
+    /// the next write, unless the export fails.
+    pub fn snapshot_to(&self, path: &Path) -> Result<Stats> {
+        // Cleared before the read, so a write that lands meanwhile marks the
+        // store changed again.
+        let was_changed = self.changed.swap(false, Ordering::Relaxed);
+        let exported = self.export_to(path);
+        if exported.is_err() && was_changed {
+            self.mark_changed();
         }
-        writer.finish(now)
+        exported
     }
 
     /// Replaces every key with the entries of the export file at `path`, in
     /// one transaction: readers see the old contents or the new ones.
-    /// Entries already expired are skipped.
-    pub fn replace_from(&self, path: &Path) -> Result<Stats> {
+    /// Entries already expired are skipped. With `previous`, the contents
+    /// being replaced are exported there first, with no write in between.
+    pub fn replace_from(&self, path: &Path, previous: Option<&Path>) -> Result<Stats> {
         // Checked before queueing, so a bad file never holds up writes.
         export::Reader::open(path)?.check()?;
         match self.submit(Work::Replace {
             path: path.to_owned(),
+            previous: previous.map(Path::to_owned),
         })? {
             Outcome::Replaced(stats) => Ok(stats),
             _ => Err(StoreError::Storage("unexpected reply to a replace".into())),
@@ -398,6 +424,24 @@ fn open_database(path: &Path, cache_bytes: usize) -> Result<Database> {
     open_index(&txn, generation)?;
     txn.commit().map_err(storage)?;
     Ok(db)
+}
+
+/// Writes every live key of `db`'s last commit to a new export file.
+fn export_database(db: &Database, path: &Path, now: u64) -> Result<Stats> {
+    let txn = db.begin_read().map_err(storage)?;
+    let (generation, _) = read_generations(&txn.open_table(META).map_err(storage)?)?;
+    let entries = txn
+        .open_table(EntryTable::new(&table_name(ENTRIES, generation)))
+        .map_err(storage)?;
+    let mut writer = export::Writer::create(path)?;
+    for item in entries.iter().map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        let (expires_at, json) = decode(value.value())?;
+        if live(expires_at, now) {
+            writer.insert(key.value(), expires_at, json)?;
+        }
+    }
+    writer.finish(now)
 }
 
 /// Creates an empty store file, closed again before this returns.
@@ -667,7 +711,12 @@ impl<'t> WriteView<'t> {
     }
 }
 
-fn writer(db: Arc<Database>, jobs: Receiver<Job>, config: Arc<StoreConfig>) {
+fn writer(
+    db: Arc<Database>,
+    jobs: Receiver<Job>,
+    config: Arc<StoreConfig>,
+    changed: Arc<AtomicBool>,
+) {
     let mut next_sweep = Instant::now() + SWEEP_INTERVAL;
     // A replace runs in its own transaction; one received while batching
     // waits here for the next round.
@@ -712,6 +761,16 @@ fn writer(db: Arc<Database>, jobs: Receiver<Job>, config: Arc<StoreConfig>) {
         .unwrap_or_else(|_| Err(StoreError::Storage("internal error".into())));
         match result {
             Ok((outcomes, more)) => {
+                // Committed before the replies: a snapshot that starts once
+                // a write is acknowledged sees the store changed.
+                if outcomes.iter().any(|outcome| {
+                    matches!(
+                        outcome,
+                        Ok(Outcome::Done | Outcome::Deleted(true) | Outcome::Replaced(_))
+                    )
+                }) {
+                    changed.store(true, Ordering::Relaxed);
+                }
                 if sweep {
                     next_sweep = if more {
                         Instant::now()
@@ -780,7 +839,12 @@ fn apply(
                 }
                 Work::Delete { key } => Ok(Outcome::Deleted(w.delete(key, now)?)),
                 // Runs in a batch of its own, so its errors fail only it.
-                Work::Replace { path } => {
+                Work::Replace { path, previous } => {
+                    // Nothing else writes meanwhile, so the last commit is
+                    // exactly what the replace removes.
+                    if let Some(previous) = previous {
+                        export_database(db, previous, now)?;
+                    }
                     Ok(Outcome::Replaced(w.replace(path, config.max_bytes, now)?))
                 }
             });

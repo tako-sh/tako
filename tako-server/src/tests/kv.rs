@@ -183,27 +183,18 @@ async fn kv_stores_are_created_queried_and_deleted() {
     assert!(info["size_bytes"].as_u64().unwrap() > 0);
     assert!(info["backup"].is_null());
 
-    // Snapshots, SQL, migrations and transfers are SQLite's.
-    for command in [
-        Command::QueryDatabase {
-            name: "sessions".into(),
-            sql: "SELECT 1".into(),
-        },
-        Command::SnapshotDatabase {
-            name: "sessions".into(),
-            reason: tako_core::SnapshotReason::Manual,
-            app: None,
-        },
-        Command::ConfigureDatabaseBackup {
-            name: "sessions".into(),
-            backup: None,
-        },
-        Command::BeginDatabaseExport {
-            name: "sessions".into(),
-        },
-    ] {
-        assert!(error(&state, command).await.contains("is a KV store"));
-    }
+    // SQL and migrations are SQLite's.
+    assert!(
+        error(
+            &state,
+            Command::QueryDatabase {
+                name: "sessions".into(),
+                sql: "SELECT 1".into(),
+            },
+        )
+        .await
+        .contains("is a KV store")
+    );
     create(&state, "main", DatabaseEngine::Sqlite).await;
     assert!(
         query(&state, "main", KvRequest::Get { key: "k".into() })
@@ -250,34 +241,206 @@ async fn kv_stores_are_created_queried_and_deleted() {
     );
 }
 
+fn backup(bucket: &str) -> tako_core::StorageBinding {
+    tako_core::StorageBinding {
+        provider: tako_core::StorageProvider::S3,
+        resource: None,
+        bucket: Some(bucket.into()),
+        endpoint: Some("https://s3.example.test".into()),
+        region: Some("auto".into()),
+        access_key_id: Some("k".into()),
+        secret_access_key: Some("s".into()),
+        force_path_style: true,
+        public_base_url: None,
+        path: None,
+        signing_key: None,
+    }
+}
+
 #[tokio::test]
-async fn kv_stores_refuse_backups_at_create() {
+async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
-    let refused = error(
+    ok(
         &state,
         Command::CreateDatabase {
             name: "sessions".into(),
             engine: DatabaseEngine::Kv,
             generation: GENERATION.into(),
             backup_key_base64: BASE64.encode([7u8; 32]),
-            backup: Some(tako_core::StorageBinding {
-                provider: tako_core::StorageProvider::S3,
-                resource: None,
-                bucket: Some("b".into()),
-                endpoint: Some("https://s3.example.test".into()),
-                region: Some("auto".into()),
-                access_key_id: Some("k".into()),
-                secret_access_key: Some("s".into()),
-                force_path_style: true,
-                public_base_url: None,
-                path: None,
-                signing_key: None,
-            }),
+            backup: Some(backup("kv-snapshots")),
         },
     )
     .await;
-    assert!(refused.contains("no snapshots"));
+    let release = |reason| Command::SnapshotDatabase {
+        name: "sessions".into(),
+        reason,
+        app: None,
+    };
+    // A new, empty store has nothing to snapshot before a release.
+    let skipped = ok(&state, release(tako_core::SnapshotReason::Release)).await;
+    assert!(skipped["skipped"].is_string(), "{skipped}");
+
+    put(&state, "sessions", "kept", r#""first""#, None).await;
+    put(&state, "sessions", "short", "1", Some(1)).await;
+    let first = ok(&state, release(tako_core::SnapshotReason::Release)).await;
+    let first = first["snapshot"]["id"].as_str().unwrap().to_owned();
+    // Unchanged since, so the next release snapshot is skipped.
+    let again = ok(&state, release(tako_core::SnapshotReason::Release)).await;
+    assert!(again["skipped"].is_string(), "{again}");
+
+    let store = crate::databases::snapshots::test_store("kv-snapshots").unwrap();
+    let objects: Vec<_> = {
+        use futures_util::TryStreamExt;
+        store.list(None).try_collect().await.unwrap()
+    };
+    assert!(
+        objects
+            .iter()
+            .any(|meta| meta.location.as_ref().ends_with(".redb.zst.enc")),
+        "snapshots are encrypted KV exports"
+    );
+
+    put(&state, "sessions", "kept", r#""second""#, None).await;
+    put(&state, "sessions", "added", "2", None).await;
+    let restored = ok(
+        &state,
+        Command::RestoreDatabase {
+            name: "sessions".into(),
+            snapshot: Some(first.clone()),
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert_eq!(restored["warnings"], json!([]), "{restored}");
+    assert_eq!(get(&state, "sessions", "kept").await, json!(r#""first""#));
+    assert_eq!(get(&state, "sessions", "added").await, Value::Null);
+    // The replaced contents were snapshotted, and kept on the server.
+    let listed = ok(
+        &state,
+        Command::ListDatabaseSnapshots {
+            name: "sessions".into(),
+        },
+    )
+    .await;
+    let reasons: Vec<&str> = listed["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        reasons.iter().filter(|r| **r == "restore").count(),
+        1,
+        "{listed}"
+    );
+    assert!(
+        state
+            .databases
+            .database_dir("sessions")
+            .join("previous.redb")
+            .exists()
+    );
+    // `--latest` skips the copy taken before the restore.
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: "sessions".into(),
+            snapshot: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert_eq!(get(&state, "sessions", "added").await, Value::Null);
+
+    // Export and import through the transfer commands.
+    let export = ok(
+        &state,
+        Command::BeginDatabaseExport {
+            name: "sessions".into(),
+        },
+    )
+    .await;
+    let export_id = export["export_id"].as_str().unwrap().to_owned();
+    let size = export["size_bytes"].as_u64().unwrap();
+    let mut file = Vec::new();
+    while (file.len() as u64) < size {
+        let chunk = ok(
+            &state,
+            Command::DatabaseExportChunk {
+                name: "sessions".into(),
+                export_id: export_id.clone(),
+                offset: file.len() as u64,
+            },
+        )
+        .await;
+        file.extend(
+            BASE64
+                .decode(chunk["data_base64"].as_str().unwrap())
+                .unwrap(),
+        );
+    }
+    ok(
+        &state,
+        Command::FinishDatabaseExport {
+            name: "sessions".into(),
+            export_id,
+        },
+    )
+    .await;
+    let exported = temp.path().join("exported.redb");
+    std::fs::write(&exported, &file).unwrap();
+    let reader = tako_kv::export::Reader::open(&exported).unwrap();
+    reader.check().unwrap();
+    // `short` expired; only `kept` is exported.
+    assert_eq!(reader.keys(), 1);
+    drop(reader);
+
+    put(&state, "sessions", "kept", r#""third""#, None).await;
+    let import = |data: Vec<u8>| {
+        let state = &state;
+        async move {
+            use sha2::Digest;
+            let begin = ok(
+                state,
+                Command::BeginDatabaseImport {
+                    name: "sessions".into(),
+                    size_bytes: data.len() as u64,
+                    sha256: hex::encode(sha2::Sha256::digest(&data)),
+                },
+            )
+            .await;
+            let upload_id = begin["upload_id"].as_str().unwrap().to_owned();
+            ok(
+                state,
+                Command::DatabaseImportChunk {
+                    name: "sessions".into(),
+                    upload_id: upload_id.clone(),
+                    offset: 0,
+                    data_base64: BASE64.encode(&data),
+                },
+            )
+            .await;
+            state
+                .handle_command(Command::FinishDatabaseImport {
+                    name: "sessions".into(),
+                    upload_id,
+                })
+                .await
+        }
+    };
+    // A file that is not a KV export changes nothing.
+    let refused = import(b"not a kv export".to_vec()).await;
+    assert!(
+        refused
+            .error_message()
+            .unwrap()
+            .contains("not a usable KV store export"),
+        "{refused:?}"
+    );
+    assert_eq!(get(&state, "sessions", "kept").await, json!(r#""third""#));
+    assert!(matches!(import(file).await, Response::Ok { .. }));
+    assert_eq!(get(&state, "sessions", "kept").await, json!(r#""first""#));
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 //! network, recorded in the network state under a name no database or store
 //! shares, and bound per environment, here in `[envs.<env>].kv`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use tako_core::{Command, DatabaseEngine, KvRequest};
@@ -69,11 +69,68 @@ pub enum KvCommands {
         key: String,
     },
 
-    /// Delete a store and every key in it
+    /// Take a snapshot now
+    Backup {
+        /// Store name
+        name: String,
+    },
+
+    /// List a store's snapshots
+    Backups {
+        /// Store name
+        name: String,
+    },
+
+    /// Replace a store with one of its snapshots
+    Restore {
+        /// Store name
+        name: String,
+        /// Restore the newest snapshot
+        #[arg(
+            long,
+            conflicts_with = "snapshot",
+            required_unless_present = "snapshot"
+        )]
+        latest: bool,
+        /// Snapshot ID from `tako kv backups`
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Recover onto another server, which becomes the store's server
+        #[arg(long)]
+        server: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Replace a store's keys with those of an export file
+    Import {
+        /// Store name
+        name: String,
+        /// Export file from `tako kv export`
+        file: PathBuf,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Download every key of a store to an export file
+    Export {
+        /// Store name
+        name: String,
+        /// Output file
+        file: PathBuf,
+    },
+
+    /// Delete a store, every key in it, and its snapshots
     #[command(visible_alias = "rm")]
     Delete {
         /// Store name
         name: String,
+        /// Delete only the copy left on this server after
+        /// `restore --server` moved the store elsewhere
+        #[arg(long)]
+        server: Option<String>,
         /// Skip the confirmation
         #[arg(long, short)]
         yes: bool,
@@ -162,9 +219,58 @@ async fn run_async(
             output::success(&format!("Removed {key} from {name}"));
             Ok(())
         }
-        KvCommands::Delete { name, yes } => {
-            sqlite::delete(&ctx, &name, yes, DatabaseEngine::Kv).await
+        KvCommands::Backup { name } => sqlite::backup_now(&ctx, &name, DatabaseEngine::Kv).await,
+        KvCommands::Backups { name } => sqlite::backups(&ctx, &name, DatabaseEngine::Kv).await,
+        KvCommands::Restore {
+            name,
+            latest: _,
+            snapshot,
+            server,
+            yes,
+        } => {
+            sqlite::restore(
+                &ctx,
+                &name,
+                snapshot,
+                server.as_deref(),
+                yes,
+                DatabaseEngine::Kv,
+            )
+            .await
         }
+        KvCommands::Import { name, file, yes } => {
+            ctx.require_admin()?;
+            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
+            sqlite::confirm(
+                &format!("Replace every key of {name} with {}?", file.display()),
+                "Apps keep using the current keys until the import replaces them all at once. A snapshot of the current contents is taken first when backups are configured.",
+                yes,
+            )?;
+            if output::is_dry_run() {
+                return sqlite::dry_run(
+                    &format!("Import {} into {name}", file.display()),
+                    serde_json::json!({"database": name, "file": file}),
+                );
+            }
+            sqlite::transfer::import(&home, &name, &file, DatabaseEngine::Kv).await
+        }
+        KvCommands::Export { name, file } => {
+            ctx.require_admin()?;
+            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
+            if output::is_dry_run() {
+                return sqlite::dry_run(
+                    &format!("Export {name} to {}", file.display()),
+                    serde_json::json!({"database": name, "file": file}),
+                );
+            }
+            sqlite::transfer::export(&home, &name, &file, DatabaseEngine::Kv).await
+        }
+        KvCommands::Delete { name, server, yes } => match server {
+            Some(server) => {
+                sqlite::delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Kv).await
+            }
+            None => sqlite::delete(&ctx, &name, yes, DatabaseEngine::Kv).await,
+        },
     }
 }
 

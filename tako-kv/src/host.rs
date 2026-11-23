@@ -452,12 +452,48 @@ impl KvHost {
         Ok(store.export_to(path)?)
     }
 
-    /// Replaces a store's contents with the export at `path`. Blocks.
-    pub fn import(&self, id: &StoreId, path: &Path) -> Result<Stats, HostError> {
+    /// Writes an export of a store for a backup, counting the store as
+    /// unchanged until its next write. Blocks.
+    pub fn snapshot(&self, id: &StoreId, path: &Path) -> Result<Stats, HostError> {
         let store = self
             .store(id)
             .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
-        Ok(store.replace_from(path)?)
+        Ok(store.snapshot_to(path)?)
+    }
+
+    /// Whether a store may differ from its last snapshot. False for a store
+    /// this server does not host.
+    pub fn has_changes(&self, id: &StoreId) -> bool {
+        self.store(id).is_some_and(|store| store.has_changes())
+    }
+
+    /// Records that a store differs from its last snapshot.
+    pub fn mark_changed(&self, id: &StoreId) {
+        if let Some(store) = self.store(id) {
+            store.mark_changed();
+        }
+    }
+
+    /// Records that a store matches its last snapshot, as a new, empty one
+    /// does.
+    pub fn clear_changed(&self, id: &StoreId) {
+        if let Some(store) = self.store(id) {
+            store.clear_changed();
+        }
+    }
+
+    /// Replaces a store's contents with the export at `path`, exporting the
+    /// contents it replaces to `previous` first when given. Blocks.
+    pub fn import(
+        &self,
+        id: &StoreId,
+        path: &Path,
+        previous: Option<&Path>,
+    ) -> Result<Stats, HostError> {
+        let store = self
+            .store(id)
+            .ok_or_else(|| HostError::UnknownStore(id.clone()))?;
+        Ok(store.replace_from(path, previous)?)
     }
 
     /// Creates an empty store file at `path`, closed again before this

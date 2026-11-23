@@ -93,6 +93,11 @@ pub struct TakoToml {
     #[serde(default)]
     pub databases: HashMap<String, DatabaseResourceConfig>,
 
+    /// [kv.*] sections - per-store settings for the Tako-hosted KV stores
+    /// this project binds in `[envs.<env>].kv`.
+    #[serde(default)]
+    pub kv: HashMap<String, DatabaseResourceConfig>,
+
     /// Release command run once on the deploy leader server during the "Preparing"
     /// phase, before any rolling update starts (e.g. `"bun run db:migrate"`).
     /// Can be overridden per environment via `[envs.<name>].release`.
@@ -249,9 +254,10 @@ pub struct BackupConfig {
     pub storage: String,
 }
 
-/// Settings for a Tako-hosted database, from `[databases.<name>]`. The
-/// database itself, its server and access, live in the network's records;
-/// this table is needed only to override the environment's backup storage.
+/// Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV
+/// store, from `[kv.<name>]`. The database itself, its server and access,
+/// live in the network's records; this table is needed only to override the
+/// environment's backup storage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

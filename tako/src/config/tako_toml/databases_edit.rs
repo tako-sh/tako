@@ -86,10 +86,18 @@ impl TakoToml {
     }
 
     /// Removes the bindings to KV store `name` in the environments of
-    /// `network`.
+    /// `network`, and its `[kv.<name>]` settings unless environments of
+    /// another network still bind it.
     pub fn remove_kv_from_file(path: &Path, name: &str, network: &str) -> Result<()> {
         let mut doc = load(path)?;
-        remove_env_bindings(&mut doc, "kv", name, network);
+        let other_network = remove_env_bindings(&mut doc, "kv", name, network);
+        if !other_network && let Some(stores) = doc.get_mut("kv").and_then(Item::as_table_like_mut)
+        {
+            stores.remove(name);
+            if stores.is_empty() {
+                doc.remove("kv");
+            }
+        }
         save(path, &doc)
     }
 }
@@ -130,11 +138,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             &dir,
-            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n",
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n\n[kv.sessions]\nbackup = \"backups\"\n\n[kv.other]\nbackup = \"backups\"\n\n[storages.backups]\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
         );
         TakoToml::remove_kv_from_file(&path, "sessions", "0123456789abcdef0123456789abcdef")
             .unwrap();
         let config = TakoToml::load_from_file(&path).unwrap();
+        assert!(!config.kv.contains_key("sessions"));
+        assert!(config.kv.contains_key("other"));
         assert_eq!(config.envs["production"].kv.len(), 1);
         assert_eq!(config.envs["production"].databases.len(), 1);
         assert!(config.envs["staging"].kv.is_empty());

@@ -179,7 +179,7 @@
     },
     "DatabaseResourceConfig": {
       "additionalProperties": false,
-      "description": "Settings for a Tako-hosted database, from `[databases.<name>]`. The\ndatabase itself, its server and access, live in the network's records;\nthis table is needed only to override the environment's backup storage.",
+      "description": "Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV\nstore, from `[kv.<name>]`. The database itself, its server and access,\nlive in the network's records; this table is needed only to override the\nenvironment's backup storage.",
       "properties": {
         "backup": {
           "description": "Private S3-compatible storage resource that receives snapshots.\nDefaults to the deploying environment's `backup.storage`.",
@@ -559,6 +559,16 @@
     "images": {
       "$ref": "#/$defs/ImagesConfig",
       "description": "Public image optimizer allowlists. Each array replaces its default and must be non-empty."
+    },
+    "kv": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DatabaseResourceConfig"
+      },
+      "description": "Per-store settings for Tako-hosted KV stores, which environments bind in `[envs.<env>].kv`. Create stores with `tako kv create`.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+      },
+      "type": "object"
     },
     "main": {
       "description": "Runtime entrypoint override. May be a file path or module specifier.",

@@ -1,8 +1,8 @@
 //! Preparing an environment's databases before its release command and
 //! rollout: backup destinations and grants on the databases' servers (for
 //! administrators), a snapshot before the release command, and the
-//! project's migrations. KV stores take part in grants only: they have no
-//! snapshots or migrations.
+//! project's migrations. KV stores are backed up and granted like
+//! databases; they have no migrations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -194,8 +194,8 @@ struct Prepared {
 }
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
-    // Distinct databases and KV stores bound by this environment. KV stores
-    // are only granted: they have no backups, snapshots or migrations.
+    // Distinct databases and KV stores bound by this environment. Both get
+    // backups, grants and release snapshots; only databases get migrations.
     let mut bound: BTreeMap<String, &PlannedBinding> = BTreeMap::new();
     for planned in prep.plan.sql.values().chain(prep.plan.kv.values()) {
         bound
@@ -203,14 +203,12 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             .or_insert(planned);
     }
 
-    let sqlite =
-        |planned: &&&PlannedBinding| planned.binding.engine == tako_core::DatabaseEngine::Sqlite;
     if prep.administrator {
         let mut backed_up = bound.clone();
         if let Some(replay) = &prep.plan.replay {
             backed_up.insert(replay.database_name.clone(), replay);
         }
-        for planned in backed_up.values().filter(sqlite) {
+        for planned in backed_up.values() {
             // Without a backup storage the server stops snapshotting the
             // database.
             let storage = crate::commands::storage::decrypt_database_backup_storage(
@@ -247,7 +245,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
     };
 
     if prep.release {
-        for planned in bound.values().filter(sqlite) {
+        for planned in bound.values() {
             send(
                 &planned.home,
                 Command::SnapshotDatabase {
