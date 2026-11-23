@@ -1,8 +1,9 @@
-//! Snapshot backups of hosted databases.
+//! Snapshot backups of KV stores. SQLite databases are backed up
+//! continuously instead (see [`super::backups`]), which also owns the
+//! scheduler, disk-space reservations and work directories these use.
 //!
-//! A snapshot is a compact, verified copy of the database (`VACUUM INTO`,
-//! or for a KV store its export file), compressed with zstd and encrypted
-//! with the database's backup key, then
+//! A snapshot is a verified export of the store, compressed with zstd and
+//! encrypted with the store's backup key, then
 //! uploaded next to a JSON manifest. The manifest is written last, so only
 //! complete snapshots are ever listed. Snapshots run hourly while the
 //! database changes, before deploy release commands, before restores, and on
@@ -10,7 +11,7 @@
 //! of each of the last 7 days and 4 weeks.
 
 use std::collections::{BTreeSet, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,13 +19,13 @@ use std::time::Duration;
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tako_core::{
     BackupEncryptionInfo, BackupKeyBinding, DatabaseBackupStatus, DatabaseEngine, DatabaseSnapshot,
     SnapshotReason, StorageBinding,
 };
 use tako_database::DatabaseId;
 
+use super::backups::{SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
 use super::now_unix_secs;
 use crate::ServerState;
 use crate::operations::{
@@ -41,35 +42,45 @@ const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 /// How many databases the scheduler snapshots at once, so a database whose
 /// storage is slow delays only its own snapshot.
 const SCHEDULER_CONCURRENCY: usize = 4;
-/// A work directory this old belongs to an operation that a restart or crash
-/// interrupted: snapshots, restores, and exports finish well within it, and
-/// import and export sessions expire after an hour.
-const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long a data object may go without a manifest before pruning deletes
 /// it. An upload still in progress has none yet.
 const ORPHAN_AGE_SECS: i64 = 24 * 60 * 60;
-/// Free space kept on the data disk beyond snapshots' working files.
-const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 const MANIFEST_FORMAT: u32 = 1;
-
-/// In-memory backup state of one database. The object store is the record;
-/// this only avoids listing it on every scheduler tick.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct BackupState {
-    pub last_snapshot: Option<DatabaseSnapshot>,
-    pub last_attempt_unix_secs: Option<u64>,
-    pub last_error: Option<String>,
-    /// Whether `last_snapshot` was read from the object store.
-    pub loaded: bool,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     format: u32,
     database: String,
     generation: String,
-    snapshot: DatabaseSnapshot,
+    snapshot: Snapshot,
     encryption: BackupEncryptionInfo,
+}
+
+/// A snapshot as its manifest records it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Snapshot {
+    id: String,
+    created_at_unix_secs: u64,
+    reason: SnapshotReason,
+    /// Size of the file the snapshot restores.
+    database_bytes: u64,
+    /// Size of the uploaded, compressed and encrypted object.
+    stored_bytes: u64,
+    /// SHA-256 of the file, hex encoded.
+    sha256: String,
+}
+
+impl Snapshot {
+    /// As `ListDatabaseSnapshots` lists it: every snapshot is a full copy.
+    fn listed(&self) -> DatabaseSnapshot {
+        DatabaseSnapshot {
+            id: self.id.clone(),
+            created_at_unix_secs: self.created_at_unix_secs,
+            reason: self.reason,
+            full: true,
+            stored_bytes: self.stored_bytes,
+        }
+    }
 }
 
 /// Snapshots live under the database's name and generation, so a database
@@ -504,6 +515,8 @@ pub(crate) fn status(state: &ServerState, stored: &StoredDatabase) -> Option<Dat
         endpoint: backup.endpoint.clone().unwrap_or_default(),
         destination: Some(tako_core::BackupDestination::of(backup)),
         last_snapshot: current.last_snapshot,
+        // Snapshots only: no continuous history.
+        replicated_at_unix_secs: None,
         last_attempt_unix_secs: current.last_attempt_unix_secs,
         last_error: current.last_error,
     })
@@ -522,38 +535,27 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
     })
 }
 
-/// One scheduler tick: housekeeping for every database, then a snapshot job
-/// for each changed database with backups. Returns without waiting for the
-/// snapshots.
+/// One scheduler tick: a snapshot job for each changed KV store with
+/// backups. Returns without waiting for the snapshots.
 pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) {
     jobs.reap();
     if state.is_draining() {
         return;
     }
-    state.refresh_database_routes();
-    super::transfer::expire(state);
+    // Routes, registrations and work directories are kept by the backup
+    // scheduler, for both engines (see `super::backups::housekeeping`).
     let databases = match state.state_store.list_databases() {
         Ok(databases) => databases,
         Err(error) => {
-            tracing::warn!(%error, "Snapshot scheduler could not read databases");
+            tracing::warn!(%error, "Snapshot scheduler could not read KV stores");
             return;
         }
     };
     for stored in databases {
-        // A database whose registration failed at startup (or later)
-        // is retried, so a transient error does not keep it
-        // unavailable until the next restart.
-        state.retry_database_registration(&stored.name).await;
-        let work = state.databases.work_dir(&stored.name);
-        let removed = tokio::task::spawn_blocking(move || {
-            remove_stale_work_dirs(&work, std::time::SystemTime::now())
-        })
-        .await
-        .unwrap_or(0);
-        if removed > 0 {
-            tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
-        }
-        if stored.secrets.backup.is_some() && has_changes(state, &stored) {
+        if stored.engine == DatabaseEngine::Kv
+            && stored.secrets.backup.is_some()
+            && has_changes(state, &stored)
+        {
             jobs.start(state, stored.name);
         }
     }
@@ -576,11 +578,6 @@ impl SnapshotJobs {
             permits: Arc::new(tokio::sync::Semaphore::new(limit)),
             pending: Default::default(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_pending(&self, name: &str) -> bool {
-        self.pending.lock().contains(name)
     }
 
     /// Queues a snapshot of `name` if it is due once a slot is free, unless
@@ -661,7 +658,7 @@ async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
         let current = backups.entry(stored.name.clone()).or_default();
         current.loaded = true;
         if current.last_snapshot.is_none() {
-            current.last_snapshot = latest;
+            current.last_snapshot = latest.as_ref().map(Snapshot::listed);
         }
     }
     let now = now_unix_secs();
@@ -734,7 +731,7 @@ async fn record(
     backup: &StorageBinding,
     started: u64,
     reason: SnapshotReason,
-    result: Result<DatabaseSnapshot, String>,
+    result: Result<Snapshot, String>,
 ) -> Result<DatabaseSnapshot, String> {
     {
         let mut backups = state.databases.backups.lock();
@@ -748,7 +745,7 @@ async fn record(
         });
         match &result {
             Ok(snapshot) => {
-                current.last_snapshot = Some(snapshot.clone());
+                current.last_snapshot = Some(snapshot.listed());
                 current.last_error = None;
                 tracing::info!(database = %stored.name, snapshot = %snapshot.id, ?reason, "Uploaded database snapshot");
             }
@@ -759,68 +756,7 @@ async fn record(
     if let Err(error) = prune(stored, backup).await {
         tracing::warn!(database = %stored.name, %error, "Pruning database snapshots failed");
     }
-    Ok(snapshot)
-}
-
-/// Disk space held for the snapshot copies on disk. Copies of several
-/// databases can exist at once (the scheduler's, and manual, release, and
-/// restore snapshots), so each one checks the free space against what the
-/// others still hold.
-#[derive(Default)]
-pub(crate) struct SnapshotSpace {
-    reserved: Arc<parking_lot::Mutex<u64>>,
-}
-
-impl SnapshotSpace {
-    /// Holds `needed` bytes for `purpose` until the returned reservation
-    /// drops, if `available` covers them, the other reservations, and the
-    /// disk reserve. Another reservation counts in full even after its files
-    /// are partly written, so this errs toward refusing.
-    pub(crate) fn reserve(
-        &self,
-        needed: u64,
-        available: u64,
-        purpose: &str,
-    ) -> Result<SpaceReservation, String> {
-        let mut reserved = self.reserved.lock();
-        let required = reserved
-            .saturating_add(needed)
-            .saturating_add(DISK_RESERVE_BYTES);
-        if available < required {
-            return Err(if *reserved == 0 {
-                format!(
-                    "not enough free disk space for {purpose}: {required} bytes needed, {available} available"
-                )
-            } else {
-                format!(
-                    "not enough free disk space for {purpose}: {required} bytes needed, including {} held for other snapshots and restores in progress; {available} available",
-                    *reserved
-                )
-            });
-        }
-        *reserved = reserved.saturating_add(needed);
-        Ok(SpaceReservation {
-            reserved: self.reserved.clone(),
-            bytes: needed,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reserved_bytes(&self) -> u64 {
-        *self.reserved.lock()
-    }
-}
-
-pub(crate) struct SpaceReservation {
-    reserved: Arc<parking_lot::Mutex<u64>>,
-    bytes: u64,
-}
-
-impl Drop for SpaceReservation {
-    fn drop(&mut self) {
-        let mut reserved = self.reserved.lock();
-        *reserved = reserved.saturating_sub(self.bytes);
-    }
+    Ok(snapshot.listed())
 }
 
 /// A work directory with the disk space reserved for its files. The space is
@@ -870,7 +806,7 @@ async fn upload_copy(
     copy: &SnapshotCopy,
     reason: SnapshotReason,
     own: Option<&str>,
-) -> Result<DatabaseSnapshot, String> {
+) -> Result<Snapshot, String> {
     let created = now_unix_secs();
     // Milliseconds lead the ID, so IDs order snapshots taken in the same
     // second (snapshots of a database are taken one at a time).
@@ -899,7 +835,7 @@ async fn upload_copy(
     let stored_bytes = std::fs::metadata(&encrypted)
         .map(|m| m.len())
         .map_err(|e| e.to_string())?;
-    let snapshot = DatabaseSnapshot {
+    let snapshot = Snapshot {
         id: snapshot_id.clone(),
         created_at_unix_secs: created,
         reason,
@@ -1030,7 +966,7 @@ async fn read_manifests(
     Ok(manifests)
 }
 
-async fn list(stored: &StoredDatabase) -> Result<Vec<DatabaseSnapshot>, String> {
+async fn list(stored: &StoredDatabase) -> Result<Vec<Snapshot>, String> {
     let Some(backup) = &stored.secrets.backup else {
         return Err(format!(
             "Backups are not configured for database {}.",
@@ -1050,8 +986,10 @@ pub(crate) async fn list_command(
     id: &str,
 ) -> Result<serde_json::Value, String> {
     let stored = state.hosted_database(id)?;
-    let snapshots = list(&stored).await?;
-    Ok(serde_json::json!({"database": stored.name, "snapshots": snapshots}))
+    let snapshots: Vec<DatabaseSnapshot> =
+        list(&stored).await?.iter().map(Snapshot::listed).collect();
+    // A KV store has no continuous history to restore into.
+    Ok(serde_json::json!({"database": stored.name, "windows": [], "snapshots": snapshots}))
 }
 
 /// Which snapshots retention keeps: the newest overall, the newest one a
@@ -1059,7 +997,7 @@ pub(crate) async fn list_command(
 /// not), every snapshot of the last 24 hours (so a release or manual
 /// snapshot survives the hourly ones after it), and the newest of each of the
 /// last 7 days and 4 weeks. `snapshots` is newest first.
-fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<String> {
+fn retained(snapshots: &[Snapshot], now: u64) -> BTreeSet<String> {
     let mut keep = BTreeSet::new();
     if let Some(newest) = snapshots.first() {
         keep.insert(newest.id.clone());
@@ -1351,118 +1289,23 @@ async fn restore_from(
         .map_err(|e| e.to_string())??;
     }
 
-    let warnings = replace_locked(state, stored, restored, "database is being restored").await?;
+    let warnings = replace_locked(state, stored, restored).await?;
     tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
         "database": stored.name,
         "name": stored.name,
-        "snapshot": manifest.snapshot,
+        "snapshot": manifest.snapshot.listed(),
         "warnings": warnings,
     }))
 }
 
-/// Replaces a database's file with a verified `replacement` while its
-/// requests are paused. When backups are configured and the database changed,
-/// the exact contents being replaced are copied during the pause and uploaded
-/// once requests resume. Returns warnings about that snapshot; the replaced
-/// file is also kept as `previous.sqlite`.
-pub(crate) async fn replace(
-    state: &ServerState,
-    stored: &StoredDatabase,
-    replacement: PathBuf,
-    pause_reason: &str,
-) -> Result<Vec<String>, String> {
-    let lock = state.databases.lock(&stored.name);
-    let _operation = lock.lock().await;
-    replace_locked(state, stored, replacement, pause_reason).await
-}
-
-/// [`replace`], for a caller that already holds the database's lock.
-pub(crate) async fn replace_locked(
-    state: &ServerState,
-    stored: &StoredDatabase,
-    replacement: PathBuf,
-    pause_reason: &str,
-) -> Result<Vec<String>, String> {
-    if stored.engine == DatabaseEngine::Kv {
-        return replace_kv_locked(state, stored, replacement).await;
-    }
-    let id = DatabaseId::parse(&stored.name)?;
-    // The caller read `stored` before it took the lock; a delete and create
-    // of the same name meanwhile leaves a different database under it.
-    let current = state.hosted_database(&stored.name)?;
-    if current.generation != stored.generation {
-        return Err(format!(
-            "Database {} was replaced by a new database of the same name meanwhile; nothing was changed.",
-            stored.name
-        ));
-    }
-    let guard = state
-        .databases
-        .host
-        .pause(&id, pause_reason)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut warnings = Vec::new();
-    let backup = stored.secrets.backup.clone();
-    let copy = match &backup {
-        Some(_) if state.databases.host.has_changes(&id) => {
-            match copy_database(state, stored).await {
-                Ok(copy) => Some(copy),
-                Err(error) => {
-                    warnings.push(format!("could not snapshot the replaced contents: {error}"));
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-    let path = guard.path().to_path_buf();
-    let previous = state
-        .databases
-        .database_dir(&stored.name)
-        .join("previous.sqlite");
-    let swapped = tokio::task::spawn_blocking(move || {
-        rotate_replay_epochs(&replacement)
-            .map_err(|e| format!("prepare restored channel replay epochs: {e}"))?;
-        tako_database::replace_database(&path, &replacement, &previous)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    guard.mark_changed();
-    drop(guard);
-    swapped?;
-
-    if let (Some(backup), Some(copy)) = (backup, copy) {
-        let started = now_unix_secs();
-        // Not fenced: copies of replaced contents are left out of latest
-        // restores, and a move's new copy uploads one before it claims the
-        // database.
-        let result = upload_copy(stored, &backup, &copy, SnapshotReason::Restore, None).await;
-        if let Err(error) = record(
-            state,
-            stored,
-            &backup,
-            started,
-            SnapshotReason::Restore,
-            result,
-        )
-        .await
-        {
-            warnings.push(format!(
-                "could not upload a snapshot of the replaced contents (kept as previous.sqlite on the server): {error}"
-            ));
-        }
-    }
-    Ok(warnings)
-}
-
-/// [`replace_locked`] for a KV store: the replacement is applied in one
+/// Replaces a KV store's keys with a verified `replacement`, for a caller
+/// that holds the store's lock. The replacement is applied in one
 /// transaction while the store keeps serving, so readers see the old
 /// contents or the new ones. The exact contents it replaces are exported to
 /// `previous.redb` first, and uploaded as a snapshot when backups are
 /// configured and they changed since the last one.
-async fn replace_kv_locked(
+pub(crate) async fn replace_locked(
     state: &ServerState,
     stored: &StoredDatabase,
     replacement: PathBuf,
@@ -1536,117 +1379,6 @@ async fn replace_kv_locked(
     Ok(warnings)
 }
 
-/// Cursors issued before a restore cannot refer to the restored timeline.
-/// Change the staged copy only, before its main file is renamed into place.
-fn rotate_replay_epochs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use rusqlite::{Connection, OpenFlags, config::DbConfig};
-
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
-    db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
-    let replay: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-           WHERE type = 'table' AND name = 'tako_replay_apps' COLLATE NOCASE AND rootpage > 0)
-         AND (SELECT count(*) FROM pragma_table_info('tako_replay_apps')
-              WHERE name COLLATE NOCASE IN ('app', 'epoch') AND type = 'TEXT' COLLATE NOCASE) = 2",
-        [],
-        |row| row.get(0),
-    )?;
-    if replay {
-        db.execute(
-            "UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
-            [],
-        )?;
-        // The swap moves only the main file; make the new epochs durable in it.
-        let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
-        if busy != 0 {
-            return Err("could not checkpoint the replacement database".into());
-        }
-    }
-    Ok(())
-}
-
-/// Removes the work directories under `root` last modified more than
-/// [`STALE_WORK_AGE`] before `now`, and returns how many it removed.
-pub(crate) fn remove_stale_work_dirs(root: &Path, now: std::time::SystemTime) -> usize {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return 0;
-    };
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|modified| {
-                now.duration_since(modified)
-                    .is_ok_and(|age| age > STALE_WORK_AGE)
-            });
-        if stale && std::fs::remove_dir_all(entry.path()).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
-}
-
-/// A work directory removed when dropped.
-pub(crate) struct WorkDir {
-    pub path: PathBuf,
-}
-
-impl WorkDir {
-    /// Marks the directory as in use now, so the cleanup of interrupted
-    /// work, which goes by its age, leaves it alone. Writing a file inside
-    /// does not change the directory's own modification time.
-    pub(crate) fn touch(&self) {
-        let touched = std::fs::File::open(&self.path).and_then(|dir| {
-            dir.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
-        });
-        if let Err(error) = touched {
-            tracing::debug!(path = %self.path.display(), %error, "Could not refresh a work directory's age");
-        }
-    }
-}
-
-impl Drop for WorkDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-pub(crate) fn fresh_work_dir(
-    state: &ServerState,
-    id: &str,
-    label: &str,
-) -> Result<WorkDir, String> {
-    let root = state.databases.work_dir(id);
-    super::create_private_dir(&root)?;
-    let path = root.join(format!(
-        "{label}-{}",
-        nanoid::nanoid!(12, &nanoid::alphabet::SAFE[..])
-    ));
-    super::create_private_dir(&path)?;
-    Ok(WorkDir { path })
-}
-
-pub(crate) fn sha256_file(path: &Path) -> Result<(String, u64), String> {
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 256 * 1024];
-    let mut total = 0u64;
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        total += read as u64;
-        hasher.update(&buffer[..read]);
-    }
-    Ok((hex::encode(hasher.finalize()), total))
-}
-
 fn compress(input: &Path, output: &Path) -> Result<(), String> {
     let mut reader = std::fs::File::open(input).map_err(|e| e.to_string())?;
     let writer = std::fs::File::create(output).map_err(|e| e.to_string())?;
@@ -1669,8 +1401,8 @@ fn decompress(input: &Path, output: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn snapshot(id: &str, created: u64) -> DatabaseSnapshot {
-        DatabaseSnapshot {
+    fn snapshot(id: &str, created: u64) -> Snapshot {
+        Snapshot {
             id: id.into(),
             created_at_unix_secs: created,
             reason: SnapshotReason::Scheduled,
@@ -1755,31 +1487,6 @@ mod tests {
         assert_eq!(
             orphaned_data(&objects, now),
             vec![key("2-b.sqlite.zst.enc"), key("5-e.redb.zst.enc")]
-        );
-    }
-
-    #[test]
-    fn snapshot_space_counts_the_copies_in_progress() {
-        let space = SnapshotSpace::default();
-        let available = DISK_RESERVE_BYTES + 100;
-        let first = space.reserve(60, available, "a snapshot").unwrap();
-        let refused = space.reserve(60, available, "a snapshot").err().unwrap();
-        assert!(
-            refused.contains("including 60 held for other snapshots and restores in progress"),
-            "{refused}"
-        );
-        let second = space.reserve(40, available, "a snapshot").unwrap();
-        assert_eq!(space.reserved_bytes(), 100);
-        drop(first);
-        drop(second);
-        assert_eq!(space.reserved_bytes(), 0);
-        assert!(space.reserve(100, available, "a snapshot").is_ok());
-        assert_eq!(
-            space.reserve(101, available, "a snapshot").err().unwrap(),
-            format!(
-                "not enough free disk space for a snapshot: {} bytes needed, {available} available",
-                DISK_RESERVE_BYTES + 101
-            )
         );
     }
 

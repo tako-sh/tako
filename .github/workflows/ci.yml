@@ -22,7 +22,9 @@ jobs:
   alma-fixture:
     name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Usually about 4 minutes, but installing the fixture's packages took
+    # over 19 when Ubuntu's mirrors were slow and dropped connections.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -170,6 +172,8 @@ jobs:
           cargo test -p tako-network --locked --test '*'
           cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
           cargo test -p tako-database --locked
+          cargo test -p tako-backup --locked --test recovery
+          cargo test --locked --manifest-path vendor/terse-litestream/Cargo.toml
 
       - name: Run Compose integration tests
         run: |

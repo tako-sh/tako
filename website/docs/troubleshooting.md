@@ -188,7 +188,7 @@ tako backup now --env production
 
 Backup storage must not use `public_base_url`, and `local` cannot be used as a backup target.
 
-For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `tako sqlite status <name> --json`. A database snapshot uses the storage named in `[databases.<name>].backup`, or else the environment's `backup.storage`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then take one with `tako sqlite backup <name>`. A snapshot also needs free space for about three copies of the database on the server, beyond what other snapshots in progress there hold.
+For a hosted database, check `backup.last_error` and `backup.replicated_at_unix_secs` in `tako sqlite status <name> --json`. Its backups use the storage named in `[databases.<name>].backup`, or else the environment's `backup.storage`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then capture a full snapshot with `tako sqlite backup <name>`. While storage fails, the server keeps the captures on its disk and retries at most 15 minutes apart. A restore needs free space for about three times what it downloads on the server, beyond what other restores and transfers in progress there hold.
 
 ## Database Requests Fail
 

@@ -11,7 +11,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use sha2::{Digest, Sha256};
 use tako_core::{DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport};
 
-use super::snapshots::{self, SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
+use super::backups::{self, SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
+use super::snapshots;
 use crate::ServerState;
 
 /// Transfers idle for longer are abandoned and their files removed.
@@ -264,7 +265,7 @@ pub(crate) async fn finish_import(
             "Database {id} was replaced by a new database of the same name during the import; nothing was imported."
         ));
     }
-    let warnings = snapshots::replace_locked(
+    let warnings = backups::replace_locked(
         state,
         &stored,
         path,

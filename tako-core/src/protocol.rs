@@ -374,8 +374,10 @@ pub enum Command {
         keep_existing: bool,
     },
 
-    /// Take and upload a snapshot now. `app` names the app environment that
-    /// asks (before its release command), which must use the database.
+    /// Record a restore point now: a full image for `manual` and
+    /// `scheduled`, otherwise a named transaction of the continuous backup.
+    /// `app` names the app environment that asks (before its release
+    /// command), which must use the database.
     SnapshotDatabase {
         name: String,
         reason: SnapshotReason,
@@ -383,15 +385,19 @@ pub enum Command {
         app: Option<String>,
     },
 
-    /// List uploaded snapshots of a database.
+    /// List a database's restore points and its windows of restorable time.
     ListDatabaseSnapshots { name: String },
 
-    /// Replace a database with a snapshot; `None` selects the newest. The key
-    /// is needed when this server no longer has it (a replacement server).
+    /// Replace a database with its backed-up state: at the restore point
+    /// `snapshot` (a transaction), at the newest transaction captured at or
+    /// before `at_unix_ms`, or, with neither, at the newest one. The key is
+    /// needed when this server no longer has it (a replacement server).
     RestoreDatabase {
         name: String,
         #[serde(default)]
         snapshot: Option<String>,
+        #[serde(default)]
+        at_unix_ms: Option<i64>,
         #[serde(default)]
         backup_key_base64: Option<String>,
     },

@@ -150,7 +150,7 @@ A TTL makes a key expire that long after the `put`. An expired key is never retu
 
 ## Backups
 
-KV stores are backed up like [hosted databases](/databases/#back-up-and-restore): each snapshot is a compact export of the store's live keys, compressed with zstd, encrypted with the store's backup key, and uploaded to private S3-compatible storage. Snapshots are taken hourly while the store changes, before deploy release commands, before restores and imports, and on demand. Retention keeps every snapshot of the last 24 hours, and the newest of each of the last 7 days and 4 weeks.
+KV stores are backed up with snapshots, not continuously like [hosted databases](/databases/#back-up-and-restore), so a restore takes a snapshot rather than a time: each snapshot is a compact export of the store's live keys, compressed with zstd, encrypted with the store's backup key, and uploaded to private S3-compatible storage. Snapshots are taken hourly while the store changes, before deploy release commands, before restores and imports, and on demand. Retention keeps every snapshot of the last 24 hours, and the newest of each of the last 7 days and 4 weeks.
 
 Backups go to the deploying environment's `backup.storage`, or to a storage named for the store:
 

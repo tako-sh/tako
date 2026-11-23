@@ -309,6 +309,7 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
         Command::RestoreDatabase {
             name: "sessions".into(),
             snapshot: Some(first.clone()),
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
@@ -348,6 +349,7 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
         Command::RestoreDatabase {
             name: "sessions".into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )

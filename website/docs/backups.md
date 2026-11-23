@@ -1,24 +1,24 @@
 ---
 title: "Backups"
-description: "Back up Tako-hosted databases with encrypted snapshots, and create or restore encrypted manual archives of an app's data directory."
+description: "Back up Tako-hosted databases continuously with point-in-time restore, and create or restore encrypted manual archives of an app's data directory."
 ---
 
 Tako protects two kinds of data separately:
 
-| Data                                                                         | Protection                                                                                                   | Configure                                                    |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| [Hosted databases](/databases/)                                              | Encrypted snapshots: hourly while changing, before release commands, migrations, and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
-| [KV stores](/kv/)                                                            | Encrypted snapshots: hourly while changing, before release commands and restores, and on demand              | `[envs.<env>].backup.storage` or `[kv.<name>].backup`        |
-| Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives                                                                     | `[envs.<env>].backup`                                        |
-| Files in the shared data directory                                           | Not backed up; copy them separately during coordinated downtime                                              | —                                                            |
-| Compose named volumes, external databases, S3 contents                       | Protect separately                                                                                           | —                                                            |
-| Network membership, shared secrets, device keys                              | Protect separately                                                                                           | —                                                            |
+| Data                                                                         | Protection                                                                                                                                   | Configure                                                    |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| [Hosted databases](/databases/)                                              | Continuous encrypted backups: changes every 10 seconds, restorable to any moment of the last 7 days, with daily and on-demand full snapshots | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
+| [KV stores](/kv/)                                                            | Encrypted snapshots: hourly while changing, before release commands and restores, and on demand                                              | `[envs.<env>].backup.storage` or `[kv.<name>].backup`        |
+| Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives                                                                                                     | `[envs.<env>].backup`                                        |
+| Files in the shared data directory                                           | Not backed up; copy them separately during coordinated downtime                                                                              | —                                                            |
+| Compose named volumes, external databases, S3 contents                       | Protect separately                                                                                                                           | —                                                            |
+| Network membership, shared secrets, device keys                              | Protect separately                                                                                                                           | —                                                            |
 
 Use [release rollback](/operations/#logs-and-releases) to recover code and a backup to recover data. Deploys and timers do not create app-directory archives.
 
 ## Back up hosted databases
 
-Set the environment's `backup.storage` (or `[databases.<name>].backup` for one database) to a private S3-compatible storage resource and deploy. The database's server then snapshots it every hour while it changes, before a deploy's release command, and before a restore or import:
+Set the environment's `backup.storage` (or `[databases.<name>].backup` for one database) to a private S3-compatible storage resource and deploy. The database's server then backs it up continuously: every 10 seconds it uploads the transactions committed since the last upload, and it records a restore point before each deploy's release command, before migrations, and before a restore, import, or reset:
 
 ```toml
 [envs.production]
@@ -27,12 +27,13 @@ backup = { storage = "private_backups" }
 ```
 
 ```bash
-tako sqlite backup main
 tako sqlite backups main --json
-tako sqlite restore main --latest
+tako sqlite restore main --at 15m
+tako sqlite restore main --snapshot <id>
+tako sqlite backup main
 ```
 
-Snapshots are consistent, integrity-checked copies, compressed with zstd and encrypted with the database's own key, which the network stores for full clients. Retention keeps every snapshot of the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
+Backups are encrypted with the database's own key, which the network stores for full clients. Any moment of the last 7 days can be restored. Full snapshots, captured daily while the database changes and on demand with `tako sqlite backup`, are kept longer: all from the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
 
 ## Configure an app data destination
 
@@ -52,13 +53,13 @@ tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
-The destination must be private S3-compatible storage without `public_base_url`. A backup-only storage resource is not exposed through `tako.storages` unless separately bound to the app. Keep the environment-managed backup keys and storage credentials: the server cannot recover encrypted archives without them. One storage resource can receive both app archives and database snapshots.
+The destination must be private S3-compatible storage without `public_base_url`. A backup-only storage resource is not exposed through `tako.storages` unless separately bound to the app. Keep the environment-managed backup keys and storage credentials: the server cannot recover encrypted archives without them. One storage resource can receive both app archives and database backups.
 
 ### Upgrade from SQLite file capture
 
 Earlier versions listed SQLite files in `backup = { databases = [...], shared_databases = [...] }` and captured them continuously. Those fields are rejected now. Move each database to a hosted database:
 
-1. `tako sqlite create <name> --server <server>`, then bind it with `databases = { <binding> = "<name>" }` under `[envs.production]` in `tako.toml`. Its snapshots go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
+1. `tako sqlite create <name> --server <server>`, then bind it with `databases = { <binding> = "<name>" }` under `[envs.production]` in `tako.toml`. Its backups go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
 2. During a write freeze, copy the existing file to your machine, checkpoint it (`PRAGMA wal_checkpoint(TRUNCATE)`), and run `tako sqlite import <name> <file>`.
 3. Change the app to use `tako.databases.<binding>` and deploy.
 
@@ -163,7 +164,7 @@ A fresh deploy creates no full-directory backup.
 
 Manual archives require temporary space for the snapshot, compressed archive, and encrypted archive, plus a disk reserve. They are not a transactionally consistent snapshot across multiple databases or arbitrary files being modified concurrently. Coordinate app writes when that consistency is required. Application processes outside Tako's supervision must stop before a restore.
 
-Database snapshots need free space for about three copies of the database plus 256 MiB on the server's data disk, counting the space other snapshots in progress on that server still hold. The server takes scheduled snapshots of up to four databases at once, so one whose storage is slow does not hold up the others. A snapshot that fails is retried after five minutes and reported by `tako sqlite status`.
+A database restore needs free space for about three times what it downloads plus 256 MiB on the server's data disk, counting the space other restores and transfers in progress on that server still hold. Until storage accepts them, captures wait on the server's disk. The server uploads for up to eight databases at once, giving each upload time for its size, so one whose storage is slow does not hold up the others. A failed upload is retried with backoff, at most 15 minutes apart, and reported by `tako sqlite status`.
 
 ## Verify recovery
 

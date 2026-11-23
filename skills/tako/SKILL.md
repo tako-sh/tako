@@ -254,9 +254,11 @@ validation.
   `tako.databases.<binding>`), not in the data directory, which is plain files
   and not captured. Database commands need administrator permission;
   `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
-  removes the database with its snapshots, so confirm the database and the
-  environments that bind it first, and take `tako sqlite backup` before risky
-  changes. Schema changes go in `migrations/` SQL files, applied on deploy.
+  removes the database with its backups, so confirm the database and the
+  environments that bind it first. With backup storage, databases are backed
+  up continuously: `tako sqlite backups` lists restore points and the window
+  that `tako sqlite restore <name> --at <time>` reaches, and every restore,
+  import, and reset records a `before restore` point that undoes it. Schema changes go in `migrations/` SQL files, applied on deploy.
 - Values every server of the network must see (login and WebAuthn challenges,
   one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
   bound in `[envs.<env>].kv`, read as `tako.kv.<binding>` with `get`, `put`
@@ -264,8 +266,9 @@ validation.
   `tako::kv`): a store hosted on one server and reachable from all of them
   through each app's internal socket. `tako.cache` is per server and evicts,
   so a value cached on one server is a miss on the next. KV stores are backed
-  up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`;
-  `tako kv backup|backups|restore|export|import`), and have no atomic
+  up with snapshots, hourly while they change (`[envs.<env>].backup.storage`
+  or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`;
+  a restore takes a snapshot, not a time), and have no atomic
   counters or transactions, so keep canonical records in a database. A
   binding name is used once per environment across `databases` and `kv`, and
   store names share the network's namespace with databases. `tako kv get`,

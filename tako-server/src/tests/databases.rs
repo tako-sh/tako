@@ -126,11 +126,18 @@ async fn snapshots_restore_the_contents_they_captured() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: Some(first_id.clone()),
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
     .await;
-    assert_eq!(restored["snapshot"]["id"], first_id);
+    assert_eq!(
+        restored["restored"]["transaction"]
+            .as_u64()
+            .unwrap()
+            .to_string(),
+        first_id
+    );
     assert_eq!(count(&state, ID).await, 1);
     assert!(
         state
@@ -141,16 +148,19 @@ async fn snapshots_restore_the_contents_they_captured() {
         "the replaced file is kept"
     );
 
-    // The restore first saved the changed contents it replaced.
+    // The restore first backed up the contents it replaced.
     let listed = ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await;
-    let reasons: Vec<_> = listed["snapshots"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|snapshot| snapshot["reason"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(reasons.len(), 2, "a manual and a pre-restore snapshot");
+    let reasons = snapshot_reasons(&state).await;
+    assert_eq!(
+        reasons.len(),
+        2,
+        "a manual and a pre-restore point: {reasons:?}"
+    );
     assert!(reasons.contains(&"restore".to_owned()));
+    assert!(
+        listed["windows"][0]["from_transaction"].is_u64(),
+        "the history is restorable to any captured transaction"
+    );
     let pre_restore = listed["snapshots"]
         .as_array()
         .unwrap()
@@ -165,6 +175,7 @@ async fn snapshots_restore_the_contents_they_captured() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: Some(pre_restore),
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
@@ -222,6 +233,7 @@ async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
             Command::RestoreDatabase {
                 name: ID.into(),
                 snapshot: Some(first["snapshot"]["id"].as_str().unwrap().into()),
+                at_unix_ms: None,
                 backup_key_base64: None,
             },
         )
@@ -397,7 +409,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
 }
 
 #[tokio::test]
-async fn latest_restores_pick_the_newer_of_two_snapshots_in_one_second() {
+async fn listings_put_the_newest_restore_point_first() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, Some("same-second-bucket")).await;
@@ -434,34 +446,12 @@ async fn latest_restores_pick_the_newer_of_two_snapshots_in_one_second() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
     .await;
     assert_eq!(count(&state, ID).await, 10);
-}
-
-#[tokio::test]
-async fn a_failed_manifest_write_leaves_no_snapshot_behind() {
-    let temp = TempDir::new().unwrap();
-    let state = state(&temp);
-    create(&state, ID, Some("lost-response")).await;
-    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
-    // The manifest is written, but the storage reports failure.
-    error(
-        &state,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
-        },
-    )
-    .await;
-    // Neither it nor its data is left for a restore to pick.
-    let store = crate::databases::snapshots::test_store("lost-response").unwrap();
-    use futures_util::TryStreamExt;
-    let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
-    assert!(objects.is_empty(), "{objects:?}");
 }
 
 #[tokio::test]
@@ -481,19 +471,19 @@ async fn snapshots_are_encrypted_with_the_database_key() {
     )
     .await;
 
-    let store = crate::databases::snapshots::test_store("encrypted-bucket").unwrap();
+    let store = crate::databases::backups::test_store("encrypted-bucket").unwrap();
     let objects: Vec<_> = {
         use futures_util::TryStreamExt;
         store.list(None).try_collect().await.unwrap()
     };
     let data = objects
         .iter()
-        .find(|meta| meta.location.as_ref().ends_with(".sqlite.zst.enc"))
-        .expect("an encrypted data object");
+        .find(|meta| meta.location.as_ref().ends_with(".ltx"))
+        .expect("an encrypted segment");
     assert!(
         data.location
             .as_ref()
-            .starts_with(&format!("_tako/databases/{ID}/{GENERATION}/snapshots/"))
+            .starts_with(&format!("_tako/databases/{ID}/{GENERATION}/ltx/"))
     );
     let bytes = store
         .get(&data.location)
@@ -509,6 +499,7 @@ async fn snapshots_are_encrypted_with_the_database_key() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: Some(BASE64.encode([9u8; 32])),
         },
     )
@@ -522,7 +513,7 @@ async fn snapshots_are_encrypted_with_the_database_key() {
 }
 
 #[tokio::test]
-async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
+async fn release_points_name_the_state_before_each_release() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, Some("release-bucket")).await;
@@ -536,18 +527,6 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     )
     .await;
     assert!(granted["peer_key"].is_string(), "a grant issues a peer key");
-
-    // A new, empty database has nothing to snapshot yet.
-    let empty = ok(
-        &state,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Release,
-            app: None,
-        },
-    )
-    .await;
-    assert!(empty["skipped"].is_string());
     query(&state, ID, "CREATE TABLE items (name TEXT)").await;
 
     let foreign = error(
@@ -561,34 +540,49 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     .await;
     assert!(foreign.contains("does not use"));
 
-    let first = ok(
+    let release = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Release,
+        app: Some("web/production".into()),
+    };
+    let first = ok(&state, release()).await;
+    assert_eq!(first["snapshot"]["reason"], "release");
+    query(
         &state,
-        Command::SnapshotDatabase {
+        ID,
+        "INSERT INTO items VALUES ('after the first release')",
+    )
+    .await;
+    let second = ok(&state, release()).await;
+    let (first, second) = (
+        first["snapshot"]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap(),
+        second["snapshot"]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap(),
+    );
+    assert!(
+        second > first,
+        "each point names the state it was recorded at"
+    );
+    ok(
+        &state,
+        Command::RestoreDatabase {
             name: ID.into(),
-            reason: SnapshotReason::Release,
-            app: Some("web/production".into()),
+            snapshot: Some(first.to_string()),
+            at_unix_ms: None,
+            backup_key_base64: None,
         },
     )
     .await;
-    assert!(
-        first["snapshot"].is_object(),
-        "a changed database is snapshotted"
-    );
-    let second = ok(
-        &state,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Release,
-            app: Some("web/production".into()),
-        },
-    )
-    .await;
-    assert!(
-        second["skipped"].is_string(),
-        "an unchanged database is skipped"
-    );
-    // Deployers take only the release snapshot, which skips an unchanged
-    // database; any other reason would let them add full snapshots.
+    assert_eq!(count(&state, ID).await, 0);
+    // Deployers record only the point before a release; any other reason
+    // would let them add full images.
     for reason in [
         SnapshotReason::Manual,
         SnapshotReason::Migration,
@@ -605,10 +599,27 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         .await;
         // Command responses are not printed: CodeQL treats them as secret-bearing (rust/cleartext-logging).
         assert!(
-            refused.contains("only the snapshot before a release"),
-            "a deployer's {reason:?} snapshot is refused"
+            refused.contains("only the restore point before a release"),
+            "a deployer's {reason:?} restore point is refused"
         );
     }
+}
+
+#[tokio::test]
+async fn a_release_point_for_a_database_without_backups_is_skipped() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let skipped = ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Release,
+            app: None,
+        },
+    )
+    .await;
+    assert!(skipped["skipped"].is_string());
 }
 
 #[tokio::test]
@@ -630,89 +641,83 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
     let id = tako_database::DatabaseId::parse(ID).unwrap();
     assert!(
         state.databases.host.has_changes(&id),
-        "the scheduler retries the snapshot"
+        "the scheduler captures the changes later"
     );
+    let status = ok(
+        &state,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    assert!(status["databases"][0]["backup"]["last_error"].is_string());
 }
 
 #[tokio::test]
-async fn a_stalled_upload_does_not_delay_other_scheduled_snapshots() {
-    use crate::databases::snapshots::{SnapshotJobs, schedule};
+async fn a_stalled_upload_does_not_delay_other_databases_backups() {
+    use crate::databases::backups::{BackupJobs, schedule};
     const STALLED: &str = "archive";
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
-    // Listed first, so a scheduler snapshotting one database at a time would
+    // Listed first, so a scheduler backing up one database at a time would
     // wait on its upload before reaching the other.
     create(&state, STALLED, Some("stalled")).await;
     create(&state, ID, Some("scheduled-bucket")).await;
     for id in [STALLED, ID] {
         query(&state, id, "CREATE TABLE items (name TEXT)").await;
     }
-    let snapshot_of = |id: &str| {
+    let replicated = |id: &str| {
         state
             .databases
             .backups
             .lock()
             .get(id)
-            .and_then(|backup| backup.last_snapshot.clone())
+            .and_then(|backup| backup.replicated_at_unix_secs)
     };
-    let mut jobs = SnapshotJobs::new(4);
-    tokio::time::timeout(Duration::from_secs(10), schedule(&state, &mut jobs))
-        .await
-        .expect("a scheduler tick does not wait for uploads");
-    let first = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(snapshot) = snapshot_of(ID) {
-                return snapshot;
-            }
+    let store = crate::databases::backups::test_store("scheduled-bucket").unwrap();
+    let segments = || async {
+        use futures_util::TryStreamExt;
+        store
+            .list(None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|meta| meta.location.as_ref().ends_with(".ltx"))
+            .count()
+    };
+    let mut jobs = BackupJobs::new(4);
+    schedule(&state, &mut jobs);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while replicated(ID).is_none() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("the healthy database is snapshotted while the other upload stalls");
-    assert_eq!(first.reason, SnapshotReason::Scheduled);
+    .expect("the healthy database is backed up while the other upload stalls");
     assert!(
         jobs.is_pending(STALLED),
         "the stalled upload is in progress"
     );
-    assert!(snapshot_of(STALLED).is_none());
-    assert!(
-        state.databases.snapshot_space.reserved_bytes() > 0,
-        "the stalled copy keeps its disk space reserved"
-    );
+    assert!(replicated(STALLED).is_none());
+    let before = segments().await;
 
-    // An hour later the upload still stalls, and the healthy database's next
-    // snapshot is not held up behind it.
+    // The healthy database's next change is not held up behind it.
     query(&state, ID, "INSERT INTO items VALUES ('a')").await;
-    if let Some(snapshot) = state
-        .databases
-        .backups
-        .lock()
-        .get_mut(ID)
-        .and_then(|backup| backup.last_snapshot.as_mut())
-    {
-        snapshot.created_at_unix_secs -= 60 * 60;
-    }
-    tokio::time::timeout(Duration::from_secs(10), schedule(&state, &mut jobs))
-        .await
-        .expect("a scheduler tick does not wait for uploads");
     tokio::time::timeout(Duration::from_secs(10), async {
-        while snapshot_of(ID).is_none_or(|snapshot| snapshot.id == first.id) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        loop {
+            schedule(&state, &mut jobs);
+            if segments().await > before {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the healthy database keeps its hourly snapshots");
+    .expect("the healthy database keeps uploading its changes");
     assert!(jobs.is_pending(STALLED));
-
-    // Stopping the scheduler abandons the stalled upload and its copy.
+    // Stopping the scheduler abandons the stalled upload.
     drop(jobs);
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while state.databases.snapshot_space.reserved_bytes() > 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the stalled copy's disk space is released");
 }
 
 #[tokio::test]
@@ -750,6 +755,95 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
     assert!(
         moved["backup"]["last_snapshot"].is_null(),
         "the first bucket's snapshot is not in the second"
+    );
+}
+
+#[tokio::test]
+async fn a_restore_point_uses_the_backups_configured_when_it_runs() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("stale-config-bucket")).await;
+    // Read before backups were turned off, as by a command that then waited
+    // for the database.
+    let read_before = state.hosted_database(ID).unwrap();
+    ok(
+        &state,
+        Command::ConfigureDatabaseBackup {
+            name: ID.into(),
+            backup: None,
+        },
+    )
+    .await;
+    for reason in [SnapshotReason::Release, SnapshotReason::Manual] {
+        let refused = match reason {
+            SnapshotReason::Manual => {
+                crate::databases::backups::full_snapshot(&state, &read_before, reason).await
+            }
+            _ => crate::databases::backups::mark(&state, &read_before, reason).await,
+        }
+        .unwrap_err();
+        assert!(refused.contains("not configured"), "{refused}");
+    }
+    let store = crate::databases::backups::test_store("stale-config-bucket").unwrap();
+    let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
+    let uploaded: Vec<_> =
+        futures_util::TryStreamExt::try_collect::<Vec<_>>(store.list(Some(&prefix)))
+            .await
+            .unwrap();
+    assert!(uploaded.is_empty(), "nothing went to the old bucket");
+}
+
+#[tokio::test]
+async fn a_restore_that_stopped_before_clearing_its_marker_backs_up() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    state.open_databases(Some("server-a".into())).await.unwrap();
+    create(&state, ID, Some("swap-crash-bucket")).await;
+    assert!(crate::databases::backups::is_unrestored(&state, ID).unwrap());
+    // A restore renamed another file into place, then the server stopped
+    // before it removed the marker.
+    let path = state.databases.database_path(ID);
+    let staged = path.with_extension("staged");
+    std::fs::copy(&path, &staged).unwrap();
+    std::fs::rename(&staged, &path).unwrap();
+    assert!(!crate::databases::backups::is_unrestored(&state, ID).unwrap());
+    assert!(
+        !state.databases.database_dir(ID).join("unrestored").exists(),
+        "the stale marker is cleared"
+    );
+}
+
+#[tokio::test]
+async fn a_replacement_during_an_outage_keeps_its_restore_point() {
+    const BUCKET: &str = "outage-bucket";
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some(BUCKET)).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&state, ID, "INSERT INTO items VALUES ('before the reset')").await;
+    crate::databases::backups::back_up(&state, ID).await;
+    // Storage goes down; the reset still replaces the database.
+    crate::databases::backups::set_down(BUCKET, true);
+    let reset = ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    assert!(
+        reset["warnings"].to_string().contains("could not back up"),
+        "{reset}"
+    );
+    // Back up, the point naming the replaced contents is published.
+    crate::databases::backups::set_down(BUCKET, false);
+    crate::databases::backups::back_up(&state, ID).await;
+    assert!(
+        snapshot_reasons(&state)
+            .await
+            .contains(&"restore".to_owned())
     );
 }
 
@@ -940,34 +1034,70 @@ async fn deleting_a_database_revokes_its_grants() {
 }
 
 #[tokio::test]
-async fn latest_restores_skip_the_safety_copies_restores_take() {
+async fn a_time_restores_the_state_the_database_had_then() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
-    create(&state, ID, Some("latest-bucket")).await;
+    create(&state, ID, Some("time-bucket")).await;
     query(&state, ID, "CREATE TABLE items (name TEXT)").await;
     query(&state, ID, "INSERT INTO items VALUES ('good')").await;
-    ok(
+    // A release point captures and uploads what the database has so far.
+    let point = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Release,
+        app: None,
+    };
+    ok(&state, point()).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let good_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    query(&state, ID, "INSERT INTO items VALUES ('bad')").await;
+    ok(&state, point()).await;
+    assert_eq!(count(&state, ID).await, 2);
+
+    let restored = ok(
         &state,
-        Command::SnapshotDatabase {
+        Command::RestoreDatabase {
             name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
+            snapshot: None,
+            at_unix_ms: Some(good_at),
+            backup_key_base64: None,
         },
     )
     .await;
-    query(&state, ID, "INSERT INTO items VALUES ('bad')").await;
-    let latest = || Command::RestoreDatabase {
-        name: ID.into(),
-        snapshot: None,
-        backup_key_base64: None,
-    };
-    ok(&state, latest()).await;
+    assert!(restored["restored"]["transaction"].as_u64().is_some());
+    assert!(
+        restored["restored"]["captured_at_unix_ms"]
+            .as_i64()
+            .unwrap()
+            <= good_at
+    );
     assert_eq!(count(&state, ID).await, 1);
-    // The first restore saved the bad contents; repeating it restores the
-    // good snapshot again, not that safety copy.
-    query(&state, ID, "INSERT INTO items VALUES ('later')").await;
-    ok(&state, latest()).await;
+    // The latest state now is the restored one.
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
     assert_eq!(count(&state, ID).await, 1);
+    let early = error(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: Some(0),
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert!(early.contains("that early"), "{early}");
 }
 
 #[tokio::test]
@@ -1046,6 +1176,8 @@ async fn snapshot_reasons(state: &ServerState) -> Vec<String> {
         .unwrap()
         .iter()
         .map(|s| s["reason"].as_str().unwrap().to_owned())
+        // Capture starts with a full image of its own.
+        .filter(|reason| reason != "scheduled")
         .collect()
 }
 
@@ -1087,8 +1219,7 @@ async fn migrations_apply_once_after_a_snapshot_of_what_they_change() {
         json!(["0001_items.sql", "0002_seed.sql"])
     );
     assert_eq!(count(&state, ID).await, 1);
-    // The fresh database had nothing to copy.
-    assert!(snapshot_reasons(&state).await.is_empty());
+    assert_eq!(snapshot_reasons(&state).await, ["migration"]);
 
     let mut more = migrations.clone();
     more.push(migration(
@@ -1099,7 +1230,7 @@ async fn migrations_apply_once_after_a_snapshot_of_what_they_change() {
         panic!("the new migration applies");
     };
     assert_eq!(report["applied"], json!(["0003_more.sql"]));
-    assert_eq!(snapshot_reasons(&state).await, ["migration"]);
+    assert_eq!(snapshot_reasons(&state).await, ["migration", "migration"]);
 
     let Response::Ok { data: report } = migrate(&state, more, false, None).await else {
         panic!("nothing is pending");
@@ -1107,8 +1238,8 @@ async fn migrations_apply_once_after_a_snapshot_of_what_they_change() {
     assert_eq!(report["applied"], json!([]));
     assert_eq!(
         snapshot_reasons(&state).await.len(),
-        1,
-        "no snapshot without pending migrations"
+        2,
+        "no restore point without pending migrations"
     );
 }
 
@@ -1193,17 +1324,23 @@ async fn reset_empties_a_database_after_a_safety_copy() {
         "the reset dropped the table"
     );
     assert_eq!(snapshot_reasons(&state).await, ["restore"]);
-    // The safety copy restores the contents.
-    let snapshot =
-        ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await["snapshots"][0]["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+    // The restore point before the reset restores the contents.
+    let listed = ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await;
+    let snapshot = listed["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|snapshot| snapshot["reason"] == "restore")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     ok(
         &state,
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: Some(snapshot),
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
@@ -1269,7 +1406,7 @@ async fn deleting_a_database_deletes_its_snapshots() {
         },
     )
     .await;
-    let store = crate::databases::snapshots::test_store("delete-bucket").unwrap();
+    let store = crate::databases::backups::test_store("delete-bucket").unwrap();
     let objects = || async {
         use futures_util::TryStreamExt;
         store
@@ -1320,7 +1457,7 @@ async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
         },
     )
     .await;
-    let store = crate::databases::snapshots::test_store("keep-bucket").unwrap();
+    let store = crate::databases::backups::test_store("keep-bucket").unwrap();
     use futures_util::TryStreamExt;
     let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
     assert_eq!(objects.len(), 2, "the manifest and its data remain");
@@ -1351,6 +1488,7 @@ async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: Some(key()),
         },
     )
@@ -1379,12 +1517,157 @@ async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: Some(taken["snapshot"]["id"].as_str().unwrap().into()),
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
     .await;
     let names = query(&new, ID, "SELECT name FROM items ORDER BY rowid").await;
     assert_eq!(names["rows"], json!([["moved"], ["new"]]));
+}
+
+#[tokio::test]
+async fn a_new_copy_backs_up_nothing_until_it_is_restored() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("move-target-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&old, ID, "INSERT INTO items VALUES ('moved')").await;
+    ok(
+        &old,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    // A move creates the copy, and the scheduler can reach it before the
+    // restore lists the backups.
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("move-target-bucket")).await;
+    crate::databases::backups::back_up(&new, ID).await;
+    let status = ok(
+        &new,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
+    // it carries no secrets.
+    assert!(
+        status["databases"][0]["backup"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("until it is restored")),
+        "{status}"
+    );
+    // Its empty file was not uploaded, so the latest state is the old copy's.
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: None,
+            backup_key_base64: Some(key()),
+        },
+    )
+    .await;
+    assert_eq!(count(&new, ID).await, 1);
+    // Restored, it backs up.
+    query(&new, ID, "INSERT INTO items VALUES ('new')").await;
+    ok(
+        &new,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+}
+
+fn spool_segments(state: &ServerState) -> usize {
+    let ltx = state.databases.database_dir(ID).join("replica").join("ltx");
+    std::fs::read_dir(&ltx)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|level| {
+            std::fs::read_dir(level.path())
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn a_copy_that_lost_the_database_stops_capturing() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("lost-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    ok(
+        &old,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("lost-bucket")).await;
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: None,
+            backup_key_base64: Some(key()),
+        },
+    )
+    .await;
+    // The old copy, unreachable during the move, keeps taking writes.
+    query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
+    crate::databases::backups::back_up(&old, ID).await;
+    let status = ok(
+        &old,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
+    // it carries no secrets.
+    assert!(
+        status["databases"][0]["backup"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("moved to another server")),
+        "{status}"
+    );
+    // It stopped capturing, so its spool no longer grows with each write.
+    let held = spool_segments(&old);
+    for round in 0..3 {
+        query(
+            &old,
+            ID,
+            &format!("INSERT INTO items VALUES ('stale {round}')"),
+        )
+        .await;
+        crate::databases::backups::back_up(&old, ID).await;
+    }
+    assert_eq!(spool_segments(&old), held);
+    // Nor after a restart, which forgets everything but the disk.
+    crate::databases::backups::forget(&old, ID, false)
+        .await
+        .unwrap();
+    crate::databases::backups::back_up(&old, ID).await;
+    assert_eq!(spool_segments(&old), held);
 }
 
 #[tokio::test]
@@ -1410,19 +1693,19 @@ async fn a_failed_move_leaves_the_old_copy_snapshotting() {
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: Some(BASE64.encode([9u8; 32])),
         },
     )
     .await;
-    // The claim was given back, so the old copy still snapshots.
-    let store = crate::databases::snapshots::test_store("unfenced-bucket").unwrap();
-    let holder = object_store::path::Path::from(format!(
-        "_tako/databases/{ID}/{GENERATION}/snapshots/holder"
-    ));
-    assert!(matches!(
-        store.get(&holder).await,
-        Err(object_store::Error::NotFound { .. })
-    ));
+    // The claim was given back: the holder names no server, so the old copy
+    // still snapshots.
+    let store = crate::databases::backups::test_store("unfenced-bucket").unwrap();
+    let holder =
+        object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}/holder"));
+    let holder: serde_json::Value =
+        serde_json::from_slice(&store.get(&holder).await.unwrap().bytes().await.unwrap()).unwrap();
+    assert_eq!(holder["server"], "(none)");
     query(&old, ID, "INSERT INTO items VALUES ('later')").await;
     ok(&old, snapshot()).await;
 }
@@ -1453,6 +1736,7 @@ async fn deleting_a_database_fences_its_snapshots_from_a_copy_that_holds_them() 
         Command::RestoreDatabase {
             name: ID.into(),
             snapshot: None,
+            at_unix_ms: None,
             backup_key_base64: None,
         },
     )
@@ -1512,7 +1796,7 @@ async fn a_copy_the_delete_could_not_reach_publishes_nothing_afterwards() {
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
     // string; these commands carry no secrets.
     assert!(refused.contains("was deleted"), "{refused}");
-    let store = crate::databases::snapshots::test_store("deleted-fence-bucket").unwrap();
+    let store = crate::databases::backups::test_store("deleted-fence-bucket").unwrap();
     let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
     let left: Vec<String> =
         futures_util::TryStreamExt::try_collect::<Vec<_>>(store.list(Some(&prefix)))
@@ -1544,6 +1828,7 @@ async fn moves_resume_and_abandoned_moves_give_the_snapshots_back() {
     let restore = || Command::RestoreDatabase {
         name: ID.into(),
         snapshot: None,
+        at_unix_ms: None,
         backup_key_base64: Some(key()),
     };
     ok(&new, restore()).await;
@@ -1726,13 +2011,13 @@ async fn interrupted_work_directories_are_removed_once_stale() {
     let now = std::time::SystemTime::now();
     // A directory an operation may still be using stays.
     assert_eq!(
-        crate::databases::snapshots::remove_stale_work_dirs(&root, now),
+        crate::databases::backups::remove_stale_work_dirs(&root, now),
         0
     );
     assert!(root.join("restore-left-behind").exists());
     let tomorrow = now + std::time::Duration::from_secs(25 * 60 * 60);
     assert_eq!(
-        crate::databases::snapshots::remove_stale_work_dirs(&root, tomorrow),
+        crate::databases::backups::remove_stale_work_dirs(&root, tomorrow),
         1
     );
     assert!(!root.join("restore-left-behind").exists());
@@ -1833,7 +2118,7 @@ async fn transfers_still_receiving_chunks_keep_their_work_directory() {
     .await;
     let now = std::time::SystemTime::now();
     assert_eq!(
-        crate::databases::snapshots::remove_stale_work_dirs(&root, now),
+        crate::databases::backups::remove_stale_work_dirs(&root, now),
         0
     );
     assert!(dirs[0].path().exists());

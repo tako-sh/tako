@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/pingora-core"]
+exclude = ["vendor/pingora-core", "vendor/terse-litestream"]
 members = [
   "tako-core",
+  "tako-backup",
   "tako-network",
   "tako-compose",
   "tako-socket",

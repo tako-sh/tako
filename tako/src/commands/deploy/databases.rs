@@ -1,6 +1,6 @@
 //! Preparing an environment's databases before its release command and
 //! rollout: backup destinations and grants on the databases' servers (for
-//! administrators), a snapshot before the release command, and the
+//! administrators), a restore point before the release command, and the
 //! project's migrations. KV stores are backed up and granted like
 //! databases; they have no migrations.
 
@@ -209,7 +209,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             backed_up.insert(replay.database_name.clone(), replay);
         }
         for planned in backed_up.values() {
-            // Without a backup storage the server stops snapshotting the
+            // Without a backup storage the server stops backing up the
             // database.
             let storage = crate::commands::storage::decrypt_database_backup_storage(
                 prep.env,
@@ -251,7 +251,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
                 Command::SnapshotDatabase {
                     name: planned.database_name.clone(),
                     reason: SnapshotReason::Release,
-                    // Administrators may snapshot any database, including
+                    // Administrators may back up any database, including
                     // one this deploy binds for the first time; deployers
                     // without administration name their app.
                     app: (!prep.administrator).then(|| prep.app.to_owned()),
@@ -260,7 +260,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             .await
             .map_err(|e| {
                 format!(
-                    "Snapshot {} before the release command: {e}",
+                    "Back up {} before the release command: {e}",
                     planned.database_name
                 )
             })?;
