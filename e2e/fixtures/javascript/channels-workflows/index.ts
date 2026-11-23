@@ -1,4 +1,5 @@
-import { signal, WorkflowResultError } from "tako.sh";
+import { hostname } from "node:os";
+import { signal, tako, WorkflowResultError } from "tako.sh";
 import approval from "./src/workflows/approval";
 import broadcast from "./src/workflows/broadcast";
 import demo from "./src/channels/demo";
@@ -51,7 +52,13 @@ export default async function fetch(request: Request): Promise<Response> {
   if (url.pathname === "/publish" && request.method === "POST") {
     const { message } = (await request.json()) as { message: string };
     const published = await demo.publish({ type: "message", data: { message } });
-    return Response.json({ ok: true, id: published.id });
+    return Response.json({
+      ok: true,
+      id: published.id,
+      publisher: hostname(),
+      databaseBindings: Object.keys(tako.databases),
+      hasReplayBinding: tako.databases["@channels"] !== undefined,
+    });
   }
 
   if (url.pathname === "/store/messages" && request.method === "POST") {

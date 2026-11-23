@@ -272,6 +272,11 @@ impl TakoToml {
                 tako_core::validate_database_name(database_name)
                     .map_err(ConfigError::Validation)?;
             }
+            if let Some(channels) = &env_config.channels {
+                tako_core::validate_database_name(&channels.database).map_err(|error| {
+                    ConfigError::Validation(format!("[envs.{env_name}.channels].database: {error}"))
+                })?;
+            }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
             }

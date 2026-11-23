@@ -46,6 +46,35 @@ pub fn detect_app_sdk(runtime_id: &str, app_dir: &Path, source_root: &Path) -> O
     }
 }
 
+/// Whether the app in `app_dir` depends on a Tako SDK at all, including a
+/// declared dependency whose version is not readable yet (a Rust app before
+/// its first build writes `Cargo.lock`). Callers use it to decide whether the
+/// app can use SDK-backed runtime features, so it errs toward `true`.
+pub fn app_uses_sdk(runtime_id: &str, app_dir: &Path, source_root: &Path) -> bool {
+    let dirs = search_dirs(app_dir, source_root);
+    detect_app_sdk(runtime_id, app_dir, source_root).is_some()
+        || dirs.iter().any(|dir| package_json_declares_sdk(dir))
+        || read_nearest(&dirs, "Cargo.toml")
+            .is_some_and(|manifest| cargo_toml_declares_sdk(&manifest))
+}
+
+/// `tako = ...`, `tako.workspace = true`, `[dependencies.tako]`, or a renamed
+/// `package = "tako"` dependency, in any dependency table.
+fn cargo_toml_declares_sdk(manifest: &str) -> bool {
+    manifest.lines().any(|line| {
+        let line: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        line.starts_with(&format!("{RUST_CRATE}="))
+            || line.starts_with(&format!("{RUST_CRATE}."))
+            || line.ends_with(&format!("dependencies.{RUST_CRATE}]"))
+            || line.contains(&format!("package=\"{RUST_CRATE}\""))
+    })
+}
+
 fn search_dirs<'a>(app_dir: &'a Path, source_root: &Path) -> Vec<&'a Path> {
     let dirs: Vec<&Path> = app_dir
         .ancestors()
@@ -617,6 +646,38 @@ mod tests {
             detect_app_sdk("bun", temp.path(), temp.path()),
             sdk("javascript", "tako.sh", "1.4.2")
         );
+    }
+
+    #[test]
+    fn sdk_use_counts_declared_dependencies_without_a_lockfile() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let uses = || app_uses_sdk("custom", dir, dir);
+        assert!(!uses());
+        for manifest in [
+            "[dependencies]\ntako = \"0.3\"",
+            "[dependencies]\ntako.workspace = true",
+            "[dependencies.tako]\npath = \"../sdk\"",
+            "[dependencies]\nsdk = { package = \"tako\", version = \"0.3\" }",
+        ] {
+            std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            assert!(uses(), "{manifest}");
+        }
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"tako\"\n[dependencies]\ntako-extra = \"1\"\ntakoyaki = \"1\"\n# tako = \"1\"",
+        )
+        .unwrap();
+        assert!(!uses());
+        std::fs::remove_file(dir.join("Cargo.toml")).unwrap();
+        std::fs::write(dir.join("go.mod"), "module app\n\nrequire tako.sh v0.4.1\n").unwrap();
+        assert!(app_uses_sdk("go", dir, dir));
+        std::fs::write(
+            dir.join("go.mod"),
+            "module app\n\nrequire example.com/x v1.0.0\n",
+        )
+        .unwrap();
+        assert!(!app_uses_sdk("go", dir, dir));
     }
 
     #[test]

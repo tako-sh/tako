@@ -21,6 +21,7 @@ pub(super) const CHECKED_IN_PATH: &str = "website/public/schemas/tako-toml.json"
 pub(super) const UPDATE_ENV: &str = "TAKO_UPDATE_SCHEMA";
 
 const NAME_PATTERN: &str = "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$";
+pub(super) const DATABASE_NAME_PATTERN: &str = "^[a-z][a-z0-9_-]{0,62}$";
 const NON_BLANK_PATTERN: &str = "\\S";
 
 /// Generate the `tako.toml` JSON Schema.
@@ -193,7 +194,7 @@ pub(super) fn generate() -> Value {
         "databases": {
             "type": "object",
             "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
-            "propertyNames": { "pattern": "^[a-z][a-z0-9_-]{0,62}$" },
+            "propertyNames": { "pattern": DATABASE_NAME_PATTERN },
             "additionalProperties": database,
         },
         "servers": {

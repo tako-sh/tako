@@ -419,9 +419,13 @@ fn format_database_lines(databases: &[(String, Vec<String>)]) -> Vec<String> {
         .iter()
         .map(|(name, bound_by)| {
             let detail = if bound_by.is_empty() {
-                output::theme_muted("not bound by this project").to_string()
+                output::theme_muted("not used by this project").to_string()
             } else {
-                format!("bound by {}", bound_by.join(", "))
+                let users: Vec<_> = bound_by
+                    .iter()
+                    .map(|scope| crate::commands::project_resources::database_user_label(scope))
+                    .collect();
+                format!("used by {}", users.join(", "))
             };
             format!(
                 "{indent}{name:<width$}  {detail}",
@@ -501,8 +505,8 @@ fn format_project_lines(
                 .databases
                 .iter()
                 .map(|db| match &db.server {
-                    Some(server) => format!("{} → {} on {server}", db.binding, db.database),
-                    None => format!("{} → {} (no network record)", db.binding, db.database),
+                    Some(server) => format!("{} → {} on {server}", db.usage.label(), db.database),
+                    None => format!("{} → {} (no network record)", db.usage.label(), db.database),
                 })
                 .collect();
             lines.push(format!("{indent}databases {}", databases.join(", ")));
@@ -748,11 +752,20 @@ mod tests {
                 credentials: readable.then_some(false),
             }],
             backup_key: readable.then_some(true),
-            databases: vec![DatabaseBinding {
-                binding: "main".into(),
-                database: "orders".into(),
-                server: Some("edge-a".into()),
-            }],
+            databases: vec![
+                ProjectDatabase {
+                    usage: DatabaseUsage::Binding {
+                        binding: "main".into(),
+                    },
+                    database: "orders".into(),
+                    server: Some("edge-a".into()),
+                },
+                ProjectDatabase {
+                    usage: DatabaseUsage::ChannelReplay,
+                    database: "events".into(),
+                    server: Some("edge-b".into()),
+                },
+            ],
             note: (!readable).then(|| DEPLOY_CLIENT_NOTE.into()),
             access,
         }
@@ -775,10 +788,10 @@ mod tests {
                 "App shop",
                 "  production  network main  servers edge-a",
                 "    3 secrets  credentials postgres_url  storage uploads → media (no credentials)  backup key",
-                "    databases main → orders on edge-a",
+                "    databases main → orders on edge-a, channel replay → events on edge-b",
                 "  staging     network main (deploy client)  servers edge-a",
                 "    storage uploads → media",
-                "    databases main → orders on edge-a",
+                "    databases main → orders on edge-a, channel replay → events on edge-b",
                 "    Secrets, credentials and backup keys need a full client.",
             ]
         );
@@ -919,7 +932,10 @@ mod tests {
         };
         let databases = vec![
             ("audit".to_string(), vec![]),
-            ("orders".to_string(), vec!["shop/production".to_string()]),
+            (
+                "orders".to_string(),
+                vec!["shop/production#channels".to_string()],
+            ),
         ];
         let lines: Vec<String> = format_server_status_lines("edge-a", None, &global, &databases)
             .into_iter()
@@ -930,8 +946,8 @@ mod tests {
             &[
                 String::new(),
                 "  Databases".to_string(),
-                "    audit   not bound by this project".to_string(),
-                "    orders  bound by shop/production".to_string(),
+                "    audit   not used by this project".to_string(),
+                "    orders  used by shop/production (channel replay)".to_string(),
             ]
         );
     }

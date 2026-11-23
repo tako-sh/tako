@@ -37,8 +37,25 @@ pub(crate) struct StorageBinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct DatabaseBinding {
-    pub binding: String,
+#[serde(tag = "usage", rename_all = "snake_case")]
+pub(crate) enum DatabaseUsage {
+    Binding { binding: String },
+    ChannelReplay,
+}
+
+impl DatabaseUsage {
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Binding { binding } => binding,
+            Self::ChannelReplay => "channel replay",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ProjectDatabase {
+    #[serde(flatten)]
+    pub usage: DatabaseUsage,
     pub database: String,
     /// The server the database lives on, when its network record is known.
     pub server: Option<String>,
@@ -58,7 +75,7 @@ pub(crate) struct EnvResources {
     pub credentials: Option<Vec<String>>,
     pub storages: Vec<StorageBinding>,
     pub backup_key: Option<bool>,
-    pub databases: Vec<DatabaseBinding>,
+    pub databases: Vec<ProjectDatabase>,
     pub note: Option<String>,
 }
 
@@ -89,14 +106,23 @@ impl ProjectResources {
             };
             for record in records.iter().filter(|record| record.server == server_id) {
                 // Database names are unique within a network, not across them.
-                let bound_by = self
+                let mut users = BTreeSet::new();
+                for env in self
                     .envs
                     .iter()
-                    .filter(|env| env.network_id.as_deref() == Some(network_id.as_str()))
-                    .filter(|env| env.databases.iter().any(|db| db.database == record.name))
-                    .map(|env| format!("{}/{}", self.app, env.name))
-                    .collect();
-                homed.push((record.name.clone(), bound_by));
+                    .filter(|env| env.network_id.as_ref() == Some(network_id))
+                {
+                    for db in env.databases.iter().filter(|db| db.database == record.name) {
+                        let scope = tako_core::deployment_app_id(&self.app, &env.name);
+                        users.insert(match db.usage {
+                            DatabaseUsage::Binding { .. } => scope,
+                            DatabaseUsage::ChannelReplay => {
+                                tako_core::channel_replay_grant_scope(&scope)
+                            }
+                        });
+                    }
+                }
+                homed.push((record.name.clone(), users.into_iter().collect()));
             }
         }
         homed.sort();
@@ -113,6 +139,7 @@ pub(crate) fn load(
     let app = config.name.clone().unwrap_or_else(|| "app".to_string());
     let secrets = context.load_secrets().unwrap_or_default();
     let aliases = LocalNetworks::load().ok();
+    let needs_replay = super::deploy::project_needs_channel_replay(&context.project_dir, &config);
 
     let mut databases = BTreeMap::new();
     let mut envs = Vec::new();
@@ -159,11 +186,13 @@ pub(crate) fn load(
             &name,
             &config,
             &secrets,
+            needs_replay,
             access,
             servers,
             alias.map(|alias| alias.alias).or(network_id.clone()),
             network_id,
-            homes.map(|records| server_names(records, inventory)),
+            homes.map(Vec::as_slice).unwrap_or_default(),
+            inventory,
         ));
     }
     Ok(ProjectResources {
@@ -211,11 +240,13 @@ pub(crate) fn env_resources(
     name: &str,
     config: &TakoToml,
     secrets: &SecretsStore,
+    needs_replay: bool,
     access: Access,
     servers: Result<Vec<String>, String>,
     network: Option<String>,
     network_id: Option<String>,
-    database_servers: Option<BTreeMap<String, String>>,
+    records: &[DatabaseRecord],
+    inventory: &ServerInventory,
 ) -> EnvResources {
     let env = config.envs.get(name);
     let readable = matches!(access, Access::Local | Access::Full);
@@ -252,21 +283,29 @@ pub(crate) fn env_resources(
         .unwrap_or_default();
     storages.sort_by(|a, b| a.binding.cmp(&b.binding));
 
-    let mut databases: Vec<DatabaseBinding> = env
+    let database_servers = server_names(records, inventory);
+    let mut databases: Vec<ProjectDatabase> = env
         .map(|env| {
             env.databases
                 .iter()
-                .map(|(binding, database)| DatabaseBinding {
-                    binding: binding.clone(),
+                .map(|(binding, database)| ProjectDatabase {
+                    usage: DatabaseUsage::Binding {
+                        binding: binding.clone(),
+                    },
                     database: database.clone(),
-                    server: database_servers
-                        .as_ref()
-                        .and_then(|servers| servers.get(database).cloned()),
+                    server: database_servers.get(database).cloned(),
                 })
                 .collect()
         })
         .unwrap_or_default();
-    databases.sort_by(|a, b| a.binding.cmp(&b.binding));
+    databases.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
+    if let Some(database) = replay_database(config, name, records, secrets, needs_replay) {
+        databases.push(ProjectDatabase {
+            usage: DatabaseUsage::ChannelReplay,
+            server: database_servers.get(database).cloned(),
+            database: database.to_owned(),
+        });
+    }
 
     let credentials = readable.then(|| {
         let mut names: Vec<String> = secrets
@@ -295,6 +334,43 @@ pub(crate) fn env_resources(
         databases,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
     }
+}
+
+/// Hosted replay uses a database without creating an app SQL binding. Like
+/// deploy planning, the generated database is selected only while the
+/// project's code uses channels (`needs_replay`) and no `postgres_url` is set;
+/// otherwise it stays in the directory unused.
+pub(crate) fn replay_database<'a>(
+    config: &'a TakoToml,
+    env: &str,
+    records: &'a [DatabaseRecord],
+    secrets: &SecretsStore,
+    needs_replay: bool,
+) -> Option<&'a str> {
+    if env == "development" {
+        return None;
+    }
+    if let Some(channels) = &config.envs.get(env)?.channels {
+        return Some(&channels.database);
+    }
+    if !needs_replay
+        || secrets
+            .get_credential(env, crate::config::POSTGRES_CREDENTIAL_NAME)
+            .is_some()
+    {
+        return None;
+    }
+    let owner = tako_core::deployment_app_id(config.name.as_deref()?, env);
+    records.iter().find_map(|record| {
+        (record.channel_owner.as_deref() == Some(owner.as_str())).then_some(record.name.as_str())
+    })
+}
+
+/// Display a server-reported SQL or internal channel grant scope.
+pub(crate) fn database_user_label(scope: &str) -> String {
+    scope
+        .strip_suffix("#channels")
+        .map_or_else(|| scope.to_owned(), |app| format!("{app} (channel replay)"))
 }
 
 /// Whether the environment's routes need `ssl.cloudflare` and it isn't set.

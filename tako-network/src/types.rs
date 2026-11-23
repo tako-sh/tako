@@ -269,7 +269,7 @@ impl fmt::Display for SshPublicKey {
 
 macro_rules! text_type {
     ($name:ident, $validate:expr) => {
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
         impl $name {

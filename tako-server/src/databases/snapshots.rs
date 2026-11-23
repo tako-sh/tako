@@ -1325,6 +1325,8 @@ pub(crate) async fn replace_locked(
         .database_dir(&stored.name)
         .join("previous.sqlite");
     let swapped = tokio::task::spawn_blocking(move || {
+        rotate_replay_epochs(&replacement)
+            .map_err(|e| format!("prepare restored channel replay epochs: {e}"))?;
         tako_database::replace_database(&path, &replacement, &previous)
     })
     .await
@@ -1355,6 +1357,36 @@ pub(crate) async fn replace_locked(
         }
     }
     Ok(warnings)
+}
+
+/// Cursors issued before a restore cannot refer to the restored timeline.
+/// Change the staged copy only, before its main file is renamed into place.
+fn rotate_replay_epochs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use rusqlite::{Connection, OpenFlags, config::DbConfig};
+
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
+    let replay: bool = db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+           WHERE type = 'table' AND name = 'tako_replay_apps' COLLATE NOCASE AND rootpage > 0)
+         AND (SELECT count(*) FROM pragma_table_info('tako_replay_apps')
+              WHERE name COLLATE NOCASE IN ('app', 'epoch') AND type = 'TEXT' COLLATE NOCASE) = 2",
+        [],
+        |row| row.get(0),
+    )?;
+    if replay {
+        db.execute(
+            "UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
+            [],
+        )?;
+        // The swap moves only the main file; make the new epochs durable in it.
+        let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        if busy != 0 {
+            return Err("could not checkpoint the replacement database".into());
+        }
+    }
+    Ok(())
 }
 
 /// Removes the work directories under `root` last modified more than

@@ -6,3 +6,9 @@ databases = { messages = "messages" }
 
 [envs.production]
 route = "cw-e2e.example.com"
+databases = { messages = "messages" }
+# A release command gets only its app SQL bindings, including on the remote node.
+release = """node -e 'require("node:assert/strict").deepEqual(Object.keys(JSON.parse(process.env.TAKO_BOOTSTRAP_DATA).databases), ["messages"])'"""
+
+[envs.production.channels]
+database = "channel-replay"

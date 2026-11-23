@@ -49,7 +49,12 @@ use task_tree::{
     DeployTaskTreeController, build_artifact_target_groups, should_use_deploy_task_tree,
 };
 
+pub(crate) use config::project_needs_channel_replay;
 pub(crate) use manifest::resolve_deploy_main;
+
+/// A deploy-only client cannot create the replay database or read Postgres.
+const UNPROVISIONED_REPLAY: &str =
+    "Keep the servers' current channel storage (hosted replay needs a full-access deploy)";
 
 /// Deployment configuration
 #[derive(Clone)]
@@ -67,6 +72,7 @@ struct DeployConfig {
     backup: Option<tako_core::BackupBinding>,
     /// Database bindings, sent with the release command and the deploy.
     databases: HashMap<String, tako_core::DatabaseBinding>,
+    channel_database: Option<tako_core::DatabaseBinding>,
     force: bool,
     main: String,
     use_unified_target_process: bool,
@@ -136,6 +142,20 @@ pub(super) fn resolve_release_command(config: &TakoToml, env_name: &str) -> Opti
 }
 
 impl DeployConfig {
+    /// Scoped clients assert only the replay target. The server supplies the
+    /// existing binding's secret peer key and preserves all app SQL bindings.
+    fn deploy_databases(&self, full: bool) -> Option<HashMap<String, tako_core::DatabaseBinding>> {
+        let mut bindings = if full {
+            self.databases.clone()
+        } else {
+            HashMap::new()
+        };
+        if let Some(replay) = &self.channel_database {
+            bindings.insert(tako_core::CHANNEL_REPLAY_BINDING.to_owned(), replay.clone());
+        }
+        (full || !bindings.is_empty()).then_some(bindings)
+    }
+
     fn release_command_payload(&self, release_dir: &str) -> Option<tako_core::Command> {
         let command_line = self.release_command.as_ref()?;
         Some(tako_core::Command::RunRelease {
@@ -339,7 +359,71 @@ async fn run_async(
         }
     }
 
+    let deployment_app_name = tako_core::deployment_app_id(&app_name, &env);
+    let needs_replay =
+        config::needs_channel_replay(&project_dir, &tako_config, preflight_runtime_adapter);
+    let postgres = |secrets: &SecretsStore| {
+        secrets
+            .get_credential(&env, crate::config::POSTGRES_CREDENTIAL_NAME)
+            .is_some()
+    };
+    let has_postgres = postgres(&secrets);
+    if !tako_config.envs[&env].databases.is_empty() && is_container_release {
+        return Err("Database bindings are available to native releases only; container and Compose releases cannot use them yet.".into());
+    }
+    // Only deploys that bind, select, provision or revoke a database read the
+    // directory, so an unreadable record cannot block unrelated apps.
+    let environment = &tako_config.envs[&env];
+    let reads_directory = configure_bindings
+        || !environment.databases.is_empty()
+        || environment.channels.is_some()
+        || (needs_replay && !has_postgres);
+    let mut database_records = if reads_directory {
+        tokio::task::block_in_place(|| {
+            crate::network::databases::list_from(&network, output::is_dry_run())
+        })?
+    } else {
+        Vec::new()
+    };
+    let mut database_plan = databases::plan(
+        &tako_config,
+        &servers,
+        &network.id,
+        &env,
+        &deployment_app_name,
+        &database_records,
+        configure_bindings,
+        needs_replay,
+        has_postgres,
+    )?;
+    if database_plan.unprovisioned_replay && !output::is_dry_run() {
+        output::hint(&format!(
+            "No hosted channel replay is provisioned for {env}; the servers keep their current channel storage. Deploy once with full access to provision it."
+        ));
+    }
     if output::is_dry_run() {
+        for (name, home) in &database_plan.create {
+            output::dry_run_skip(&format!(
+                "Create database {name} on {} (cached network plan)",
+                home.name
+            ));
+        }
+        if let Some(replay) = &database_plan.replay {
+            output::dry_run_skip(&format!(
+                "Use channel database {} on {} ({})",
+                replay.database_name,
+                replay.home.name,
+                if database_plan.implicit_replay {
+                    "automatic"
+                } else {
+                    "configured"
+                }
+            ));
+        } else if database_plan.unprovisioned_replay {
+            output::dry_run_skip(UNPROVISIONED_REPLAY);
+        } else if has_postgres && needs_replay {
+            output::dry_run_skip("Use configured Postgres for channels");
+        }
         output::dry_run_skip("Server checks");
         output::dry_run_skip("Build");
         for name in &server_names {
@@ -350,34 +434,22 @@ async fn run_async(
         }
         let https_port = common_https_port_for_servers(&server_names, &servers);
         print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
+        if output::is_json() {
+            return output::json_result(serde_json::json!({
+                "ok": true, "command": "deploy", "dry_run": true, "app": deployment_app_name,
+                "servers": server_names, "source": "cached_network",
+                "create_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name,"server":home.name})).collect::<Vec<_>>(),
+                "channel_database": database_plan.replay.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.implicit_replay})),
+                "channel_postgres": needs_replay && has_postgres && database_plan.replay.is_none(),
+                "channel_replay_unprovisioned": database_plan.unprovisioned_replay,
+            }));
+        }
         return Ok(());
     }
 
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    // Administrators also need the records to revoke stale grants.
-    let binds_databases = tako_config
-        .envs
-        .get(&env)
-        .is_some_and(|env| !env.databases.is_empty());
-    let database_records = if binds_databases || configure_bindings {
-        crate::commands::sqlite::target::env_records(&tako_config, &env)?
-    } else {
-        Vec::new()
-    };
-    let mut database_plan = crate::commands::sqlite::target::plan_bindings(
-        &tako_config,
-        &servers,
-        &env,
-        &database_records,
-    )?;
-    if !database_plan.is_empty() && is_container_release {
-        return Err(
-            "Database bindings are available to native releases only; container and Compose releases cannot use them yet."
-                .into(),
-        );
-    }
     tracing::debug!("{}", format_servers_summary(&server_names));
 
     if configure_bindings {
@@ -441,6 +513,9 @@ async fn run_async(
         secrets = tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(&project_dir, &app_name, &env, true, false)
         })?;
+        if postgres(&secrets) != has_postgres && needs_replay {
+            return Err("Channel storage configuration changed during deploy; retry to plan against the current configuration.".into());
+        }
         let final_validation = config::validate_release_secret_snapshot(
             &project_dir,
             &tako_config,
@@ -607,17 +682,25 @@ async fn run_async(
 
     // ===== Deploy =====
 
-    let deployment_app_name = tako_core::deployment_app_id(&app_name, &env);
     let leader_server = server_names
         .first()
         .cloned()
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
+    if configure_bindings {
+        databases::provision(
+            &database_plan,
+            &network,
+            &deployment_app_name,
+            &mut database_records,
+        )
+        .await?;
+    }
     // An administrator's deploy also revokes the grants of an environment
     // that no longer binds the network's databases.
     let revokes_grants = configure_bindings && !database_records.is_empty();
     let mut granted = None;
-    if !database_plan.is_empty() || revokes_grants {
+    if !database_plan.sql.is_empty() || revokes_grants {
         let prepared = databases::prepare(databases::Preparation {
             plan: &database_plan,
             records: &database_records,
@@ -632,7 +715,13 @@ async fn run_async(
             release: release_command.is_some(),
         })
         .await?;
-        databases::apply_peer_keys(&mut database_plan, &prepared.peer_keys);
+        databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
+        if let Some(replay) = &mut database_plan.replay {
+            replay.binding.peer_key = prepared
+                .replay_peer_keys
+                .get(&replay.home.device_id)
+                .cloned();
+        }
         granted = Some(prepared);
     }
     // Pin the environment's secret snapshot on the leader once it holds what
@@ -660,7 +749,8 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
-        databases: crate::commands::sqlite::target::wire_bindings(&database_plan),
+        databases: crate::commands::sqlite::target::wire_bindings(&database_plan.sql),
+        channel_database: database_plan.replay.map(|replay| replay.binding),
         force,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,
@@ -808,7 +898,7 @@ async fn run_async(
         // Every server runs the new release; grants only the old one used
         // can go.
         if let Some(granted) = granted {
-            databases::narrow_grants(&deployment_app_name, granted).await;
+            databases::narrow_grants(granted).await;
         }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
@@ -822,6 +912,12 @@ async fn run_async(
             print_deploy_summary_with_https_port("Release", &version, &routes, https_port);
         }
 
+        if output::is_json() {
+            return output::json_result(serde_json::json!({
+                "ok": true, "command": "deploy",
+                "created_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name, "server":home.name})).collect::<Vec<_>>()
+            }));
+        }
         Ok(())
     } else {
         let succeeded = targets.len() - errors.len();

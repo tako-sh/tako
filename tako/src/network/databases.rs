@@ -31,6 +31,9 @@ pub(crate) struct DatabaseRecord {
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
+    /// Set only when deploy creates an implicit replay database for this app/env.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_owner: Option<String>,
 }
 
 fn scope() -> Result<AppEnv> {
@@ -41,9 +44,17 @@ fn scope() -> Result<AppEnv> {
 fn read(
     alias: &LocalNetwork,
     kind: RecordKind,
+    cached: bool,
 ) -> Result<std::collections::BTreeMap<String, Zeroizing<String>>> {
     let scope = scope()?;
-    let (profile, cache) = super::state::pull(alias, Some(scope.clone()))?;
+    let (profile, cache) = if cached {
+        let Some(cache) = super::state::read_cache(alias)? else {
+            return Ok(Default::default());
+        };
+        (super::load_profile(alias)?, cache)
+    } else {
+        super::state::pull(alias, Some(scope.clone()))?
+    };
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
     let mut values = std::collections::BTreeMap::new();
@@ -51,8 +62,9 @@ fn read(
         if record.address.scope != scope || record.address.kind != kind {
             continue;
         }
-        // Records this device may not read, and tombstones, have no value.
-        let Ok(Some(bytes)) = record.open(&cache, &keys, &device) else {
+        // Only a tombstone is absent. A missing recipient key must never
+        // turn an existing database into a candidate for automatic creation.
+        let Some(bytes) = record.open(&cache, &keys, &device)? else {
             continue;
         };
         let content: RecordContent = serde_json::from_slice(&bytes)?;
@@ -63,12 +75,21 @@ fn read(
 
 /// The network's databases, sorted by name.
 pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
+    list_from(alias, false)
+}
+
+/// Dry runs consult the authenticated cache without contacting a server.
+pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<DatabaseRecord>> {
     let mut records = Vec::new();
-    for (name, value) in read(alias, RecordKind::Database)? {
+    for (name, value) in read(alias, RecordKind::Database, cached)? {
         let record: DatabaseRecord = serde_json::from_str(&value)?;
-        if record.name == name {
-            records.push(record);
+        if record.name != name {
+            return Err(format!(
+                "Database directory entry for '{name}' contains a different name."
+            )
+            .into());
         }
+        records.push(record);
     }
     Ok(records)
 }
@@ -86,7 +107,7 @@ pub(crate) fn backup_key(
     alias: &LocalNetwork,
     record: &DatabaseRecord,
 ) -> Result<Zeroizing<String>> {
-    read(alias, RecordKind::DatabaseKey)?
+    read(alias, RecordKind::DatabaseKey, false)?
         .remove(&key_name(record))
         .ok_or_else(|| {
             format!(
@@ -204,6 +225,7 @@ mod tests {
             server: "a".repeat(64),
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
+            channel_owner: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert_eq!(

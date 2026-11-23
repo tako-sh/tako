@@ -411,7 +411,7 @@ async fn send_deploy_command(
             secrets_digest: config.secrets_digest.clone(),
             storages: Some(config.storages.clone()),
             // Database bindings need grants, which only full clients make.
-            databases: server_admin.then(|| config.databases.clone()),
+            databases: config.deploy_databases(server_admin),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
             force: config.force,

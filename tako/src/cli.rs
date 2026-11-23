@@ -659,16 +659,13 @@ impl Cli {
                 yes,
                 force,
                 description,
-            } => {
-                commands::deploy::run(
-                    env.as_deref(),
-                    yes,
-                    force,
-                    description.as_deref(),
-                    self.config.as_deref(),
-                )?;
-                json_success(json, "deploy")
-            }
+            } => commands::deploy::run(
+                env.as_deref(),
+                yes,
+                force,
+                description.as_deref(),
+                self.config.as_deref(),
+            ),
             Commands::Delete {
                 env,
                 server,

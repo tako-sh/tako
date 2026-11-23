@@ -22,6 +22,8 @@ pub(crate) struct NativeProxy {
     export_owner: Option<String>,
     export_replaced: AtomicBool,
     invocations: parking_lot::Mutex<crate::native_invocation::ReplayGuard>,
+    /// Server addresses that database routes were last resolved against.
+    database_peers: parking_lot::Mutex<Option<Vec<(String, IpAddr)>>>,
     pub(crate) address: Ipv6Addr,
     pub(crate) gateway: Ipv4Addr,
 }
@@ -52,6 +54,7 @@ impl NativeProxy {
             export_owner: (!state.runtime_config().standby).then(|| nanoid::nanoid!(32)),
             export_replaced: AtomicBool::new(false),
             invocations: Default::default(),
+            database_peers: Default::default(),
             address: config.network.id.address(&member.request.wg_public_key),
             gateway: gateway.address(),
         });
@@ -177,11 +180,30 @@ impl NativeProxy {
         match serde_json::from_slice::<Option<ServiceSnapshot>>(&projection)
             .map_err(|error| error.to_string())?
         {
-            Some(snapshot) => self.directory.write().replace_snapshot(&snapshot, now),
+            Some(snapshot) => {
+                self.directory.write().replace_snapshot(&snapshot, now)?;
+                self.refresh_database_routes(state, now);
+                Ok(())
+            }
             None => {
                 self.clear();
                 Ok(())
             }
+        }
+    }
+
+    /// Database bindings resolve other servers' addresses from this directory,
+    /// which starts empty and fills after startup has applied them. Re-resolve
+    /// them whenever the servers' addresses change, so a restarted server
+    /// reaches databases on other servers without waiting for a deploy. A
+    /// projection outage keeps the last resolved routes.
+    fn refresh_database_routes(&self, state: &ServerState, now: u64) {
+        let peers = self.directory.read().server_addresses(now);
+        let mut seen = self.database_peers.lock();
+        if seen.as_ref() != Some(&peers) {
+            *seen = Some(peers);
+            drop(seen);
+            state.refresh_database_routes();
         }
     }
 
@@ -329,6 +351,7 @@ mod tests {
             export_owner: export_owner.map(str::to_string),
             export_replaced: AtomicBool::new(false),
             invocations: Default::default(),
+            database_peers: Default::default(),
             address: Ipv6Addr::LOCALHOST,
             gateway: Ipv4Addr::LOCALHOST,
         }

@@ -24,7 +24,7 @@ run's result.
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
 
-The deployment harness also installs `caller/` as a second app. Its root
+The deployment harness also installs `caller/` as a second app.
 The caller's `schemas` imports the producer's generated `tako-schema.json`; generation writes its `tako.imports.ts`.
 `POST /call` invokes `echo`, which directly calls `uppercase`; `POST /run` starts
 the caller's `relay` workflow, durably waits for `broadcast`, and returns its
@@ -47,3 +47,13 @@ messages. `POST /store/messages` with that header and `{ "chatId": "chat-a", "me
 commits a row, then invalidates only that chat's Store subscription. The deployment
 smoke test checks authorization, subscription readiness, invalidation, and the
 refreshed read. Store loaders are never called during type generation.
+
+`just e2e e2e/fixtures/javascript/channels-workflows` deploys `cw-e2e/production`
+first to Ubuntu, then to AlmaLinux in the same two-member network. The full client
+creates `channel-replay` on Ubuntu once (`tako sqlite create channel-replay --server server-ubuntu`).
+`[envs.production.channels].database` selects it on both deployments. App
+instances and release commands see only the `messages` SQL binding. After the
+Store export/import checks, both nodes publish to `demo`; subscribers resume
+through the other node without a reset. `tako sqlite status` checks the
+replay-only binding and peer grant; `tako sqlite shell` matches each returned
+cursor and message to its row. No Postgres credential is set in this fixture.

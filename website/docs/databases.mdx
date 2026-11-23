@@ -16,7 +16,7 @@ Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DAT
 
 ## Create and bind a database
 
-A database belongs to the network, not to an environment. Its name identifies it: names are unique within a network, start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). Creating one requires full access:
+A database belongs to the network, not to an environment. Names are unique within a network, start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). On a network with **one trusted server**, a full client's `tako deploy` creates any missing databases declared by the environment. On a network with **several servers**, choose a home for each missing database first:
 
 ```bash
 tako sqlite create main --server edge-a
@@ -31,11 +31,19 @@ databases = { main = "main" }
 
 Then deploy with `tako deploy --env production`.
 
-`tako.toml` holds only bindings: where each database lives is in the network's records, so a deploy resolves each bound name there and fails when the network has no database with that name. `tako sqlite list --json` shows the network's databases, their servers, and whether this project binds them (`in_project`).
+The network record determines the home, even if the app deploys elsewhere. An app targeting just `edge-a` on a two-server network still needs an explicit placement for a missing database. `tako deploy --env production --dry-run --json` previews creations from cached records. A successful `tako deploy --env production --json` reports newly created names and homes in `created_databases`; subsequent deployments reuse them. A deploy-only identity cannot create or grant a database. Use a full client for the first deploy that needs a new binding or target.
 
 Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].databases` is set.
 
 `tako sqlite` commands use `--network` when given, else the network configured in the selected TOML file's environments, else this machine's only network, else they ask in an interactive terminal. When the environments configure several networks, pass `--network <alias-or-id>`.
+
+### Use a database for channel replay
+
+`[envs.production.channels]` with `database = "chat-prod-replay"` selects a database for Tako to use on behalf of the app. It does **not** create an app SQL alias, run the project's SQL migrations against a replay-only database, or give the app, its workers or its release command a SQL token for replay. The same setting works for an SDK-enabled Compose group, which cannot use ordinary app SQL bindings.
+
+Without that setting or `postgres_url`, a channel-capable deploy selects a generated app/environment database. The automatically owned database cannot be bound as app SQL. If you intentionally select an ordinary database for replay and also bind it for SQL, the SQL binding can read or change **every table**: channel namespace isolation is not a SQL access restriction. Prefer a dedicated replay database.
+
+`tako sqlite list --json` shows the home, `in_project`, `channel_replay_envs`, and `channel_owner` for an automatically owned database. `tako sqlite status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
 
 ## Use it from application code
 
@@ -170,7 +178,7 @@ tako sqlite shell main "SELECT count(*) FROM users" --json
 tako sqlite shell main
 ```
 
-`status` reports the size, the app environments using the database on its server (`bindings`), those granted from other servers (`remote_grants`), and backup state: destination, last snapshot, last attempt, and last error. Without a name it reports every database the project binds.
+`status` reports the size, the app environments using the database on its server (`bindings`), those granted from other servers (`remote_grants`), and backup state: destination, last snapshot, last attempt, and last error. Without a name it reports the databases this project uses in the selected network, including channel replay.
 
 `shell` runs SQL with a full-access connection. With SQL as an argument it runs that statement and exits; with `--json` it prints `columns`, `rows`, `affected_row_count`, and `truncated`. Results stop at 1,000 rows and 8 MiB; use `export` for more. Each statement commits on its own: `BEGIN` is rejected rather than silently leaving later statements outside a transaction, so run multi-statement changes from a migration or a script. Without SQL it reads statements from standard input; an interactive terminal also accepts `.tables`, `.schema [table]`, and `.quit`. The shell has the same restrictions as apps.
 
@@ -222,6 +230,8 @@ tako sqlite restore main --snapshot <snapshot-id>
 A restore checks that the server has room, downloads the snapshot, and verifies its checksum and integrity before anything changes, then pauses the database, copies exactly the contents it replaces, and swaps the snapshot in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. The replaced contents are uploaded as a snapshot with reason `restore` and kept beside the database as `previous.sqlite` until the next replacement. Writes since the restored snapshot are lost.
 
 `--latest` restores the newest snapshot that is not one of these `restore` safety copies, so repeating a restore does not undo it. To go back to the contents a restore replaced, pass its `--snapshot` ID.
+
+Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no snapshot. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
 
 ### Import and export
 
@@ -282,7 +292,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 - Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako runs WAL with `synchronous = FULL`.
 - `foreign_keys` is on for every connection. A statement may take at most 30 seconds to prepare and run, and the statements of one `sequence` (such as `executeMultiple`) share that limit; a statement waits up to 5 seconds for the write lock. A migration file's statements may run for 5 minutes together and wait up to 30 seconds for the write lock. Interactive transactions idle for 10 seconds are rolled back.
 - Requests are limited to 32 MiB and 65,536 statements and batch steps, and a request's body must arrive within 30 seconds (otherwise `408`); a request that waits 30 seconds for one of the database's 32 request slots, or for room in the server's 256 MiB of buffered requests and cursor output, gets `503`, as does a pipeline whose results find no room left in that buffer (results stay counted until the response is sent); a connection that sends no request for 30 seconds, or stops reading its response for 30 seconds, is closed, and a server holds at most 1,024 connections per listener; responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
-- Database bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
+- App SQL bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them; their SDK-enabled services can use hosted replay through the channel runtime.
 - A deploy client cannot change an environment's database bindings; a full client must deploy the change.
 - Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by full clients.
 - `create` refuses a name the network already has. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.

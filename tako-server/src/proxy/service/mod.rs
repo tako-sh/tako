@@ -40,8 +40,14 @@ impl TakoProxy {
         self.lb.unregister_app(app_name);
         self.routes.write().remove_app_routes(app_name);
         self.static_servers.write().remove(app_name);
-        self.channel_stores.write().remove(app_name);
-        self.channel_credentials.write().remove(app_name);
+        if let Some(cell) = self.channel_stores.write().remove(app_name)
+            && let Some(store) = cell.get()
+        {
+            store.detach();
+        }
+        if let Ok(scope) = crate::native_channel_client::app_scope(app_name) {
+            self.channel_credentials.write().remove(scope.as_str());
+        }
         self.channel_registry.invalidate(app_name);
     }
 }

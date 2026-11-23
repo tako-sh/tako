@@ -115,6 +115,25 @@ impl DeliveryState {
         state
     }
 
+    pub(crate) fn signal_gap(&self, channel: Option<&str>) {
+        let mut resets = self.resets.lock();
+        resets.retain(|_, sender| sender.receiver_count() > 0);
+        for (stream, sender) in resets.iter() {
+            if channel.is_none_or(|channel| channel == stream) {
+                sender.send_modify(|generation| *generation = generation.wrapping_add(1));
+            }
+        }
+    }
+
+    /// Positions restart under a replaced database's new epoch: forget the
+    /// heads each stream has seen and make every live subscriber reload.
+    pub(crate) fn replaced(&self) {
+        for changes in self.changes.lock().values() {
+            changes.send_replace(None);
+        }
+        self.signal_gap(None);
+    }
+
     pub(crate) fn wake(&self, channel: &str, head: Option<i64>) {
         let streams = self.changes.lock();
         if let Some(head) = head {

@@ -1,8 +1,6 @@
 use crate::lb::LoadBalancer;
 use crate::proxy::proxy_protocol_service::{ProxyProtocolService, ProxyProtocolTlsAcceptor};
-use crate::proxy::{
-    ChannelPostgresUrlResolver, CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy,
-};
+use crate::proxy::{ChannelTargetResolver, CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy};
 use crate::scaling::ColdStartManager;
 use crate::tls::{CertManager, ChallengeTokens, SelfSignedGenerator, create_sni_callbacks};
 use parking_lot::RwLock;
@@ -36,7 +34,8 @@ pub(crate) struct ServerBuildConfig {
     pub(crate) cert_manager: Option<Arc<CertManager>>,
     pub(crate) cold_start: Arc<ColdStartManager>,
     pub(crate) cloudflare_ips: CloudflareIpRanges,
-    pub(crate) channel_postgres_url: Option<ChannelPostgresUrlResolver>,
+    pub(crate) channel_target: ChannelTargetResolver,
+    pub(crate) direct_channel_stores: Arc<crate::channels::DirectChannelStores>,
     pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
 }
@@ -57,7 +56,8 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         cert_manager,
         cold_start,
         cloudflare_ips,
-        channel_postgres_url,
+        channel_target,
+        direct_channel_stores,
         channel_credentials_generation,
         channel_registry,
     } = build;
@@ -105,11 +105,10 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     proxy.spawn_gate = spawn_gate;
     proxy.proxy_requests = proxy_requests;
     if let Some(client) = native_channels {
-        proxy.set_native_channel_client(client);
+        proxy.set_native_channel_client(client.with_target_resolver(channel_target.clone()));
     }
-    if let Some(resolver) = channel_postgres_url {
-        proxy.set_channel_postgres_url_resolver(resolver);
-    }
+    proxy.set_channel_target_resolver(channel_target);
+    proxy.direct_channel_stores = direct_channel_stores;
     proxy.channel_credentials_generation = channel_credentials_generation;
     proxy.channel_registry = channel_registry;
 

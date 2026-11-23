@@ -160,9 +160,9 @@ async fn credential_rotation_reconnects_shared_socket_and_refreshes_credentials(
     let proxy = proxy_for_feed(temp.path(), feed_app().await);
     let resolutions = Arc::new(AtomicUsize::new(0));
     let calls = resolutions.clone();
-    proxy.set_channel_postgres_url_resolver(Arc::new(move |_| {
+    proxy.set_channel_target_resolver(Arc::new(move |_| {
         calls.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
+        Ok(crate::channels::ChannelTarget::Local)
     }));
     let addr = serve(proxy.clone()).await;
     let mut client = connect(addr).await;
@@ -194,12 +194,12 @@ async fn credential_rotation_during_handshake_invalidates_the_captured_store() {
     let temp = TempDir::new().unwrap();
     let proxy = proxy_for_feed(temp.path(), feed_app().await);
     let generation = proxy.channel_credentials_generation.clone();
-    proxy.set_channel_postgres_url_resolver(Arc::new(move |_| {
+    proxy.set_channel_target_resolver(Arc::new(move |_| {
         // Simulate a deployment landing while the initial credentials resolve.
         generation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .ok();
-        Ok(None)
+        Ok(crate::channels::ChannelTarget::Local)
     }));
     let addr = serve(proxy).await;
     let mut client = connect(addr).await;
