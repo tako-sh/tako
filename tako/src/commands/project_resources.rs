@@ -139,6 +139,7 @@ pub(crate) fn load(
     let app = config.name.clone().unwrap_or_else(|| "app".to_string());
     let secrets = context.load_secrets().unwrap_or_default();
     let aliases = LocalNetworks::load().ok();
+    let needs_replay = super::deploy::project_needs_channel_replay(&context.project_dir, &config);
 
     let mut databases = BTreeMap::new();
     let mut envs = Vec::new();
@@ -185,6 +186,7 @@ pub(crate) fn load(
             &name,
             &config,
             &secrets,
+            needs_replay,
             access,
             servers,
             alias.map(|alias| alias.alias).or(network_id.clone()),
@@ -238,6 +240,7 @@ pub(crate) fn env_resources(
     name: &str,
     config: &TakoToml,
     secrets: &SecretsStore,
+    needs_replay: bool,
     access: Access,
     servers: Result<Vec<String>, String>,
     network: Option<String>,
@@ -296,7 +299,7 @@ pub(crate) fn env_resources(
         })
         .unwrap_or_default();
     databases.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
-    if let Some(database) = replay_database(config, name, records, secrets) {
+    if let Some(database) = replay_database(config, name, records, secrets, needs_replay) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::ChannelReplay,
             server: database_servers.get(database).cloned(),
@@ -334,13 +337,15 @@ pub(crate) fn env_resources(
 }
 
 /// Hosted replay uses a database without creating an app SQL binding. Like
-/// deploy planning, a configured `postgres_url` takes precedence over the
-/// generated database, which then stays in the directory unused.
+/// deploy planning, the generated database is selected only while the
+/// project's code uses channels (`needs_replay`) and no `postgres_url` is set;
+/// otherwise it stays in the directory unused.
 pub(crate) fn replay_database<'a>(
     config: &'a TakoToml,
     env: &str,
     records: &'a [DatabaseRecord],
     secrets: &SecretsStore,
+    needs_replay: bool,
 ) -> Option<&'a str> {
     if env == "development" {
         return None;
@@ -348,9 +353,10 @@ pub(crate) fn replay_database<'a>(
     if let Some(channels) = &config.envs.get(env)?.channels {
         return Some(&channels.database);
     }
-    if secrets
-        .get_credential(env, crate::config::POSTGRES_CREDENTIAL_NAME)
-        .is_some()
+    if !needs_replay
+        || secrets
+            .get_credential(env, crate::config::POSTGRES_CREDENTIAL_NAME)
+            .is_some()
     {
         return None;
     }

@@ -49,6 +49,7 @@ use task_tree::{
     DeployTaskTreeController, build_artifact_target_groups, should_use_deploy_task_tree,
 };
 
+pub(crate) use config::project_needs_channel_replay;
 pub(crate) use manifest::resolve_deploy_main;
 
 /// A deploy-only client cannot create the replay database or read Postgres.

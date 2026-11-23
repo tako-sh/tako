@@ -557,6 +557,41 @@ fn runtime_state_storage_validation_native_channels_validate_configured_postgres
     }
 }
 
+#[test]
+fn hosted_channel_replay_ignores_an_expired_postgres_url_unless_workflows_use_it() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    let mut config = native_multi_server_js_config();
+    config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
+        database: "events".into(),
+    });
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            POSTGRES_CREDENTIAL_NAME,
+            EncryptedSecretValue::new("encrypted".into(), Some("2000-01-01".into())),
+        )
+        .unwrap();
+    let validate = || {
+        config::validate_runtime_state_storage_for_deploy(
+            temp.path(),
+            &config,
+            &secrets,
+            "production",
+            2,
+        )
+    };
+    assert!(!validate().has_errors(), "{:?}", validate().errors);
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
+    );
+    assert!(validate().errors[0].contains("expired"));
+}
+
 fn write_workflow(temp: &TempDir, name: &str, source: &str) {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();

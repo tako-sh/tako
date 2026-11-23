@@ -61,6 +61,7 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
         "production",
         &config(),
         &secrets(),
+        true,
         Access::Full,
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
@@ -108,6 +109,7 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
         "production",
         &config(),
         &SecretsStore::default(),
+        true,
         Access::Deploy,
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
@@ -155,6 +157,7 @@ route = "staging.example.com"
             name,
             &config,
             &SecretsStore::default(),
+            true,
             Access::Deploy,
             Ok(vec![]),
             Some("main".into()),
@@ -169,10 +172,10 @@ route = "staging.example.com"
     }
     let none = SecretsStore::default();
     assert_eq!(
-        replay_database(&config, "production", &[], &none),
+        replay_database(&config, "production", &[], &none, true),
         Some("events")
     );
-    assert_eq!(replay_database(&config, "staging", &[], &none), None);
+    assert_eq!(replay_database(&config, "staging", &[], &none, true), None);
     // Postgres replaces a generated database, but never an explicit one.
     let mut postgres = SecretsStore::default();
     for env in ["production", "staging"] {
@@ -186,15 +189,24 @@ route = "staging.example.com"
             .unwrap();
     }
     assert_eq!(
-        replay_database(&config, "staging", &records, &none),
+        replay_database(&config, "staging", &records, &none, true),
         Some("generated")
     );
+    // Code without channels leaves only an explicit selection in use.
     assert_eq!(
-        replay_database(&config, "staging", &records, &postgres),
+        replay_database(&config, "staging", &records, &none, false),
         None
     );
     assert_eq!(
-        replay_database(&config, "production", &records, &postgres),
+        replay_database(&config, "production", &records, &none, false),
+        Some("events")
+    );
+    assert_eq!(
+        replay_database(&config, "staging", &records, &postgres, true),
+        None
+    );
+    assert_eq!(
+        replay_database(&config, "production", &records, &postgres, true),
         Some("events")
     );
 }
@@ -209,6 +221,7 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
         "production",
         &config,
         &secrets(),
+        true,
         Access::Full,
         Ok(vec![]),
         None,

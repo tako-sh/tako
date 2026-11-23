@@ -13,10 +13,14 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
     let workflow_storage = project_workflow_storage(project_dir, tako_config);
-    let adapter =
-        super::resolve_build_adapter(project_dir, tako_config).unwrap_or(BuildAdapter::Unknown);
-    let has_channels = needs_channel_replay(project_dir, tako_config, adapter);
-    if workflow_storage == WorkflowStorageIntent::NoWorkflows && !has_channels {
+    // A selected `[envs.<env>.channels].database` keeps channels off Postgres.
+    let channels_use_postgres = project_needs_channel_replay(project_dir, tako_config)
+        && tako_config
+            .envs
+            .get(env)
+            .and_then(|spec| spec.channels.as_ref())
+            .is_none();
+    if workflow_storage == WorkflowStorageIntent::NoWorkflows && !channels_use_postgres {
         return result;
     }
 
@@ -116,6 +120,14 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
     } else {
         WorkflowStorageIntent::NoWorkflows
     }
+}
+
+/// Whether the project's code uses channels, presence or stores, which keep
+/// their history in the environment's channel replay backend.
+pub(crate) fn project_needs_channel_replay(project_dir: &Path, tako_config: &TakoToml) -> bool {
+    let adapter =
+        super::resolve_build_adapter(project_dir, tako_config).unwrap_or(BuildAdapter::Unknown);
+    needs_channel_replay(project_dir, tako_config, adapter)
 }
 
 pub(in crate::commands::deploy) fn needs_channel_replay(
