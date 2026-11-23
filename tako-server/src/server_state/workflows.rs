@@ -45,6 +45,55 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) -> Result<(), StateStoreError> {
+        let activation =
+            ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?);
+        self.sync_app_workflows_as(app_name, release_path, runtime_bin_path, activation)
+            .await
+            .map(|_| ())
+    }
+
+    /// Reinstall the runtime of the committed release a failed deployment
+    /// fell back to. The candidate's workers may have registered its
+    /// schedules already, so the restored release takes a newer revision
+    /// than the candidate's, and keeps it for later recoveries.
+    pub(crate) async fn restore_app_workflows(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) {
+        if self.is_draining() {
+            return;
+        }
+        let restored = async {
+            let revision = self
+                .sync_app_workflows_as(
+                    app_name,
+                    release_path,
+                    runtime_bin_path,
+                    ScheduleActivation::Deploy,
+                )
+                .await?;
+            if let Some(revision) = revision {
+                self.state_store
+                    .set_workflow_schedule_revision(app_name, revision)?;
+            }
+            Ok::<_, StateStoreError>(())
+        }
+        .await;
+        if let Err(error) = restored {
+            tracing::warn!(app = app_name, %error, "Failed to restore workflows");
+        }
+    }
+
+    /// Install the release's runtime and return its schedule revision.
+    async fn sync_app_workflows_as(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+        activation: ScheduleActivation,
+    ) -> Result<Option<i64>, StateStoreError> {
         let secrets = self.state_store.get_secrets(app_name)?;
         let storages = self.state_store.get_storages(app_name)?;
         let bindings = self.state_store.get_app_databases(app_name)?;
@@ -65,11 +114,14 @@ impl ServerState {
                     store: self.workflows.workflow_store_config(app_name),
                     require_store: false,
                 },
-                ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
+                activation,
             )
             .await?;
+        let revision = prepared
+            .as_ref()
+            .and_then(|runtime| runtime.schedule_revision());
         self.install_app_workflows(app_name, prepared);
-        Ok(())
+        Ok(revision)
     }
 
     pub(crate) fn install_app_workflows(&self, app_name: &str, prepared: Option<PreparedWorkflow>) {

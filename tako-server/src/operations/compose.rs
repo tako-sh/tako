@@ -212,7 +212,7 @@ impl crate::ServerState {
                         .await
                         .ok()
                         .flatten();
-                        self.sync_app_workflows(
+                        self.restore_app_workflows(
                             &app_name,
                             &previous_release,
                             runtime_bin.as_deref(),

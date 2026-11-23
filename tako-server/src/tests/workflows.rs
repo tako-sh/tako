@@ -423,6 +423,82 @@ async fn deploys_of_workflow_releases_refuse_an_environment_without_a_workflow_d
     assert!(prepare(false).await.unwrap().is_none());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_release_outranks_the_failed_candidates_schedules() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "go-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let _workflow_db = serve_workflows(&state);
+    let release = temp.path().join("apps/go-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("worker"), "cat <&3 >/dev/null\nsleep 600\n").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "protocol_version": tako_core::PROTOCOL_VERSION,
+            "runtime": "go",
+            "main": "app",
+            "workflow_worker_main": "worker",
+            "idle_timeout": 300,
+            "env_vars": {"TAKO_BUILD": "v1"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    // A candidate deployment took a revision, and its workers may have
+    // registered their schedules under it before the deployment failed.
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let candidate = state
+        .prepare_app_workflows(
+            app_id,
+            &release,
+            Some("/bin/sh"),
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: state.workflows.workflow_store_config(app_id),
+                require_store: true,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let candidate_revision = candidate.schedule_revision().unwrap();
+    state.install_app_workflows(app_id, Some(candidate));
+
+    state
+        .restore_app_workflows(app_id, &release, Some("/bin/sh"))
+        .await;
+    let restored = state
+        .state_store
+        .workflow_schedule_revision(app_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        restored > candidate_revision,
+        "{restored} <= {candidate_revision}"
+    );
+    assert!(state.workflows.has(app_id));
+}
+
 #[tokio::test]
 async fn a_workflows_directory_without_definitions_runs_no_workflows() {
     let temp = TempDir::new().unwrap();

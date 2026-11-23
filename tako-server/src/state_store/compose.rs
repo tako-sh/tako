@@ -3,6 +3,21 @@ use crate::instances::AppConfig;
 use rusqlite::OptionalExtension;
 
 impl SqliteStateStore {
+    /// The schedule revision of the app's committed release, replaced when a
+    /// failed deployment restores that release's runtime.
+    pub(crate) fn set_workflow_schedule_revision(
+        &self,
+        app: &str,
+        revision: i64,
+    ) -> Result<(), StateStoreError> {
+        self.lock_conn()?.execute(
+            "INSERT INTO app_schedule_revisions (app, revision) VALUES (?1, ?2)
+             ON CONFLICT (app) DO UPDATE SET revision = excluded.revision",
+            (app, revision),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn workflow_schedule_revision(
         &self,
         app: &str,
