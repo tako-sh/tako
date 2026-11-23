@@ -155,10 +155,14 @@ const RESERVED: &[&str] = &[
     "corrosion-ca.pem",
     "corrosion-admin.sock",
     "subscriptions",
+    "runtime.redb",
+    "runtime.redb-import",
+    "runtime.runtime-lock",
+    // The SQLite journal the runtime imports once, and the copy it keeps.
     "runtime.db",
     "runtime.db-wal",
     "runtime.db-shm",
-    "runtime.runtime-lock",
+    "runtime.db.migrated",
 ];
 
 pub fn validate_filename(name: &str) -> Result<()> {

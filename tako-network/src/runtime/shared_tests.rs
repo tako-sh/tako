@@ -90,16 +90,20 @@ fn populated_observed_secrets_compact_and_repair_in_one_snapshot() {
     stale.id = RequestId::random().unwrap();
     stale.revision = 1;
     {
-        let tx = runtime.db.transaction().unwrap();
-        // Old caches can contain multiple revisions of the same address.
-        for record in expected.records.iter().chain(std::iter::once(&stale)) {
-            tx.execute(
-                "INSERT INTO shared_observed VALUES ('secret',?1,?2)",
-                params![record.id.to_string(), serde_json::to_string(record).unwrap()],
-            )
-            .unwrap();
+        let txn = runtime.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(SHARED_OBSERVED).unwrap();
+            // Old caches can contain multiple revisions of the same address.
+            for record in expected.records.iter().chain(std::iter::once(&stale)) {
+                table
+                    .insert(
+                        ("secret", record.id.to_string().as_str()),
+                        serde_json::to_string(record).unwrap().as_str(),
+                    )
+                    .unwrap();
+            }
         }
-        tx.commit().unwrap();
+        txn.commit().unwrap();
         let mut store = fixture.store.0.borrow_mut();
         store.shared = expected.clone();
         store.shared.records[0] = stale;
@@ -118,11 +122,7 @@ fn populated_observed_secrets_compact_and_repair_in_one_snapshot() {
         };
         assert_eq!(snapshot, expected);
         assert_eq!(fixture.store.0.borrow().shared, expected);
-        let count: i64 = runtime
-            .db
-            .query_row("SELECT count(*) FROM shared_observed", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 2000);
+        assert_eq!(rows(&runtime, SHARED_OBSERVED), 2000);
     }
 }
 
@@ -301,14 +301,7 @@ fn secret_publication_survives_lost_response_and_retry_cannot_win_again() {
             newer
         );
         // Completed acknowledgements cannot keep the overwritten ciphertext alive.
-        let payloads: Vec<String> = runtime
-            .db
-            .prepare("SELECT payload FROM shared_publications")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
+        let payloads = payloads(&runtime, SHARED_PUBLICATIONS);
         assert_eq!(payloads.len(), 2);
         for payload in payloads {
             assert!(
@@ -316,16 +309,25 @@ fn secret_publication_survives_lost_response_and_retry_cannot_win_again() {
             );
             assert!(!payload.contains("ciphertext"));
         }
-        let observed: String = runtime
+        let observed: Vec<String> = runtime
             .db
-            .query_row(
-                "SELECT payload FROM shared_observed WHERE kind='secret'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+            .begin_read()
+            .unwrap()
+            .open_table(SHARED_OBSERVED)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| {
+                let (key, payload) = row.unwrap();
+                assert_eq!(key.value().0, "secret");
+                payload.value().to_owned()
+            })
+            .collect();
+        let [observed] = &observed[..] else {
+            panic!("one observed record expected");
+        };
         assert_eq!(
-            serde_json::from_str::<crate::shared::SharedRecord>(&observed)
+            serde_json::from_str::<crate::shared::SharedRecord>(observed)
                 .unwrap()
                 .id,
             newer.id
@@ -341,7 +343,7 @@ fn deploy_clients_get_no_values_and_new_full_clients_receive_old_value_keys() {
     for (scope, kind, name) in [
         ("shop/production", RecordKind::App, "API_KEY"),
         ("shop/staging", RecordKind::App, "API_KEY"),
-        ("shop/production", RecordKind::Credential, "postgres_url"),
+        ("shop/production", RecordKind::Credential, "ssl.cloudflare"),
     ] {
         let mutation = secret_mutation(&fixture, scope, kind, name, Some("original"));
         fixture
@@ -398,7 +400,7 @@ fn deploy_clients_get_no_values_and_new_full_clients_receive_old_value_keys() {
     );
     for (kind, name) in [
         (RecordKind::App, "API_KEY"),
-        (RecordKind::Credential, "postgres_url"),
+        (RecordKind::Credential, "ssl.cloudflare"),
     ] {
         let denied = secret_mutation(&fixture, "shop/production", kind, name, Some("changed"));
         assert!(
@@ -725,13 +727,8 @@ fn expired_receipts_are_collected_and_deadlines_and_observations_are_authenticat
     runtime
         .reconcile_record_keys(mutation.expires_at)
         .unwrap();
-    let count: i64 = runtime
-        .db
-        .query_row("SELECT count(*) FROM shared_publications", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(rows(&runtime, SHARED_PUBLICATIONS.0), 0);
+    assert_eq!(rows(&runtime, SHARED_PUBLICATIONS.1), 0);
     assert!(
         fixture
             .call(

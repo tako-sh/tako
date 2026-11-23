@@ -6,7 +6,7 @@ use crate::shared::{
 };
 use sha2::{Digest, Sha256};
 
-const MAX_PUBLICATION_RECEIPTS: i64 = 100_000;
+const MAX_PUBLICATION_RECEIPTS: u64 = 100_000;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,27 +72,25 @@ impl<S: RegistryStore> ServerRuntime<S> {
         let mut legacy_grants = Vec::new();
         let mut seen_ids = std::collections::BTreeSet::new();
         {
-            let mut statement = self
-                .db
-                .prepare("SELECT kind, id, payload FROM shared_observed ORDER BY kind, id")?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                let kind: String = row.get(0)?;
-                let payload: String = row.get(2)?;
+            let txn = self.db.begin_read()?;
+            for row in txn.open_table(SHARED_OBSERVED)?.iter()? {
+                let (key, payload) = row?;
+                let (kind, id) = key.value();
+                let payload = payload.value();
                 if payload.len() > crate::shared::MAX_SHARED_RECORD_BYTES {
                     return Err(RuntimeError::Capacity("observed shared record"));
                 }
-                match kind.as_str() {
+                match kind {
                     // Record rows keep the `secret` tag they were stored with,
                     // including plaintext records.
                     "secret" => {
-                        let record: SharedRecord = serde_json::from_str(&payload)?;
+                        let record: SharedRecord = serde_json::from_str(payload)?;
                         seen_ids.insert(record.id.clone());
                         observed.records.push(record);
                     }
                     "grant" => legacy_grants.push((
-                        row.get::<_, String>(1)?,
-                        serde_json::from_str::<LegacyKeyGrant>(&payload)?,
+                        id.to_owned(),
+                        serde_json::from_str::<LegacyKeyGrant>(payload)?,
                     )),
                     _ => return Err(RuntimeError::Invalid("observed shared record kind")),
                 }
@@ -116,32 +114,32 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 self.store.append_record(record)?;
             }
         }
-        let tx = self.db.transaction()?;
-        tx.execute("DELETE FROM shared_observed WHERE kind='secret'", [])?;
-        for record in &observed.records {
-            tx.execute(
-                "INSERT INTO shared_observed VALUES ('secret',?1,?2)",
-                params![
-                    serde_json::to_string(&record.address)?,
-                    serde_json::to_string(record)?
-                ],
-            )?;
-        }
-        for (id, grant) in &legacy_grants {
-            if seen_ids.contains(&grant.record) {
-                tx.execute(
-                    "DELETE FROM shared_observed WHERE kind='grant' AND id=?1",
-                    [id],
-                )?;
+        // One write transaction replaces every record row.
+        let txn = write(&self.db)?;
+        {
+            let mut table = txn.open_table(SHARED_OBSERVED)?;
+            table.retain_in(("secret", "")..("secret\0", ""), |_, _| false)?;
+            for record in &observed.records {
+                let address = serde_json::to_string(&record.address)?;
+                if table
+                    .insert(
+                        ("secret", address.as_str()),
+                        serde_json::to_string(record)?.as_str(),
+                    )?
+                    .is_some()
+                {
+                    return Err(RuntimeError::Conflict("duplicate current record"));
+                }
+            }
+            for (id, grant) in &legacy_grants {
+                if seen_ids.contains(&grant.record) {
+                    table.remove(("grant", id.as_str()))?;
+                }
             }
         }
-        // The old protocol's commands have no retry deadline. New clients must
-        // explicitly replace those pending commands; published values have just
-        // been preserved above. Do not retain their historical ciphertexts.
-        tx.execute_batch(
-            "DROP TABLE IF EXISTS shared_commands; DROP TABLE IF EXISTS shared_grants;",
-        )?;
-        tx.commit()?;
+        // The old protocol's commands had no retry deadline and were never
+        // imported from the SQLite journal: new clients replace them.
+        txn.commit()?;
         Ok(observed)
     }
 
@@ -167,20 +165,11 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Invalid("publication deadline"));
         }
-        self.db.execute(
-            "DELETE FROM shared_publications WHERE expires<=?1",
-            [sql_time(now)?],
-        )?;
+        self.purge_publications(now)?;
+        let id = mutation.id.to_string();
         let hash = hex::encode(Sha256::digest(&serde_json::to_vec(&mutation)?));
-        let previous: Option<String> = self
-            .db
-            .query_row(
-                "SELECT payload FROM shared_publications WHERE id=?1",
-                [mutation.id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let mut publication = if let Some(previous) = previous {
+        let previous = SHARED_PUBLICATIONS.get(&self.db, &id)?;
+        let mut publication = if let Some((_, previous)) = previous {
             let saved: Publication = serde_json::from_str(&previous)?;
             if &saved.receipt.author != author || saved.mutation_hash != hash {
                 return Err(RuntimeError::Conflict("record operation"));
@@ -228,27 +217,22 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 receipt: (&record).into(),
                 pending: Some(record),
             };
-            let count: i64 =
-                self.db
-                    .query_row("SELECT count(*) FROM shared_publications", [], |row| {
-                        row.get(0)
-                    })?;
-            if count >= MAX_PUBLICATION_RECEIPTS {
+            let txn = write(&self.db)?;
+            if SHARED_PUBLICATIONS.count(&txn)? >= MAX_PUBLICATION_RECEIPTS {
                 return Err(RuntimeError::Capacity("publication receipts"));
             }
-            self.db.execute(
-                "INSERT INTO shared_publications VALUES (?1,?2,?3)",
-                params![
-                    mutation.id.to_string(),
-                    sql_time(mutation.expires_at)?,
-                    serde_json::to_string(&publication)?
-                ],
+            SHARED_PUBLICATIONS.put(
+                &txn,
+                &id,
+                journal_time(mutation.expires_at)?,
+                &serde_json::to_string(&publication)?,
             )?;
+            txn.commit()?;
             publication
         };
         if let Some(record) = &publication.pending {
-            // The FULL synchronous outbox commit precedes publication. After a
-            // lost response, retry uses the original revision and ciphertext.
+            // The durable outbox commit precedes publication. After a lost
+            // response, retry uses the original revision and ciphertext.
             self.store.append_record(record)?;
             let state = self.shared_snapshot()?;
             if state
@@ -259,15 +243,18 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 return Err(RuntimeError::Corrosion("published record absent"));
             }
             publication.pending = None;
-            self.db.execute(
-                "UPDATE shared_publications SET payload=?1 WHERE id=?2",
-                params![
-                    serde_json::to_string(&publication)?,
-                    mutation.id.to_string()
-                ],
-            )?;
+            let txn = write(&self.db)?;
+            SHARED_PUBLICATIONS.update(&txn, &id, &serde_json::to_string(&publication)?)?;
+            txn.commit()?;
         }
         Ok(RpcResponse::RecordPublished(publication.receipt))
+    }
+
+    fn purge_publications(&self, now: u64) -> RuntimeResult<()> {
+        let txn = write(&self.db)?;
+        SHARED_PUBLICATIONS.purge_through(&txn, journal_time(now)?)?;
+        txn.commit()?;
+        Ok(())
     }
 
     pub(super) fn pull_records(
@@ -321,10 +308,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
     /// Supply current value keys to newly admitted servers. Superseded versions
     /// are never granted, and each successful reconciliation also retires them.
     pub fn reconcile_record_keys(&mut self, now: u64) -> RuntimeResult<()> {
-        self.db.execute(
-            "DELETE FROM shared_publications WHERE expires<=?1",
-            [sql_time(now)?],
-        )?;
+        self.purge_publications(now)?;
         let registry = self.snapshot()?;
         self.require_server(&registry, now)?;
         let state = self.shared_snapshot()?;
