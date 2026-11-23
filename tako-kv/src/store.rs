@@ -1580,6 +1580,23 @@ fn growth<V: View + ?Sized>(view: &V, cmd: &Cmd, now: u64) -> Result<i64> {
                 _ => 0,
             }
         }
+        Cmd::Rename { from, to, only_new } => {
+            let Some(entry) = live(view, from, now)? else {
+                return Ok(0);
+            };
+            let existing = live(view, to, now)?;
+            if from == to || (*only_new && existing.is_some()) {
+                return Ok(0);
+            }
+            // A key is charged twice its name, and each of a hash's fields
+            // its key's name once; a replaced key is freed.
+            let charged = match entry.kind {
+                KeyType::Hash => 2 + entry.fields().0 as i64,
+                KeyType::String => 2,
+            };
+            (to.len() as i64 - from.len() as i64) * charged
+                - existing.map_or(0, |old| stored_weight(to, &old)) as i64
+        }
         Cmd::HSet { key, .. }
         | Cmd::HSetNx { key, .. }
         | Cmd::HIncrBy { key, .. }

@@ -608,6 +608,22 @@ async fn edge_servers_relay_to_the_home_server() {
         };
         assert_eq!(user["f"], "v");
     }
+    // RESET on a relayed connection cannot leave it signed in, and the home
+    // server cannot check the app's token, so the connection closes after
+    // the reply; a new one authenticates through the edge again.
+    let mut stream = TcpStream::connect(edge_addr).await.unwrap();
+    assert_eq!(
+        raw(&mut stream, b"AUTH edge-token\r\nRESET\r\n", 13).await,
+        b"+OK\r\n+RESET\r\n"
+    );
+    let mut rest = Vec::new();
+    let closed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_end(&mut rest),
+    )
+    .await;
+    assert!(matches!(closed, Ok(Ok(0))), "{closed:?} {rest:?}");
+
     // The data lives on the home server.
     let reply = home
         .admin(&id, vec!["GET".into(), "challenge".into()])
@@ -740,4 +756,44 @@ async fn client_names_are_checked_and_limited() {
         .await
         .unwrap();
     assert!(list.contains(" name=short "), "{list}");
+}
+
+#[tokio::test]
+async fn command_info_replies_are_sized_before_they_are_built() {
+    let config = HostConfig {
+        max_reply_bytes: 64 * 1024,
+        ..HostConfig::default()
+    };
+    let (_dir, addr) = host_with(config, &["main"]).await;
+    let mut kv = client(addr, "main", false).await;
+    let ask = |count: usize| {
+        let mut cmd = redis::cmd("COMMAND");
+        cmd.arg("INFO");
+        for _ in 0..count {
+            cmd.arg("get");
+        }
+        cmd
+    };
+    let few: Vec<redis::Value> = ask(10).query_async(&mut kv).await.unwrap();
+    assert_eq!(few.len(), 10);
+    let error = ask(5_000)
+        .query_async::<redis::Value>(&mut kv)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("reply would exceed"), "{error}");
+    // Inside a transaction, the same request becomes an error in its slot
+    // and the rest of the transaction runs.
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let mut info = vec!["COMMAND".to_string(), "INFO".to_string()];
+    info.extend(std::iter::repeat_n("get".to_string(), 5_000));
+    let mut request = b"AUTH main\r\nMULTI\r\nPING\r\n".to_vec();
+    tako_kv::encode_request(&info, &mut request);
+    request.extend_from_slice(b"EXEC\r\n");
+    let got = String::from_utf8(raw(&mut stream, &request, 120).await).unwrap();
+    assert!(
+        got.starts_with(
+            "+OK\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+PONG\r\n-ERR reply would exceed"
+        ),
+        "{got}"
+    );
 }

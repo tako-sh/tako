@@ -370,6 +370,12 @@ async fn full_stores_refuse_only_writes_that_would_grow_them() {
     assert_eq!(f.run("HINCRBY h c 10").await, oom);
     assert_eq!(f.run("HSET g a b").await, oom);
     assert_eq!(f.run("HGET h a").await, bulk("yy"));
+    // Renaming to a longer name grows the key, and each of a hash's fields.
+    assert_eq!(f.run("RENAME h hash").await, oom);
+    assert_eq!(f.run("RENAME k2 k2-longer").await, oom);
+    assert_eq!(f.run("RENAME h x").await, Reply::Ok);
+    assert_eq!(f.run("RENAMENX x k0").await, Reply::Int(0));
+    assert_eq!(f.run("RENAME x h").await, Reply::Ok);
     // Removing keys makes room again.
     assert!(matches!(f.run("DEL k0 k1 k2").await, Reply::Int(3)));
     assert_eq!(f.run(&format!("SET k0 {value}")).await, Reply::Ok);

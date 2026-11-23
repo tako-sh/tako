@@ -360,19 +360,24 @@ impl Connection {
     /// Makes room for a reply the connection built itself, such as
     /// `CLIENT LIST`'s, or replaces it with an error when none frees up.
     async fn fit(&mut self, reply: Reply) -> Reply {
-        let need = reply.size();
-        if need <= self.reply_room() {
-            return reply;
-        }
-        self.take_reply_room();
-        if need <= self.reply_room() {
-            return reply;
-        }
-        if self.flush().await && self.wait_for_reply_room(need).await {
+        if self.room_for(reply.size()).await {
             reply
         } else {
             Reply::error(SHORT_OF_REPLY_SPACE)
         }
+    }
+
+    /// Makes room for a reply of `need` bytes, sending what is buffered and
+    /// waiting for the budget if it must. False when none frees up.
+    async fn room_for(&mut self, need: usize) -> bool {
+        if need <= self.reply_room() {
+            return true;
+        }
+        self.take_reply_room();
+        if need <= self.reply_room() {
+            return true;
+        }
+        self.flush().await && self.wait_for_reply_room(need).await
     }
 
     /// Waits for room for a reply of `need` bytes, once what is buffered
@@ -905,9 +910,14 @@ impl Connection {
                 self.unwatch();
                 self.proto = 2;
                 self.name = None;
-                if !self.from_peer {
-                    self.auth = Auth::None;
+                if self.from_peer {
+                    // A relayed connection cannot authenticate again here:
+                    // the app's server checked its token. It closes after
+                    // the reply instead, and the client reconnects through
+                    // that server.
+                    return Local::Close(Reply::Simple("RESET".into()));
                 }
+                self.auth = Auth::None;
                 Reply::Simple("RESET".into())
             }
             "multi" => {
@@ -940,6 +950,17 @@ impl Connection {
                 }
             }
             "info" => self.info(&args).await,
+            "command" => {
+                let need = command_reply_size(&args);
+                let max = self.config().max_reply_bytes;
+                if need > max {
+                    return Local::Reply(command_too_large(max));
+                }
+                if !self.room_for(need).await {
+                    return Local::Reply(Reply::error(SHORT_OF_REPLY_SPACE));
+                }
+                command_command(&args)
+            }
             _ => self.simple(spec, &args),
         })
     }
@@ -1140,6 +1161,8 @@ impl Connection {
             results.push(if spec.class == Class::Connection {
                 let mut reply = match spec.name {
                     "info" => self.info(args).await,
+                    // Not built when it would not fit.
+                    "command" if size + command_reply_size(args) > room => command_too_large(room),
                     _ => self.simple(spec, args),
                 };
                 if size + reply.size() > room {
@@ -1166,7 +1189,7 @@ impl Connection {
             }
             "echo" | "ping" => SMALL + args.iter().map(Bytes::len).sum::<usize>(),
             "info" | "config" => 8 * 1024,
-            "command" => 64 * 1024,
+            "command" => command_reply_size(args),
             _ => SMALL,
         }
     }
@@ -1565,6 +1588,37 @@ fn store_error(error: &StoreError) -> String {
         StoreError::Closed => NOT_SERVED.into(),
         StoreError::Storage(message) => format!("ERR storage error: {message}"),
     }
+}
+
+/// How large `COMMAND`'s reply to `args` is, worked out without building
+/// it: `COMMAND INFO` names can repeat, so one request could otherwise
+/// build a reply far past the limit before its room is checked.
+fn command_reply_size(args: &[Bytes]) -> usize {
+    let entry =
+        |name: &[u8]| command::find(name).map_or(Reply::Nil.size(), |spec| spec.info().size());
+    let every = || {
+        command::all()
+            .iter()
+            .map(|spec| spec.info().size())
+            .fold(0usize, usize::saturating_add)
+    };
+    let entries = match args.get(1) {
+        None => every(),
+        Some(sub) if is(sub, "info") && args.len() == 2 => every(),
+        Some(sub) if is(sub, "info") => args[2..]
+            .iter()
+            .map(|name| entry(name))
+            .fold(0usize, usize::saturating_add),
+        // Counts, name lists and errors.
+        Some(sub) => 64 * 1024 + sub.len(),
+    };
+    entries.saturating_add(32)
+}
+
+fn command_too_large(limit: usize) -> Reply {
+    Reply::Error(format!(
+        "ERR reply would exceed {limit} bytes; ask COMMAND INFO for fewer commands"
+    ))
 }
 
 fn command_command(args: &[Bytes]) -> Reply {
