@@ -2,7 +2,7 @@
  * Server-only readers for the Tako bootstrap envelope.
  *
  * Tako spawns each app process with a pipe on fd 3 containing a JSON
- * envelope `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}`, or with
+ * envelope `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}, "kv": {...}}`, or with
  * `TAKO_BOOTSTRAP_DATA` when the app is packaged as a container.
  * Server/worker entrypoints call `initBootstrapFromFd(reader)` at startup
  * — before the user's module is imported — to populate the pure

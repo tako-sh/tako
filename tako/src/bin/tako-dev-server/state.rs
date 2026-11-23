@@ -152,6 +152,7 @@ pub struct RuntimeApp {
     pub secrets: HashMap<String, String>,
     pub storages: HashMap<String, tako_core::StorageBinding>,
     pub databases: HashMap<String, tako_core::DatabaseConnection>,
+    pub kv: HashMap<String, tako_core::KvConnection>,
 }
 
 // ---------------------------------------------------------------------------

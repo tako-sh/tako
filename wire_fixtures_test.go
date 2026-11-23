@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"tako.sh/internal"
 )
 
 const wireFixtureDir = "test-support/wire"
@@ -197,6 +199,54 @@ func TestStoreInvalidationMatchesWireFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	socket.expect("channel_publish-store_invalidate-build", socket.take())
+}
+
+func TestKVCommandsMatchWireFixtures(t *testing.T) {
+	previous := bootstrap
+	t.Cleanup(func() { bootstrap = previous })
+	bootstrap = &internal.Bootstrap{KV: map[string]internal.KVConnection{"sessions": {Token: "kv-token-example"}}}
+	socket := startWireSocket(t)
+	ctx := context.Background()
+	sessions, ok := GetKV("sessions")
+	if !ok {
+		t.Fatal("GetKV(sessions) must find the binding")
+	}
+
+	if err := sessions.Put(ctx, "session:1", map[string]string{"user": "u1"}, WithTTL(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-put", socket.take())
+	if err := sessions.Put(ctx, "settings", 1); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-put-no-ttl", socket.take())
+
+	// JSON null is a value; a null reply means the key is not set.
+	socket.reply("replies/cache-hit-null.json")
+	value := map[string]string{"kept": "yes"}
+	found, err := sessions.Get(ctx, "session:1", &value)
+	if err != nil || !found || value != nil {
+		t.Fatalf("a stored null parsed as %v, %v, %v", value, found, err)
+	}
+	socket.expect("kv-get", socket.take())
+	socket.reply("replies/ok-null.json")
+	value = map[string]string{"kept": "yes"}
+	found, err = sessions.Get(ctx, "session:1", &value)
+	if err != nil || found || value["kept"] != "yes" {
+		t.Fatalf("a missing key parsed as %v, %v, %v", value, found, err)
+	}
+	socket.expect("kv-get", socket.take())
+
+	if err := sessions.Delete(ctx, "session:1"); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("kv-delete", socket.take())
+
+	socket.reply("replies/error-unavailable.json")
+	if err := sessions.Put(ctx, "session:1", 1); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a rejection must keep its code: %v", err)
+	}
+	socket.take()
 }
 
 func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {

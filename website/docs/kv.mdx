@@ -1,0 +1,234 @@
+---
+title: KV stores
+description: "Create Tako-hosted key-value stores of JSON values with optional expiry, bind them to apps, back them up, and share challenges, sessions, and flags across every server of a network."
+---
+
+A Tako KV store is a key-value store that `tako-server` hosts on one server of a [native network](/networks/). Apps `get`, `put`, and `delete` JSON values by key, each with an optional TTL, through the Tako SDK in JavaScript, Go, and Rust. Apps on every server of the network use the same store, which makes it the place for state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Writes are on disk before they are acknowledged, stores are backed up like [hosted databases](/databases/), and the same code runs under `tako dev`.
+
+| Need                                                           | Use                                   |
+| -------------------------------------------------------------- | ------------------------------------- |
+| Values every server must see, with optional expiry             | A KV store                            |
+| Recomputable values cached next to each app, evicted when full | [`tako.cache`](/cache/)               |
+| Relational records, queries, and transactions                  | A [hosted database](/databases/)      |
+| Files and uploads                                              | [Storage](/storage/)                  |
+| An external Redis or Valkey                                    | A [secret](/secrets/) holding its URL |
+
+## Create and bind a store
+
+A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Creating one requires full access:
+
+```bash
+tako kv create sessions --server edge-a
+```
+
+`--server` can be omitted when the network has a single server. Bind the store in each environment that uses it; the key is the binding name the app reads, and the value is the store's name. An environment can bind several stores, and several apps and environments can bind the same store:
+
+```toml
+[envs.production]
+kv = { sessions = "auth-sessions", limits = "rate-limits" }
+```
+
+Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. Deploys never create KV stores. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
+
+`tako kv` commands find the network like `tako sqlite` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
+
+## Use it from application code
+
+Each binding has `get`, `put`, and `delete`. Values are anything that encodes as JSON. `get` returns nothing for a key that is not set or has expired; a stored JSON `null` is a value. `put` without a TTL keeps the key until it is deleted; putting a key again replaces its value and its TTL.
+
+<CodeGroup>
+
+```ts JavaScript
+import { tako } from "tako.sh";
+
+const sessions = tako.kv.sessions;
+if (!sessions) throw new Error("No KV store is bound as sessions");
+
+// Issue a challenge that expires in five minutes (the TTL is in milliseconds).
+await sessions.put(`challenge:${userId}`, { challenge }, { ttl: 300_000 });
+
+// Verify it on whichever server handles the response, then remove it so it
+// cannot be replayed.
+const issued = await sessions.get<{ challenge: string }>(`challenge:${userId}`);
+await sessions.delete(`challenge:${userId}`);
+```
+
+```go Go
+package main
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"tako.sh"
+)
+
+type Challenge struct {
+	Challenge string `json:"challenge"`
+}
+
+func issue(ctx context.Context, userID, challenge string) error {
+	sessions, ok := tako.GetKV("sessions")
+	if !ok {
+		return errors.New("no KV store bound as sessions")
+	}
+	return sessions.Put(ctx, "challenge:"+userID, Challenge{challenge}, tako.WithTTL(5*time.Minute))
+}
+
+// Reads the challenge, then removes it so it cannot be replayed.
+func consume(ctx context.Context, userID string) (Challenge, bool, error) {
+	var issued Challenge
+	sessions, ok := tako.GetKV("sessions")
+	if !ok {
+		return issued, false, errors.New("no KV store bound as sessions")
+	}
+	found, err := sessions.Get(ctx, "challenge:"+userID, &issued)
+	if err != nil || !found {
+		return issued, found, err
+	}
+	return issued, true, sessions.Delete(ctx, "challenge:"+userID)
+}
+```
+
+```rust Rust
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct Challenge {
+    challenge: String,
+}
+
+// The async methods need the SDK's `tokio` feature; `get_blocking`,
+// `put_blocking`, and `delete_blocking` work without it.
+async fn challenges(user_id: &str, challenge: String) -> std::io::Result<Option<Challenge>> {
+    let sessions = tako::kv("sessions").expect("a KV store bound as sessions");
+    let key = format!("challenge:{user_id}");
+    sessions
+        .put(&key, &Challenge { challenge }, Some(Duration::from_secs(300)))
+        .await?;
+    // Read it back, then remove it so it cannot be replayed.
+    let issued: Option<Challenge> = sessions.get(&key).await?;
+    sessions.delete(&key).await?;
+    Ok(issued)
+}
+```
+
+</CodeGroup>
+
+- **JavaScript**: `tako.kv.<binding>` has `get<T>(key)`, which resolves to the value or `undefined`, `put(key, value, { ttl })` with `ttl` in milliseconds, and `delete(key)`. `tako generate` adds a `TakoKv` interface to `tako.d.ts`, so every bound name is typed. A binding is `undefined` when the environment does not bind that name.
+- **Go**: `tako.GetKV(name)` returns a `*tako.KV`, or `false` when the environment does not bind the name; `tako.KVNames()` lists the bound names. `Get(ctx, key, &value)` decodes into `value` and reports whether the key was set, `Put(ctx, key, value, tako.WithTTL(d))` takes a `time.Duration`, and `Delete(ctx, key)` removes it. Each call honors `ctx` and gives up after 30 seconds.
+- **Rust**: `tako::kv(name)` returns `Option<tako::Kv>`. `get_blocking::<T>(key)` returns `io::Result<Option<T>>`, `put_blocking(key, &value, Option<Duration>)` sets it, and `delete_blocking(key)` removes it; with the `tokio` feature, `get`, `put`, and `delete` are their async forms.
+
+Bindings are read when accessed. Each request carries the binding's token, which never appears when a binding is logged or serialized; there is no URL to pass around. Keep KV calls on the server: browsers cannot reach a store.
+
+## Errors
+
+A request the server rejects fails with a stable reason:
+
+| Reason            | JavaScript (`TakoError.reason`) | Go (`errors.Is`)         | Rust (`ErrorCode::of`)      | Meaning                                                                        |
+| ----------------- | ------------------------------- | ------------------------ | --------------------------- | ------------------------------------------------------------------------------ |
+| `invalid_request` | `"invalid_request"`             | `tako.ErrInvalidRequest` | `ErrorCode::InvalidRequest` | The key or value is malformed or too large; retrying cannot succeed            |
+| `unavailable`     | `"unavailable"`                 | `tako.ErrUnavailable`    | `ErrorCode::Unavailable`    | The binding changed, the store's server cannot be reached, or it is restarting |
+
+The SDKs check keys, values, and TTLs before sending, so most invalid requests fail without reaching the server. JavaScript rejects with a `TakoError` whose `code` is `TAKO_RPC_ERROR`; Go returns a `*tako.ServerError` with the server's message; Rust returns an `io::Error` wrapping a `tako::KvRejected`.
+
+## Expiry
+
+A TTL makes a key expire that long after the `put`. An expired key is never returned. The server removes expired keys four times a second and alongside writes, so they stop counting against the store's size without anyone reading them. Expiry times are absolute, so they survive restarts, backups, and restores; moving a server's clock moves them. A restore or import skips keys that expired since their snapshot or export.
+
+## Durability and limits
+
+- Every write is on disk before it is acknowledged, so an acknowledged write survives a crash or power loss. Writes arriving together share one flush to disk.
+- A store has no size limit: it can hold many gigabytes, up to the free space on its server's disk. Nothing is evicted; deletes and expiry free space. A write the disk has no room for fails without being stored. `tako kv status` reports a store's size.
+- Each store keeps up to 16 MiB of recently used data in memory, from a 256 MiB budget shared by the stores on its server. Stores opened after the budget is used up get no cache of their own and read through the operating system's file cache, so the budget holds however many stores a server hosts.
+- Keys are 1 byte to 1 KiB of UTF-8. Values are at most 256 KiB as JSON text. A TTL must be longer than zero.
+- `get`, `put`, and `delete` are the whole API: there are no atomic counters, compare-and-set, scans, transactions, or pub/sub, so two servers that read, change, and put the same key can overwrite each other. Use a [hosted database](/databases/) for queries and transactions, [Workflows](/workflows/) for queues, and [Channels](/channels/) for pub/sub.
+- KV bindings are available to native releases and their workflow workers. [Container and Compose releases](/docker/) cannot use them yet.
+
+## Backups
+
+KV stores are backed up with snapshots, not continuously like [hosted databases](/databases/#back-up-and-restore), so a restore takes a snapshot rather than a time: each snapshot is a compact export of the store's live keys, compressed with zstd, encrypted with the store's backup key, and uploaded to private S3-compatible storage. Snapshots are taken hourly while the store changes, before deploy release commands, before restores and imports, and on demand. Retention keeps every snapshot of the last 24 hours, and the newest of each of the last 7 days and 4 weeks.
+
+Backups go to the deploying environment's `backup.storage`, or to a storage named for the store:
+
+```toml
+[envs.production]
+kv = { sessions = "auth-sessions" }
+backup = { storage = "backups" }
+
+[kv.auth-sessions]
+backup = "kv-backups" # overrides [envs.production].backup.storage for this store
+```
+
+A full client's deploy configures the store's backups. Without a backup storage the store takes no snapshots and is lost with its server; `tako deploy` warns about it.
+
+```bash
+tako kv backup sessions
+tako kv backups sessions --json
+tako kv restore sessions --latest
+tako kv restore sessions --snapshot <id>
+tako kv export sessions sessions.redb
+tako kv import sessions sessions.redb
+```
+
+- `restore` replaces every key with a snapshot's, all at once: apps keep reading the current keys until it finishes, and writes since the snapshot are lost. `--latest` restores the newest snapshot that was not taken before a restore or import, so repeating it does not undo itself.
+- `export` downloads every live key, with its expiry, as one file. `import` replaces every key with an export's, all at once; it refuses a file that is not a Tako KV export, and changes nothing then.
+- Before a restore or import replaces the keys, the server exports the exact contents it replaces to `previous.redb` in the store's directory, and uploads them as a "before restore" snapshot when backups are configured and the store changed since its last snapshot.
+- When a store's server is lost, `tako kv restore <name> --latest --server <new-server>` recovers it from its snapshots onto another server, keeping its name, as [for databases](/databases/#recover-on-another-server). Deploy every app that binds it afterwards. A copy the move left on a reachable old server is removed with `tako kv delete <name> --server <old-server>`.
+
+The export file is a [redb](https://www.redb.org/) database with a versioned layout; treat it as opaque and move it only between Tako KV stores.
+
+## Develop locally
+
+`tako dev` and `tako run` serve bound stores from local files through their internal sockets, so code does not change between development and production:
+
+```text
+.tako/data/kv/<store-name>.redb
+```
+
+Files are created on first use. Development uses `[envs.development].kv` when it is set. Otherwise it binds every name used under `kv` by any environment, taking the store from the first environment in name order. Tokens change between sessions, so read stores from the binding. With `--env` set to another environment, `tako run` serves no KV stores and prints a warning: hosted stores are reachable only from deployed apps.
+
+## Inspect
+
+```bash
+tako kv list --json
+tako kv status sessions --json
+tako kv get sessions challenge:42
+tako kv put sessions flags:beta '{"enabled":true}' --ttl 7d
+tako kv delete-key sessions challenge:42
+```
+
+`list` shows the network's KV stores, their servers, and whether this project binds them (`in_project`). `status` reports a store's size, its backups, and the app environments using it on its server (`bindings`) or from other servers (`remote_grants`). Without a name it reports every store the project binds.
+
+`get` prints a key's JSON value, and exits with an error when the key is not set; with `--json` it prints `{"ok": true, "command": "kv get", "key": ..., "value": ...}`. `put` sets a key to a JSON value: quote text as a JSON string, such as `'"hello"'`, or pass `-` to read the value from stdin. `--ttl` takes a number of seconds or a duration such as `30s`, `15m`, `2h`, or `7d`. `delete-key` removes one key; `delete` removes the whole store.
+
+## Apps on other servers
+
+An app on another server than its store's calls its own server as usual. That server checks the token and forwards the request over the network's private WireGuard transport to the store's server on port 9848, which the network firewall opens only to other servers. The forwarded request carries the key of the grant that a full client's deploy gave the app environment on the store's server, so other processes on a granted server cannot act for the environment, and tokens are checked only on the app's server. Grants work as for [databases](/databases/#apps-on-other-servers): a deploy adds them before its rollout and narrows them once it succeeds.
+
+Each request to a store on another server adds a private-network round trip, so place a store on the server where most of its traffic runs. While a store's server is down, requests from every server fail with `unavailable`.
+
+## Delete a store
+
+```bash
+tako kv delete sessions
+```
+
+`delete` (alias `rm`) removes the store, every key in it, and its snapshots from its server, its record in the network state, and the store's bindings and `[kv.<name>]` table from `tako.toml`. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails. When the store's server is no longer a member of the network, `delete` removes only its record and bindings, so the name can be created again; restore it onto another server instead when it has snapshots.
+
+## Limits and security
+
+- Each binding has its own random token, sent with every request through the app's internal socket. A token works only on the server that issued it, only for the app environment it was issued to, and only for the store its binding names. Tokens stay stable across deploys while a binding names the same store on the same server.
+- During a rolling deploy, the old and new release's bindings are both active, so old instances keep working until they drain. A release command receives temporary bindings that are revoked when it finishes.
+- Apps that bind the same store share its keys. Prefix keys with the app or feature (`auth:challenge:42`) when several apps share a store.
+- Managing KV stores (`create`, `status`, `get`, `put`, `delete-key`, `backup`, `restore`, `export`, `import`, `delete`) requires full access. Every member that may deploy can read where stores live (`list` and deploys). A deploy client cannot change an environment's bindings.
+
+## Verify
+
+1. Run `tako kv status <name> --json` and confirm the server, `backup`, and `bindings` or `remote_grants`.
+2. Run `tako kv put <name> tako:check '"ok"' --ttl 60`, then `tako kv get <name> tako:check`.
+3. From the app, `put` a key through one server of the environment and `get` it through another.
+4. With backups configured, run `tako kv backup <name>` and confirm it in `tako kv backups <name>`.

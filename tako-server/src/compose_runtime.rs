@@ -82,6 +82,7 @@ pub(crate) fn sdk_runtime(
             secrets: &config.secrets,
             storages: &storages,
             databases: &HashMap::new(),
+            kv: &HashMap::new(),
         },
     );
     Some(tako_compose::SdkRuntime {

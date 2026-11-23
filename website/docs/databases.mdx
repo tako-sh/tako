@@ -7,16 +7,17 @@ A Tako database is a SQLite database that `tako-server` hosts on one server of a
 
 Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR` remain plain file directories; Tako does not discover, capture, or back up SQLite files placed there.
 
-| Need                                              | Use                                                     |
-| ------------------------------------------------- | ------------------------------------------------------- |
-| Relational app data that must survive server loss | A hosted database with a backup storage                 |
-| Data shared by apps on several servers            | A hosted database                                       |
-| Files, caches, or scratch data on one server      | `tako.dataDir` / `TAKO_DATA_DIR` ([Storage](/storage/)) |
-| Postgres, MySQL, or another external database     | A [secret](/secrets/) holding its URL                   |
+| Need                                                | Use                                                     |
+| --------------------------------------------------- | ------------------------------------------------------- |
+| Relational app data that must survive server loss   | A hosted database with a backup storage                 |
+| Data shared by apps on several servers              | A hosted database                                       |
+| Short-lived keys every server must see, with expiry | A [KV store](/kv/) of JSON values                       |
+| Files, caches, or scratch data on one server        | `tako.dataDir` / `TAKO_DATA_DIR` ([Storage](/storage/)) |
+| Postgres, MySQL, or another external database       | A [secret](/secrets/) holding its URL                   |
 
 ## Create and bind a database
 
-A database belongs to the network, not to an environment. Names are unique within a network, start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). On a network with **one trusted server**, a full client's `tako deploy` creates any missing databases declared by the environment. On a network with **several servers**, choose a home for each missing database first:
+A database belongs to the network, not to an environment. Names are unique within a network, across its databases and [KV stores](/kv/), start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). On a network with **one trusted server**, a full client's `tako deploy` creates any missing databases declared by the environment (KV stores are always created with `tako kv create`). On a network with **several servers**, choose a home for each missing database first:
 
 ```bash
 tako sqlite create main --server edge-a
@@ -33,7 +34,9 @@ Then deploy with `tako deploy --env production`.
 
 The network record determines the home, even if the app deploys elsewhere. An app targeting just `edge-a` on a two-server network still needs an explicit placement for a missing database. `tako deploy --env production --dry-run --json` previews creations from cached records. A successful `tako deploy --env production --json` reports newly created names and homes in `created_databases`; subsequent deployments reuse them. A deploy-only identity cannot create or grant a database. Use a full client for the first deploy that needs a new binding or target.
 
-Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].databases` is set.
+A deploy fails when a bound name belongs to a KV store rather than a database. `tako sqlite list --json` shows the network's databases, their servers, and whether this project uses them (`in_project`).
+
+Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. An environment's `databases` and `kv` bindings share one set of names, so a binding name is used by one of them. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].databases` is set.
 
 `tako sqlite` commands use `--network` when given, else the network configured in the selected TOML file's environments, else this machine's only network, else they ask in an interactive terminal. When the environments configure several networks, pass `--network <alias-or-id>`.
 
@@ -305,7 +308,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 - App SQL bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them; their SDK-enabled services can use hosted replay through the channel runtime.
 - A deploy client cannot change an environment's database bindings; a full client must deploy the change.
 - Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys), record the restore point before their own release, and apply their own app's migrations; backup keys are readable only by full clients.
-- `create` refuses a name the network already has. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
+- `create` refuses a name the network already has, including a KV store's. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
 
 ## Verify
 

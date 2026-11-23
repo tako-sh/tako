@@ -83,6 +83,7 @@ impl crate::ServerState {
                         secrets: &config.secrets,
                         storages: &config.storages,
                         databases: &HashMap::new(),
+                        kv: &HashMap::new(),
                         postgres_url: runtime_credentials.get("postgres_url"),
                     },
                     tako_workflows::manager::ScheduleActivation::Deploy,

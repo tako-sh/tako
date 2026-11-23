@@ -25,7 +25,7 @@ use super::cron::{self, CronTickerHandle};
 use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
-    AppHandlers, AppLookup, CacheFn, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn,
+    AppHandlers, AppLookup, CacheFn, ChannelPublishFn, EnqueueSocketHandle, KvFn, NetworkCallFn,
     OnEnqueue, PeerAuthFn, SocketOptions, pinned_app_auth, spawn_with_options,
 };
 use super::in_flight::InFlightLimiter;
@@ -119,6 +119,7 @@ pub struct WorkflowManager {
     channel_publish: parking_lot::Mutex<Option<ChannelPublishFn>>,
     peer_auth: parking_lot::Mutex<Option<PeerAuthFn>>,
     cache: parking_lot::Mutex<Option<CacheFn>>,
+    kv: parking_lot::Mutex<Option<KvFn>>,
     network_call: Arc<RwLock<Option<NetworkCallFn>>>,
     /// Serializes `ensure` calls so two concurrent deploys of the same app
     /// can't each start their own supervisor + cron ticker and then have
@@ -284,6 +285,7 @@ impl WorkflowManager {
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
             cache: parking_lot::Mutex::new(None),
+            kv: parking_lot::Mutex::new(None),
             network_call: Arc::new(RwLock::new(None)),
             ensure_gate: tokio::sync::Mutex::new(()),
             retired: parking_lot::Mutex::new(Vec::new()),
@@ -304,6 +306,11 @@ impl WorkflowManager {
 
     pub fn set_peer_auth(&self, auth: PeerAuthFn) {
         *self.peer_auth.lock() = Some(auth);
+    }
+
+    /// Serves the internal socket's KV calls. Set before the socket starts.
+    pub fn set_kv(&self, kv: KvFn) {
+        *self.kv.lock() = Some(kv);
     }
 
     pub fn set_cache(&self, cache: CacheFn) {
@@ -361,6 +368,7 @@ impl WorkflowManager {
             SocketOptions {
                 mode: None,
                 cache: self.cache.lock().clone(),
+                kv: self.kv.lock().clone(),
             },
         )?);
         Ok(())
@@ -395,6 +403,7 @@ impl WorkflowManager {
             SocketOptions {
                 mode: Some(mode),
                 cache: self.cache.lock().clone(),
+                kv: self.kv.lock().clone(),
             },
         )?;
         sockets.insert(app.to_string(), (symlink_path.to_path_buf(), handle));
@@ -1049,6 +1058,7 @@ pub fn worker_spec_for_command(
         secrets,
         storages,
         databases: std::collections::HashMap::new(),
+        kv: std::collections::HashMap::new(),
         log_sink: None,
         isolation,
         lanes: Vec::new(),
@@ -1075,6 +1085,7 @@ mod tests {
             secrets: StdHashMap::new(),
             storages: StdHashMap::new(),
             databases: StdHashMap::new(),
+            kv: StdHashMap::new(),
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
@@ -1169,6 +1180,7 @@ mod tests {
             secrets: StdHashMap::new(),
             storages: StdHashMap::new(),
             databases: StdHashMap::new(),
+            kv: StdHashMap::new(),
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),

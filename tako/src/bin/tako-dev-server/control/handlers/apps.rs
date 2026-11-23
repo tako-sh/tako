@@ -36,6 +36,7 @@ pub(super) struct RegisterAppArgs {
     pub(super) images: Box<tako_images::ImagesConfig>,
     pub(super) storages: HashMap<String, tako_core::StorageBinding>,
     pub(super) databases: HashMap<String, String>,
+    pub(super) kv: HashMap<String, String>,
     pub(super) client_pid: Option<u32>,
     pub(super) readiness_failure_hint: Option<String>,
     pub(super) worker_command: Option<Vec<String>>,
@@ -48,6 +49,7 @@ struct WorkerBindings {
     storages: HashMap<String, tako_core::StorageBinding>,
     secrets: HashMap<String, String>,
     databases: HashMap<String, tako_core::DatabaseConnection>,
+    kv: HashMap<String, tako_core::KvConnection>,
 }
 
 // Call after locking the registration key. A rename claims both names until the old
@@ -99,6 +101,7 @@ pub(super) async fn register_app(
         images,
         storages,
         databases,
+        kv,
         client_pid,
         readiness_failure_hint,
         worker_command,
@@ -191,9 +194,22 @@ pub(super) async fn register_app(
             )
         })
         .transpose()?;
-    let databases = crate::databases::connect(&config_path, &databases)
+    // KV stores first: if a database then fails to open, the KV bindings
+    // go back to what the running app holds, and neither changes.
+    let kv_before = crate::kv::snapshot(&config_path).await;
+    let kv = crate::kv::connect(&config_path, &kv)
         .await
-        .map_err(|e| format!("failed to serve local databases: {e}"))?;
+        .map_err(|e| format!("failed to serve local KV stores: {e}"))?;
+    let databases = match crate::databases::connect(&config_path, &databases).await {
+        Ok(databases) => databases,
+        Err(error) => {
+            if let Err(restore) = crate::kv::restore(&config_path, kv_before).await {
+                tracing::warn!(config_path = %config_path, "Could not restore local KV bindings: {restore}");
+            }
+            return Err(format!("failed to serve local databases: {error}").into());
+        }
+    };
+    let app_kv = kv.clone();
     let app_storages = storages.clone();
     let app_secrets = secrets.clone();
     let app_databases = databases.clone();
@@ -305,6 +321,7 @@ pub(super) async fn register_app(
                 secrets,
                 storages,
                 databases,
+                kv,
             },
         );
 
@@ -393,6 +410,7 @@ pub(super) async fn register_app(
                 storages: app_storages,
                 secrets: app_secrets,
                 databases: app_databases,
+                kv: app_kv,
             },
             worker_log_buffer,
         )
@@ -431,6 +449,7 @@ async fn ensure_workflow_runtime(
         storages,
         secrets,
         databases,
+        kv,
     } = bindings;
     let Some(workflows) = workflows else {
         return;
@@ -473,6 +492,7 @@ async fn ensure_workflow_runtime(
         secrets,
         storages,
         databases,
+        kv,
         log_sink,
         isolation: None,
         external: false,
@@ -560,6 +580,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
         workflows.stop_pinned_socket(&app_name).await;
     }
     crate::databases::release(&config_path).await;
+    crate::kv::release(&config_path).await;
 
     Response::AppUnregistered { config_path }
 }
@@ -638,6 +659,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
                     storages: app.storages.clone(),
                     secrets: app.secrets.clone(),
                     databases: app.databases.clone(),
+                    kv: app.kv.clone(),
                 },
                 app.log_buffer.clone(),
             )

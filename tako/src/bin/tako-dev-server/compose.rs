@@ -113,6 +113,7 @@ pub(crate) fn with_sdk(
             secrets: sdk.secrets,
             storages: &storages,
             databases: &HashMap::new(),
+            kv: &HashMap::new(),
         },
     );
     let value = |key: &str, default: &str| {

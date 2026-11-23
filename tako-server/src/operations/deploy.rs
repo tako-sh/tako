@@ -244,6 +244,7 @@ impl crate::ServerState {
         }
         config.apply_internal_defaults();
         let database_connections = self.databases.connections(&config.databases);
+        let kv_connections = crate::databases::kv_connections(&config.databases);
         let workflows = match self
             .prepare_app_workflows(
                 app_name,
@@ -253,6 +254,7 @@ impl crate::ServerState {
                     secrets: &config.secrets,
                     storages: &config.storages,
                     databases: &database_connections,
+                    kv: &kv_connections,
                     postgres_url: runtime_credentials.get("postgres_url"),
                 },
                 tako_workflows::manager::ScheduleActivation::Deploy,

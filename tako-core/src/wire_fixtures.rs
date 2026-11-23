@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::bootstrap::{Bindings, envelope_bytes};
-use crate::database::DatabaseConnection;
+use crate::database::{DatabaseConnection, KvConnection};
 use crate::network::NetworkRequest;
 use crate::{
     Command, EnqueueOpts, EnqueueRunResponse, ErrorCode, Response, RunPayload, RunResult,
@@ -391,6 +391,50 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         command(
+            "kv-get",
+            Command::Kv {
+                app: APP.into(),
+                token: "kv-token-example".into(),
+                request: crate::KvRequest::Get {
+                    key: "session:1".into(),
+                },
+            },
+        ),
+        command(
+            "kv-put",
+            Command::Kv {
+                app: APP.into(),
+                token: "kv-token-example".into(),
+                request: crate::KvRequest::Put {
+                    key: "session:1".into(),
+                    json: r#"{"user":"u1"}"#.into(),
+                    ttl_ms: Some(86_400_000),
+                },
+            },
+        ),
+        command(
+            "kv-put-no-ttl",
+            Command::Kv {
+                app: APP.into(),
+                token: "kv-token-example".into(),
+                request: crate::KvRequest::Put {
+                    key: "settings".into(),
+                    json: "1".into(),
+                    ttl_ms: None,
+                },
+            },
+        ),
+        command(
+            "kv-delete",
+            Command::Kv {
+                app: APP.into(),
+                token: "kv-token-example".into(),
+                request: crate::KvRequest::Delete {
+                    key: "session:1".into(),
+                },
+            },
+        ),
+        command(
             "channel_close",
             Command::ChannelClose {
                 app: APP.into(),
@@ -565,12 +609,17 @@ fn bootstrap() -> Fixture {
             auth_token: "token-example".into(),
         },
     )]);
+    let kv = HashMap::from([(
+        "sessions".to_string(),
+        KvConnection::new("kv-token-example"),
+    )]);
     let json = serde_json::from_slice(&envelope_bytes(
         "tok-abc",
         Bindings {
             secrets: &secrets,
             storages: &storages,
             databases: &databases,
+            kv: &kv,
         },
     ))
     .unwrap();
@@ -585,12 +634,15 @@ fn bootstrap() -> Fixture {
                 serde_json::from_value(file["storages"].clone()).unwrap();
             let databases: HashMap<String, DatabaseConnection> =
                 serde_json::from_value(file["databases"].clone()).unwrap();
+            let kv: HashMap<String, KvConnection> =
+                serde_json::from_value(file["kv"].clone()).unwrap();
             let rebuilt: Value = serde_json::from_slice(&envelope_bytes(
                 token,
                 Bindings {
                     secrets: &secrets,
                     storages: &storages,
                     databases: &databases,
+                    kv: &kv,
                 },
             ))
             .unwrap();

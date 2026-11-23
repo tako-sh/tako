@@ -23,6 +23,7 @@ type Bootstrap struct {
 	Token     string                        `json:"token"`
 	Secrets   map[string]string             `json:"secrets"`
 	Databases map[string]DatabaseConnection `json:"databases,omitempty"`
+	KV        map[string]KVConnection       `json:"kv,omitempty"`
 }
 
 // DatabaseConnection is one database binding: where the app reaches the
@@ -30,6 +31,12 @@ type Bootstrap struct {
 type DatabaseConnection struct {
 	URL       string `json:"url"`
 	AuthToken string `json:"authToken"`
+}
+
+// KVConnection is one KV store binding: the token that authorizes it, which
+// the SDK sends with each request through the internal socket.
+type KVConnection struct {
+	Token string `json:"token"`
 }
 
 // BootstrapFromRuntime reads the bootstrap envelope from the current process.

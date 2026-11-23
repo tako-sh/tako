@@ -70,6 +70,9 @@ pub struct WorkerSpec {
     /// Database connections to hand the worker via fd 3.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub databases: HashMap<String, tako_core::DatabaseConnection>,
+    /// KV store connections to hand the worker via fd 3.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub kv: HashMap<String, tako_core::KvConnection>,
     /// Optional per-line log sink. When `Some`, the supervisor pipes
     /// stdout/stderr and forwards each line. When `None`, inherits the
     /// parent's stdio (production default — lets journald/systemd capture
@@ -100,6 +103,7 @@ impl WorkerSpec {
             secrets: HashMap::new(),
             storages: HashMap::new(),
             databases: HashMap::new(),
+            kv: HashMap::new(),
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
@@ -541,6 +545,7 @@ impl WorkerSupervisor {
                 secrets: &self.spec.secrets,
                 storages: &self.spec.storages,
                 databases: &self.spec.databases,
+                kv: &self.spec.kv,
             },
         )
         .map_err(SupervisorError::Spawn)?;

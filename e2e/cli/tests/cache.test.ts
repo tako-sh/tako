@@ -33,7 +33,7 @@ test("tako run launches the child when its cache socket cannot be bound", async 
     ]);
     expect(code).toBe(0);
     expect(out.trim()).toBe("child-ran");
-    expect(err).toContain("Local cache unavailable");
+    expect(err).toContain("Local cache and KV stores unavailable");
   } finally {
     await rm(project, { recursive: true, force: true });
   }

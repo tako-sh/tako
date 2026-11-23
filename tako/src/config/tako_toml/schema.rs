@@ -93,6 +93,11 @@ pub struct TakoToml {
     #[serde(default)]
     pub databases: HashMap<String, DatabaseResourceConfig>,
 
+    /// [kv.*] sections - per-store settings for the Tako-hosted KV stores
+    /// this project binds in `[envs.<env>].kv`.
+    #[serde(default)]
+    pub kv: HashMap<String, DatabaseResourceConfig>,
+
     /// Release command run once on the deploy leader server during the "Preparing"
     /// phase, before any rolling update starts (e.g. `"bun run db:migrate"`).
     /// Can be overridden per environment via `[envs.<name>].release`.
@@ -199,6 +204,13 @@ pub struct EnvConfig {
     #[serde(default)]
     pub databases: HashMap<String, String>,
 
+    /// KV store bindings assigned to this environment.
+    ///
+    /// Key = app binding name exposed as `tako.kv.<key>`.
+    /// Value = name of a KV store created with `tako kv create`. Binding
+    /// names are shared with `databases`: each is used once per environment.
+    #[serde(default)]
+    pub kv: HashMap<String, String>,
     /// Channel replay settings for this environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channels: Option<ChannelsConfig>,
@@ -242,9 +254,10 @@ pub struct BackupConfig {
     pub storage: String,
 }
 
-/// Settings for a Tako-hosted database, from `[databases.<name>]`. The
-/// database itself, its server and access, live in the network's records;
-/// this table is needed only to override the environment's backup storage.
+/// Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV
+/// store, from `[kv.<name>]`. The database itself, its server and access,
+/// live in the network's records; this table is needed only to override the
+/// environment's backup storage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

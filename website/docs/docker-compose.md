@@ -150,7 +150,7 @@ Compose stays in charge of images, commands, environment, replicas and health ch
 | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `TAKO_APP_NAME`        | The group's deployment ID (`<name>/<env>`); in `tako dev`, the dev app name                                  |
 | `TAKO_INTERNAL_SOCKET` | `/run/tako/internal.sock`. The group's socket directory is mounted read-only at `/run/tako`.                 |
-| `TAKO_BOOTSTRAP_DATA`  | The group's token, all group secrets and S3 storage bindings. No databases.                                  |
+| `TAKO_BOOTSTRAP_DATA`  | The group's token, all group secrets and S3 storage bindings. No databases or KV stores.                     |
 | `TAKO_DATA_DIR`        | `/tako/data`. The group's app data directory is mounted read-write, and its group is added to the container. |
 | `TAKO_BUILD`, `ENV`    | Release version and environment                                                                              |
 | `HOST`, `PORT`         | HTTP apps only: `0.0.0.0` and the selected port                                                              |
@@ -173,7 +173,7 @@ Tako installs the new release's workflow runtime before it starts the release's 
 
 ### Limits
 
-- Hosted Tako databases (`tako.databases`) are unavailable, as for standalone containers: containers have no loopback route to them.
+- Hosted Tako databases (`tako.databases`) and KV stores (`tako.kv`) are unavailable, as for standalone containers: containers have no loopback route to them.
 - Local storage bindings are rejected in groups with SDK services; use S3 storage.
 - No scale-to-zero or cold starts, and one server per group.
 - In `tako dev`, SDK services reach the dev server through a mounted Unix socket. This works with Docker Engine on Linux; Docker Desktop on macOS and Windows may not forward host Unix sockets into its VM.

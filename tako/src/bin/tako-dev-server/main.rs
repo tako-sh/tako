@@ -5,6 +5,7 @@ mod databases;
 mod dev_channels;
 mod identity;
 mod image;
+mod kv;
 mod lan;
 mod local_dns;
 mod network;
@@ -241,6 +242,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Some((dir, _)) => caches.reply(&dir, request),
                 None => tako_core::Response::error("unknown development cache"),
+            }
+        }));
+        let registry = Arc::downgrade(&state);
+        workflows.set_kv(Arc::new(move |name, token, request| {
+            // Stores are bound per registration; find the calling app's.
+            let config_path = registry.upgrade().and_then(|state| {
+                let state = state.lock().ok()?;
+                state
+                    .apps
+                    .iter()
+                    .find(|(_, app)| app.name == name)
+                    .map(|(config_path, _)| config_path.clone())
+            });
+            match config_path {
+                Some(config_path) => kv::call(&config_path, token, request),
+                None => tako_core::Response::coded_error(
+                    tako_core::ErrorCode::Unavailable,
+                    format!("{name} is not running under the dev server"),
+                ),
             }
         }));
     }

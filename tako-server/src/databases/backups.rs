@@ -58,6 +58,9 @@ pub(crate) struct BackupState {
     pub replicated_at_unix_secs: Option<u64>,
     pub last_attempt_unix_secs: Option<u64>,
     pub last_error: Option<String>,
+    /// For a KV store's snapshots: whether `last_snapshot` was read from
+    /// the object store.
+    pub loaded: bool,
 }
 
 /// One database's capture, guarded by its own lock: the periodic job,
@@ -887,7 +890,7 @@ pub(crate) async fn housekeeping(state: &Arc<ServerState>) {
     }
 }
 
-/// Starts a backup job for every database, without waiting for them.
+/// Starts a backup job for every SQLite database, without waiting for them.
 pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
     jobs.reap();
     if state.is_draining() {
@@ -900,8 +903,11 @@ pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
             return;
         }
     };
+    // KV stores keep snapshot backups (see `super::snapshots`).
     for stored in databases {
-        jobs.start(state, stored.name);
+        if stored.engine == tako_core::DatabaseEngine::Sqlite {
+            jobs.start(state, stored.name);
+        }
     }
 }
 
@@ -1694,6 +1700,9 @@ pub(crate) async fn replace_locked(
     replacement: PathBuf,
     pause_reason: &str,
 ) -> Result<Vec<String>, String> {
+    if stored.engine == tako_core::DatabaseEngine::Kv {
+        return super::snapshots::replace_locked(state, stored, replacement).await;
+    }
     replace_inner(state, stored, replacement, pause_reason, false).await
 }
 

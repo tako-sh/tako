@@ -28,6 +28,9 @@ fn implicit_name(app: &str) -> String {
 #[derive(Default)]
 pub(in crate::commands::deploy) struct Plan {
     pub sql: HashMap<String, PlannedBinding>,
+    /// KV store bindings. They are backed up and granted like databases,
+    /// have no migrations, and deploys never create them.
+    pub kv: HashMap<String, PlannedBinding>,
     pub replay: Option<PlannedBinding>,
     /// A deploy-only client found no generated replay database it could be
     /// using. It cannot create one, so the servers keep the environment's
@@ -66,9 +69,27 @@ pub(in crate::commands::deploy) fn plan(
             "The generated channel database name '{generated}' is also an app SQL database. Select a channel database explicitly with [envs.{env}.channels].database."
         ));
     }
+    if let Some(name) = replay
+        && environment.kv.values().any(|store| store == name)
+    {
+        return Err(format!(
+            "'{name}' is bound as a KV store in {env}, so it cannot also hold channel replay. Select another channel database with [envs.{env}.channels].database."
+        ));
+    }
     let members = crate::commands::helpers::resolve_network_servers(servers, network, &[], env)?;
     let mut resolve = |name: &str, for_replay: bool| -> Result<Option<PlannedBinding>, String> {
         let home = if let Some(record) = records.iter().find(|r| r.name == name) {
+            if record.engine != tako_core::DatabaseEngine::Sqlite {
+                return Err(if for_replay {
+                    format!(
+                        "'{name}' is a KV store, so it cannot hold channel replay. Select a SQLite database with [envs.{env}.channels].database."
+                    )
+                } else {
+                    format!(
+                        "'{name}' is a KV store. Bind it under [envs.{env}].kv instead of databases."
+                    )
+                });
+            }
             if for_replay && implicit && record.channel_owner.as_deref() != Some(app) {
                 return Err(format!(
                     "Database '{name}' is not {app}'s automatically created channel database. Select an intended database explicitly with [envs.{env}.channels].database."
@@ -117,12 +138,41 @@ pub(in crate::commands::deploy) fn plan(
                 commands.join(" or ")
             ));
         };
-        Ok(Some(PlannedBinding::new(name, home)))
+        Ok(Some(PlannedBinding::new(
+            name,
+            home,
+            tako_core::DatabaseEngine::Sqlite,
+        )))
     };
     for (binding, name) in &environment.databases {
         plan.sql.insert(
             binding.clone(),
             resolve(name, false)?.expect("SQL placement"),
+        );
+    }
+    // KV stores must exist: `tako kv create` places them, since a deploy
+    // cannot choose where shared state should live.
+    for (binding, name) in &environment.kv {
+        let record = records.iter().find(|r| &r.name == name).ok_or_else(|| {
+            format!(
+                "KV store '{name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako kv create {name}`, or run `tako kv list` to see the network's KV stores."
+            )
+        })?;
+        if record.engine != tako_core::DatabaseEngine::Kv {
+            return Err(format!(
+                "'{name}', bound as '{binding}' under kv in {env}, is a SQLite database. Bind it under databases instead."
+            ));
+        }
+        let home = resolve_home(servers, network, &record.server, env)
+            .map_err(|error| format!("The server of KV store '{name}': {error}"))?;
+        if home.device_id != record.server {
+            return Err(format!(
+                "KV store '{name}' has no valid server device ID in the network directory."
+            ));
+        }
+        plan.kv.insert(
+            binding.clone(),
+            PlannedBinding::new(name, home, tako_core::DatabaseEngine::Kv),
         );
     }
     match replay {
@@ -181,6 +231,7 @@ mod tests {
             server: "a".repeat(64),
             generation: "c".repeat(32),
             created_at_unix_secs: 1,
+            engine: tako_core::DatabaseEngine::Sqlite,
             channel_owner: owner.map(str::to_owned),
         }
     }
@@ -342,5 +393,59 @@ mod tests {
         .unwrap();
         assert_eq!(both.replay.unwrap().database_name, "other");
         assert!(!both.unprovisioned_replay);
+    }
+    #[test]
+    fn kv_stores_are_planned_only_when_they_exist_and_never_hold_replay() {
+        let kv = |name: &str| DatabaseRecord {
+            engine: tako_core::DatabaseEngine::Kv,
+            ..record(name, None)
+        };
+        let place = |settings: &str, records: &[DatabaseRecord]| {
+            plan(
+                &project(settings),
+                &servers(1),
+                NETWORK,
+                "production",
+                APP,
+                records,
+                true,
+                false,
+                false,
+            )
+        };
+        // A KV binding names an existing store and is planned apart from SQL.
+        let planned = place("kv={auth='sessions'}", &[kv("sessions")]).unwrap();
+        assert_eq!(
+            planned.kv["auth"].binding.engine,
+            tako_core::DatabaseEngine::Kv
+        );
+        assert!(planned.sql.is_empty() && planned.create.is_empty());
+        // Deploys never create KV stores, even on a one-server network.
+        assert!(
+            place("kv={auth='sessions'}", &[])
+                .err()
+                .unwrap()
+                .contains("tako kv create sessions")
+        );
+        // Each kind of binding names a record of its own kind.
+        assert!(
+            place("kv={auth='main'}", &[record("main", None)])
+                .err()
+                .unwrap()
+                .contains("is a SQLite database")
+        );
+        assert!(
+            place("databases={main='sessions'}", &[kv("sessions")])
+                .err()
+                .unwrap()
+                .contains("is a KV store")
+        );
+        // Channel replay needs a SQLite database.
+        assert!(
+            place("channels.database='sessions'", &[kv("sessions")])
+                .err()
+                .unwrap()
+                .contains("cannot hold channel replay")
+        );
     }
 }

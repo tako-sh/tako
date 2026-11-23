@@ -1,7 +1,8 @@
 //! Preparing an environment's databases before its release command and
 //! rollout: backup destinations and grants on the databases' servers (for
 //! administrators), a restore point before the release command, and the
-//! project's migrations.
+//! project's migrations. KV stores are backed up and granted like
+//! databases; they have no migrations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -24,7 +25,7 @@ pub(super) async fn provision(
     app: &str,
     records: &mut Vec<DatabaseRecord>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if plan.sql.is_empty() && plan.replay.is_none() {
+    if plan.sql.is_empty() && plan.kv.is_empty() && plan.replay.is_none() {
         return Ok(());
     }
     // A move can leave the same generation on the old home. Verify the live
@@ -32,7 +33,12 @@ pub(super) async fn provision(
     let current = tokio::task::block_in_place(|| crate::network::databases::list(network))?;
     let mut checked = BTreeSet::new();
     let mut hosted = HashMap::new();
-    for entry in plan.sql.values().chain(plan.replay.iter()) {
+    for entry in plan
+        .sql
+        .values()
+        .chain(plan.kv.values())
+        .chain(plan.replay.iter())
+    {
         if !checked.insert(&entry.database_name) {
             continue;
         }
@@ -80,7 +86,16 @@ pub(super) async fn provision(
                 .as_ref()
                 .is_some_and(|r| r.database_name == *name))
         .then_some(app);
-        records.push(crate::commands::sqlite::create_database(network, home, name, owner).await?);
+        records.push(
+            crate::commands::sqlite::create_database(
+                network,
+                home,
+                name,
+                owner,
+                tako_core::DatabaseEngine::Sqlite,
+            )
+            .await?,
+        );
         output::success(&format!("Created database {name} on {}", home.name));
     }
     Ok(())
@@ -179,9 +194,10 @@ struct Prepared {
 }
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
-    // Distinct databases bound by this environment.
+    // Distinct databases and KV stores bound by this environment. Both get
+    // backups, grants and release snapshots; only databases get migrations.
     let mut bound: BTreeMap<String, &PlannedBinding> = BTreeMap::new();
-    for planned in prep.plan.sql.values() {
+    for planned in prep.plan.sql.values().chain(prep.plan.kv.values()) {
         bound
             .entry(planned.database_name.clone())
             .or_insert(planned);

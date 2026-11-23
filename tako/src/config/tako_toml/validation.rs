@@ -267,15 +267,38 @@ impl TakoToml {
                     )));
                 }
             }
-            for (binding_name, database_name) in &env_config.databases {
+            for (binding_name, database_name) in env_config.databases.iter().chain(&env_config.kv) {
                 tako_core::validate_database_name(binding_name).map_err(ConfigError::Validation)?;
                 tako_core::validate_database_name(database_name)
                     .map_err(ConfigError::Validation)?;
+            }
+            // Both kinds of binding reach apps through one set of names on
+            // the server.
+            let mut shared: Vec<&String> = env_config
+                .kv
+                .keys()
+                .filter(|name| env_config.databases.contains_key(*name))
+                .collect();
+            shared.sort();
+            if let Some(name) = shared.first() {
+                return Err(ConfigError::Validation(format!(
+                    "Environment '{env_name}' binds '{name}' in both databases and kv; give the KV store binding another name"
+                )));
             }
             if let Some(channels) = &env_config.channels {
                 tako_core::validate_database_name(&channels.database).map_err(|error| {
                     ConfigError::Validation(format!("[envs.{env_name}.channels].database: {error}"))
                 })?;
+                if env_config
+                    .kv
+                    .values()
+                    .any(|store| *store == channels.database)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.channels].database names '{}', which this environment binds as a KV store; channel replay needs a SQLite database",
+                        channels.database
+                    )));
+                }
             }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
@@ -288,7 +311,15 @@ impl TakoToml {
         }
 
         for (name, database) in &self.databases {
-            validate_database_resource(self, name, database)?;
+            validate_database_resource(self, "databases", name, database)?;
+        }
+        for (name, store) in &self.kv {
+            validate_database_resource(self, "kv", name, store)?;
+            if self.databases.contains_key(name) {
+                return Err(ConfigError::Validation(format!(
+                    "'{name}' has both [databases.{name}] and [kv.{name}]; a name is one database or one KV store"
+                )));
+            }
         }
 
         Ok(())
@@ -297,6 +328,7 @@ impl TakoToml {
 
 fn validate_database_resource(
     config: &TakoToml,
+    section: &str,
     name: &str,
     database: &DatabaseResourceConfig,
 ) -> Result<()> {
@@ -304,17 +336,17 @@ fn validate_database_resource(
     if let Some(storage) = &database.backup {
         let Some(resource) = config.storages.get(storage) else {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup references missing storage resource '{storage}'"
+                "[{section}.{name}].backup references missing storage resource '{storage}'"
             )));
         };
         if resource.provider != tako_core::StorageProvider::S3 {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup storage '{storage}' must use provider 's3'"
+                "[{section}.{name}].backup storage '{storage}' must use provider 's3'"
             )));
         }
         if resource.public_base_url.is_some() {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].backup storage '{storage}' must be private; remove public_base_url or use a separate private storage resource"
+                "[{section}.{name}].backup storage '{storage}' must be private; remove public_base_url or use a separate private storage resource"
             )));
         }
     }
@@ -431,6 +463,7 @@ pub(super) const TOP_LEVEL_KEYS: &[&str] = &[
     "envs",
     "storages",
     "databases",
+    "kv",
     "servers",
 ];
 

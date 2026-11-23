@@ -172,9 +172,7 @@ export function installChannelSocketPublisherFromEnv(): boolean {
 /** Send a single JSONL command and resolve to `data` (or throw on error). */
 export async function callInternal(socketPath: string, cmd: unknown): Promise<unknown> {
   createConnection ??= (await import(/* @vite-ignore */ netModule)).createConnection;
-  const network =
-    typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command === "network_call";
-  const resp = await internalSocketPool(socketPath, network).call(cmd);
+  const resp = await internalSocketPool(socketPath, poolKind(cmd)).call(cmd);
   if (resp.status === "error") {
     const reason = takoErrorReason(resp.code);
     logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", reason, message: resp.message });
@@ -186,14 +184,30 @@ export async function callInternal(socketPath: string, cmd: unknown): Promise<un
   return resp.data ?? null;
 }
 
-function internalSocketPool(socketPath: string, network: boolean): InternalSocketPool {
+/** Which pool's lanes carry a command. */
+type PoolKind = "network" | "kv" | "storage";
+
+function poolKind(cmd: unknown): PoolKind {
+  const command = typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command;
+  if (command === "network_call") return "network";
+  if (command === "kv") return "kv";
+  return "storage";
+}
+
+function internalSocketPool(socketPath: string, kind: PoolKind): InternalSocketPool {
   // Network handlers can call storage and other handlers in the same process.
   // Separate storage capacity and reject network overload instead of queuing
-  // descendants behind the ancestors that are waiting for them.
-  const key = `${network ? "network" : "storage"}:${socketPath}`;
+  // descendants behind the ancestors that are waiting for them. KV calls can
+  // wait on another server for up to the RPC timeout, so they get lanes of
+  // their own and never hold up workflows, channels, or the cache.
+  const key = `${kind}:${socketPath}`;
   const existing = internalSocketPools.get(key);
   if (existing) return existing;
-  const created = new InternalSocketPool(socketPath, DEFAULT_INTERNAL_SOCKET_POOL_SIZE, network);
+  const created = new InternalSocketPool(
+    socketPath,
+    DEFAULT_INTERNAL_SOCKET_POOL_SIZE,
+    kind === "network",
+  );
   internalSocketPools.set(key, created);
   return created;
 }

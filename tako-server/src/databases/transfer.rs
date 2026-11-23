@@ -1,5 +1,5 @@
-//! Importing a SQLite file into a database, and exporting a consistent copy,
-//! in chunks over the management protocol.
+//! Importing a SQLite file (or a KV export) into a database, and exporting
+//! a consistent copy, in chunks over the management protocol.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -10,9 +10,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use sha2::{Digest, Sha256};
 use tako_core::{DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport};
-use tako_database::DatabaseId;
 
 use super::backups::{self, SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
+use super::snapshots;
 use crate::ServerState;
 
 /// Transfers idle for longer are abandoned and their files removed.
@@ -28,6 +28,7 @@ pub(crate) struct Transfers {
 
 struct Import {
     database: String,
+    path: PathBuf,
     /// The generation the import was started for; a database deleted and
     /// created again under the same name does not receive it.
     generation: String,
@@ -129,7 +130,9 @@ pub(crate) async fn begin_import(
         .snapshot_space
         .reserve(size.saturating_mul(2), available, "the import")
         .map_err(|error| format!("Cannot import into {id}: {error}."))?;
-    let path = work.path.join("import.sqlite");
+    let path = work
+        .path
+        .join(format!("import.{}", snapshots::extension(&stored)));
     let file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -140,6 +143,7 @@ pub(crate) async fn begin_import(
         upload_id.clone(),
         Import {
             database: id.to_owned(),
+            path,
             generation: stored.generation,
             work,
             file,
@@ -233,16 +237,29 @@ pub(crate) async fn finish_import(
         .file
         .sync_all()
         .map_err(|e| format!("flush import: {e}"))?;
-    let path = import.work.path.join("import.sqlite");
+    let path = import.path.clone();
+    let engine = state.hosted_database(id)?.engine;
     let verify = path.clone();
-    tokio::task::spawn_blocking(move || tako_database::verify_database(&verify))
+    tokio::task::spawn_blocking(move || snapshots::verify_copy(engine, &verify))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| format!("The uploaded file is not a usable SQLite database: {e}"))?;
+        .map_err(|e| match engine {
+            tako_core::DatabaseEngine::Sqlite => {
+                format!("The uploaded file is not a usable SQLite database: {e}")
+            }
+            tako_core::DatabaseEngine::Kv => {
+                format!("The uploaded file is not a usable KV store export: {e}")
+            }
+        })?;
 
     let lock = state.databases.lock(id);
     let _guard = lock.lock().await;
     let stored = state.hosted_database(id)?;
+    if stored.engine != engine {
+        return Err(format!(
+            "Database {id} was replaced by a new database of the same name during the import; nothing was imported."
+        ));
+    }
     if stored.generation != import.generation {
         return Err(format!(
             "Database {id} was replaced by a new database of the same name during the import; nothing was imported."
@@ -269,27 +286,23 @@ pub(crate) async fn begin_export(
     state: &ServerState,
     id: &str,
 ) -> Result<serde_json::Value, String> {
-    let database = DatabaseId::parse(id)?;
     // Held until the export is registered, so a delete either cancels it or
     // has already removed the database.
     let lock = state.databases.lock(id);
     let _guard = lock.lock().await;
-    state.hosted_database(id)?;
+    let stored = state.hosted_database(id)?;
     let work = fresh_work_dir(state, id, "export")?;
-    let size = state.databases.host.size_bytes(&database).unwrap_or(0);
+    let size = snapshots::size_bytes(state, &stored);
     let available = crate::operations::available_bytes(&work.path)?;
     let space = state
         .databases
         .snapshot_space
         .reserve(size, available, "the export")
         .map_err(|error| format!("Cannot export {id}: {error}."))?;
-    let path = work.path.join("export.sqlite");
-    // A snapshot copy marks the database unchanged, but an export is not a
-    // backup: mark it changed again so the scheduler still uploads it, even a
-    // write that lands while the copy is made.
-    let snapshot = state.databases.host.snapshot(&database, &path).await;
-    state.databases.host.mark_changed(&database);
-    snapshot.map_err(|e| format!("copy database: {e}"))?;
+    let path = work
+        .path
+        .join(format!("export.{}", snapshots::extension(&stored)));
+    snapshots::copy_contents(state, &stored, &path, false).await?;
     let hash_path = path.clone();
     let (sha256, size) = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
         .await

@@ -46,6 +46,7 @@ fn cache_authenticates_before_opening_an_app_store() {
             Some(1),
             None,
             Some(&cache),
+            None,
             Command::Cache {
                 app: app.into(),
                 shared: true,
@@ -55,6 +56,42 @@ fn cache_authenticates_before_opening_an_app_store() {
     };
     assert!(send("web/production").error_message().is_some());
     assert_eq!(send("web/staging").data(), Some(&serde_json::json!("null")));
+}
+
+#[test]
+fn kv_requests_reach_the_kv_handler_with_the_callers_token() {
+    let lookup: AppLookup = Arc::new(|_| panic!("KV must not require a workflow worker"));
+    let kv: KvFn = Arc::new(|app, token, request| {
+        assert_eq!((app, token), ("web/staging", "binding-token"));
+        assert_eq!(request, tako_core::KvRequest::Get { key: "k".into() });
+        Response::ok(serde_json::json!("1"))
+    });
+    let auth = pinned_app_auth("web/staging");
+    let send = |app: &str, kv: Option<&KvFn>| {
+        handle_command(
+            &lookup,
+            None,
+            Some(&auth),
+            Some(1),
+            None,
+            None,
+            kv,
+            Command::Kv {
+                app: app.into(),
+                token: "binding-token".into(),
+                request: tako_core::KvRequest::Get { key: "k".into() },
+            },
+        )
+    };
+    assert!(send("web/production", Some(&kv)).error_message().is_some());
+    assert_eq!(
+        send("web/staging", Some(&kv)).data(),
+        Some(&serde_json::json!("1"))
+    );
+    assert_eq!(
+        send("web/staging", None).error_code(),
+        Some(ErrorCode::Unavailable)
+    );
 }
 
 #[test]
@@ -93,6 +130,7 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
             Some(1001),
             Some(&route),
             None,
+            None,
             command("web/staging", "mail.send-email")
         )
         .data()
@@ -111,6 +149,7 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
                 Some(&auth),
                 uid,
                 Some(&route),
+                None,
                 None,
                 command(app, address)
             )
@@ -169,6 +208,7 @@ fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
             Some(&publish),
             Some(&auth),
             Some(1001),
+            None,
             None,
             None,
             command(app, extra),
@@ -243,6 +283,7 @@ fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
             Some(1001),
             None,
             None,
+            None,
             command,
         )
     };
@@ -292,6 +333,7 @@ fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
         None,
         Some(&auth),
         Some(1001),
+        None,
         None,
         None,
         command("web", "chat", "channel_close"),
@@ -418,6 +460,7 @@ async fn pinned_socket_serves_only_its_app_through_a_moved_directory_and_a_rebin
             SocketOptions {
                 mode: Some(0o666),
                 cache: None,
+                kv: None,
             },
         )
         .unwrap()
@@ -1131,7 +1174,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             })
         })
     };
-    let call = |cmd| handle_command(&lookup, None, None, None, None, None, cmd);
+    let call = |cmd| handle_command(&lookup, None, None, None, None, None, None, cmd);
     let claim = || {
         let response = call(Command::ClaimRun {
             app: "a".into(),
@@ -1285,6 +1328,7 @@ fn assert_remote_reclaim_recovers_budget(
             None,
             None,
             None,
+            None,
             Command::ClaimRun {
                 app: "a".into(),
                 worker_id: "worker".into(),
@@ -1394,7 +1438,16 @@ fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
                 id: id.clone(),
             },
         ] {
-            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, None, cmd);
+            let response = handle_command(
+                &lookup,
+                None,
+                Some(&auth),
+                Some(1000),
+                None,
+                None,
+                None,
+                cmd,
+            );
             assert!(
                 response
                     .error_message()

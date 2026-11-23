@@ -4,30 +4,30 @@
     {
       "name": "tako",
       "type": "framework",
-      "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.",
+      "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, hosted databases, KV stores, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "d5ddc65ced5f24bd53fdb63110dc35ef222ddeb27934646e8a748d9edc980189"
+      "sha256": "23d5f8c04be3fab4aa50fe8b2d71162554051771094849608cfbd63204e72382"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "f3b619854f20553f1dd329452b694852fcff228e4f0a1e8948917bd7b91f92d7"
+      "sha256": "351517b764a2bcaa1c78a138792e8164f253079ec30424d5d36174c636220c07"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "ededc5012d6d991758242494cbd5272cf310819e0a285c989e98baf1e3498c70"
+      "sha256": "c0c253b1cb6200adab7be6749324c67e89bdfb42f0d9a9d10a805909d7ca1250"
     },
     {
       "name": "tako-sdk-rust",
       "type": "framework",
       "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling, authenticated presence, and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "a3643876151acc33615ef8229b92d1d0ce0c57d1062e6174d8d202f90229f016"
+      "sha256": "ee97e867b949c908980b07a4b0abc3f91c78c289c3ba7be39d2ad34744df148e"
     }
   ]
 }

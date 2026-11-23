@@ -57,11 +57,15 @@ impl ErrorCode {
         Self::ALL.into_iter().find(|known| known.as_str() == code)
     }
 
-    /// The code of a rejected network call's error, when the server sent one.
+    /// The code of a rejected network call's or KV request's error, when
+    /// the server sent one.
     pub fn of(error: &io::Error) -> Option<Self> {
-        error
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<Rejected>())
+        let inner = error.get_ref()?;
+        if let Some(rejected) = inner.downcast_ref::<KvRejected>() {
+            return rejected.code;
+        }
+        inner
+            .downcast_ref::<Rejected>()
             .and_then(|rejected| rejected.code)
     }
 }
@@ -86,6 +90,21 @@ impl fmt::Display for Rejected {
 }
 
 impl std::error::Error for Rejected {}
+
+/// A KV request the server rejected, with its diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvRejected {
+    pub code: Option<ErrorCode>,
+    pub message: String,
+}
+
+impl fmt::Display for KvRejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "KV request failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for KvRejected {}
 
 /// The `code` of an error reply, read leniently.
 pub(crate) fn reply_code(response: &serde_json::Value) -> Option<ErrorCode> {

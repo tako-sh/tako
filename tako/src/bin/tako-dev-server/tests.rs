@@ -111,6 +111,7 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
             secrets: std::collections::HashMap::new(),
             storages: std::collections::HashMap::new(),
             databases: Default::default(),
+            kv: Default::default(),
         },
     );
     s.routes.set_routes(
@@ -149,6 +150,7 @@ fn runtime_app_with_env(
         secrets: std::collections::HashMap::new(),
         storages: std::collections::HashMap::new(),
         databases: Default::default(),
+        kv: Default::default(),
     }
 }
 

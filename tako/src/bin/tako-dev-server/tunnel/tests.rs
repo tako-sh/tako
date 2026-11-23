@@ -909,6 +909,7 @@ pub(super) fn tunnel_state_with_app(
             secrets: Default::default(),
             storages: Default::default(),
             databases: Default::default(),
+            kv: Default::default(),
         },
     );
     state

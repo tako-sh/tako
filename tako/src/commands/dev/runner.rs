@@ -229,6 +229,7 @@ pub async fn run(
     let env_snapshot = env_state.lock().await.clone();
     let storages = load_dev_storages(&project_dir, &cfg, &environment)?;
     let databases = crate::local_databases::dev_files(&project_dir, &cfg, &environment);
+    let kv = crate::local_databases::dev_kv_files(&project_dir, &cfg, &environment);
     // Migrations run before the app starts, so it sees the current schema.
     let migrated = crate::local_databases::migrate_environment(&project_dir, &cfg, &environment)
         .map_err(|error| format!("Migrations failed: {error}"))?;
@@ -258,6 +259,7 @@ pub async fn run(
             images: &cfg.images,
             storages: &storages,
             databases: &databases,
+            kv: &kv,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,
