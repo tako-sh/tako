@@ -12,6 +12,7 @@ unit-rust:
     cargo test -p tako-cli --test cli_integration
 
 unit-js:
+    bun run --filter 'tako.sh' build
     bun test --cwd sdk/javascript
 
 unit-go:
