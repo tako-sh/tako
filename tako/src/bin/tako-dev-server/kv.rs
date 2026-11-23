@@ -105,7 +105,49 @@ pub(crate) async fn connect(
     Ok(connections)
 }
 
-type Scope = BTreeMap<String, (PathBuf, String)>;
+pub(crate) type Scope = BTreeMap<String, (PathBuf, String)>;
+
+/// The bindings of the app registered at `config_path`, with their tokens,
+/// for [`restore`] to put back.
+pub(crate) async fn snapshot(config_path: &str) -> Option<Scope> {
+    server()
+        .registrations
+        .lock()
+        .await
+        .scopes
+        .get(config_path)
+        .cloned()
+}
+
+/// Puts back bindings [`snapshot`] took, with the same tokens, so processes
+/// that still hold them keep working; `None` releases the registration.
+/// Fails only when a file the bindings name cannot be opened again.
+pub(crate) async fn restore(config_path: &str, scope: Option<Scope>) -> Result<(), String> {
+    let Some(previous) = scope else {
+        release(config_path).await;
+        return Ok(());
+    };
+    let server = server();
+    let mut registrations = server.registrations.lock().await;
+    let files: HashMap<String, String> = previous
+        .iter()
+        .map(|(binding, (path, _))| (binding.clone(), path.display().to_string()))
+        .collect();
+    // Every binding names the file it had, so each keeps its token.
+    let restored = open_bindings(server, &mut registrations, &previous, &files).await;
+    let result = match restored {
+        Ok((scope, host_bindings)) => {
+            server
+                .host
+                .set_bindings(&host_scope(config_path), host_bindings);
+            registrations.scopes.insert(config_path.to_owned(), scope);
+            Ok(())
+        }
+        Err(error) => Err(error),
+    };
+    close_unused(server, &mut registrations).await;
+    result
+}
 
 /// Opens the files `bindings` name that are not open yet, in binding
 /// order, and returns the app's new scope with the host's bindings for it.
@@ -327,6 +369,40 @@ mod tests {
         ));
         release(config).await;
         assert!(!is_open(&file).await);
+    }
+
+    #[tokio::test]
+    async fn restores_put_back_the_previous_bindings_and_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).display().to_string();
+        let (old, new) = (path("old.redb"), path("new.redb"));
+        let config = "/r/tako.toml";
+        let before = connect(config, &HashMap::from([("auth".to_string(), old.clone())]))
+            .await
+            .unwrap();
+        let snapshot = snapshot(config).await;
+        // A re-registration that changes the binding, then has to be undone.
+        let after = connect(config, &HashMap::from([("auth".to_string(), new.clone())]))
+            .await
+            .unwrap();
+        assert_ne!(after["auth"].token, before["auth"].token);
+        restore(config, snapshot).await.unwrap();
+        // The running app's token works again, on the file it had.
+        assert!(matches!(
+            send(config, &before["auth"], put("k")).await,
+            Response::Ok { .. }
+        ));
+        assert!(
+            send(config, &after["auth"], get("k"))
+                .await
+                .error_message()
+                .is_some()
+        );
+        assert!(is_open(&old).await);
+        assert!(!is_open(&new).await);
+        // Restoring a registration that had none releases it.
+        restore(config, None).await.unwrap();
+        assert!(!is_open(&old).await);
     }
 
     #[tokio::test]

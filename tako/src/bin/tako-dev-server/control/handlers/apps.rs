@@ -194,12 +194,21 @@ pub(super) async fn register_app(
             )
         })
         .transpose()?;
-    let databases = crate::databases::connect(&config_path, &databases)
-        .await
-        .map_err(|e| format!("failed to serve local databases: {e}"))?;
+    // KV stores first: if a database then fails to open, the KV bindings
+    // go back to what the running app holds, and neither changes.
+    let kv_before = crate::kv::snapshot(&config_path).await;
     let kv = crate::kv::connect(&config_path, &kv)
         .await
         .map_err(|e| format!("failed to serve local KV stores: {e}"))?;
+    let databases = match crate::databases::connect(&config_path, &databases).await {
+        Ok(databases) => databases,
+        Err(error) => {
+            if let Err(restore) = crate::kv::restore(&config_path, kv_before).await {
+                tracing::warn!(config_path = %config_path, "Could not restore local KV bindings: {restore}");
+            }
+            return Err(format!("failed to serve local databases: {error}").into());
+        }
+    };
     let app_kv = kv.clone();
     let app_storages = storages.clone();
     let app_secrets = secrets.clone();
