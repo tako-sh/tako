@@ -42,6 +42,10 @@ pub enum StateStoreError {
 
     #[error("unsupported schema version: {found}")]
     UnsupportedSchemaVersion { found: i32 },
+
+    /// An app's workflow database did not answer; a retry can succeed.
+    #[error("workflow database unavailable: {0}")]
+    WorkflowStoreUnavailable(String),
 }
 
 impl From<rusqlite::Error> for StateStoreError {

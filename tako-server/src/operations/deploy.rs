@@ -201,6 +201,7 @@ impl crate::ServerState {
                     config,
                     routes,
                     ssl,
+                    require_workflow_store: true,
                 })
                 .await;
         }
@@ -226,6 +227,7 @@ impl crate::ServerState {
                     databases: &database_connections,
                     kv: &kv_connections,
                     store: crate::databases::workflow_store(app_name, &config.databases),
+                    require_store: true,
                 },
                 tako_workflows::manager::ScheduleActivation::Deploy,
             )

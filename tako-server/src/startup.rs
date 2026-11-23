@@ -30,6 +30,7 @@ use standby::{StandbyPromotionConfig, spawn_standby_monitor};
 use tasks::{
     spawn_health_monitoring, spawn_idle_monitoring, spawn_instance_event_bridge,
     spawn_instance_reconcile, spawn_management_http, spawn_management_socket,
+    spawn_workflow_retries,
 };
 
 pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
@@ -290,6 +291,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_instance_event_bridge(&rt, state.clone());
     spawn_health_monitoring(&rt, state.clone());
     spawn_instance_reconcile(&rt, state.clone());
+    spawn_workflow_retries(&rt, state.clone());
     spawn_idle_monitoring(&rt, state.clone());
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);

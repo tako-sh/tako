@@ -124,6 +124,12 @@ pub enum RunsDbError {
 }
 
 impl RunsDbError {
+    /// Whether the workflow database did not answer, so the same call can
+    /// succeed later.
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Hosted(error) if error.is_unavailable())
+    }
+
     /// The internal-socket code a worker or enqueue command failing with this
     /// error replies with. Operator-only failures (`RunNotFound`, ...) and
     /// storage errors an SDK cannot act on have none.

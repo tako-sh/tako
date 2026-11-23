@@ -9,6 +9,10 @@ pub(crate) struct WorkflowBindings<'a> {
     /// The hosted store of the app's workflow runs, from its `@workflows`
     /// binding. A release that defines workflows gets no runtime without it.
     pub(crate) store: Option<tako_workflows::WorkflowStoreConfig>,
+    /// Whether such a release fails instead, as a deploy does: only a full
+    /// client can provision the database, so the deploy must not seem to
+    /// succeed without it.
+    pub(crate) require_store: bool,
 }
 
 impl ServerState {
@@ -59,6 +63,7 @@ impl ServerState {
                     // The committed binding, through the same resolver
                     // operator commands use.
                     store: self.workflows.workflow_store_config(app_name),
+                    require_store: false,
                 },
                 ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
             )
@@ -123,8 +128,7 @@ impl ServerState {
                 .cloned()
                 .unwrap_or_else(|| manifest.version.clone());
             let Some(store) = bindings.store else {
-                warn_without_store(app_name);
-                return Ok(None);
+                return without_store(app_name, bindings.require_store);
             };
             return self
                 .workflows
@@ -136,7 +140,7 @@ impl ServerState {
                 )
                 .await
                 .map(Some)
-                .map_err(|error| StateStoreError::InvalidData(error.to_string()));
+                .map_err(workflow_error);
         }
         let internal_socket = self.workflows.socket_path();
 
@@ -146,6 +150,7 @@ impl ServerState {
             databases,
             kv,
             store,
+            require_store,
         } = bindings;
         let mut worker_env = manifest.env_vars.clone();
         // Older manifests can omit the version. Their release directory still
@@ -308,8 +313,7 @@ impl ServerState {
 
         self.ensure_internal_socket_started()?;
         let Some(store) = store else {
-            warn_without_store(app_name);
-            return Ok(None);
+            return without_store(app_name, require_store);
         };
         let mut spec = crate::workflows::worker_spec_for_command(
             app_name,
@@ -334,15 +338,71 @@ impl ServerState {
             .prepare(store, manifest.workflow_retention_ms, spec, activation)
             .await
             .map(Some)
-            .map_err(|error| StateStoreError::InvalidData(error.to_string()))
+            .map_err(workflow_error)
+    }
+
+    /// Start the workflow runtimes that recovery left waiting for their
+    /// database. An app deployed, stopped or removed since then is dropped:
+    /// its own operation decided its runtime.
+    pub(crate) async fn retry_waiting_workflows(&self) {
+        let waiting: Vec<_> = self
+            .workflows_waiting
+            .lock()
+            .iter()
+            .map(|(app, waiting)| (app.clone(), waiting.clone()))
+            .collect();
+        for (app_name, waiting) in waiting {
+            if self.is_draining() {
+                return;
+            }
+            let lock = self.get_deploy_lock(&app_name).await;
+            let _guard = lock.lock().await;
+            let current = self.app_manager.get_app(&app_name).filter(|app| {
+                let config = app.config.read();
+                config.version == waiting.version && !config.stopped
+            });
+            if current.is_some() && !self.workflows.has(&app_name) {
+                match self
+                    .try_sync_app_workflows(
+                        &app_name,
+                        &waiting.release_path,
+                        waiting.runtime_bin_path.as_deref(),
+                    )
+                    .await
+                {
+                    Err(StateStoreError::WorkflowStoreUnavailable(_)) => continue,
+                    Err(error) => {
+                        tracing::warn!(app = %app_name, %error, "Failed to start workflows")
+                    }
+                    Ok(()) => tracing::info!(app = %app_name, "Started workflows"),
+                }
+            }
+            self.workflows_waiting.lock().remove(&app_name);
+        }
+    }
+}
+
+/// A database that did not answer stays retryable.
+fn workflow_error(error: tako_workflows::manager::WorkflowManagerError) -> StateStoreError {
+    if error.is_unavailable() {
+        StateStoreError::WorkflowStoreUnavailable(error.to_string())
+    } else {
+        StateStoreError::InvalidData(error.to_string())
     }
 }
 
 /// A release defines workflows, but its environment has no workflow
-/// database: deploys from a full client provision one.
-fn warn_without_store(app: &str) {
+/// database: deploys from a full client provision one. A deploy fails
+/// without it; recovery starts the app without its workflow engine.
+fn without_store(app: &str, require: bool) -> Result<Option<PreparedWorkflow>, StateStoreError> {
+    if require {
+        return Err(StateStoreError::InvalidData(format!(
+            "this release runs workflows, but {app} has no workflow database; deploy once with full access to provision it"
+        )));
+    }
     tracing::warn!(
         app,
         "Skipping workflow engine: the environment has no workflow database; deploy it again from a full client"
     );
+    Ok(None)
 }

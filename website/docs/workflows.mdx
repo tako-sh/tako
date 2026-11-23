@@ -477,6 +477,8 @@ tako db create shop-workflows --server edge-a
 db = "shop-workflows"
 ```
 
+Only a full client can create and grant the database. Until one has deployed a release with workflows, a deploy client's deploys of such a release fail rather than run without workflows.
+
 Every server of the environment then works from the same runs: a run enqueued on one server can run on another, a run ID deduplicates across servers, and each schedule fires once per due time. Several apps or environments can name one database; each keeps its own runs and schedules. Do not also bind the workflow database as app SQL: a SQL binding can read and change every table in it.
 
 The database server acknowledges a transaction only after synchronizing it to disk, including enqueues and saved steps. Acknowledged state survives a process or host crash when the filesystem and storage device honor synchronization requests. Each operation is one transaction in one request, so a slow network never holds the database's writer.

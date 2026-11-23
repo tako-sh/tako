@@ -654,6 +654,82 @@ async fn restore_from_state_store_restarts_internal_socket_for_apps_with_workflo
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn restored_apps_serve_while_their_workflow_database_is_unreachable() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "workflow-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state_a = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager.clone(),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release_dir = temp.path().join("apps/workflow-app/production/releases/v1");
+    write_js_workflow_scaffold(&release_dir);
+    write_release_manifest(
+        &release_dir,
+        "node",
+        "index.js",
+        &["/bin/sh", "-lc", "sleep 600"],
+        Some("true"),
+        300,
+    );
+    let app = state_a.app_manager.register_app(AppConfig {
+        name: "workflow-app".to_string(),
+        environment: "production".to_string(),
+        version: "v1".to_string(),
+        path: release_dir.clone(),
+        command: vec!["/bin/sh".into(), "-lc".into(), "sleep 600".into()],
+        min_instances: 0,
+        max_instances: 4,
+        idle_timeout: Duration::from_secs(300),
+        ..Default::default()
+    });
+    state_a.load_balancer.register_app(app);
+    state_a.persist_app_state(app_id).await;
+    drop(state_a);
+
+    let state_b = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    // The database's server is not reachable yet, as right after a restart.
+    let token = tako_db::testing::TestServer::start()
+        .database("tests#workflows")
+        .token;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    state_b.workflows.set_store_resolver(Arc::new(move |app| {
+        Some(tako_workflows::WorkflowStoreConfig::hosted(
+            url.clone(),
+            token.clone(),
+            app,
+        ))
+    }));
+    state_b.restore_from_state_store().await.unwrap();
+    assert!(
+        state_b.app_manager.get_app(app_id).is_some(),
+        "an unreachable workflow database must not take the app's routes away"
+    );
+    assert!(!state_b.workflows.has(app_id));
+    assert!(state_b.workflows_waiting.lock().contains_key(app_id));
+
+    // Once the database answers, the retry starts the workflow runtime.
+    let _workflow_db = super::workflows::serve_workflows(&state_b);
+    state_b.retry_waiting_workflows().await;
+    assert!(state_b.workflows.has(app_id));
+    assert!(state_b.workflows_waiting.lock().is_empty());
+}
+
 #[tokio::test]
 async fn server_state_starts_internal_socket_at_boot() {
     let temp = TempDir::new().unwrap();

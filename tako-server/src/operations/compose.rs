@@ -8,6 +8,9 @@ pub(super) struct ComposeDeployment {
     pub config: AppConfig,
     pub routes: Vec<String>,
     pub ssl: Option<tako_core::SslBinding>,
+    /// A deploy fails when an SDK group has no workflow database; scaling,
+    /// starting and stopping keep the group running without one.
+    pub require_workflow_store: bool,
 }
 
 impl crate::ServerState {
@@ -18,6 +21,7 @@ impl crate::ServerState {
             mut config,
             routes,
             ssl,
+            require_workflow_store,
         } = request;
         let app_name = config.deployment_id();
         if config.compose.as_ref().map(|c| {
@@ -89,6 +93,7 @@ impl crate::ServerState {
                         databases: &HashMap::new(),
                         kv: &HashMap::new(),
                         store: crate::databases::workflow_store(&app_name, &config.databases),
+                        require_store: require_workflow_store,
                     },
                     tako_workflows::manager::ScheduleActivation::Deploy,
                 )
@@ -473,6 +478,7 @@ impl crate::ServerState {
             config,
             routes,
             ssl,
+            require_workflow_store: false,
         })
         .await
     }

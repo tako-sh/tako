@@ -254,6 +254,7 @@ impl ServerState {
             server_mode: AsyncRwLock::new(server_mode),
             databases,
             restore_failures: SyncRwLock::new(HashMap::new()),
+            workflows_waiting: parking_lot::Mutex::new(HashMap::new()),
             runtime,
             workflows,
         })

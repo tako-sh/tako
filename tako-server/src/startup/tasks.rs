@@ -104,6 +104,21 @@ pub(super) fn spawn_instance_reconcile(rt: &Runtime, state: Arc<ServerState>) {
     });
 }
 
+/// Workflow runtimes whose database did not answer at restore start once it
+/// does.
+pub(super) fn spawn_workflow_retries(rt: &Runtime, state: Arc<ServerState>) {
+    rt.spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(5));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            if !state.workflows_waiting.lock().is_empty() {
+                state.retry_waiting_workflows().await;
+            }
+        }
+    });
+}
+
 pub(super) fn spawn_idle_monitoring(rt: &Runtime, state: Arc<ServerState>) {
     let (idle_event_tx, mut idle_event_rx) = mpsc::channel(256);
     let idle_monitor = Arc::new(IdleMonitor::new(IdleConfig::default(), idle_event_tx));

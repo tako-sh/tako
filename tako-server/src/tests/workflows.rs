@@ -354,6 +354,70 @@ async fn sync_app_workflows_registers_go_worker_binary_from_manifest() {
     );
 }
 
+#[tokio::test]
+async fn deploys_of_workflow_releases_refuse_an_environment_without_a_workflow_database() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "go-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = temp.path().join("apps/go-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("worker"), "sleep 600\n").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "protocol_version": tako_core::PROTOCOL_VERSION,
+            "runtime": "go",
+            "main": "app",
+            "workflow_worker_main": "worker",
+            "idle_timeout": 300,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let prepare = |require_store| {
+        state.prepare_app_workflows(
+            app_id,
+            &release,
+            Some("/bin/sh"),
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: None,
+                require_store,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+    };
+    // Only a full client can provision the database, so a deploy must not
+    // look successful without it; recovery keeps the app up without workflows.
+    let Err(error) = prepare(true).await else {
+        panic!("a deploy without a workflow database succeeded");
+    };
+    assert!(
+        error.to_string().contains("no workflow database"),
+        "{error}"
+    );
+    assert!(prepare(false).await.unwrap().is_none());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
     let temp = TempDir::new().unwrap();

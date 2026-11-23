@@ -218,6 +218,14 @@ pub enum WorkflowManagerError {
     NoStore(String),
 }
 
+impl WorkflowManagerError {
+    /// Whether the workflow database did not answer, so the same call can
+    /// succeed later.
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Db(error) if error.is_unavailable())
+    }
+}
+
 /// The store an operator command reads or changes, and the app's active
 /// runtime when this server runs one.
 struct OperatorStore {

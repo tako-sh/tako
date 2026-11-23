@@ -144,6 +144,18 @@ pub struct ServerState {
     /// deployment ID. Status and the app list report them until a deploy
     /// registers the app or a delete removes it.
     pub(crate) restore_failures: SyncRwLock<HashMap<String, RestoreFailure>>,
+    /// Apps whose workflow database did not answer when their release was
+    /// restored, by deployment ID. They serve without workflows until a
+    /// retry reaches the database.
+    pub(crate) workflows_waiting: parking_lot::Mutex<HashMap<String, WaitingWorkflows>>,
+}
+
+/// The restored release whose workflow runtime waits for its database.
+#[derive(Debug, Clone)]
+pub(crate) struct WaitingWorkflows {
+    pub(crate) version: String,
+    pub(crate) release_path: std::path::PathBuf,
+    pub(crate) runtime_bin_path: Option<String>,
 }
 
 /// Why a persisted app was left unregistered at restore.

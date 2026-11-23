@@ -216,7 +216,22 @@ impl ServerState {
                     .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
                     .await
             {
-                errors.push(format!("{app_name}: {error}"));
+                if let StateStoreError::WorkflowStoreUnavailable(_) = error {
+                    // The database's server can be unreachable for a while,
+                    // as when this one has just restarted. The app serves
+                    // meanwhile; a background task starts its workflows.
+                    tracing::warn!(app = %app_name, %error, "Workflow database unavailable; retrying in the background");
+                    self.workflows_waiting.lock().insert(
+                        app_name.clone(),
+                        crate::server_state::WaitingWorkflows {
+                            version: config.version.clone(),
+                            release_path: release_path.clone(),
+                            runtime_bin_path: runtime_bin_path.clone(),
+                        },
+                    );
+                } else {
+                    errors.push(format!("{app_name}: {error}"));
+                }
             }
             if strict && !errors.is_empty() {
                 break;
