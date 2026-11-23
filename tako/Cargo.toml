@@ -39,7 +39,7 @@ rmcp = { version = "3.7", default-features = false, features = ["server", "trans
 toml_edit = "0.25"
 jsonc-parser = { version = "0.34", features = ["serde", "cst"] }
 # Pingora 0.9 creates zero-capacity buffers, which Tokio 1.54 rejects on every connection.
-tokio = { version = "=1.54.1", features = ["full"] }
+tokio = { version = "=1.53.1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 ctrlc.workspace = true
@@ -61,7 +61,7 @@ unicode-width = "0.2"
 
 # File watching
 notify = "8.2"
-notify-debouncer-mini = "0.8"
+notify-debouncer-mini = "0.7"
 
 # HTTP proxy/server
 openssl.workspace = true
@@ -127,7 +127,7 @@ daemonize = "0.5"
 
 
 [dev-dependencies]
-tokio = { version = "=1.54.1", features = ["test-util"] }
+tokio = { version = "=1.53.1", features = ["test-util"] }
 # The tako.toml JSON Schema is generated and checked only by tests.
 tako-core = { path = "../tako-core", features = ["schema"] }
 tako-images = { path = "../tako-images", features = ["schema"] }
