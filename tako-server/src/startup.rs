@@ -217,6 +217,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     crate::operations::sweep_release_staging_dirs(&data_dir, recovery_mode);
+    crate::operations::sweep_retired_archive_state(&data_dir, recovery_mode);
     // This process takes its own shared lease below.
     drop(recovery_lease);
     let state = Arc::new(if let Some(reload_owner) = reload_owner {

@@ -16,7 +16,9 @@ mod queries;
 mod release_artifacts;
 pub(crate) use release_artifacts::{RecoveryMode, available_bytes, sweep_release_staging_dirs};
 mod releases;
+mod retired_archives;
 #[cfg(test)]
 pub(crate) use releases::ReleaseRun;
+pub(crate) use retired_archives::sweep_retired_archive_state;
 mod tls;
 mod workflows;
