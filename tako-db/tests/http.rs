@@ -1539,9 +1539,20 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     let replay_scope = "shop/production#channels";
     home.host
         .set_remote_grants(replay_scope, BTreeSet::from([home.id.clone()]), &replay_key);
+    // The workflow store's grant is separate from replay's too.
+    let workflows_key = generate_token();
+    let workflows_scope = "shop/production#workflows";
+    home.host.set_remote_grants(
+        workflows_scope,
+        BTreeSet::from([home.id.clone()]),
+        &workflows_key,
+    );
     for (scope, peer_key, expected) in [
         (replay_scope, &replay_key, StatusCode::OK),
         (replay_scope, &key, StatusCode::FORBIDDEN),
+        (workflows_scope, &workflows_key, StatusCode::OK),
+        (workflows_scope, &replay_key, StatusCode::FORBIDDEN),
+        (workflows_scope, &key, StatusCode::FORBIDDEN),
         (
             "shop/production#release",
             &replay_key,

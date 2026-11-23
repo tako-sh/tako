@@ -435,10 +435,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Release commands borrow the app's grant; the channel service has its own.
+/// Release commands borrow the app's grant; the channel and workflow
+/// services have their own.
 fn grant_scope(scope: &str) -> &str {
     match scope.split_once('#') {
-        Some((_, "channels")) | None => scope,
+        Some((_, "channels" | "workflows")) | None => scope,
         Some((environment, _)) => environment,
     }
 }
