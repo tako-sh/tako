@@ -19,6 +19,19 @@ use zeroize::Zeroize;
 
 const MAGIC: &[u8; 8] = b"TAKOLTX1";
 
+/// The most an object holds: it is sealed as one AES-GCM message, which
+/// encrypts at most 2^39 - 256 bits (RFC 5116), just under 64 GiB.
+pub const MAX_SEALED_BYTES: u64 = (1 << 36) - 32;
+
+/// Fails for a payload larger than one object can hold.
+pub fn ensure_sealable(bytes: u64) -> Result<()> {
+    ensure!(
+        bytes <= MAX_SEALED_BYTES,
+        "{bytes} bytes is more than one encrypted object holds ({MAX_SEALED_BYTES} bytes, the AES-GCM limit)"
+    );
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Key {
     pub id: String,
@@ -117,6 +130,7 @@ fn mapped(file: &std::fs::File) -> Result<Bytes> {
 }
 
 fn seal_payload(key: &Key, context: &[u8], payload: PutPayload) -> Result<Bytes> {
+    ensure_sealable(payload.content_length() as u64)?;
     let mut file = tempfile::tempfile()?;
     let mut nonce = [0; 12];
     openssl::rand::rand_bytes(&mut nonce)?;
@@ -468,6 +482,13 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn objects_stop_at_the_aes_gcm_limit() {
+        assert!(ensure_sealable(MAX_SEALED_BYTES).is_ok());
+        let error = ensure_sealable(MAX_SEALED_BYTES + 1).unwrap_err();
+        assert!(error.to_string().contains("AES-GCM limit"), "{error}");
     }
 
     #[test]

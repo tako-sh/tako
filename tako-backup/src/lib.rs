@@ -479,6 +479,8 @@ impl Replica {
             "segment {} has a capture time before 1970",
             segment.filename()
         );
+        encryption::ensure_sealable(bytes.len() as u64)
+            .with_context(|| format!("segment {} cannot be backed up", segment.filename()))?;
         let key = self.segment_key(segment, captured_at_ms);
         let stored = if bytes.len() as u64 > self.multipart_threshold {
             // A multipart write cannot be create-only, so an existing object

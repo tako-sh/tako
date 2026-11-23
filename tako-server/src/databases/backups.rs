@@ -47,6 +47,9 @@ const DELETE_BATCH: usize = 1000;
 /// interrupted: restores and exports finish well within it, and import and
 /// export sessions expire after an hour.
 const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often long work refreshes its directory's age, well within
+/// [`STALE_WORK_AGE`].
+const WORK_REFRESH: Duration = Duration::from_secs(60 * 60);
 /// Free space kept on the data disk beyond restores' working files.
 const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -1633,22 +1636,26 @@ async fn restore_from(
     let work = fresh_work_dir(state, &stored.name, "restore")?;
     let downloads = reserve_restore(state, stored, &work, downloaded.saturating_mul(2))?;
     let segments_dir = work.path.join("segments");
-    let restored_bytes = replica
-        .download(&plan, &segments_dir)
-        .await
-        .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
-    drop(downloads);
-    let _restored_space = reserve_restore(state, stored, &work, restored_bytes)?;
     let restored = work.path.join("restored.sqlite");
-    Replica::apply(&segments_dir, txid, &restored)
-        .await
-        .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
-    {
-        let restored = restored.clone();
-        tokio::task::spawn_blocking(move || tako_database::verify_database(&restored))
+    // A large restore can outlast the age at which interrupted work is
+    // cleaned up.
+    let _restored_space = keeping_fresh(&work, async {
+        let restored_bytes = replica
+            .download(&plan, &segments_dir)
+            .await
+            .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
+        drop(downloads);
+        let space = reserve_restore(state, stored, &work, restored_bytes)?;
+        Replica::apply(&segments_dir, txid, &restored)
+            .await
+            .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
+        let verify = restored.clone();
+        tokio::task::spawn_blocking(move || tako_database::verify_database(&verify))
             .await
             .map_err(|e| e.to_string())??;
-    }
+        Ok::<_, String>(space)
+    })
+    .await?;
     let warnings =
         replace_inner(state, stored, restored, "database is being restored", moved).await?;
     tracing::info!(database = %stored.name, transaction = txid, "Restored database");
@@ -1661,6 +1668,20 @@ async fn restore_from(
         },
         "warnings": warnings,
     }))
+}
+
+/// Runs `work` while refreshing `dir`'s age every [`WORK_REFRESH`], so the
+/// cleanup of interrupted work, which goes by age, leaves it alone.
+async fn keeping_fresh<T>(dir: &WorkDir, work: impl std::future::Future<Output = T>) -> T {
+    let mut work = std::pin::pin!(work);
+    let mut refresh = tokio::time::interval(WORK_REFRESH);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            output = &mut work => return output,
+            _ = refresh.tick() => dir.touch(),
+        }
+    }
 }
 
 fn reserve_restore(
@@ -1983,6 +2004,35 @@ mod tests {
 
     async fn holder_named(remote: &dyn ObjectStore, key: &ObjectPath) -> Option<String> {
         read_claim(remote, key).await.unwrap().unwrap().server
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn long_work_keeps_its_directory_from_the_stale_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = WorkDir {
+            path: root.path().join("restore-1"),
+        };
+        std::fs::create_dir(&dir.path).unwrap();
+        let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+        let age_dir = |at| {
+            std::fs::File::open(&dir.path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(at))
+                .unwrap();
+        };
+        age_dir(two_days_ago);
+        // Two hours of work on the paused clock.
+        keeping_fresh(&dir, async {
+            tokio::time::sleep(Duration::from_secs(90 * 60)).await;
+            age_dir(two_days_ago);
+            tokio::time::sleep(Duration::from_secs(40 * 60)).await;
+        })
+        .await;
+        assert_eq!(
+            remove_stale_work_dirs(root.path(), std::time::SystemTime::now()),
+            0
+        );
+        assert!(dir.path.exists());
     }
 
     #[tokio::test]
