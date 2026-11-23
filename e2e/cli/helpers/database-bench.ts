@@ -1,7 +1,7 @@
 /**
  * Loopback latency of the hosted database protocol against in-process SQLite.
  *
- *   cargo build --release -p tako-database --example serve
+ *   cargo build --release -p tako-db --example serve
  *   bun e2e/cli/helpers/database-bench.ts target/release/examples/serve
  */
 import { Database } from "bun:sqlite";

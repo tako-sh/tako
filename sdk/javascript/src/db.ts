@@ -1,5 +1,5 @@
 /**
- * Tako-hosted databases, exposed as `tako.databases`.
+ * Tako-hosted databases, exposed as `tako.db`.
  *
  * Each binding is a plain `{ url, authToken }` connection for the libSQL
  * HTTP protocol, so it can be passed straight to an existing driver:
@@ -8,31 +8,31 @@
  * import { createClient } from "@libsql/client";
  * import { tako } from "tako.sh";
  *
- * const db = createClient(tako.databases.main);
+ * const db = createClient(tako.db.main);
  * ```
  */
 
 import { getDatabaseBindings } from "./tako/secrets";
 
 /** Connection to a Tako-hosted database. */
-export interface TakoDatabase {
+export interface TakoDbConnection {
   /** Endpoint of the database, served by Tako next to the app. */
   readonly url: string;
   /** Token that authorizes this app's binding. Treat it as a secret. */
   readonly authToken: string;
 }
 
-/** Typed database bag exposed as `tako.databases`. */
-export type TakoDatabaseBag<T = Record<never, never>> = Readonly<{
-  [K in keyof T]: TakoDatabase;
+/** Typed database bag exposed as `tako.db`. */
+export type TakoDbBag<T = Record<never, never>> = Readonly<{
+  [K in keyof T]: TakoDbConnection;
 }> &
-  Readonly<Record<string, TakoDatabase | undefined>>;
+  Readonly<Record<string, TakoDbConnection | undefined>>;
 
 const REDACTED = "[REDACTED]";
 
 /** Load database bindings delivered by the Tako runtime. */
-export function loadDatabases<T = Record<never, never>>(): TakoDatabaseBag<T> {
-  return createDatabaseBag<T>(getDatabaseBindings);
+export function loadDb<T = Record<never, never>>(): TakoDbBag<T> {
+  return createDbBag<T>(getDatabaseBindings);
 }
 
 /**
@@ -41,11 +41,11 @@ export function loadDatabases<T = Record<never, never>>(): TakoDatabaseBag<T> {
  *
  * @internal
  */
-export function createDatabaseBag<T = Record<never, never>>(
+export function createDbBag<T = Record<never, never>>(
   bindings: () => Record<string, unknown>,
-): TakoDatabaseBag<T> {
-  const cache = new WeakMap<object, TakoDatabase>();
-  const lookup = (name: string): TakoDatabase | undefined => {
+): TakoDbBag<T> {
+  const cache = new WeakMap<object, TakoDbConnection>();
+  const lookup = (name: string): TakoDbConnection | undefined => {
     const all = bindings();
     if (!Object.prototype.hasOwnProperty.call(all, name)) return undefined;
     const raw = all[name];
@@ -59,7 +59,7 @@ export function createDatabaseBag<T = Record<never, never>>(
     return database;
   };
 
-  return new Proxy(Object.create(null) as Record<string, TakoDatabase>, {
+  return new Proxy(Object.create(null) as Record<string, TakoDbConnection>, {
     get(_target, prop: string | symbol): unknown {
       if (typeof prop !== "string") return undefined;
       return lookup(prop);
@@ -77,10 +77,10 @@ export function createDatabaseBag<T = Record<never, never>>(
     has(_target, prop: string | symbol): boolean {
       return typeof prop === "string" && Object.prototype.hasOwnProperty.call(bindings(), prop);
     },
-  }) as TakoDatabaseBag<T>;
+  }) as TakoDbBag<T>;
 }
 
-function createDatabase(name: string, raw: Record<string, unknown>): TakoDatabase {
+function createDatabase(name: string, raw: Record<string, unknown>): TakoDbConnection {
   const { url, authToken } = raw;
   if (typeof url !== "string" || typeof authToken !== "string") {
     throw new Error(`Tako: database binding "${name}" must have a url and an authToken`);

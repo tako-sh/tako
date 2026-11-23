@@ -112,7 +112,7 @@ zeroize = "1"
 tako-sqlite = { path = "../tako-sqlite" }
 rusqlite.workspace = true
 # Hosts local databases for `tako dev` and `tako run`
-tako-database = { path = "../tako-database" }
+tako-db = { path = "../tako-db" }
 tako-kv = { path = "../tako-kv" }
 
 # QR code generation for LAN mode CA cert URL

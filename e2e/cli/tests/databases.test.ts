@@ -37,11 +37,11 @@ beforeAll(async () => {
       'runtime = "bun"',
       "",
       "[envs.development]",
-      'databases = { main = "app-db", drizzle = "drizzle-db" }',
+      'db = { main = "app-db", drizzle = "drizzle-db" }',
       "",
       "[envs.production]",
       'route = "db.example.com"',
-      'databases = { main = "prod-db" }',
+      'db = { main = "prod-db" }',
       "",
     ].join("\n"),
   );
@@ -223,7 +223,7 @@ describe("migrations", () => {
         'runtime = "bun"',
         "",
         "[envs.development]",
-        'databases = { main = "app-db" }',
+        'db = { main = "app-db" }',
         "",
       ].join("\n"),
     );
@@ -247,10 +247,10 @@ describe("migrations", () => {
       join(dir, "migrations", "0002_more.sql"),
       "INSERT INTO items VALUES ('more');\n",
     );
-    const pending = await tako("sqlite", "migration", "list", "--local");
+    const pending = await tako("db", "migration", "list", "--local");
     expect(pending.code).toBe(0);
     expect(pending.err).toContain("0002_more.sql");
-    const migrated = await tako("sqlite", "migration", "apply", "--local");
+    const migrated = await tako("db", "migration", "apply", "--local");
     expect(migrated.code).toBe(0);
     expect(migrated.err).toContain("0002_more.sql");
     expect(rows()).toEqual(["more", "seed"]);
@@ -261,7 +261,7 @@ describe("migrations", () => {
     const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
     db.run("INSERT INTO items VALUES ('scratch')");
     db.close();
-    const reset = await tako("sqlite", "reset", "app-db", "--local", "--yes");
+    const reset = await tako("db", "reset", "app-db", "--local", "--yes");
     expect(reset.code).toBe(0);
     expect(rows()).toEqual(["more", "seed"]);
   });

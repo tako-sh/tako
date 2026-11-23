@@ -189,12 +189,12 @@ fn channel_replay_database_is_optional_and_scoped_to_each_environment() {
 [envs.production]
 route = "chat.example.com"
 [envs.production.channels]
-database = "chat-prod-replay"
+db = "chat-prod-replay"
 
 [envs.staging]
 route = "staging.example.com"
 [envs.staging.channels]
-database = "chat_stage2-"
+db = "chat_stage2-"
 
 [envs.development]
 "#,
@@ -207,7 +207,7 @@ database = "chat_stage2-"
         ("development", None),
     ] {
         let env = &config.envs[name];
-        assert_eq!(env.channels.as_ref().map(|c| c.database.as_str()), expected);
+        assert_eq!(env.channels.as_ref().map(|c| c.db.as_str()), expected);
         assert!(env.databases.is_empty());
     }
 }
@@ -216,12 +216,12 @@ database = "chat_stage2-"
 fn channel_replay_database_rejects_invalid_names_and_fields() {
     let table = "[envs.development.channels]";
     for name in ["", "Chat", "9chat", "chat.db", " chat ", &"a".repeat(64)] {
-        let err = TakoToml::parse(&format!("{table}\ndatabase = '{name}'")).unwrap_err();
+        let err = TakoToml::parse(&format!("{table}\ndb = '{name}'")).unwrap_err();
         assert!(err.to_string().contains("database name"), "{err}");
     }
     for (fields, expected) in [
-        ("", "missing field `database`"),
-        ("databse = 'chat'", "unknown field `databse`"),
+        ("", "missing field `db`"),
+        ("database = 'chat'", "unknown field `database`"),
     ] {
         let err = TakoToml::parse(&format!("{table}\n{fields}")).unwrap_err();
         assert!(err.to_string().contains(expected), "{err}");
@@ -275,7 +275,7 @@ backup = {{ storage = "backups", {paths} }}
         ))
         .unwrap_err()
         .to_string();
-        assert!(err.contains("tako sqlite import"), "{err}");
+        assert!(err.contains("tako db import"), "{err}");
     }
 }
 
@@ -612,18 +612,18 @@ fn compose_loads_service_routes_and_local_app_defaults() {
 #[test]
 fn kv_bindings_parse_and_share_names_with_databases() {
     let config = TakoToml::parse(
-        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { auth = \"sessions\" }\n",
+        "[envs.production]\nroute = \"shop.example.com\"\ndb = { main = \"main\" }\nkv = { auth = \"sessions\" }\n",
     )
     .unwrap();
     assert_eq!(config.envs["production"].kv["auth"], "sessions");
 
     let shared = TakoToml::parse(
-        "[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\nkv = { main = \"sessions\" }\n",
+        "[envs.production]\nroute = \"shop.example.com\"\ndb = { main = \"main\" }\nkv = { main = \"sessions\" }\n",
     )
     .unwrap_err()
     .to_string();
     assert!(
-        shared.contains("binds 'main' in both databases and kv"),
+        shared.contains("binds 'main' in both db and kv"),
         "{shared}"
     );
 
@@ -638,7 +638,7 @@ fn kv_bindings_parse_and_share_names_with_databases() {
     );
 
     let replay = TakoToml::parse(
-        "[envs.production]\nroute = \"shop.example.com\"\nkv = { auth = \"sessions\" }\nchannels.database = \"sessions\"\n",
+        "[envs.production]\nroute = \"shop.example.com\"\nkv = { auth = \"sessions\" }\nchannels.db = \"sessions\"\n",
     )
     .unwrap_err()
     .to_string();
@@ -676,12 +676,12 @@ fn kv_stores_take_their_backup_storage_from_their_own_table_or_the_environment()
         "{missing}"
     );
     let both = TakoToml::parse(&format!(
-        "[databases.sessions]\nbackup = \"kv_backups\"\n\n[kv.sessions]\nbackup = \"kv_backups\"\n\n{storages}"
+        "[db.sessions]\nbackup = \"kv_backups\"\n\n[kv.sessions]\nbackup = \"kv_backups\"\n\n{storages}"
     ))
     .unwrap_err()
     .to_string();
     assert!(
-        both.contains("both [databases.sessions] and [kv.sessions]"),
+        both.contains("both [db.sessions] and [kv.sessions]"),
         "{both}"
     );
 }

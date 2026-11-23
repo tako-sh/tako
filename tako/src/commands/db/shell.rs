@@ -1,4 +1,4 @@
-//! `tako sqlite shell`: run SQL against a hosted database.
+//! `tako db shell`: run SQL against a hosted database.
 
 use std::io::{BufRead, Write};
 

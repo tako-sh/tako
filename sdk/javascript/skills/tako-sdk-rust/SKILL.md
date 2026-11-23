@@ -51,14 +51,14 @@ Secrets are available through `tako::secret("NAME")` or
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako sqlite create <name>`
-(administrator permission), bound in `[envs.<env>].databases`, and served over
-the libSQL HTTP protocol next to the app. `tako::database("main")` returns
-`Option<tako::Database>` with `url()` and `auth_token()`; `Debug` redacts the
+Tako-hosted SQLite databases are created with `tako db create <name>`
+(administrator permission), bound in `[envs.<env>].db`, and served over
+the libSQL HTTP protocol next to the app. `tako::db("main")` returns
+`Option<tako::Db>` with `url()` and `auth_token()`; `Debug` redacts the
 token. `tako::bootstrap()?.databases()` lists every binding.
 
 ```rust
-let main = tako::database("main").expect("a database bound as main");
+let main = tako::db("main").expect("a database bound as main");
 // Pass main.url() and main.auth_token() to a libSQL HTTP client.
 ```
 
@@ -111,7 +111,7 @@ unreachable or restarting. A store has no size limit beyond its server's disk,
 and nothing is evicted. There are no atomic counters, compare-and-set, or
 transactions: concurrent read-modify-write of one key can lose an update.
 
-An environment's `databases` and `kv` share one set of binding names, and
+An environment's `db` and `kv` share one set of binding names, and
 store names share the network's namespace with databases. Every write is on
 disk before it is acknowledged, and stores are backed up like databases
 (`[envs.<env>].backup.storage` or `[kv.<name>].backup`;
@@ -239,9 +239,9 @@ use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
 read responses at 1 MiB. Invalidations use the environment's channel replay
 backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
 server of the network. Because `Cargo.toml` depends on the `tako` crate, a
-deploy with neither `[envs.<env>.channels].database` nor `postgres_url` selects a
+deploy with neither `[envs.<env>.channels].db` nor `postgres_url` selects a
 generated replay database; on a multi-server network, create one with
-`tako sqlite create` and set `database` first (see
+`tako db create` and set `db` first (see
 https://tako.sh/docs/channels/#deploy-replay-storage). See
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.

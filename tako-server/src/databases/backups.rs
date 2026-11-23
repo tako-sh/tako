@@ -5,7 +5,7 @@
 //! key, under `_tako/databases/<name>/<generation>/` (see `tako-backup`). Any
 //! transaction of the last seven days can be restored. Full images (bases)
 //! are captured when capture starts, once a day while the database changes,
-//! and by `tako sqlite backup`; retention keeps some of them for four weeks.
+//! and by `tako db backup`; retention keeps some of them for four weeks.
 //! Deploys, migrations, and replacements name the transaction before them
 //! with a restore point.
 
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tako_backup::{Capture, Point, Replica, Stored, Target};
 use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageBinding};
-use tako_database::DatabaseId;
+use tako_db::DatabaseId;
 
 use super::now_unix_secs;
 use crate::ServerState;
@@ -256,11 +256,11 @@ async fn check_holder(
         .map_err(Refused::Unavailable)?
     {
         Some(holder) if holder == DELETED_HOLDER => Err(Refused::Deleted(format!(
-            "database {} was deleted; this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was deleted; this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         ))),
         Some(holder) if holder != own => Err(Refused::Moved(format!(
-            "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         ))),
         _ => Ok(()),
@@ -632,7 +632,7 @@ async fn ensure_open(
         if unrestored {
             if newest.is_some() {
                 return Err(format!(
-                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako sqlite restore {} --latest`)",
+                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako db restore {} --latest`)",
                     stored.name, stored.name
                 ));
             }
@@ -1239,7 +1239,7 @@ pub(crate) async fn mark(
     result
 }
 
-/// Captures a full image now and uploads it, as `tako sqlite backup` does.
+/// Captures a full image now and uploads it, as `tako db backup` does.
 /// It restores on its own and is kept like the daily ones.
 pub(crate) async fn full_snapshot(
     state: &ServerState,
@@ -1668,7 +1668,7 @@ pub(crate) async fn restore(
             Ok(_) => return restored,
             Err(read) => {
                 return Err(format!(
-                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako sqlite delete {} --server <this server>`)",
+                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako db delete {} --server <this server>`)",
                     stored.name, stored.name
                 ));
             }
@@ -1734,7 +1734,7 @@ async fn restore_from(
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         let verify = restored.clone();
-        tokio::task::spawn_blocking(move || tako_database::verify_database(&verify))
+        tokio::task::spawn_blocking(move || tako_db::verify_database(&verify))
             .await
             .map_err(|e| e.to_string())??;
         Ok::<_, String>(space)
@@ -1891,7 +1891,7 @@ async fn replace_inner(
     let swapped = tokio::task::spawn_blocking(move || {
         rotate_replay_epochs(&replacement)
             .map_err(|e| format!("prepare restored channel replay epochs: {e}"))?;
-        tako_database::replace_database(&path, &replacement, &previous)
+        tako_db::replace_database(&path, &replacement, &previous)
     })
     .await
     .map_err(|e| e.to_string())?;

@@ -21,7 +21,7 @@ use tako_core::{
     DatabaseQueryResult, KvConnection, Response, StorageBinding, StorageProvider,
     channel_replay_grant_scope,
 };
-use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
 use crate::ServerState;
 use crate::instances::{AppConfig, AppLaunch};
@@ -365,7 +365,7 @@ impl Databases {
                             &mut bindings
                         };
                         target.push(Binding {
-                            token_hash: tako_database::hash_token(&binding.token),
+                            token_hash: tako_db::hash_token(&binding.token),
                             database,
                             home,
                         });
@@ -464,7 +464,7 @@ impl Databases {
                 .filter(|existing| existing.binding.same_target(&binding));
             let token = existing
                 .map(|existing| existing.token.clone())
-                .unwrap_or_else(tako_database::generate_token);
+                .unwrap_or_else(tako_db::generate_token);
             let mut binding = binding;
             if binding.peer_key.is_none() {
                 binding.peer_key = existing.and_then(|existing| existing.binding.peer_key.clone());
@@ -526,7 +526,7 @@ impl Databases {
     }
 }
 
-fn report(report: tako_database::MigrationReport) -> tako_core::DatabaseMigrationReport {
+fn report(report: tako_db::MigrationReport) -> tako_core::DatabaseMigrationReport {
     tako_core::DatabaseMigrationReport {
         applied: report.applied,
         pending: report.pending,
@@ -746,10 +746,10 @@ impl ServerState {
                 match bind_reuseport(address) {
                     Ok(listener) => {
                         tracing::info!(%address, "Serving databases to apps");
-                        tako_database::http::serve(
+                        tako_db::http::serve(
                             state.databases.host.clone(),
                             listener,
-                            tako_database::http::Access::Apps,
+                            tako_db::http::Access::Apps,
                         )
                         .await;
                     }
@@ -802,10 +802,10 @@ impl ServerState {
                     Ok(listener) => {
                         tracing::info!(%address, "Serving databases to network servers");
                         let proxy = proxy.clone();
-                        tako_database::http::serve(
+                        tako_db::http::serve(
                             host.clone(),
                             listener,
-                            tako_database::http::Access::Peers {
+                            tako_db::http::Access::Peers {
                                 allow: Arc::new(move |peer| proxy.is_server_address(peer)),
                             },
                         )
@@ -1465,9 +1465,9 @@ impl ServerState {
             }
         }
         let database = DatabaseId::parse(id)?;
-        let migrations: Vec<tako_database::Migration> = migrations
+        let migrations: Vec<tako_db::Migration> = migrations
             .into_iter()
-            .map(|m| tako_database::Migration {
+            .map(|m| tako_db::Migration {
                 name: m.name,
                 sql: m.sql,
             })
@@ -1538,9 +1538,9 @@ impl ServerState {
         let work = backups::fresh_work_dir(self, id, "reset")?;
         let empty = work.path.join("empty.sqlite");
         let create = empty.clone();
-        let migrations: Vec<tako_database::Migration> = migrations
+        let migrations: Vec<tako_db::Migration> = migrations
             .into_iter()
-            .map(|m| tako_database::Migration {
+            .map(|m| tako_db::Migration {
                 name: m.name,
                 sql: m.sql,
             })
@@ -1552,7 +1552,7 @@ impl ServerState {
                 .map_err(|e| format!("create an empty database: {e}"))?;
             match owner {
                 Some(owner) if !migrations.is_empty() => {
-                    tako_database::migrate::migrate_file(&create, &owner, &migrations, false)
+                    tako_db::migrate::migrate_file(&create, &owner, &migrations, false)
                         .map(Some)
                         .map_err(|e| format!("The migrations failed; {name} was not reset: {e}"))
                 }
@@ -1604,9 +1604,7 @@ impl ServerState {
             Err(message) => return Response::error(message),
         };
         if stored.engine != DatabaseEngine::Kv {
-            return Response::error(format!(
-                "{id} is a SQLite database; use `tako sqlite shell`."
-            ));
+            return Response::error(format!("{id} is a SQLite database; use `tako db shell`."));
         }
         let store = match tako_kv::StoreId::parse(id) {
             Ok(store) => store,
@@ -1621,15 +1619,15 @@ impl ServerState {
     }
 }
 
-fn json_value(value: tako_database::Value) -> serde_json::Value {
+fn json_value(value: tako_db::Value) -> serde_json::Value {
     match value {
-        tako_database::Value::Null => serde_json::Value::Null,
-        tako_database::Value::Integer(value) => value.into(),
-        tako_database::Value::Float(value) => serde_json::Number::from_f64(value)
+        tako_db::Value::Null => serde_json::Value::Null,
+        tako_db::Value::Integer(value) => value.into(),
+        tako_db::Value::Float(value) => serde_json::Number::from_f64(value)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        tako_database::Value::Text(value) => value.into(),
-        tako_database::Value::Blob(value) => serde_json::json!({"base64": BASE64.encode(value)}),
+        tako_db::Value::Text(value) => value.into(),
+        tako_db::Value::Blob(value) => serde_json::json!({"base64": BASE64.encode(value)}),
     }
 }
 
@@ -1645,9 +1643,7 @@ fn restore_target(
             .ok()
             .filter(|txid| *txid > 0)
             .map(tako_backup::Target::Txid)
-            .ok_or_else(|| {
-                format!("Restore point {snapshot} is not one `tako sqlite backups` lists.")
-            }),
+            .ok_or_else(|| format!("Restore point {snapshot} is not one `tako db backups` lists.")),
         (None, Some(at)) => Ok(tako_backup::Target::Time(at)),
         (None, None) => Ok(tako_backup::Target::Latest),
     }

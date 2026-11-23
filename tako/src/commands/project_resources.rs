@@ -358,7 +358,7 @@ pub(crate) fn replay_database<'a>(
         return None;
     }
     if let Some(channels) = &config.envs.get(env)?.channels {
-        return Some(&channels.database);
+        return Some(&channels.db);
     }
     if !needs_replay
         || secrets

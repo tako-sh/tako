@@ -402,7 +402,7 @@ pub enum Command {
         backup_key_base64: Option<String>,
     },
 
-    /// Run one SQL statement as an administrator, for `tako sqlite shell`.
+    /// Run one SQL statement as an administrator, for `tako db shell`.
     QueryDatabase { name: String, sql: String },
 
     /// Read or write one key of a KV store this server hosts, as an

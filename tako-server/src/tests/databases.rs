@@ -246,7 +246,7 @@ async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
 async fn committed_replay_bindings_survive_restart_without_authorizing_application_sql() {
     use hyper::StatusCode;
     use tako_core::{CHANNEL_REPLAY_BINDING, DatabaseBinding, channel_replay_grant_scope};
-    use tako_database::http::{self, Access};
+    use tako_db::http::{self, Access};
 
     const APP: &str = "web/production";
     let temp = TempDir::new().unwrap();
@@ -638,7 +638,7 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
     )
     .await;
     assert!(failed.contains("unreachable"));
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     assert!(
         state.databases.host.has_changes(&id),
         "the scheduler captures the changes later"
@@ -857,7 +857,7 @@ async fn import_and_export_round_trip_a_file() {
 
     // Export. It copies the database like a snapshot does, but is not one, so
     // the database stays due for its next scheduled snapshot.
-    let db_id = tako_database::DatabaseId::parse(ID).unwrap();
+    let db_id = tako_db::DatabaseId::parse(ID).unwrap();
     // Start from a database the scheduler considers backed up.
     state
         .databases
@@ -1864,8 +1864,8 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     // Something else already holds the name in the database host, so the
     // new file cannot be registered.
     let other = temp.path().join("other.sqlite");
-    tako_database::DatabaseHost::create_file(&other).unwrap();
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    tako_db::DatabaseHost::create_file(&other).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     state.databases.host.register(id.clone(), other).unwrap();
     let failed = error(
         &state,
@@ -2145,7 +2145,7 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
         state
             .databases
             .host
-            .is_registered(&tako_database::DatabaseId::parse(ID).unwrap())
+            .is_registered(&tako_db::DatabaseId::parse(ID).unwrap())
     );
     drop(pins);
     ok(&state, delete()).await;
@@ -2175,7 +2175,7 @@ async fn deleting_a_database_ends_its_transfers() {
     let size = state
         .databases
         .host
-        .size_bytes(&tako_database::DatabaseId::parse(ID).unwrap())
+        .size_bytes(&tako_db::DatabaseId::parse(ID).unwrap())
         .unwrap();
     assert_eq!(
         state.databases.snapshot_space.reserved_bytes(),
@@ -2331,7 +2331,7 @@ async fn databases_that_failed_to_open_are_retried() {
     let state = state(&temp);
     state.open_databases(None).await.unwrap();
     create(&state, ID, None).await;
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     // As if opening it had failed at startup.
     state.databases.host.unregister(&id).await.unwrap();
     assert!(!state.databases.host.is_registered(&id));

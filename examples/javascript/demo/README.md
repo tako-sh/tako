@@ -19,19 +19,19 @@ The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the re
 ## Database
 
 Supply requests live in the `mission` database, which the app reaches as
-`tako.databases.mission` through `@libsql/client`. `tako dev` serves it from a
+`tako.db.mission` through `@libsql/client`. `tako dev` serves it from a
 local file, after applying `migrations/`. To deploy, create the database on one
 of the network's servers:
 
 ```bash
-tako sqlite create mission --server <server>
+tako db create mission --server <server>
 ```
 
 and bind it to production in `tako.toml`:
 
 ```toml
 [envs.production]
-databases = { mission = "mission" }
+db = { mission = "mission" }
 ```
 
 Instances on every server of the network can use it. Deploys apply

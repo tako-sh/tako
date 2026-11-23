@@ -24,9 +24,9 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                           |
 | `--network <NETWORK>`           | Network to act on, by local alias or stable ID. See [Choosing a network](#choosing-a-network).           |
 
-App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `release`, `backup`, `delete`, `secret`, `credential`, `storage`, `sqlite`, `kv`, `generate`, and project-context `scale`, `status`, and `doctor`.
+App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `release`, `backup`, `delete`, `secret`, `credential`, `storage`, `db`, `kv`, `generate`, and project-context `scale`, `status`, and `doctor`.
 
-Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secret sync`, `secret migrate`, `secret clear`, `backup now/download/restore`, `sqlite create/backup/restore/import/export/delete`, `kv create/backup/restore/import/export/delete`, and `workflow retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
+Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secret sync`, `secret migrate`, `secret clear`, `backup now/download/restore`, `db create/backup/restore/import/export/delete`, `kv create/backup/restore/import/export/delete`, and `workflow retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
 
 The selected config file supplies environment networks in `[envs.<env>].network`; its parent directory determines the project root and local `.tako/` state. Config files in the same directory have independent network settings but share secret drafts; unpublished drafts cannot move to another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
@@ -183,7 +183,7 @@ Runs a one-off command locally from the app directory with Tako project context.
 
 Script files are expanded by the selected runtime. Bun runs JS/TS scripts with Bun, Node runs TS scripts with type stripping, and Go runs `.go` files with `go run`. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands and runtimes without a bare script rule.
 
-The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and use `tako.secrets`, `tako.storages`, `tako.databases`, and `tako.kv`. Development database and KV store bindings are served from local files under `.tako/data/databases/` and `.tako/data/kv/`. Other environments get no databases or KV stores, with a warning: `tako run` never connects to hosted ones.
+The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and use `tako.secrets`, `tako.storages`, `tako.db`, and `tako.kv`. Development database and KV store bindings are served from local files under `.tako/data/databases/` and `.tako/data/kv/`. Other environments get no databases or KV stores, with a warning: `tako run` never connects to hosted ones.
 
 Secrets are not process env vars. `tako run` is local-only in v0; it does not run commands on deployed servers.
 
@@ -196,7 +196,7 @@ tako deploy --env production --dry-run --json
 
 Uses the environment's [network](#choosing-a-network) and records its ID in `[envs.<env>].network` in the selected TOML config; in an interactive terminal it offers to add a server when that network has none yet. Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Before the release command, it snapshots each bound [hosted database](/databases/) that changed and has backups configured; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
 
-On a network with exactly one trusted server, a full client creates missing declared app SQLite databases and, for a channel-capable release without a selected backend, the generated replay database. It reports each new name and home once. A successful `--json` deploy lists these in `created_databases` (`name`, `server`); an empty list means it created none. With several trusted servers, use `tako sqlite create <name> --server <server>` to place a missing database; for replay, set `[envs.<env>.channels].database` to that name. A restricted deploy client needs a full client to provision database access first. See [Deploy Replay Storage](/channels/#deploy-replay-storage).
+On a network with exactly one trusted server, a full client creates missing declared app SQLite databases and, for a channel-capable release without a selected backend, the generated replay database. It reports each new name and home once. A successful `--json` deploy lists these in `created_databases` (`name`, `server`); an empty list means it created none. With several trusted servers, use `tako db create <name> --server <server>` to place a missing database; for replay, set `[envs.<env>.channels].db` to that name. A restricted deploy client needs a full client to provision database access first. See [Deploy Replay Storage](/channels/#deploy-replay-storage).
 
 `--dry-run --json` previews database creations (`create_databases`) and the selected replay database (`channel_database`, with `name`, `server`, and `implicit` when present) from cached network state. `channel_replay_unprovisioned` is true when a deploy-only client finds no replay database to use. It does not create anything, grant access, build, or deploy. In particular, a cached plan is not confirmation that every server currently has the required grants or that its database is reachable.
 
@@ -234,7 +234,7 @@ tako undeploy ...
 tako destroy ...
 ```
 
-Deletes one deployment target, drains and stops the app, removes runtime state and its database and KV store bindings, and removes the server-side app data tree for that app/environment on the selected server. Hosted databases and KV stores are not deleted; use `tako sqlite delete` or `tako kv delete`.
+Deletes one deployment target, drains and stops the app, removes runtime state and its database and KV store bindings, and removes the server-side app data tree for that app/environment on the selected server. Hosted databases and KV stores are not deleted; use `tako db delete` or `tako kv delete`.
 
 A Compose service cannot be deleted independently: `tako delete --service <service>` is rejected before contacting a server. Remove the service from the Compose file and redeploy, or delete the whole group. Docker named volumes remain after group deletion.
 
@@ -356,7 +356,7 @@ Running `tako credential` without a subcommand lists credentials. Set and remove
 
 Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in the local state and the network state, never exposed to app code, and published by `tako secret sync` or deploy. Running processes receive the new bindings on deploy.
 
-`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` selects shared Postgres for workflows and, unless `[envs.<env>.channels].database` selects hosted SQLite, for channels, presence and Store invalidations. Selecting a replay database does not change workflow storage or migrate existing history. Multi-server workflows need Postgres unless every workflow opts into local execution. Neither provider credential is exposed to app code.
+`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` selects shared Postgres for workflows and, unless `[envs.<env>.channels].db` selects hosted SQLite, for channels, presence and Store invalidations. Selecting a replay database does not change workflow storage or migrate existing history. Multi-server workflows need Postgres unless every workflow opts into local execution. Neither provider credential is exposed to app code.
 
 ## Storage
 
@@ -384,38 +384,38 @@ Backup commands default to `production`, require project context, and target the
 
 `backup now` creates a manual full app-directory archive; deploys and timers do not create one. `backup list` lists these archives and older `databases` archives. `backup status` shows the last archive, the last failed attempt, retention, and unfinished restores.
 
-`backup restore <backup-id>` restores a manual archive, including workflow state when present, and pauses the owning app. Use `--server` when multiple servers are mapped. `download` saves an encrypted archive. Hosted databases have their own continuous backups; use `tako sqlite backups` and `tako sqlite restore`. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
+`backup restore <backup-id>` restores a manual archive, including workflow state when present, and pauses the owning app. Use `--server` when multiple servers are mapped. `download` saves an encrypted archive. Hosted databases have their own continuous backups; use `tako db backups` and `tako db restore`. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
 
 ## Databases
 
 ```bash
-tako sqlite create <name> [--server <server>]
-tako sqlite list
-tako sqlite ls
-tako sqlite status [<name>]
-tako sqlite shell <name> [<sql>]
-tako sqlite migration new <name> [--binding <binding>]
-tako sqlite migration list [<database>] [--local]
-tako sqlite migration apply [<database>] [--local]
-tako sqlite backup <name>
-tako sqlite backups <name>
-tako sqlite restore <name> (--latest|--snapshot <id>|--at <time>) [--server <server>] [-y|--yes]
-tako sqlite import <name> <file> [-y|--yes]
-tako sqlite export <name> <file>
-tako sqlite reset <name> [--local] [--force] [-y|--yes]
-tako sqlite delete <name> [--server <server>] [-y|--yes]
-tako sqlite rm ...
+tako db create <name> [--server <server>]
+tako db list
+tako db ls
+tako db status [<name>]
+tako db shell <name> [<sql>]
+tako db migration new <name> [--binding <binding>]
+tako db migration list [<database>] [--local]
+tako db migration apply [<database>] [--local]
+tako db backup <name>
+tako db backups <name>
+tako db restore <name> (--latest|--snapshot <id>|--at <time>) [--server <server>] [-y|--yes]
+tako db import <name> <file> [-y|--yes]
+tako db export <name> <file>
+tako db reset <name> [--local] [--force] [-y|--yes]
+tako db delete <name> [--server <server>] [-y|--yes]
+tako db rm ...
 ```
 
-`tako db` is an alias for `tako sqlite`. A database belongs to a network: `--network`, else the network configured in the selected TOML file's environments, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments configure several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migration` need permission to deploy some app; the others require network and server administrator permission.
+`tako db` is an alias for `tako db`. A database belongs to a network: `--network`, else the network configured in the selected TOML file's environments, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments configure several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migration` need permission to deploy some app; the others require network and server administrator permission.
 
-`create` makes the database on `--server` (optional on a one-server network) and records its home. Bind it to app code with `[envs.<env>].databases` or select it for runtime replay with `[envs.<env>.channels].database`. `list --json` shows its home and the project's `channel_replay_envs`; `channel_owner` identifies an automatically owned replay database. `status` asks the home for size, users, and backup state, for every database the project uses if no name is given. In its JSON `bindings` and `remote_grants`, `<app>/<env>#channels` denotes runtime replay access. Backups require an environment `backup.storage` or `[databases.<name>].backup`.
+`create` makes the database on `--server` (optional on a one-server network) and records its home. Bind it to app code with `[envs.<env>].db` or select it for runtime replay with `[envs.<env>.channels].db`. `list --json` shows its home and the project's `channel_replay_envs`; `channel_owner` identifies an automatically owned replay database. `status` asks the home for size, users, and backup state, for every database the project uses if no name is given. In its JSON `bindings` and `remote_grants`, `<app>/<env>#channels` denotes runtime replay access. Backups require an environment `backup.storage` or `[db.<name>].backup`.
 
 `migration new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time (or the next number no migration in the folder uses) and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migration list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migration apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
 
 `shell` runs one statement when `<sql>` is given and otherwise reads statements from stdin, with `.tables`, `.schema [table]`, and `.quit` in an interactive terminal. Results stop at 1,000 rows and 8 MiB. Each statement commits on its own, so `BEGIN` is rejected. Hosted databases are backed up continuously. `backup` captures a full snapshot now; `backups` lists the window of time the database can be restored to and its restore points with their reason (`full snapshot`, `manual full snapshot`, `before release`, `before migrations`, `before restore`). `restore` replaces the database with its backed-up state: `--at <time>` the newest capture at or before a local time (`2026-11-23 10:15`), an RFC 3339 time, or an age (`15m`, `2h`, `1d`); `--snapshot <id>` a restore point; `--latest` the newest state uploaded. It first backs up the contents it replaces as a `before restore` point. With `--server` it recovers the database onto another server, which becomes its server, and removes the new copy again if the restore fails (keeping the backups); a move that stopped after its restore is finished by running the same command again; the old copy stops uploading backups: at once if its server is up, otherwise once that server is back and sees the move. `import` replaces the database with a local SQLite file; `export` writes a consistent copy and refuses to overwrite an existing file. `delete` removes the database file, its backups, its network records, its `tako.toml` entries, and copies an unfinished move left on other servers of the network. It refuses while apps on the database's server bind it, and revokes grants to app environments on other servers after naming them in a warning. `delete --server <server>` removes only the copy `restore --server` left on an old server, keeping the database, its record, and its backups. `restore`, `import`, `reset`, and `delete` ask for confirmation; non-interactive runs need `--yes`.
 
-Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `windows` and `snapshots` for `backups`, `migrations` for `migration list` and `apply`, `path` for `migration new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
+Global `--json` prints `{"ok":true,"command":"db",...}`: `databases` for `list` and `status`, `windows` and `snapshots` for `backups`, `migrations` for `migration list` and `apply`, `path` for `migration new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
 
 ## KV Stores
 
@@ -436,13 +436,13 @@ tako kv delete <name> [--server <server>] [-y|--yes]
 tako kv rm ...
 ```
 
-A KV store belongs to a network, which `tako kv` selects like `tako sqlite`. Databases and KV stores share the network's records, so a name identifies one of either; `create` refuses a name a database or store already has. `list` needs permission to deploy some app; the others require network and server administrator permission.
+A KV store belongs to a network, which `tako kv` selects like `tako db`. Databases and KV stores share the network's records, so a name identifies one of either; `create` refuses a name a database or store already has. `list` needs permission to deploy some app; the others require network and server administrator permission.
 
 `create` makes the store on `--server` (optional when the network has one server) and records it in the network; bind it by adding `kv = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. `list` reads the network's records; `status` asks each store's server for its size, backups, and the app environments using it, for every store the project binds when no name is given.
 
 `get` prints a key's JSON value as stored, and exits with an error when the key is not set or has expired. `put` sets a key to a JSON value; text must be quoted as a JSON string (`'"hello"'`), and `-` reads the value from stdin. `--ttl` takes whole seconds or a number followed by `s`, `m`, `h`, or `d`; without it the key stays until deleted. `delete-key` removes one key, and succeeds when the key is not set.
 
-`backup`, `backups`, `restore`, `import`, `export`, and `delete --server` work like their [`tako sqlite`](#databases) counterparts, on a store's snapshots and export files. KV stores are backed up with snapshots (hourly while they change), not continuously, so `restore` takes `--latest` or `--snapshot`, not a time. Backups go to `[kv.<name>].backup`, else the deploying environment's `backup.storage`. `restore` and `import` replace every key at once while apps keep reading the current ones; the contents they replace are kept on the server as `previous.redb` and, with backups configured, uploaded as a snapshot first. `import` takes a file from `tako kv export` and refuses anything else. `delete` removes the store, every key in it, its snapshots, its network record, and its `tako.toml` bindings and `[kv.<name>]` table; it refuses while apps on the store's server bind it, revokes grants to app environments on other servers, and asks for confirmation unless `--yes` is passed. When the store's server is no longer a member of the network, it removes only the record and bindings, so the name can be created again; `restore --server` recovers a store that has snapshots instead. `delete --server` removes only the copy a `restore --server` move left on another server.
+`backup`, `backups`, `restore`, `import`, `export`, and `delete --server` work like their [`tako db`](#databases) counterparts, on a store's snapshots and export files. KV stores are backed up with snapshots (hourly while they change), not continuously, so `restore` takes `--latest` or `--snapshot`, not a time. Backups go to `[kv.<name>].backup`, else the deploying environment's `backup.storage`. `restore` and `import` replace every key at once while apps keep reading the current ones; the contents they replace are kept on the server as `previous.redb` and, with backups configured, uploaded as a snapshot first. `import` takes a file from `tako kv export` and refuses anything else. `delete` removes the store, every key in it, its snapshots, its network record, and its `tako.toml` bindings and `[kv.<name>]` table; it refuses while apps on the store's server bind it, revokes grants to app environments on other servers, and asks for confirmation unless `--yes` is passed. When the store's server is no longer a member of the network, it removes only the record and bindings, so the name can be created again; `restore --server` recovers a store that has snapshots instead. `delete --server` removes only the copy a `restore --server` move left on another server.
 
 Global `--json` prints `{"ok":true,"command":"kv",...}`: `databases` for `list` and `status`, the created `database` for `create`, `snapshots` for `backups`, `result` for `backup` and `restore`, `imported` for `import`, and `exported` for `export`. `get --json` prints `{"ok":true,"command":"kv get","key":...,"value":...}` with the value as JSON; `put` and `delete-key` print `{"ok":true,"command":"kv put"|"kv delete-key","key":...}`. See [KV stores](/kv/).
 

@@ -30,10 +30,10 @@ function db(): Promise<Client> {
 }
 
 function missionDatabase() {
-  const database = tako.databases.mission;
+  const database = tako.db.mission;
   if (!database) {
     throw new Error(
-      "No database is bound as `mission`. Create one with `tako sqlite create mission` and bind it with `databases = { mission = \"mission\" }` under [envs.<env>] in tako.toml.",
+      'No database is bound as `mission`. Create one with `tako db create mission` and bind it with `db = { mission = "mission" }` under [envs.<env>] in tako.toml.',
     );
   }
   return database;

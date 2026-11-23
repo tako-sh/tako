@@ -56,8 +56,8 @@ export default async function fetch(request: Request): Promise<Response> {
       ok: true,
       id: published.id,
       publisher: hostname(),
-      databaseBindings: Object.keys(tako.databases),
-      hasReplayBinding: tako.databases["@channels"] !== undefined,
+      databaseBindings: Object.keys(tako.db),
+      hasReplayBinding: tako.db["@channels"] !== undefined,
     });
   }
 

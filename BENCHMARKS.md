@@ -60,6 +60,6 @@ many small queries per request should batch them (`batch`, transactions)
 rather than expect in-process latency. Reproduce with:
 
 ```bash
-cargo build --release -p tako-database --example serve
+cargo build --release -p tako-db --example serve
 bun e2e/cli/helpers/database-bench.ts target/release/examples/serve
 ```

@@ -6,9 +6,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use tako_database::{
-    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
-};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
 
 #[tokio::main]
 async fn main() {
@@ -48,10 +46,10 @@ async fn main() {
         })
     );
 
-    let server = tokio::spawn(tako_database::http::serve(
+    let server = tokio::spawn(tako_db::http::serve(
         host,
         listener,
-        tako_database::http::Access::Apps,
+        tako_db::http::Access::Apps,
     ));
     // Exit when the parent closes stdin.
     tokio::task::spawn_blocking(|| {

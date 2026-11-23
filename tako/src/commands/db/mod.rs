@@ -1,4 +1,4 @@
-//! `tako sqlite`: Tako-hosted SQLite databases.
+//! `tako db`: Tako-hosted SQLite databases.
 //!
 //! A database belongs to the network, not to an environment: commands find
 //! the network from the project's environments, and environments bind
@@ -31,13 +31,13 @@ use target::{Home, resolve_home};
 mod at;
 
 #[derive(Args)]
-pub struct SqliteArgs {
+pub struct DbArgs {
     #[command(subcommand)]
-    command: SqliteCommands,
+    command: DbCommands,
 }
 
 #[derive(Subcommand)]
-pub enum SqliteCommands {
+pub enum DbCommands {
     /// Create a database on a server of the network
     Create {
         /// Database name, unique within the network
@@ -93,7 +93,7 @@ pub enum SqliteCommands {
         /// Restore the newest backed-up state
         #[arg(long)]
         latest: bool,
-        /// Restore point ID from `tako sqlite backups`
+        /// Restore point ID from `tako db backups`
         #[arg(long)]
         snapshot: Option<String>,
         /// Restore the state at this time: `2026-11-23 10:15` (local time), RFC 3339, or an age such as `15m`, `2h` or `1d`
@@ -198,7 +198,7 @@ pub(crate) fn dry_run(
     Ok(())
 }
 
-pub fn run(args: SqliteArgs, config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: DbArgs, config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async(args, config_path))
 }
@@ -245,7 +245,7 @@ pub(crate) fn env_bindings(
 /// The CLI command that manages databases of `engine`.
 pub(crate) fn command_name(engine: DatabaseEngine) -> &'static str {
     match engine {
-        DatabaseEngine::Sqlite => "sqlite",
+        DatabaseEngine::Sqlite => "db",
         DatabaseEngine::Kv => "kv",
     }
 }
@@ -587,7 +587,7 @@ fn move_start(
         None => Ok(MoveStart::Create),
         Some(existing) if existing == generation => Ok(MoveStart::Resume),
         Some(_) => Err(format!(
-            "{target} already hosts a different database named {name}. Remove it with `tako sqlite delete {name} --server {target}` before moving {name} there."
+            "{target} already hosts a different database named {name}. Remove it with `tako db delete {name} --server {target}` before moving {name} there."
         )),
     }
 }
@@ -603,7 +603,7 @@ fn choose_snapshot_storage(
 ) -> Result<tako_core::StorageBinding, String> {
     let location = tako_core::BackupDestination::of;
     if storages.is_empty() {
-        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage, or `backup` in [databases.<name>] or [kv.<name>], in tako.toml.".into());
+        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage, or `backup` in [db.<name>] or [kv.<name>], in tako.toml.".into());
     }
     if let Some(source) = source {
         return storages
@@ -630,7 +630,7 @@ fn choose_snapshot_storage(
     if locations.len() > 1 {
         let envs: Vec<_> = storages.iter().map(|(env, _)| env.as_str()).collect();
         return Err(format!(
-            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in its [databases.{name}] or [kv.{name}] table to the one that does.",
+            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in its [db.{name}] or [kv.{name}] table to the one that does.",
             envs.join(", ")
         ));
     }
@@ -671,30 +671,30 @@ pub(crate) fn confirm(
 }
 
 async fn run_async(
-    args: SqliteArgs,
+    args: DbArgs,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = crate::network::network_flag();
     match args.command {
-        SqliteCommands::Create { name, server } => {
+        DbCommands::Create { name, server } => {
             let ctx = Context::load(config_path, network).await?;
             create(&ctx, &name, server.as_deref(), DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::List => {
+        DbCommands::List => {
             let ctx = Context::load(config_path, network).await?;
             list(&ctx, DatabaseEngine::Sqlite)
         }
-        SqliteCommands::Status { name } => {
+        DbCommands::Status { name } => {
             let ctx = Context::load(config_path, network).await?;
             status(&ctx, name.as_deref(), DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::Shell { name, sql } => {
+        DbCommands::Shell { name, sql } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
             let (_, home) = ctx.database(&name)?;
             shell::run(&home, &name, sql).await
         }
-        SqliteCommands::Migration(command) => match command {
+        DbCommands::Migration(command) => match command {
             MigrationCommands::New { name, binding } => {
                 new_migration(config_path, &name, binding.as_deref())
             }
@@ -713,15 +713,15 @@ async fn run_async(
                 migrate(&ctx, database.as_deref(), false).await
             }
         },
-        SqliteCommands::Backup { name } => {
+        DbCommands::Backup { name } => {
             let ctx = Context::load(config_path, network).await?;
             backup_now(&ctx, &name, DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::Backups { name } => {
+        DbCommands::Backups { name } => {
             let ctx = Context::load(config_path, network).await?;
             backups(&ctx, &name, DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::Restore {
+        DbCommands::Restore {
             name,
             latest: _,
             snapshot,
@@ -744,7 +744,7 @@ async fn run_async(
             )
             .await
         }
-        SqliteCommands::Import { name, file, yes } => {
+        DbCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
             let (_, home) = ctx.database(&name)?;
@@ -761,7 +761,7 @@ async fn run_async(
             }
             transfer::import(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::Export { name, file } => {
+        DbCommands::Export { name, file } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
             let (_, home) = ctx.database(&name)?;
@@ -773,7 +773,7 @@ async fn run_async(
             }
             transfer::export(&home, &name, &file, DatabaseEngine::Sqlite).await
         }
-        SqliteCommands::Reset {
+        DbCommands::Reset {
             name,
             local,
             force,
@@ -785,7 +785,7 @@ async fn run_async(
             let ctx = Context::load(config_path, network).await?;
             reset(&ctx, &name, force, yes).await
         }
-        SqliteCommands::Delete { name, server, yes } => {
+        DbCommands::Delete { name, server, yes } => {
             let ctx = Context::load(config_path, network).await?;
             match server {
                 Some(server) => {
@@ -840,7 +840,7 @@ pub(crate) async fn create(
         .find(|record| record.name == name)
     {
         let key = match existing.engine {
-            DatabaseEngine::Sqlite => "databases",
+            DatabaseEngine::Sqlite => "db",
             DatabaseEngine::Kv => "kv",
         };
         return Err(format!(
@@ -848,7 +848,7 @@ pub(crate) async fn create(
             existing.engine.noun(),
             match existing.engine {
                 DatabaseEngine::Sqlite => format!(
-                    "; for channel replay, set `database = \"{name}\"` under [envs.<env>.channels]"
+                    "; for channel replay, set `db = \"{name}\"` under [envs.<env>.channels]"
                 ),
                 DatabaseEngine::Kv => String::new(),
             }
@@ -888,7 +888,7 @@ pub(crate) async fn create(
     }
     output::hint(&match engine {
         DatabaseEngine::Sqlite => format!(
-            "To use it for app data, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`). For channel replay, set `database = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
+            "To use it for app data, add `db = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.db.<binding>`). For channel replay, set `db = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
         ),
         DatabaseEngine::Kv => format!(
             "To use it, add `kv = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.kv.<binding>`), then deploy."
@@ -1050,7 +1050,7 @@ pub(crate) fn list(
     if records.is_empty() {
         output::info(&match engine {
             DatabaseEngine::Sqlite => {
-                "No databases yet. Create one with `tako sqlite create <name>`.".to_string()
+                "No databases yet. Create one with `tako db create <name>`.".to_string()
             }
             DatabaseEngine::Kv => {
                 "No KV stores yet. Create one with `tako kv create <name>`.".to_string()
@@ -1285,7 +1285,7 @@ pub(crate) async fn backups(
         let time = |key: &str| format_time(current[key].as_i64().unwrap_or(0).max(0) as u64 / 1000);
         output::section(&format!("Point-in-time restore of {name}"));
         output::bullet(&format!(
-            "Any moment from {} to {} (`tako sqlite restore {name} --at <time>`)",
+            "Any moment from {} to {} (`tako db restore {name} --at <time>`)",
             time("from_unix_ms"),
             time("to_unix_ms")
         ));
@@ -1749,7 +1749,7 @@ fn check_replay_delete(
     {
         let envs = db.replay_env_names();
         return Err(format!(
-            "{} is the channel replay database for {envs}. Select a replacement with [envs.<env>.channels].database and deploy it, or remove the retired environment from this project before deleting the database.",
+            "{} is the channel replay database for {envs}. Select a replacement with [envs.<env>.channels].db and deploy it, or remove the retired environment from this project before deleting the database.",
             record.name
         ));
     }
@@ -1902,7 +1902,7 @@ pub(crate) async fn apply_migrations(
     home: &Home,
     database: &str,
     owner: &str,
-    migrations: Vec<tako_database::Migration>,
+    migrations: Vec<tako_db::Migration>,
     dry_run: bool,
     app: Option<String>,
 ) -> Result<tako_core::DatabaseMigrationReport, Box<dyn std::error::Error>> {
@@ -1990,7 +1990,7 @@ async fn migrate(
             .map(|(binding, database, report)| serde_json::json!({"binding": binding, "database": database, "report": report}))
             .collect();
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "dry_run": dry_run, "migrations": databases,
+            "ok": true, "command": "db", "dry_run": dry_run, "migrations": databases,
         }));
     }
     if results.is_empty() {
@@ -2044,7 +2044,7 @@ fn migrate_local(
     }
     if output::is_json() {
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "dry_run": dry_run,
+            "ok": true, "command": "db", "dry_run": dry_run,
             "applied": migrated.applied, "pending": migrated.pending,
         }));
     }
@@ -2123,7 +2123,7 @@ fn new_migration(
         .to_string();
     if output::is_json() {
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "path": shown,
+            "ok": true, "command": "db", "path": shown,
         }));
     }
     output::success(&format!("Created {shown}"));
@@ -2156,7 +2156,7 @@ fn unused_migration_number(dir: &Path, wanted: u64) -> u64 {
         .flatten()
         .flatten()
         .filter_map(|entry| {
-            tako_database::migrate::migration_number(&entry.file_name().to_string_lossy())
+            tako_db::migrate::migration_number(&entry.file_name().to_string_lossy())
         })
         .collect();
     let mut number = wanted;
@@ -2203,7 +2203,7 @@ fn reset_local(
         );
     }
     if path.exists() {
-        tako_database::reset_database_file(&path)?;
+        tako_db::reset_database_file(&path)?;
     }
     // Only this database: the others keep their state.
     let migrated = crate::local_databases::development_migrations(
@@ -2217,7 +2217,7 @@ fn reset_local(
     }
     if output::is_json() {
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "reset": name, "applied": migrated.applied,
+            "ok": true, "command": "db", "reset": name, "applied": migrated.applied,
         }));
     }
     output::success(&format!("Reset the local database {name}"));
@@ -2305,7 +2305,7 @@ async fn reset(
         .collect();
     if output::is_json() {
         return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "reset": name, "applied": applied,
+            "ok": true, "command": "db", "reset": name, "applied": applied,
         }));
     }
     if !applied.is_empty() {
@@ -2373,22 +2373,22 @@ mod tests {
         };
         let home = server("old");
         assert!(
-            matches!(restore_target("shop", Some(&home), None, "sqlite"), Ok((target, false)) if target.name == "old")
+            matches!(restore_target("shop", Some(&home), None, "db"), Ok((target, false)) if target.name == "old")
         );
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("old")), "sqlite"),
+            restore_target("shop", Some(&home), Some(server("old")), "db"),
             Ok((_, false))
         ));
         assert!(matches!(
-            restore_target("shop", Some(&home), Some(server("new")), "sqlite"),
+            restore_target("shop", Some(&home), Some(server("new")), "db"),
             Ok((target, true)) if target.name == "new"
         ));
         // The home server left the network: --server names the recovery target.
         assert!(matches!(
-            restore_target("shop", None, Some(server("new")), "sqlite"),
+            restore_target("shop", None, Some(server("new")), "db"),
             Ok((target, true)) if target.name == "new"
         ));
-        let Err(error) = restore_target("shop", None, None, "sqlite") else {
+        let Err(error) = restore_target("shop", None, None, "db") else {
             panic!("a restore without a home needs --server");
         };
         assert!(error.contains("--server"), "{error}");
@@ -2499,7 +2499,7 @@ mod tests {
         let timestamp = utc_timestamp().unwrap();
         assert_eq!(timestamp.len(), 14);
         let name = format!("{timestamp}_add_orders.sql");
-        assert!(tako_database::migrate::migration_number(&name).is_some());
+        assert!(tako_db::migrate::migration_number(&name).is_some());
     }
 
     #[test]
@@ -2523,7 +2523,7 @@ mod tests {
     #[test]
     fn bindings_are_grouped_by_database_outside_development() {
         let config = TakoToml::parse(
-            "name = \"shop\"\n[envs.development]\ndatabases = { main = \"local\" }\n[envs.production]\nroute = \"a.example.com\"\ndatabases = { main = \"shop\", events = \"shop\" }\n[envs.staging]\nroute = \"b.example.com\"\ndatabases = { main = \"shop_staging\" }\n",
+            "name = \"shop\"\n[envs.development]\ndb = { main = \"local\" }\n[envs.production]\nroute = \"a.example.com\"\ndb = { main = \"shop\", events = \"shop\" }\n[envs.staging]\nroute = \"b.example.com\"\ndb = { main = \"shop_staging\" }\n",
         )
         .unwrap();
         let bound = project_bindings(&config, DatabaseEngine::Sqlite);
@@ -2541,7 +2541,7 @@ mod tests {
     #[test]
     fn kv_bindings_are_kept_apart_from_database_bindings() {
         let config = TakoToml::parse(
-            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\ndatabases = { main = \"shop\" }\nkv = { auth = \"sessions\" }\n[envs.staging]\nroute = \"b.example.com\"\nkv = { auth = \"sessions\" }\n",
+            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\ndb = { main = \"shop\" }\nkv = { auth = \"sessions\" }\n[envs.staging]\nroute = \"b.example.com\"\nkv = { auth = \"sessions\" }\n",
         )
         .unwrap();
         let stores = project_bindings(&config, DatabaseEngine::Kv);
@@ -2563,16 +2563,16 @@ name = "shop"
 [envs.production]
 route = "shop.example.com"
 network = "0123456789abcdef0123456789abcdef"
-channels.database = "events"
+channels.db = "events"
 [envs.staging]
 route = "staging.example.com"
 network = "0123456789abcdef0123456789abcdef"
 [envs.preview]
 route = "preview.example.com"
 network = "fedcba9876543210fedcba9876543210"
-channels.database = "events"
+channels.db = "events"
 [envs.development]
-channels.database = "local"
+channels.db = "local"
 "#,
         )
         .unwrap();

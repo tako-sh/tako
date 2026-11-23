@@ -78,7 +78,7 @@ fn read_storage_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<Stri
 fn read_database_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
     match config {
         Some(config) => config_binding_names(config, |env| &env.databases),
-        None => read_binding_names(project_dir, "databases"),
+        None => read_binding_names(project_dir, "db"),
     }
 }
 
@@ -286,19 +286,19 @@ fn build_kv_block(names: &[String]) -> String {
 
 fn build_databases_block(names: &[String]) -> String {
     if names.is_empty() {
-        return "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * No databases are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoDatabases {}\n\n".to_string();
+        return "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * No databases are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoDb {}\n\n".to_string();
     }
 
     let mut out = String::from(
-        "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * Each binding is `{ url, authToken }`, ready for `createClient` from\n   * `@libsql/client` or `connect` from `@tursodatabase/serverless`.\n   */\n  export interface TakoDatabases {\n",
+        "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * Each binding is `{ url, authToken }`, ready for `createClient` from\n   * `@libsql/client` or `connect` from `@tursodatabase/serverless`.\n   */\n  export interface TakoDb {\n",
     );
     for name in names {
         out.push_str(&format!(
-            "    /** Database binding `{name}`. Read it with `tako.databases.{}`. */\n",
+            "    /** Database binding `{name}`. Read it with `tako.db.{}`. */\n",
             ts_property_name(name)
         ));
         out.push_str(&format!(
-            "    readonly {}: import(\"tako.sh\").TakoDatabase;\n",
+            "    readonly {}: import(\"tako.sh\").TakoDbConnection;\n",
             ts_property_name(name)
         ));
     }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use sha2::{Digest, Sha256};
 
-use crate::commands::sqlite::target::{Home, PlannedBinding, inventory_home, resolve_home};
+use crate::commands::db::target::{Home, PlannedBinding, inventory_home, resolve_home};
 use crate::config::{ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 
@@ -55,7 +55,7 @@ pub(in crate::commands::deploy) fn plan(
 ) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let environment = &config.envs[env];
-    let configured = environment.channels.as_ref().map(|c| c.database.as_str());
+    let configured = environment.channels.as_ref().map(|c| c.db.as_str());
     let generated = implicit_name(app);
     // An explicit replay database selects hosted SQLite for channels only.
     // Postgres can stay configured for workflows on the same environment.
@@ -66,14 +66,14 @@ pub(in crate::commands::deploy) fn plan(
     let sql_names_database = |name: &str| environment.databases.values().any(|db| db == name);
     if implicit && sql_names_database(&generated) {
         return Err(format!(
-            "The generated channel database name '{generated}' is also an app SQL database. Select a channel database explicitly with [envs.{env}.channels].database."
+            "The generated channel database name '{generated}' is also an app SQL database. Select a channel database explicitly with [envs.{env}.channels].db."
         ));
     }
     if let Some(name) = replay
         && environment.kv.values().any(|store| store == name)
     {
         return Err(format!(
-            "'{name}' is bound as a KV store in {env}, so it cannot also hold channel replay. Select another channel database with [envs.{env}.channels].database."
+            "'{name}' is bound as a KV store in {env}, so it cannot also hold channel replay. Select another channel database with [envs.{env}.channels].db."
         ));
     }
     let members = crate::commands::helpers::resolve_network_servers(servers, network, &[], env)?;
@@ -82,7 +82,7 @@ pub(in crate::commands::deploy) fn plan(
             if record.engine != tako_core::DatabaseEngine::Sqlite {
                 return Err(if for_replay {
                     format!(
-                        "'{name}' is a KV store, so it cannot hold channel replay. Select a SQLite database with [envs.{env}.channels].database."
+                        "'{name}' is a KV store, so it cannot hold channel replay. Select a SQLite database with [envs.{env}.channels].db."
                     )
                 } else {
                     format!(
@@ -92,7 +92,7 @@ pub(in crate::commands::deploy) fn plan(
             }
             if for_replay && implicit && record.channel_owner.as_deref() != Some(app) {
                 return Err(format!(
-                    "Database '{name}' is not {app}'s automatically created channel database. Select an intended database explicitly with [envs.{env}.channels].database."
+                    "Database '{name}' is not {app}'s automatically created channel database. Select an intended database explicitly with [envs.{env}.channels].db."
                 ));
             }
             if !for_replay && record.channel_owner.is_some() {
@@ -116,7 +116,7 @@ pub(in crate::commands::deploy) fn plan(
             home
         } else {
             let hint = if for_replay && implicit {
-                format!(" Then set `database = \"{name}\"` under `[envs.{env}.channels]`.")
+                format!(" Then set `db = \"{name}\"` under `[envs.{env}.channels]`.")
             } else {
                 String::new()
             };
@@ -130,7 +130,7 @@ pub(in crate::commands::deploy) fn plan(
                     home.device_id
                 };
                 commands.push(format!(
-                    "`tako sqlite create {name} --server {selector} --network {network}`"
+                    "`tako db create {name} --server {selector} --network {network}`"
                 ));
             }
             return Err(format!(
@@ -245,7 +245,7 @@ mod tests {
             implicit_name(&format!("{}/b", "x".repeat(60)))
         );
         tako_core::validate_database_name(&implicit_name(&"X".repeat(100))).unwrap();
-        let project = project("databases={orders='sales', read='sales'}");
+        let project = project("db={orders='sales', read='sales'}");
         let placement = |records: &[DatabaseRecord]| {
             plan(
                 &project,
@@ -302,14 +302,13 @@ mod tests {
         let name = implicit_name(APP);
         for server in ["east", "west"] {
             assert!(missing.contains(&format!(
-                "tako sqlite create {name} --server {server} --network {NETWORK}"
+                "tako db create {name} --server {server} --network {NETWORK}"
             )));
         }
         assert!(missing.contains("[envs.production.channels]"));
         let mut admin_created = record(&name, None);
         admin_created.server = "b".repeat(64);
-        let configured =
-            super::tests::project(&format!("[envs.production.channels]\ndatabase='{name}'"));
+        let configured = super::tests::project(&format!("[envs.production.channels]\ndb='{name}'"));
         let placement = plan(
             &configured,
             &servers(2),
@@ -349,14 +348,14 @@ mod tests {
         assert!(!found.unprovisioned_replay);
         assert!(scoped(&project(""), &[]).unwrap().unprovisioned_replay);
         let explicit = scoped(
-            &project(&format!("[envs.production.channels]\ndatabase='{name}'")),
+            &project(&format!("[envs.production.channels]\ndb='{name}'")),
             &[record(&name, None)],
         )
         .unwrap();
         assert!(explicit.replay.unwrap().binding.peer_key.is_none());
         for settings in [
-            "databases={main='orders'}",
-            "[envs.production.channels]\ndatabase='orders'",
+            "db={main='orders'}",
+            "[envs.production.channels]\ndb='orders'",
         ] {
             assert!(
                 scoped(&project(settings), &[])
@@ -380,7 +379,7 @@ mod tests {
         assert!(pg.replay.is_none() && pg.create.is_empty());
         // Channels can use hosted SQLite while workflows keep Postgres.
         let both = plan(
-            &project("[envs.production.channels]\ndatabase='other'"),
+            &project("[envs.production.channels]\ndb='other'"),
             &servers(1),
             NETWORK,
             "production",
@@ -435,14 +434,14 @@ mod tests {
                 .contains("is a SQLite database")
         );
         assert!(
-            place("databases={main='sessions'}", &[kv("sessions")])
+            place("db={main='sessions'}", &[kv("sessions")])
                 .err()
                 .unwrap()
                 .contains("is a KV store")
         );
         // Channel replay needs a SQLite database.
         assert!(
-            place("channels.database='sessions'", &[kv("sessions")])
+            place("channels.db='sessions'", &[kv("sessions")])
                 .err()
                 .unwrap()
                 .contains("cannot hold channel replay")

@@ -64,9 +64,9 @@ declare module "tako.sh" {
    * Each binding is `{ url, authToken }`, ready for `createClient` from
    * `@libsql/client` or `connect` from `@tursodatabase/serverless`.
    */
-  export interface TakoDatabases {
-    /** Database binding `mission`. Read it with `tako.databases.mission`. */
-    readonly mission: import("tako.sh").TakoDatabase;
+  export interface TakoDb {
+    /** Database binding `mission`. Read it with `tako.db.mission`. */
+    readonly mission: import("tako.sh").TakoDbConnection;
   }
 
   /**

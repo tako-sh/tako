@@ -752,9 +752,9 @@ async fn run_async(
         ssl: deploy_ssl,
         backup: deploy_backup,
         // Binding names are unique across databases and KV stores.
-        databases: crate::commands::sqlite::target::wire_bindings(&database_plan.sql)
+        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)
             .into_iter()
-            .chain(crate::commands::sqlite::target::wire_bindings(
+            .chain(crate::commands::db::target::wire_bindings(
                 &database_plan.kv,
             ))
             .collect(),

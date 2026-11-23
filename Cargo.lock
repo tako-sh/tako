@@ -6665,7 +6665,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "tako-core",
- "tako-database",
+ "tako-db",
  "tako-sqlite",
  "tempfile",
  "thiserror 2.0.20",
@@ -6731,7 +6731,7 @@ dependencies = [
  "tako-channels",
  "tako-compose",
  "tako-core",
- "tako-database",
+ "tako-db",
  "tako-images",
  "tako-kv",
  "tako-network",
@@ -6784,7 +6784,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tako-database"
+name = "tako-db"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
@@ -6950,7 +6950,7 @@ dependencies = [
  "tako-channels",
  "tako-compose",
  "tako-core",
- "tako-database",
+ "tako-db",
  "tako-images",
  "tako-kv",
  "tako-network",

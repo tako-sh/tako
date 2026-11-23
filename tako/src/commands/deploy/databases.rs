@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tako_core::{Command, SnapshotReason};
 
-use crate::commands::sqlite::target::{Home, PlannedBinding, resolve_home};
+use crate::commands::db::target::{Home, PlannedBinding, resolve_home};
 use crate::config::{SecretsStore, ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 use crate::output;
@@ -48,7 +48,7 @@ pub(super) async fn provision(
                 databases: Vec<tako_core::DatabaseInfo>,
             }
             let status: Status =
-                crate::commands::sqlite::send(&entry.home, Command::DatabaseStatus { name: None })
+                crate::commands::db::send(&entry.home, Command::DatabaseStatus { name: None })
                     .await?;
             hosted.insert(entry.home.device_id.clone(), status.databases);
         }
@@ -87,7 +87,7 @@ pub(super) async fn provision(
                 .is_some_and(|r| r.database_name == *name))
         .then_some(app);
         records.push(
-            crate::commands::sqlite::create_database(
+            crate::commands::db::create_database(
                 network,
                 home,
                 name,
@@ -154,7 +154,7 @@ pub(super) async fn prepare(prep: Preparation<'_>) -> Result<Granted, Box<dyn st
 /// uses. A server that cannot be reached keeps a stale grant, with a warning.
 pub(super) async fn narrow_grants(granted: Granted) {
     for (app, home, databases) in granted.narrow {
-        let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
+        let result: Result<serde_json::Value, _> = crate::commands::db::send(
             &home,
             Command::GrantDatabases {
                 app: app.to_owned(),
@@ -282,7 +282,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         let (binding, migrations) = (&selected.binding, selected.migrations);
         let planned = &prep.plan.sql[binding];
         debug_assert_eq!(planned.database_name, database);
-        let report = crate::commands::sqlite::apply_migrations(
+        let report = crate::commands::db::apply_migrations(
             &planned.home,
             &planned.database_name,
             owner,
@@ -320,7 +320,7 @@ async fn grant<'a>(
     bound: impl Iterator<Item = &'a PlannedBinding>,
     prepared: &mut Prepared,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    let network = crate::commands::sqlite::target::env_network(prep.env)?;
+    let network = crate::commands::db::target::env_network(prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
     for record in prep.records {
         let Ok(home) = resolve_home(prep.servers, &network, &record.server, prep.env) else {
@@ -345,7 +345,7 @@ async fn grant<'a>(
         let names: Vec<String> = names.into_iter().collect();
         // Old instances keep running until the rollout succeeds, so grants
         // they use stay until then.
-        let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
+        let result: Result<serde_json::Value, _> = crate::commands::db::send(
             &home,
             Command::GrantDatabases {
                 app: scope.to_owned(),
@@ -382,6 +382,6 @@ async fn grant<'a>(
 }
 
 async fn send(home: &Home, command: Command) -> Result<(), Box<dyn std::error::Error>> {
-    let _: serde_json::Value = crate::commands::sqlite::send(home, command).await?;
+    let _: serde_json::Value = crate::commands::db::send(home, command).await?;
     Ok(())
 }

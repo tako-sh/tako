@@ -210,11 +210,11 @@ GREETING = "development"
 [vars.test-e2e]
 GREETING = "test"
 [envs.development]
-databases = { main = "same-name" }
+db = { main = "same-name" }
 [envs.test-e2e]
 # An external-only route keeps the generated local default enabled.
 route = "test-e2e.example.com"
-databases = { main = "same-name" }
+db = { main = "same-name" }
 `,
     );
     mkdirSync(join(pd, "migrations"), { recursive: true });
@@ -225,7 +225,7 @@ databases = { main = "same-name" }
 import { tako } from "tako.sh";
 import { createClient } from "@libsql/client";
 export default async function fetch(request: Request) {
-  const db = createClient(tako.databases.main);
+  const db = createClient(tako.db.main);
   try {
     if (request.method === "POST") await db.execute("INSERT INTO items VALUES ('item')");
     const result = await db.execute("SELECT count(*) AS count FROM items");

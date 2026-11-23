@@ -13,7 +13,7 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
     let workflow_storage = project_workflow_storage(project_dir, tako_config);
-    // A selected `[envs.<env>.channels].database` keeps channels off Postgres.
+    // A selected `[envs.<env>.channels].db` keeps channels off Postgres.
     let channels_use_postgres = project_needs_channel_replay(project_dir, tako_config)
         && tako_config
             .envs

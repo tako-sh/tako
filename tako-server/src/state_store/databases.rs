@@ -231,7 +231,7 @@ impl SqliteStateStore {
         }
         let key = match self.all_database_grants()?.remove(app) {
             Some(existing) => existing.key,
-            None => tako_database::generate_token(),
+            None => tako_db::generate_token(),
         };
         let encrypted = self.encrypt_json(&DatabaseGrant {
             databases: databases.clone(),

@@ -1,4 +1,4 @@
-//! The time `tako sqlite restore --at` restores to.
+//! The time `tako db restore --at` restores to.
 
 use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
 

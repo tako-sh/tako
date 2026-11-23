@@ -112,7 +112,7 @@ impl TakoToml {
         let workflows = parse_workflows_config(&raw, "workflows", true)?.unwrap_or_default();
         let images = parse_images_config(&raw)?;
         let storages = parse_storage_resources(&raw)?;
-        let databases = parse_database_resources(&raw, "databases")?;
+        let databases = parse_database_resources(&raw, "db")?;
         let kv = parse_database_resources(&raw, "kv")?;
         let mut config = TakoToml {
             name,
@@ -172,7 +172,7 @@ impl TakoToml {
                         || backup.get("shared_databases").is_some())
                 {
                     return Err(ConfigError::Validation(format!(
-                        "[envs.{env_name}].backup no longer lists SQLite files. Create a hosted database with `tako sqlite create`, load the file with `tako sqlite import`, and bind it in [envs.{env_name}].databases. Hosted databases are snapshotted to the storage set in [databases.<name>].backup."
+                        "[envs.{env_name}].backup no longer lists SQLite files. Create a hosted database with `tako db create`, load the file with `tako db import`, and bind it in [envs.{env_name}].db. Hosted databases are backed up to the storage set in [db.<name>].backup."
                     )));
                 }
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
@@ -243,7 +243,7 @@ fn parse_storage_resources(raw: &toml::Value) -> Result<HashMap<String, StorageR
     Ok(resources)
 }
 
-/// `[databases.*]` or `[kv.*]`: per-database settings, keyed by name.
+/// `[db.*]` or `[kv.*]`: per-database settings, keyed by name.
 fn parse_database_resources(
     raw: &toml::Value,
     section: &str,
@@ -256,13 +256,13 @@ fn parse_database_resources(
         .as_table()
         .ok_or_else(|| ConfigError::Validation(format!("'{section}' must be a table")))?;
     for (name, value) in table {
-        if section == "databases"
+        if section == "db"
             && let Some(key) = ["id", "server", "access"]
                 .into_iter()
                 .find(|key| value.get(key).is_some())
         {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].{key} is no longer set in tako.toml: the network state records where each database lives. Remove it; `tako sqlite list` shows the network's databases."
+                "[db.{name}].{key} is no longer set in tako.toml: the network state records where each database lives. Remove it; `tako db list` shows the network's databases."
             )));
         }
         let resource: DatabaseResourceConfig = toml::from_str(&toml::to_string(value)?)

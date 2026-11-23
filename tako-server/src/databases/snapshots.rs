@@ -23,7 +23,7 @@ use tako_core::{
     BackupEncryptionInfo, BackupKeyBinding, DatabaseBackupStatus, DatabaseEngine, DatabaseSnapshot,
     SnapshotReason, StorageBinding,
 };
-use tako_database::DatabaseId;
+use tako_db::DatabaseId;
 
 use super::backups::{SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
 use super::now_unix_secs;
@@ -193,7 +193,7 @@ pub(crate) async fn copy_contents(
 /// Checks that `path` holds a usable copy for the database's engine. Blocks.
 pub(crate) fn verify_copy(engine: DatabaseEngine, path: &Path) -> Result<(), String> {
     match engine {
-        DatabaseEngine::Sqlite => tako_database::verify_database(path),
+        DatabaseEngine::Sqlite => tako_db::verify_database(path),
         DatabaseEngine::Kv => tako_kv::export::Reader::open(path)
             .and_then(|reader| reader.check())
             .map(drop)
@@ -252,11 +252,11 @@ async fn check_holder(
     };
     match read_holder(remote, stored).await? {
         Some(holder) if holder == DELETED_HOLDER => Err(format!(
-            "database {} was deleted; this copy no longer publishes snapshots. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was deleted; this copy no longer publishes snapshots. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         )),
         Some(holder) if holder != own => Err(format!(
-            "database {} was moved to another server ({holder}); this copy no longer publishes snapshots. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was moved to another server ({holder}); this copy no longer publishes snapshots. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         )),
         _ => Ok(()),

@@ -109,9 +109,9 @@ Returns time since process start.
 
 Returns a secret value by name. Prefer the generated `Secrets` struct instead of calling this directly.
 
-### `tako.GetDatabase(name string) (tako.Database, bool)`
+### `tako.GetDB(name string) (tako.DB, bool)`
 
-Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
+Returns the hosted database bound as `name` in `[envs.<env>].db`, or `false` when the environment does not bind it. `tako.DBNames()` lists bound names.
 
 ### `tako.GetKV(name string) (*tako.KV, bool)`
 
@@ -119,7 +119,7 @@ Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the e
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako sqlite create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
+Tako-hosted SQLite databases are created with `tako db create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
 
 ```go
 import (
@@ -130,7 +130,7 @@ import (
 	"tako.sh"
 )
 
-main, ok := tako.GetDatabase("main")
+main, ok := tako.GetDB("main")
 if !ok {
 	log.Fatal("no database is bound as main")
 }
@@ -314,9 +314,9 @@ an application outbox for durable commit-and-notify. Params are limited to 16 Ki
 and read responses to 1 MiB. Invalidations use the environment's channel replay
 backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
 server of the network. Because `go.mod` depends on `tako.sh`, a deploy with
-neither `[envs.<env>.channels].database` nor `postgres_url` selects a generated
-replay database; on a multi-server network, create one with `tako sqlite create`
-and set `database` first (see https://tako.sh/docs/channels/#deploy-replay-storage).
+neither `[envs.<env>.channels].db` nor `postgres_url` selects a generated
+replay database; on a multi-server network, create one with `tako db create`
+and set `db` first (see https://tako.sh/docs/channels/#deploy-replay-storage).
 See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
 
 ## Internal Protocol

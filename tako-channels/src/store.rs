@@ -928,7 +928,7 @@ mod notification_tests {
     }
 
     async fn hosted_handles_at() -> (ChannelStore, ChannelStore, PathBuf) {
-        use tako_database::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
+        use tako_db::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("replay.sqlite");
@@ -954,7 +954,7 @@ mod notification_tests {
         );
         tokio::spawn(async move {
             let _dir = dir;
-            tako_database::http::serve(host, listener, tako_database::http::Access::Apps).await
+            tako_db::http::serve(host, listener, tako_db::http::Access::Apps).await
         });
         tokio::task::spawn_blocking(move || {
             let writer = ChannelStore::open_config(config.clone()).unwrap();
@@ -999,7 +999,7 @@ mod notification_tests {
         publish(3).await.unwrap();
         wait_for(&mut changes, 3).await;
         gap.borrow_and_update();
-        // `tako sqlite reset` replaces the file under both open handles.
+        // `tako db reset` replaces the file under both open handles.
         rusqlite::Connection::open(&path)
             .unwrap()
             .execute_batch(

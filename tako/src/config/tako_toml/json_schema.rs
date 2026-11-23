@@ -191,9 +191,9 @@ pub(super) fn generate() -> Value {
             "propertyNames": { "pattern": "^[a-z0-9_-]+$", "not": { "const": "local" } },
             "additionalProperties": storage,
         },
-        "databases": {
+        "db": {
             "type": "object",
-            "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
+            "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].db`. Create databases with `tako db create`.",
             "propertyNames": { "pattern": DATABASE_NAME_PATTERN },
             "additionalProperties": database,
         },

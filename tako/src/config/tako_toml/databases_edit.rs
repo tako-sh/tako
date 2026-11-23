@@ -1,4 +1,4 @@
-//! Removes `[databases.*]` entries and database and KV store bindings from
+//! Removes `[db.*]` entries and database and KV store bindings from
 //! `tako.toml`, preserving the rest of the file: comments, ordering, and
 //! formatting.
 
@@ -73,13 +73,13 @@ impl TakoToml {
     /// every network and can still apply to an implicit channel database there.
     pub fn remove_database_from_file(path: &Path, name: &str, network: &str) -> Result<()> {
         let mut doc = load(path)?;
-        let other_network = remove_env_bindings(&mut doc, "databases", name, network);
+        let other_network = remove_env_bindings(&mut doc, "db", name, network);
         if !other_network
-            && let Some(databases) = doc.get_mut("databases").and_then(Item::as_table_like_mut)
+            && let Some(databases) = doc.get_mut("db").and_then(Item::as_table_like_mut)
         {
             databases.remove(name);
             if databases.is_empty() {
-                doc.remove("databases");
+                doc.remove("db");
             }
         }
         save(path, &doc)
@@ -117,7 +117,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             &dir,
-            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { db = \"main\", other = \"orders\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\ndatabases = { db = \"main\" }\n\n[databases.main]\nbackup = \"private_backups\"\n\n[databases.orders]\nbackup = \"private_backups\"\n\n[storages.private_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndb = { db = \"main\", other = \"orders\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\ndb = { db = \"main\" }\n\n[db.main]\nbackup = \"private_backups\"\n\n[db.orders]\nbackup = \"private_backups\"\n\n[storages.private_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
         );
         TakoToml::remove_database_from_file(&path, "main", "0123456789abcdef0123456789abcdef")
             .unwrap();
@@ -138,7 +138,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             &dir,
-            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n\n[kv.sessions]\nbackup = \"backups\"\n\n[kv.other]\nbackup = \"backups\"\n\n[storages.backups]\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndb = { main = \"main\" }\n# Sessions and challenges\nkv = { auth = \"sessions\", cache = \"other\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\nkv = { auth = \"sessions\" }\n\n[kv.sessions]\nbackup = \"backups\"\n\n[kv.other]\nbackup = \"backups\"\n\n[storages.backups]\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
         );
         TakoToml::remove_kv_from_file(&path, "sessions", "0123456789abcdef0123456789abcdef")
             .unwrap();
@@ -163,12 +163,12 @@ name = "shop"
 [envs.production]
 route = "shop.example.com"
 network = "0123456789abcdef0123456789abcdef"
-channels.database = "main"
+channels.db = "main"
 [envs.staging]
 route = "staging.example.com"
 network = "fedcba9876543210fedcba9876543210"
-databases = { db = "main" }
-[databases.main]
+db = { db = "main" }
+[db.main]
 backup = "backups"
 [storages.backups]
 bucket = "b"
@@ -180,11 +180,7 @@ region = "auto"
             .unwrap();
         let config = TakoToml::load_from_file(&path).unwrap();
         assert_eq!(
-            config.envs["production"]
-                .channels
-                .as_ref()
-                .unwrap()
-                .database,
+            config.envs["production"].channels.as_ref().unwrap().db,
             "main"
         );
         assert_eq!(config.databases["main"].backup.as_deref(), Some("backups"));

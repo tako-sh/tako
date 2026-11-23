@@ -16,7 +16,7 @@ region = "auto"
 [envs.production]
 route = "*.shop.example.com"
 storages = { uploads = "media", cache = "local" }
-databases = { main = "orders" }
+db = { main = "orders" }
 "#,
     )
     .unwrap()
@@ -139,7 +139,7 @@ fn channel_replay_status_names_the_database_without_an_app_binding() {
 name = "shop"
 [envs.production]
 route = "shop.example.com"
-channels.database = "events"
+channels.db = "events"
 [envs.staging]
 route = "staging.example.com"
 "#,
@@ -216,7 +216,7 @@ route = "staging.example.com"
 fn databases_on_a_server_name_the_environments_that_bind_them() {
     let mut config = config();
     config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
-        database: "orders".into(),
+        db: "orders".into(),
     });
     let env = env_resources(
         "production",

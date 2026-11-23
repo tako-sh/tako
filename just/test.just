@@ -24,7 +24,7 @@ workspace:
 
 # Hosted database engine, protocol, and HTTP tests.
 database:
-    cargo test --locked -p tako-database
+    cargo test --locked -p tako-db
 
 # Continuous database backups: capture, upload, restore, and retention.
 terse:

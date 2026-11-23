@@ -1,7 +1,7 @@
 use super::*;
 use crate::stream::close_payload;
 use std::path::PathBuf;
-use tako_database::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
 
 struct Db {
     url: String,
@@ -38,10 +38,10 @@ async fn with_database(test: impl FnOnce(Db) + Send + 'static) {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(tako_database::http::serve(
+    let server = tokio::spawn(tako_db::http::serve(
         host,
         listener,
-        tako_database::http::Access::Apps,
+        tako_db::http::Access::Apps,
     ));
     tokio::task::spawn_blocking(move || test(Db { url, token, path }))
         .await
@@ -295,7 +295,7 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
             reader.latest_ids(&channels).unwrap(),
             (vec![("a".into(), 1)], false)
         );
-        // `tako sqlite reset` leaves an empty file under the open handles.
+        // `tako db reset` leaves an empty file under the open handles.
         db.sql().execute_batch(RESET).unwrap();
         assert!(reader.latest_ids(&channels).is_err());
         assert!(reader.read_after("a", None, 10).is_err());

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::io::Read;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tako_database::Value as SqlValue;
+use tako_db::Value as SqlValue;
 
 pub(super) struct Statement {
     pub(super) sql: String,
@@ -221,7 +221,7 @@ struct Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tako_database::{
+    use tako_db::{
         Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
     };
 
@@ -245,10 +245,10 @@ mod tests {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(tako_database::http::serve(
+        let task = tokio::spawn(tako_db::http::serve(
             host.clone(),
             listener,
-            tako_database::http::Access::Apps,
+            tako_db::http::Access::Apps,
         ));
         tokio::task::spawn_blocking(move || {
             let client = Client::new(&url, &token).unwrap();

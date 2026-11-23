@@ -6,7 +6,7 @@ let database: Promise<Client> | undefined;
 /** The `messages` database binding, created on first use. */
 function db(): Promise<Client> {
   database ??= (async () => {
-    const binding = tako.databases.messages;
+    const binding = tako.db.messages;
     if (!binding) throw new Error("No database is bound as `messages`");
     const client = createClient(binding);
     await client.execute(

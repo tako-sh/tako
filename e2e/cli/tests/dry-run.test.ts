@@ -95,7 +95,7 @@ describe("deploy --dry-run", () => {
   test("previews replay and SQL creation from offline membership without editing the config", async () => {
     await setupProject({ servers: { solo: { host: "10.0.0.1" } } });
     const configPath = join(tempDir, "tako.toml");
-    await appendFile(configPath, 'databases = { main = "orders" }\n');
+    await appendFile(configPath, 'db = { main = "orders" }\n');
     const config = await readFile(configPath, "utf8");
     await mkdir(join(tempDir, "src/channels"), { recursive: true });
     await writeFile(join(tempDir, "src/channels/chat.ts"), 'export default defineChannel("chat");');
@@ -132,8 +132,8 @@ describe("deploy --dry-run", () => {
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
     expect(exitCode).toBe(1);
-    expect(term.fullText()).toContain("tako sqlite create chat-replay --server west --network");
-    expect(term.fullText()).toContain("tako sqlite create chat-replay --server east --network");
+    expect(term.fullText()).toContain("tako db create chat-replay --server west --network");
+    expect(term.fullText()).toContain("tako db create chat-replay --server east --network");
   });
 
   test("shows app summary when env is auto-resolved", async () => {

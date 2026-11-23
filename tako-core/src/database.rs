@@ -179,7 +179,7 @@ impl std::fmt::Debug for DatabaseConnection {
 pub enum SnapshotReason {
     /// A full image captured on its own: daily, or when capture started.
     Scheduled,
-    /// A full image `tako sqlite backup` asked for.
+    /// A full image `tako db backup` asked for.
     Manual,
     /// Before a deploy's release command.
     Release,

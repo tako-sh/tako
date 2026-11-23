@@ -18,7 +18,7 @@ members = [
   "tako-spawn",
   "tako-workflows",
   "tako-images",
-  "tako-database",
+  "tako-db",
   "sdk/rust",
 ]
 

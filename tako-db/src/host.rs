@@ -852,7 +852,7 @@ impl DatabaseHost {
                             if size > budget {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
-                                    "the result is larger than 8 MiB; select fewer rows or columns, or use `tako sqlite export`",
+                                    "the result is larger than 8 MiB; select fewer rows or columns, or use `tako db export`",
                                 ));
                             }
                             rows.push(row.to_values());

@@ -565,7 +565,7 @@ fn hosted_channel_replay_ignores_an_expired_postgres_url_unless_workflows_use_it
     write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
     let mut config = native_multi_server_js_config();
     config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
-        database: "events".into(),
+        db: "events".into(),
     });
     let mut secrets = SecretsStore::default();
     secrets.ensure_env_key_id("production").unwrap();

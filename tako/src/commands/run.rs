@@ -51,7 +51,7 @@ pub fn run(
             .is_some_and(|env_config| !env_config.databases.is_empty())
         {
             crate::output::warning(&format!(
-                "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako sqlite shell <name>` or `tako sqlite export <name> <file>`."
+                "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako db shell <name>` or `tako db export <name> <file>`."
             ));
         }
         if config

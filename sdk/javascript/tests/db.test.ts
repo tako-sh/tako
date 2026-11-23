@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { inspect } from "node:util";
-import { createDatabaseBag, loadDatabases } from "../src/database";
+import { createDbBag, loadDb } from "../src/db";
 import { injectBootstrap } from "../src/tako/secrets";
 import { initBootstrapFromFd } from "../src/tako/secrets-fd";
 
 const MAIN = { url: "http://127.0.0.1:9845", authToken: "tok-main" };
 
-describe("tako.databases", () => {
+describe("tako.db", () => {
   afterEach(() => {
     injectBootstrap({ token: null, secrets: {} });
   });
 
   test("exposes connections that drivers accept", () => {
     injectBootstrap({ token: "t", secrets: {}, databases: { main: MAIN } });
-    const databases = loadDatabases<{ main: unknown }>();
+    const databases = loadDb<{ main: unknown }>();
     expect(databases.main.url).toBe(MAIN.url);
     expect(databases.main.authToken).toBe(MAIN.authToken);
     // Drivers read the fields or spread the config.
@@ -24,14 +24,14 @@ describe("tako.databases", () => {
 
   test("redacts the token when logged or serialized", () => {
     injectBootstrap({ token: "t", secrets: {}, databases: { main: MAIN } });
-    const main = loadDatabases()["main"]!;
+    const main = loadDb()["main"]!;
     expect(JSON.stringify(main)).not.toContain("tok-main");
     expect(inspect(main)).not.toContain("tok-main");
     expect(inspect(main)).toContain(MAIN.url);
   });
 
   test("reads bindings on access, after the bootstrap arrives", () => {
-    const databases = loadDatabases();
+    const databases = loadDb();
     expect(databases["main"]).toBeUndefined();
     expect("main" in databases).toBe(false);
     injectBootstrap({ token: "t", secrets: {}, databases: { main: MAIN } });
@@ -42,7 +42,7 @@ describe("tako.databases", () => {
 
   test("lists bindings like a plain object, without their tokens", () => {
     injectBootstrap({ token: "t", secrets: {}, databases: { main: MAIN } });
-    const databases = loadDatabases();
+    const databases = loadDb();
     expect(Object.keys(databases)).toEqual(["main"]);
     expect(Object.entries(databases).map(([name, db]) => [name, db.url])).toEqual([
       ["main", MAIN.url],
@@ -53,7 +53,7 @@ describe("tako.databases", () => {
   });
 
   test("rejects malformed bindings with the binding name", () => {
-    const databases = createDatabaseBag(() => ({ main: { url: "http://x" } }));
+    const databases = createDbBag(() => ({ main: { url: "http://x" } }));
     expect(() => databases["main"]).toThrow(/"main"/);
   });
 
@@ -84,7 +84,7 @@ describe("TAKO_BOOTSTRAP_DATA without an entrypoint", () => {
     const script = `
       const { tako } = await import(${JSON.stringify(index)});
       console.log(JSON.stringify({
-        url: tako.databases.main?.url,
+        url: tako.db.main?.url,
         secret: tako.secrets.API_KEY,
         leftover: process.env.TAKO_BOOTSTRAP_DATA ?? null,
       }));

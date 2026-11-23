@@ -88,9 +88,9 @@ pub struct TakoToml {
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
-    /// [databases.*] sections - per-database settings for the Tako-hosted
-    /// SQLite databases this project binds in `[envs.<env>].databases`.
-    #[serde(default)]
+    /// [db.*] sections - per-database settings for the Tako-hosted SQLite
+    /// databases this project binds in `[envs.<env>].db`.
+    #[serde(default, rename = "db")]
     pub databases: HashMap<String, DatabaseResourceConfig>,
 
     /// [kv.*] sections - per-store settings for the Tako-hosted KV stores
@@ -199,16 +199,16 @@ pub struct EnvConfig {
 
     /// Database bindings assigned to this environment.
     ///
-    /// Key = app binding name exposed as `tako.databases.<key>`.
-    /// Value = database name from `[databases.<value>]`.
-    #[serde(default)]
+    /// Key = app binding name exposed as `tako.db.<key>`.
+    /// Value = name of a database created with `tako db create`.
+    #[serde(default, rename = "db")]
     pub databases: HashMap<String, String>,
 
     /// KV store bindings assigned to this environment.
     ///
     /// Key = app binding name exposed as `tako.kv.<key>`.
     /// Value = name of a KV store created with `tako kv create`. Binding
-    /// names are shared with `databases`: each is used once per environment.
+    /// names are shared with `db`: each is used once per environment.
     #[serde(default)]
     pub kv: HashMap<String, String>,
     /// Channel replay settings for this environment.
@@ -243,7 +243,7 @@ pub struct EnvConfig {
 pub struct ChannelsConfig {
     /// Hosted database name for channel replay, separate from app database bindings.
     #[cfg_attr(test, schemars(regex(pattern = super::json_schema::DATABASE_NAME_PATTERN)))]
-    pub database: String,
+    pub db: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -254,7 +254,7 @@ pub struct BackupConfig {
     pub storage: String,
 }
 
-/// Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV
+/// Settings for a Tako-hosted database, from `[db.<name>]`, or a KV
 /// store, from `[kv.<name>]`. The database itself, its server and access,
 /// live in the network's records; this table is needed only to override the
 /// environment's backup storage.

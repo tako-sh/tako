@@ -16,7 +16,7 @@
  */
 
 import { createLogger } from "./logger";
-import { loadDatabases } from "./database";
+import { loadDb } from "./db";
 import { loadKv } from "./kv";
 import { loadStorages } from "./storage";
 import { loadSecrets } from "./tako/secrets";
@@ -64,7 +64,7 @@ export interface TakoStorages {}
 /**
  * Project-specific database bindings. Augmented by the generated `tako.d.ts` file.
  */
-export interface TakoDatabases {}
+export interface TakoDb {}
 
 /**
  * Project-specific KV store bindings. Augmented by the generated `tako.d.ts` file.
@@ -126,7 +126,7 @@ export const storages = loadStorages<TakoStorages>();
  * Each is `{ url, authToken }` for `createClient` from `@libsql/client` or
  * `connect` from `@tursodatabase/serverless`.
  */
-export const databases = loadDatabases<TakoDatabases>();
+export const db = loadDb<TakoDb>();
 
 /**
  * Tako-hosted KV stores, typed by project-specific `tako.d.ts` declarations.
@@ -154,7 +154,7 @@ export const tako = Object.freeze({
   logger,
   secrets,
   storages,
-  databases,
+  db,
   kv,
   cache,
 } as const);
@@ -200,7 +200,7 @@ export type {
   TakoStorageBag,
   TakoStorageBinding,
 } from "./storage";
-export type { TakoDatabase, TakoDatabaseBag } from "./database";
+export type { TakoDbConnection, TakoDbBag } from "./db";
 export type { KvPutOptions, TakoKvBag, TakoKvStore } from "./kv";
 
 /**

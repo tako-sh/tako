@@ -9,10 +9,8 @@ use bytes::Bytes;
 use http::{Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use serde_json::{Value, json};
-use tako_database::http::{Access, DATABASE_HEADER, KEY_HEADER, SCOPE_HEADER, handle};
-use tako_database::{
-    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
-};
+use tako_db::http::{Access, DATABASE_HEADER, KEY_HEADER, SCOPE_HEADER, handle};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -765,7 +763,7 @@ fn tokio_stream_from<T: Send + 'static>(
 #[tokio::test]
 async fn pipelines_of_too_many_items_are_refused_while_parsed() {
     let h = harness(HostConfig::default());
-    let max = tako_database::proto::MAX_REQUEST_ITEMS;
+    let max = tako_db::proto::MAX_REQUEST_ITEMS;
     let requests: Vec<Value> = (0..=max)
         .map(|_| json!({"type": "get_autocommit"}))
         .collect();
@@ -1116,11 +1114,7 @@ fn raw_request_to(path: &str, token: &str, body: &Value) -> Vec<u8> {
 async fn serve_apps(host: &DatabaseHost) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(tako_database::http::serve(
-        host.clone(),
-        listener,
-        Access::Apps,
-    ));
+    let server = tokio::spawn(tako_db::http::serve(host.clone(), listener, Access::Apps));
     (address, server)
 }
 
@@ -1468,7 +1462,7 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     let upstream = listener.local_addr().unwrap();
     let allow: Arc<dyn Fn(std::net::IpAddr) -> bool + Send + Sync> =
         Arc::new(|ip| ip.is_loopback());
-    let server = tokio::spawn(tako_database::http::serve(
+    let server = tokio::spawn(tako_db::http::serve(
         home.host.clone(),
         listener,
         Access::Peers { allow },

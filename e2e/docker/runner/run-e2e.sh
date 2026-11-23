@@ -654,14 +654,14 @@ create_fixture_databases() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
   databases=$(bun -e '
     const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
-    console.log([...new Set([...Object.values(env.databases ?? {}), env.channels?.database].filter(Boolean))].join("\n"));
+    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db].filter(Boolean))].join("\n"));
   ' "$PROJECT_DIR/tako.toml")
   [[ -n "$databases" ]] || return 0
   while IFS= read -r database; do
-    "${tako[@]}" sqlite create "$database" --server "$server_host"
+    "${tako[@]}" db create "$database" --server "$server_host"
   done <<< "$databases"
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
-    "${tako[@]}" --json sqlite list | jq -e --arg home "$server_host" '
+    "${tako[@]}" --json db list | jq -e --arg home "$server_host" '
       (.databases | any(.name == "messages" and .in_project)) and
       (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"]))
     ' >/dev/null
@@ -682,7 +682,7 @@ run_database_checks() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
 
   echo "Running hosted database checks after deploying to $server_host"
-  if ! "${tako[@]}" --json sqlite status messages >"$status_json" 2>"$log"; then
+  if ! "${tako[@]}" --json db status messages >"$status_json" 2>"$log"; then
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
@@ -695,7 +695,7 @@ run_database_checks() {
     jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
   fi
 
-  if ! "${tako[@]}" --json sqlite shell messages "SELECT count(*) AS n FROM messages" \
+  if ! "${tako[@]}" --json db shell messages "SELECT count(*) AS n FROM messages" \
     >"$query_json" 2>"$log"; then
     cat "$log" "$query_json" >&2 || true
     exit 1
@@ -707,7 +707,7 @@ run_database_checks() {
     exit 1
   fi
 
-  if ! "${tako[@]}" sqlite export messages "$export_file" >"$log" 2>&1; then
+  if ! "${tako[@]}" db export messages "$export_file" >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
@@ -719,7 +719,7 @@ run_database_checks() {
   fi
 
   # Replacing the database with its own export pauses and resumes app access.
-  if ! "${tako[@]}" sqlite import messages "$export_file" --yes >"$log" 2>&1; then
+  if ! "${tako[@]}" db import messages "$export_file" --yes >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi

@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod network;
 
 pub mod credentials;
+pub mod db;
 pub mod delete;
 pub mod deploy;
 pub mod dev;
@@ -26,7 +27,6 @@ pub mod run;
 pub mod scale;
 pub mod secret;
 pub mod server;
-pub mod sqlite;
 pub mod status;
 pub mod storage;
 pub mod upgrade;

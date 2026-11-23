@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use tako_core::{Command, DatabaseEngine, KvRequest};
 
-use crate::commands::sqlite::{self, Context, send};
+use crate::commands::db::{self, Context, send};
 use crate::output;
 
 #[derive(Args)]
@@ -150,12 +150,10 @@ async fn run_async(
     let ctx = Context::load(config_path, network).await?;
     match args.command {
         KvCommands::Create { name, server } => {
-            sqlite::create(&ctx, &name, server.as_deref(), DatabaseEngine::Kv).await
+            db::create(&ctx, &name, server.as_deref(), DatabaseEngine::Kv).await
         }
-        KvCommands::List => sqlite::list(&ctx, DatabaseEngine::Kv),
-        KvCommands::Status { name } => {
-            sqlite::status(&ctx, name.as_deref(), DatabaseEngine::Kv).await
-        }
+        KvCommands::List => db::list(&ctx, DatabaseEngine::Kv),
+        KvCommands::Status { name } => db::status(&ctx, name.as_deref(), DatabaseEngine::Kv).await,
         KvCommands::Get { name, key } => {
             let value = query(&ctx, &name, KvRequest::Get { key: key.clone() }).await?;
             let Some(json) = value.as_str() else {
@@ -219,8 +217,8 @@ async fn run_async(
             output::success(&format!("Removed {key} from {name}"));
             Ok(())
         }
-        KvCommands::Backup { name } => sqlite::backup_now(&ctx, &name, DatabaseEngine::Kv).await,
-        KvCommands::Backups { name } => sqlite::backups(&ctx, &name, DatabaseEngine::Kv).await,
+        KvCommands::Backup { name } => db::backup_now(&ctx, &name, DatabaseEngine::Kv).await,
+        KvCommands::Backups { name } => db::backups(&ctx, &name, DatabaseEngine::Kv).await,
         KvCommands::Restore {
             name,
             latest: _,
@@ -228,7 +226,7 @@ async fn run_async(
             server,
             yes,
         } => {
-            sqlite::restore(
+            db::restore(
                 &ctx,
                 &name,
                 snapshot,
@@ -242,35 +240,35 @@ async fn run_async(
         KvCommands::Import { name, file, yes } => {
             ctx.require_admin()?;
             let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
-            sqlite::confirm(
+            db::confirm(
                 &format!("Replace every key of {name} with {}?", file.display()),
                 "Apps keep using the current keys until the import replaces them all at once. A snapshot of the current contents is taken first when backups are configured.",
                 yes,
             )?;
             if output::is_dry_run() {
-                return sqlite::dry_run(
+                return db::dry_run(
                     &format!("Import {} into {name}", file.display()),
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            sqlite::transfer::import(&home, &name, &file, DatabaseEngine::Kv).await
+            db::transfer::import(&home, &name, &file, DatabaseEngine::Kv).await
         }
         KvCommands::Export { name, file } => {
             ctx.require_admin()?;
             let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
             if output::is_dry_run() {
-                return sqlite::dry_run(
+                return db::dry_run(
                     &format!("Export {name} to {}", file.display()),
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            sqlite::transfer::export(&home, &name, &file, DatabaseEngine::Kv).await
+            db::transfer::export(&home, &name, &file, DatabaseEngine::Kv).await
         }
         KvCommands::Delete { name, server, yes } => match server {
             Some(server) => {
-                sqlite::delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Kv).await
+                db::delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Kv).await
             }
-            None => sqlite::delete(&ctx, &name, yes, DatabaseEngine::Kv).await,
+            None => db::delete(&ctx, &name, yes, DatabaseEngine::Kv).await,
         },
     }
 }

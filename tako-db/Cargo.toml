@@ -1,5 +1,5 @@
 [package]
-name = "tako-database"
+name = "tako-db"
 version = "0.0.0"
 edition.workspace = true
 publish = false

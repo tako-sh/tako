@@ -608,7 +608,7 @@ mod tests {
     fn hosted_replay_owns_the_fixed_endpoint_and_precedes_workflow_postgres() {
         let connection = tako_core::DatabaseConnection {
             url: ChannelTarget::hosted_url(),
-            auth_token: tako_database::generate_token(),
+            auth_token: tako_db::generate_token(),
         };
         let target =
             ChannelTarget::resolve(Some(connection.clone()), Some("postgres://workflow".into()))

@@ -250,14 +250,14 @@ validation.
 - Storage bindings describe providers; credentials remain encrypted. Backups and
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
-- Application SQLite belongs in a hosted database (`tako sqlite create`, read as
-  `tako.databases.<binding>`), not in the data directory, which is plain files
+- Application SQLite belongs in a hosted database (`tako db create`, read as
+  `tako.db.<binding>`), not in the data directory, which is plain files
   and not captured. Database commands need administrator permission;
-  `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
+  `tako db restore`, `import`, and `reset` replace data, and `delete`
   removes the database with its backups, so confirm the database and the
   environments that bind it first. With backup storage, databases are backed
-  up continuously: `tako sqlite backups` lists restore points and the window
-  that `tako sqlite restore <name> --at <time>` reaches, and every restore,
+  up continuously: `tako db backups` lists restore points and the window
+  that `tako db restore <name> --at <time>` reaches, and every restore,
   import, and reset records a `before restore` point that undoes it. Schema changes go in `migrations/` SQL files, applied on deploy.
 - Values every server of the network must see (login and WebAuthn challenges,
   one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
@@ -270,7 +270,7 @@ validation.
   or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`;
   a restore takes a snapshot, not a time), and have no atomic
   counters or transactions, so keep canonical records in a database. A
-  binding name is used once per environment across `databases` and `kv`, and
+  binding name is used once per environment across `db` and `kv`, and
   store names share the network's namespace with databases. `tako kv get`,
   `put`, and `delete-key` read and change keys with full access; `tako kv
   restore`, `import`, and `delete` replace or remove every key, so confirm the
@@ -306,14 +306,14 @@ history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. In production, durable channel replay and Store
 invalidations use a Tako-hosted SQLite database (one home server; other servers
-reach it over the private network). `[envs.<env>.channels].database` names it,
+reach it over the private network). `[envs.<env>.channels].db` names it,
 even when `postgres_url` is set; otherwise a configured `postgres_url` keeps
 shared Postgres for channels, and otherwise a channel-capable release (JS
 channel/presence/store definitions, a native app depending on a Tako SDK,
 `container_options.sdk`, or a Compose service with `x-tako.sdk: true`) gets a
 generated app/environment database. A full-access deploy creates a missing
 database only when the network has one trusted server; on several servers it
-stops with the `tako sqlite create` command to run before setting `database`.
+stops with the `tako db create` command to run before setting `db`.
 Deploy-only identities cannot create databases or grants, so run that first
 deploy with full access. Ephemeral channels and native presence leases stay in
 broker memory; Postgres as the channel backend rejects ephemeral delivery. Apps

@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, kv, releases, scale, secret, sqlite, storage, upgrade,
+    self, backups, credentials, db, delete, kv, releases, scale, secret, storage, upgrade,
     workflows,
 };
 use clap::CommandFactory;
@@ -192,8 +192,7 @@ pub enum Commands {
     Backup(backups::BackupCommands),
 
     /// Tako-hosted SQLite databases
-    #[command(visible_alias = "db")]
-    Sqlite(sqlite::SqliteArgs),
+    Db(db::DbArgs),
 
     /// Tako-hosted KV stores of JSON values with optional expiry
     Kv(kv::KvArgs),
@@ -398,7 +397,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Secret(_) => "secret",
         Commands::Storage(_) => "storage",
         Commands::Backup(_) => "backup",
-        Commands::Sqlite(_) => "sqlite",
+        Commands::Db(_) => "db",
         Commands::Kv(_) => "kv",
         Commands::Credential { .. } => "credential",
         Commands::Release(_) => "release",
@@ -442,8 +441,8 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | ["secret", "migrate" | "sync" | "clear"]
             | ["backup", "now" | "download" | "restore"]
             | [
-                "sqlite",
-                "create" | "link" | "backup" | "restore" | "import" | "export" | "delete"
+                "db",
+                "create" | "backup" | "restore" | "import" | "export" | "delete"
             ]
             | ["kv", "create" | "delete"]
             | ["workflow", "retry" | "cancel"]
@@ -460,7 +459,7 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
             ]
             | ["workflow", "show"]
             | ["backup" | "network", "list" | "status"]
-            | ["sqlite", "list" | "status" | "backups"]
+            | ["db", "list" | "status" | "backups"]
             | ["kv", "list" | "status"]
             | ["network", "client" | "server", "list"]
     )
@@ -613,9 +612,9 @@ impl Cli {
                     Ok(())
                 }
             }
-            Commands::Sqlite(cmd) => {
+            Commands::Db(cmd) => {
                 // Each subcommand prints its own JSON result.
-                sqlite::run(cmd, self.config.as_deref())
+                db::run(cmd, self.config.as_deref())
             }
             Commands::Kv(cmd) => {
                 // Each subcommand prints its own JSON result.
