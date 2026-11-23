@@ -689,3 +689,55 @@ async fn closing_the_host_disconnects_clients() {
     let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut chunk)).await;
     assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))));
 }
+
+#[tokio::test]
+async fn client_names_are_checked_and_limited() {
+    let s = server("secret").await;
+    let mut kv = client(s.addr, "secret", false).await;
+    let set = |name: String| {
+        let mut cmd = redis::cmd("CLIENT");
+        cmd.arg("SETNAME").arg(name);
+        cmd
+    };
+    let longest = "n".repeat(256);
+    let _: () = set(longest.clone()).query_async(&mut kv).await.unwrap();
+    let name: String = redis::cmd("CLIENT")
+        .arg("GETNAME")
+        .query_async(&mut kv)
+        .await
+        .unwrap();
+    assert_eq!(name, longest);
+    let error = set("n".repeat(257))
+        .query_async::<()>(&mut kv)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("limited to 256 bytes"),
+        "{error}"
+    );
+    // HELLO checks the name the same way, and changes nothing when it fails.
+    let error = redis::cmd("HELLO")
+        .arg(2)
+        .arg("SETNAME")
+        .arg("n".repeat(257))
+        .query_async::<redis::Value>(&mut kv)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("limited to 256 bytes"),
+        "{error}"
+    );
+    let _: redis::Value = redis::cmd("HELLO")
+        .arg(2)
+        .arg("SETNAME")
+        .arg("short")
+        .query_async(&mut kv)
+        .await
+        .unwrap();
+    let list: String = redis::cmd("CLIENT")
+        .arg("LIST")
+        .query_async(&mut kv)
+        .await
+        .unwrap();
+    assert!(list.contains(" name=short "), "{list}");
+}

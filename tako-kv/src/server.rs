@@ -247,6 +247,29 @@ impl ClientEntry {
     }
 }
 
+/// The longest client name, so the names connections keep stay small and
+/// each `CLIENT LIST` line fits [`CLIENT_LINE`].
+const MAX_CLIENT_NAME: usize = 256;
+/// The most a `CLIENT LIST` line takes.
+const CLIENT_LINE: usize = 256 + MAX_CLIENT_NAME;
+
+/// A name for `CLIENT SETNAME` or `HELLO ... SETNAME`, copied out of the
+/// request so it does not keep the request's buffer alive; `None` clears
+/// the name.
+fn client_name(name: &[u8]) -> Result<Option<Bytes>, Reply> {
+    if name.iter().any(|b| !(b'!'..=b'~').contains(b)) {
+        return Err(Reply::error(
+            "ERR Client names cannot contain spaces, newlines or special characters.",
+        ));
+    }
+    if name.len() > MAX_CLIENT_NAME {
+        return Err(Reply::Error(format!(
+            "ERR Client names are limited to {MAX_CLIENT_NAME} bytes"
+        )));
+    }
+    Ok((!name.is_empty()).then(|| Bytes::copy_from_slice(name)))
+}
+
 fn is(arg: &[u8], name: &str) -> bool {
     arg.eq_ignore_ascii_case(name.as_bytes())
 }
@@ -946,7 +969,10 @@ impl Connection {
                 password = Some(args[i + 2].clone());
                 i += 3;
             } else if is(&args[i], "setname") && i + 1 < args.len() {
-                name = Some(args[i + 1].clone());
+                match client_name(&args[i + 1]) {
+                    Ok(valid) => name = Some(valid),
+                    Err(error) => return Local::Reply(error),
+                }
                 i += 2;
             } else {
                 return Local::Reply(Reply::Error(format!(
@@ -977,7 +1003,7 @@ impl Connection {
         if !matches!(result, Local::Reply(Reply::Error(_)))
             && let Some(name) = name
         {
-            self.name = (!name.is_empty()).then_some(name);
+            self.name = name;
         }
         result
     }
@@ -1136,7 +1162,7 @@ impl Connection {
         const SMALL: usize = 256;
         match spec.name {
             "client" if args.get(1).is_some_and(|sub| is(sub, "list")) => {
-                (self.host.inner.clients.lock().len() + 1).saturating_mul(SMALL)
+                (self.host.inner.clients.lock().len() + 1).saturating_mul(CLIENT_LINE)
             }
             "echo" | "ping" => SMALL + args.iter().map(Bytes::len).sum::<usize>(),
             "info" | "config" => 8 * 1024,
@@ -1345,14 +1371,13 @@ impl Connection {
                 if let Some(error) = arity(3) {
                     return error;
                 }
-                let name = &args[2];
-                if name.iter().any(|b| !(b'!'..=b'~').contains(b)) {
-                    return Reply::error(
-                        "ERR Client names cannot contain spaces, newlines or special characters.",
-                    );
+                match client_name(&args[2]) {
+                    Ok(name) => {
+                        self.name = name;
+                        Reply::Ok
+                    }
+                    Err(error) => error,
                 }
-                self.name = (!name.is_empty()).then(|| name.clone());
-                Reply::Ok
             }
             "getname" => {
                 arity(2).unwrap_or_else(|| self.name.clone().map_or(Reply::Nil, Reply::Bulk))

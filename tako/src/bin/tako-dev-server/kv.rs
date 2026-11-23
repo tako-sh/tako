@@ -25,7 +25,7 @@ struct Registrations {
     /// Served files and their IDs.
     files: HashMap<PathBuf, StoreId>,
     /// Config path → binding → (file, token).
-    scopes: HashMap<String, BTreeMap<String, (PathBuf, String)>>,
+    scopes: HashMap<String, Scope>,
 }
 
 static SERVER: OnceCell<Server> = OnceCell::const_new();
@@ -84,9 +84,41 @@ pub(crate) async fn connect(
         .get(config_path)
         .cloned()
         .unwrap_or_default();
+    let (scope, host_bindings) =
+        match open_bindings(server, &mut registrations, &previous, bindings).await {
+            Ok(opened) => opened,
+            Err(error) => {
+                // No scope names the files this call opened, so this closes
+                // them; the app's previous bindings stay as they were.
+                close_unused(server, &mut registrations).await;
+                return Err(error);
+            }
+        };
+    server.host.set_bindings(config_path, host_bindings);
+    let connections = scope
+        .iter()
+        .map(|(binding, (_, token))| (binding.clone(), KvConnection::new(&server.address, token)))
+        .collect();
+    registrations.scopes.insert(config_path.to_owned(), scope);
+    close_unused(server, &mut registrations).await;
+    Ok(connections)
+}
+
+type Scope = BTreeMap<String, (PathBuf, String)>;
+
+/// Opens the files `bindings` name that are not open yet, in binding
+/// order, and returns the app's new scope with the host's bindings for it.
+/// Tokens are kept for bindings that still name the same file.
+async fn open_bindings(
+    server: &Server,
+    registrations: &mut Registrations,
+    previous: &Scope,
+    bindings: &HashMap<String, String>,
+) -> Result<(Scope, Vec<Binding>), String> {
     let mut scope = BTreeMap::new();
     let mut host_bindings = Vec::new();
-    for (binding, file) in bindings {
+    let ordered: BTreeMap<&String, &String> = bindings.iter().collect();
+    for (binding, file) in ordered {
         let path = PathBuf::from(file);
         let id = match registrations.files.get(&path) {
             Some(id) => id.clone(),
@@ -120,14 +152,7 @@ pub(crate) async fn connect(
         });
         scope.insert(binding.clone(), (path, token));
     }
-    server.host.set_bindings(config_path, host_bindings);
-    let connections = scope
-        .iter()
-        .map(|(binding, (_, token))| (binding.clone(), KvConnection::new(&server.address, token)))
-        .collect();
-    registrations.scopes.insert(config_path.to_owned(), scope);
-    close_unused(server, &mut registrations).await;
-    Ok(connections)
+    Ok((scope, host_bindings))
 }
 
 /// Revokes the bindings of the app registered at `config_path` and closes
@@ -224,16 +249,52 @@ mod tests {
             "the file stays open for /b"
         );
         release("/b/tako.toml").await;
+        assert!(!is_open(&file).await);
+    }
+
+    /// Whether the daemon has `file` open. Other tests share the daemon, so
+    /// tests check only their own files.
+    async fn is_open(file: &str) -> bool {
+        SERVER
+            .get()
+            .unwrap()
+            .registrations
+            .lock()
+            .await
+            .files
+            .contains_key(Path::new(file))
+    }
+
+    #[tokio::test]
+    async fn failed_registrations_close_the_files_they_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).display().to_string();
+        let (kept, opened) = (path("kept.redb"), path("opened.redb"));
+        // A file's directory cannot be created under a regular file.
+        std::fs::write(dir.path().join("plain"), "").unwrap();
+        let broken = path("plain/broken.redb");
+        let before = HashMap::from([("a".to_string(), kept.clone())]);
+        let first = connect("/d/tako.toml", &before).await.unwrap();
+
+        // Bindings open in name order: `b` opens, then `c` fails.
+        let after = HashMap::from([
+            ("a".to_string(), kept.clone()),
+            ("b".to_string(), opened.clone()),
+            ("c".to_string(), broken),
+        ]);
+        assert!(connect("/d/tako.toml", &after).await.is_err());
         assert!(
-            SERVER
-                .get()
-                .unwrap()
-                .registrations
-                .lock()
-                .await
-                .files
-                .is_empty()
+            !is_open(&opened).await,
+            "the file the failed call opened is closed"
         );
+        assert!(is_open(&kept).await);
+        assert_eq!(
+            send(&first["a"], "SET k v\r\n").await,
+            "+OK\r\n+OK\r\n",
+            "the previous binding still works"
+        );
+        release("/d/tako.toml").await;
+        assert!(!is_open(&kept).await);
     }
 
     #[tokio::test]
