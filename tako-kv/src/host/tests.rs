@@ -177,10 +177,11 @@ async fn other_servers_forward_with_their_grant() {
 
 #[test]
 fn stores_share_one_page_cache_budget() {
+    const MIB: usize = 1024 * 1024;
     let dir = tempfile::tempdir().unwrap();
     let host = KvHost::new(HostConfig {
-        cache_bytes: 4 * MIN_CACHE_BYTES,
-        total_cache_bytes: 10 * MIN_CACHE_BYTES,
+        cache_bytes: 4 * MIB,
+        total_cache_bytes: 10 * MIB,
         ..HostConfig::default()
     });
     let open = |name: &str| {
@@ -191,17 +192,32 @@ fn stores_share_one_page_cache_budget() {
     };
     let first = open("first");
     open("second");
-    assert_eq!(host.cache_bytes(), 8 * MIN_CACHE_BYTES);
-    // The third gets what is left, and stores past the budget the minimum.
+    assert_eq!(host.cache_bytes(), 8 * MIB);
+    // The third gets what is left, and stores past the budget get none.
     open("third");
-    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
-    open("fourth");
-    assert_eq!(host.cache_bytes(), 11 * MIN_CACHE_BYTES);
+    assert_eq!(host.cache_bytes(), 10 * MIB);
+    let fourth = open("fourth");
+    assert_eq!(host.cache_bytes(), 10 * MIB);
+    // A store without a cache of its own still serves.
+    host.set_bindings(
+        "shop/production",
+        vec![Binding {
+            token_hash: hash_token("token"),
+            store: fourth,
+            home: Home::Local,
+        }],
+    );
+    host.call("shop/production", "token", put("k", r#""v""#))
+        .unwrap();
+    assert_eq!(
+        host.call("shop/production", "token", get("k")).unwrap(),
+        serde_json::json!(r#""v""#)
+    );
     // Closing a store returns its share.
     host.unregister(&first).unwrap();
-    assert_eq!(host.cache_bytes(), 7 * MIN_CACHE_BYTES);
+    assert_eq!(host.cache_bytes(), 6 * MIB);
     open("fifth");
-    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
+    assert_eq!(host.cache_bytes(), 10 * MIB);
     // A store that fails to open holds nothing.
     std::fs::write(dir.path().join("plain"), "").unwrap();
     let broken = StoreId::parse("broken").unwrap();
@@ -209,7 +225,7 @@ fn stores_share_one_page_cache_budget() {
         host.register(broken, dir.path().join("plain/broken.redb"))
             .is_err()
     );
-    assert_eq!(host.cache_bytes(), 10 * MIN_CACHE_BYTES);
+    assert_eq!(host.cache_bytes(), 10 * MIB);
     host.close_all();
     assert_eq!(host.cache_bytes(), 0);
 }

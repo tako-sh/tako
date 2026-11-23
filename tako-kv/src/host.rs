@@ -70,9 +70,9 @@ pub fn generate_token() -> String {
 pub struct HostConfig {
     /// redb page cache per store, while [`Self::total_cache_bytes`] has room.
     pub cache_bytes: usize,
-    /// redb page cache shared by every store of the host. A store opened
-    /// once it is used up gets [`MIN_CACHE_BYTES`], so memory stays bounded
-    /// however many stores a server hosts.
+    /// redb page cache shared by every store of the host, however many it
+    /// opens. A store opened once it is used up gets none of its own and
+    /// reads its pages through the operating system's file cache.
     pub total_cache_bytes: usize,
     /// How long forwarding waits to reach another server.
     pub connect_timeout: Duration,
@@ -92,9 +92,6 @@ impl Default for HostConfig {
         }
     }
 }
-
-/// The page cache a store gets once the host's shared budget is used up.
-pub const MIN_CACHE_BYTES: usize = 1024 * 1024;
 
 impl HostConfig {
     fn store_config(&self, cache_bytes: usize) -> StoreConfig {
@@ -277,8 +274,7 @@ impl KvHost {
             let config = &self.inner.config;
             let cache = config
                 .cache_bytes
-                .min(config.total_cache_bytes.saturating_sub(used))
-                .max(MIN_CACHE_BYTES.min(config.cache_bytes));
+                .min(config.total_cache_bytes.saturating_sub(used));
             caches.insert(id.clone(), cache);
             cache
         };

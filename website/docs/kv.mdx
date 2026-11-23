@@ -143,7 +143,7 @@ A TTL makes a key expire that long after the `put`. An expired key is never retu
 
 - Every write is on disk before it is acknowledged, so an acknowledged write survives a crash or power loss. Writes arriving together share one flush to disk.
 - A store has no size limit: it can hold many gigabytes, up to the free space on its server's disk. Nothing is evicted; deletes and expiry free space. A write the disk has no room for fails without being stored. `tako kv status` reports a store's size.
-- Each store keeps up to 16 MiB of recently used data in memory, from a 256 MiB budget shared by the stores on its server; stores opened once the budget is used keep 1 MiB, so memory stays bounded however many stores a server hosts. Reads of data outside that cache come from disk.
+- Each store keeps up to 16 MiB of recently used data in memory, from a 256 MiB budget shared by the stores on its server. Stores opened after the budget is used up get no cache of their own and read through the operating system's file cache, so the budget holds however many stores a server hosts.
 - Keys are 1 byte to 1 KiB of UTF-8. Values are at most 256 KiB as JSON text. A TTL must be longer than zero.
 - `get`, `put`, and `delete` are the whole API: there are no atomic counters, compare-and-set, scans, transactions, or pub/sub, so two servers that read, change, and put the same key can overwrite each other. Use a [hosted database](/databases/) for queries and transactions, [Workflows](/workflows/) for queues, and [Channels](/channels/) for pub/sub.
 - KV bindings are available to native releases and their workflow workers. [Container and Compose releases](/docker/) cannot use them yet.
