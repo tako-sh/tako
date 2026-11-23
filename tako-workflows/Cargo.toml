@@ -21,6 +21,8 @@ cron = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+# Reads the per-server stores of earlier releases once, to import them.
+rusqlite.workspace = true
 
 [dev-dependencies]
 tako-db = { path = "../tako-db", features = ["testing"] }

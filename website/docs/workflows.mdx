@@ -489,6 +489,8 @@ Leases are written, renewed, and checked against the database server's clock rat
 
 The database lives on one server. While that server is unreachable, enqueues and claims fail on every server of the environment and workers retry. Configure [backups](/backups/) for the database: `tako db restore` recovers it, including onto another server. A restore, import, or reset releases every running lease, so workers from before it cannot save steps or finish runs; those runs are claimed again and resume after their last step saved in the restored data.
 
+**Upgrading from per-server stores:** earlier releases kept each app's runs in `data/tako/workflows.sqlite` on every server. The first time a server starts the app's workflow runtime against its workflow database, it imports that file's runs, saved steps, waits, buffered signals and schedules, then renames the file to `workflows.sqlite.imported`; delete it once you no longer need it. Runs that were running restart from their last saved step, or end as `dead` when they had no attempts left. Rows already in the database win, so a run ID used on two servers keeps the first copy imported. Runs from a shared Postgres store are not imported.
+
 Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
 
 ```toml

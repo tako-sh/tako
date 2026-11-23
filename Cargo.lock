@@ -6905,6 +6905,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "prometheus",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tako-core",

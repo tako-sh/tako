@@ -1143,6 +1143,73 @@ impl HostedRunsDb {
         })
     }
 
+    /// Copy rows read from a per-server store of an earlier release. Rows
+    /// already present are kept, so a retried or repeated import is
+    /// harmless, and several servers importing their own stores into one
+    /// database do not overwrite each other. Runs go last: a run becomes
+    /// claimable only once its saved steps and waits are in.
+    pub(super) fn import_legacy(&self, rows: &super::legacy::Rows) -> Result<(), RunsDbError> {
+        const CHUNK_BYTES: usize = 1024 * 1024;
+        let tables: [(&[Value], &str); 5] = [
+            (
+                &rows.steps,
+                "INSERT INTO tako_workflow_steps (app, run_id, name, result, completed_at)
+                 SELECT ?1, json_extract(value, '$.run_id'), json_extract(value, '$.name'),
+                     json_extract(value, '$.result'), json_extract(value, '$.completed_at')
+                 FROM json_each(?2) WHERE true
+                 ON CONFLICT (app, run_id, name) DO NOTHING",
+            ),
+            (
+                &rows.waiters,
+                "INSERT INTO tako_workflow_event_waiters (app, run_id, step_name, event_name, expires_at)
+                 SELECT ?1, json_extract(value, '$.run_id'), json_extract(value, '$.step_name'),
+                     json_extract(value, '$.event_name'), json_extract(value, '$.expires_at')
+                 FROM json_each(?2) WHERE true
+                 ON CONFLICT (app, run_id, step_name) DO NOTHING",
+            ),
+            (
+                &rows.inbox,
+                "INSERT INTO tako_workflow_run_inbox
+                     (app, run_id, event_name, payload, payload_bytes, received_at)
+                 SELECT ?1, json_extract(value, '$.run_id'), json_extract(value, '$.event_name'),
+                     json_extract(value, '$.payload'), json_extract(value, '$.payload_bytes'),
+                     json_extract(value, '$.received_at')
+                 FROM json_each(?2) WHERE true
+                 ON CONFLICT (app, run_id, event_name) DO NOTHING",
+            ),
+            (
+                &rows.schedules,
+                "INSERT INTO tako_workflow_schedules (app, name, cron, last_run_at, max_attempts)
+                 SELECT ?1, json_extract(value, '$.name'), json_extract(value, '$.cron'),
+                     json_extract(value, '$.last_run_at'), json_extract(value, '$.max_attempts')
+                 FROM json_each(?2) WHERE true
+                 ON CONFLICT (app, name) DO NOTHING",
+            ),
+            (
+                &rows.runs,
+                "INSERT INTO tako_workflow_runs
+                     (app, id, name, payload, status, attempts, max_attempts, run_at,
+                      lease_until, worker_id, last_error, created_at, finished_at, result)
+                 SELECT ?1, json_extract(value, '$.id'), json_extract(value, '$.name'),
+                     json_extract(value, '$.payload'), json_extract(value, '$.status'),
+                     json_extract(value, '$.attempts'), json_extract(value, '$.max_attempts'),
+                     json_extract(value, '$.run_at'), json_extract(value, '$.lease_until'),
+                     json_extract(value, '$.worker_id'), json_extract(value, '$.last_error'),
+                     json_extract(value, '$.created_at'), json_extract(value, '$.finished_at'),
+                     json_extract(value, '$.result')
+                 FROM json_each(?2) WHERE true
+                 ON CONFLICT (app, id) DO NOTHING",
+            ),
+        ];
+        for (rows, sql) in tables {
+            for chunk in super::legacy::chunks(rows, CHUNK_BYTES) {
+                self.client
+                    .batch(&[stmt(sql, &self.args([chunk.into()]))])?;
+            }
+        }
+        Ok(())
+    }
+
     /// A revision above every one handed out before, for a deployment's
     /// schedule registration.
     pub(super) fn next_schedule_revision(&self) -> Result<i64, RunsDbError> {

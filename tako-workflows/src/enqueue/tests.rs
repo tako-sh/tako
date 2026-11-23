@@ -6,6 +6,7 @@ mod concurrency;
 mod histories;
 mod identity;
 mod inbox;
+mod legacy;
 mod operator;
 mod reclaim;
 mod schedules;
