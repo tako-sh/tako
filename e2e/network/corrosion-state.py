@@ -47,6 +47,16 @@ for file, const in [
         r"pub const " + const + r': &str = (".*?");', text, re.DOTALL
     ).group(1)
     schema.append(ast.literal_eval(literal.replace("\\\n", "")))
+# Servers generate their Corrosion config with this gossip idle timeout.
+idle_timeout = int(
+    re.search(
+        r"pub const GOSSIP_IDLE_TIMEOUT_SECS: u32 = (\d+);",
+        (repository / "tako-network" / "src" / "corrosion.rs").read_text(),
+    ).group(1)
+)
+# A deploy waits 30 s for a server to hold the secrets it published
+# (tako-server/src/secret_snapshot.rs). A crashed server must catch up sooner.
+CRASH_CATCH_UP_SECONDS = 25
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -76,6 +86,21 @@ def wait_ready(i):
             time.sleep(0.1)
 
 
+def restart(i, crash):
+    if crash:
+        processes[i].kill()
+    else:
+        processes[i].terminate()
+    processes[i].wait(timeout=20)
+    with (root / str(i) / "agent.log").open("a") as log:
+        processes[i] = subprocess.Popen(
+            [binary, "-c", str(root / str(i) / "config.toml"), "agent"],
+            stdout=log,
+            stderr=log,
+        )
+    wait_ready(i)
+
+
 try:
     for i, (api, gossip) in enumerate(ports):
         d = root / str(i)
@@ -92,6 +117,7 @@ addr = "127.0.0.1:{gossip}"
 client_addr = "127.0.0.1:0"
 bootstrap = ["127.0.0.1:{ports[1 - i][1]}"]
 plaintext = true
+idle_timeout_secs = {idle_timeout}
 [admin]
 path = "{d}/admin.sock"
 ''')
@@ -142,17 +168,37 @@ path = "{d}/admin.sock"
     else:
         raise RuntimeError(result)
 
+    # A crashed server never closes its connections. A peer still holding the
+    # one it opened to the first server it joined keeps writing into it until
+    # the idle timeout, so the restarted server gets nothing from that peer
+    # until then. It must still catch up before a deploy that published
+    # through the peer stops waiting.
+    crashed = time.monotonic()
+    restart(0, crash=True)
+    # The restarted server pulls from its known peers once at startup. Write
+    # after that, as a deploy publishes after its checks of the restarted
+    # server, so only live gossip from the peer can deliver the change.
+    time.sleep(6)
+    after_crash = "after-crash-ciphertext"
+    result = post(
+        1,
+        "/v1/transactions",
+        [[
+            "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
+            ["secret", "after-crash", hashlib.sha256(after_crash.encode()).hexdigest(), after_crash],
+        ]],
+    )
+    assert "error" not in result, result
+    while after_crash not in post(0, "/v1/queries", ["SELECT payload FROM tako_shared_records", []]):
+        if time.monotonic() - crashed > CRASH_CATCH_UP_SECONDS:
+            raise RuntimeError(
+                f"A server restarted after a crash did not receive its peer's write within {CRASH_CATCH_UP_SECONDS} s"
+            )
+        time.sleep(0.2)
+
     # Membership/CA changes restart Corrosion. A spawned process is not yet an
     # HTTP-ready store; wait for reads and verify its durable records survive.
-    processes[0].terminate()
-    processes[0].wait(timeout=20)
-    with (root / "0" / "agent.log").open("a") as log:
-        processes[0] = subprocess.Popen(
-            [binary, "-c", str(root / "0" / "config.toml"), "agent"],
-            stdout=log,
-            stderr=log,
-        )
-    wait_ready(0)
+    restart(0, crash=False)
     restored = post(
         0,
         "/v1/queries",
@@ -198,7 +244,7 @@ path = "{d}/admin.sock"
     else:
         raise RuntimeError(result)
     print(
-        "PASS: actual Corrosion accepts schemas, replicates conflicting operations, recovers after restart, and retires observed ciphertext without losing concurrent candidates"
+        "PASS: actual Corrosion accepts schemas, replicates conflicting operations, recovers after restart and crash, and retires observed ciphertext without losing concurrent candidates"
     )
 except Exception:
     for i in range(len(processes)):

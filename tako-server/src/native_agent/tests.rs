@@ -265,6 +265,10 @@ fn generated_corrosion_toml_uses_exact_local_api_and_mutual_tls() {
         Some("offline-fixture-token")
     );
     assert_eq!(value["gossip"]["plaintext"].as_bool(), Some(false));
+    assert_eq!(
+        value["gossip"]["idle_timeout_secs"].as_integer(),
+        Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
+    );
     assert_eq!(value["gossip"]["tls"]["insecure"].as_bool(), Some(false));
     assert_eq!(
         value["gossip"]["tls"]["key_file"],
@@ -426,6 +430,10 @@ fn isolated_repair_config_uses_only_loopback_and_no_gossip_seeds() {
     assert_eq!(config["gossip"]["client_addr"].as_str(), Some("[::1]:0"));
     assert!(config["gossip"]["bootstrap"].as_array().unwrap().is_empty());
     assert_eq!(config["gossip"]["plaintext"].as_bool(), Some(false));
+    assert_eq!(
+        config["gossip"]["idle_timeout_secs"].as_integer(),
+        Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
+    );
     assert_eq!(config["gossip"]["tls"]["insecure"].as_bool(), Some(false));
     assert_eq!(
         &*directory.read("corrosion-ca.pem", 16 * 1024).unwrap(),

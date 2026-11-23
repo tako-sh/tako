@@ -209,6 +209,7 @@ fn write_corrosion_at(
         "[db]\npath = {}\nschema_paths = [{}]\nsubscriptions_path = {}\n\
          [api]\naddr = \"127.0.0.1:9834\"\nauthz.bearer-token = {}\n\
          [gossip]\naddr = \"[{ip}]:8787\"\nclient_addr = \"[{ip}]:0\"\nbootstrap = {}\nplaintext = false\n\
+         idle_timeout_secs = {}\n\
          [gossip.tls]\ncert_file = {}\nkey_file = {}\nca_file = {}\ninsecure = false\n\
          [gossip.tls.client]\ncert_file = {}\nkey_file = {}\n\
          [admin]\npath = {}\n[log]\nformat = \"json\"\n",
@@ -217,6 +218,7 @@ fn write_corrosion_at(
         q(&path("subscriptions")?)?,
         q(token)?,
         serde_json::to_string(seeds)?,
+        tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS,
         q(&path(&config.files.gossip_certificate)?)?,
         q(&path(&config.files.gossip_private_key)?)?,
         q(&path("corrosion-ca.pem")?)?,
