@@ -306,6 +306,18 @@ impl TakoToml {
                         workflows.db
                     )));
                 }
+                // App SQL could change the runs, its migrations would run in
+                // the store, and a reset would wipe them.
+                if let Some((binding, _)) = env_config
+                    .databases
+                    .iter()
+                    .find(|(_, name)| **name == workflows.db)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.workflows].db names '{}', which this environment also binds as app SQL ('{binding}'); keep workflow runs in their own database",
+                        workflows.db
+                    )));
+                }
             }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;

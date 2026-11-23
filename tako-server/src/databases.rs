@@ -425,19 +425,22 @@ impl Databases {
         let mut prepared = HashMap::new();
         for (name, binding) in requested {
             if tako_core::is_runtime_binding(&name) {
-                let (service, needs) = if name == CHANNEL_REPLAY_BINDING {
-                    ("channel replay", "Channel replay")
+                let needs = if name == CHANNEL_REPLAY_BINDING {
+                    "Channel replay"
                 } else {
-                    ("workflow storage", "Workflow storage")
+                    "Workflow storage"
                 };
+                // App code reaches channels through its SDK. Workflow runs
+                // are stored by tako-server itself, so a container release
+                // without the SDK can still run a workflow command.
                 let sdk = match (&config.compose, &config.launch) {
                     (Some(compose), _) => compose.has_sdk_services(),
                     (None, AppLaunch::Container { .. }) => config.container_options.sdk,
                     (None, AppLaunch::Native) => true,
                     (None, AppLaunch::Compose) => false,
                 };
-                if !sdk {
-                    return Err(format!("Hosted {service} requires an SDK-enabled release."));
+                if name == CHANNEL_REPLAY_BINDING && !sdk {
+                    return Err("Hosted channel replay requires an SDK-enabled release.".into());
                 }
                 if binding.engine != DatabaseEngine::Sqlite {
                     return Err(format!(

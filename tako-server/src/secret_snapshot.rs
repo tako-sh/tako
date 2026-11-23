@@ -67,7 +67,11 @@ impl Resolved {
         let mut expired = Vec::new();
         for value in scope.values {
             let content = value.content;
-            if matches!(value.kind, RecordKind::App | RecordKind::Credential)
+            // Only values a deploy applies can stop it: a credential this
+            // server does not use, such as a retired `postgres_url`, cannot.
+            let applied = value.kind == RecordKind::App
+                || (value.kind == RecordKind::Credential && value.name == SSL_CLOUDFLARE);
+            if applied
                 && let Some(expires_on) = &content.expires_on
                 && expires_on.as_str() <= today.as_str()
             {

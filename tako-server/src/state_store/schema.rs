@@ -85,15 +85,10 @@ fn migrate_schema_on(
         tx.execute_batch("DROP TABLE IF EXISTS database_replicas;")?;
     }
 
-    if from_version < 17 {
-        // App data directory archives were removed; hosted databases keep
-        // their own backup settings. Workflow and channel stores moved from
-        // a Postgres credential to hosted databases.
-        tx.execute_batch(
-            "DROP TABLE IF EXISTS app_backups;
-             DROP TABLE IF EXISTS app_runtime_credentials;",
-        )?;
-    }
+    // `app_backups` (app data archives) and `app_runtime_credentials` (the
+    // Postgres URL of workflow and channel stores) are no longer used. An
+    // earlier server process still reads them while a reload hands over,
+    // so a later schema version drops them.
 
     ensure_schema_objects(tx)?;
     let has_deadline: bool = tx.query_row(

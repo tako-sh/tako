@@ -14,7 +14,7 @@ mod tests;
 const SECRETS_FILE_NAME: &str = "state.local.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 /// Credentials earlier releases used. Existing state still loads with them,
-/// and `tako credentials rm` removes them, but they can no longer be set.
+/// and `tako credential rm` removes them, but they can no longer be set.
 const RETIRED_CREDENTIAL_NAMES: &[&str] = &["postgres_url"];
 
 /// Per-environment secrets with a random key id.
@@ -790,7 +790,7 @@ pub fn validate_settable_credential_name(name: &str) -> Result<()> {
             "Credential name cannot be empty".to_string(),
         )),
         _ if RETIRED_CREDENTIAL_NAMES.contains(&name) => Err(ConfigError::Validation(format!(
-            "Credential '{name}' is no longer used: workflows and channels keep their state in hosted databases. Remove it with `tako credentials rm {name}`."
+            "Credential '{name}' is no longer used: workflows and channels keep their state in hosted databases. Remove it with `tako credential rm {name}`."
         ))),
         _ => Err(ConfigError::Validation(format!(
             "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}"

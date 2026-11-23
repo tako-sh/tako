@@ -276,7 +276,9 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
-fn migration_drops_app_data_archive_backups() {
+fn migration_leaves_retired_tables_for_an_earlier_process() {
+    // During a reload the earlier process still reads these tables, so the
+    // migration leaves them in place and a later schema version drops them.
     let (_temp, store) = temp_store();
     store.init().unwrap();
     store
@@ -290,11 +292,8 @@ fn migration_drops_app_data_archive_backups() {
         .unwrap();
     store.init().unwrap();
     assert_eq!(
-        store.raw_query_i64(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'app_backups';",
-            ()
-        ),
-        0
+        store.raw_query_i64("SELECT COUNT(*) FROM app_backups;", ()),
+        1
     );
     assert_eq!(
         store.raw_query_i64("PRAGMA user_version;", ()) as i32,

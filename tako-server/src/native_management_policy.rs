@@ -262,12 +262,18 @@ pub(crate) fn authorize_command(
                 // Scoped clients assert provisioned targets; they cannot grant or remove one.
                 if let Some(requested) = databases.as_ref().filter(|set| !set.is_empty()) {
                     let current = provisioned_app(context, scope)?.databases;
-                    let matches = if requested.len() == 1
-                        && let Some(replay) = requested.get(tako_core::CHANNEL_REPLAY_BINDING)
+                    // A deploy client asserts only its runtime services'
+                    // targets (`@channels`, `@workflows`); each must match
+                    // what a full client committed.
+                    let matches = if requested
+                        .keys()
+                        .all(|name| tako_core::is_runtime_binding(name))
                     {
-                        current
-                            .get(tako_core::CHANNEL_REPLAY_BINDING)
-                            .is_some_and(|binding| keeps_binding(replay, binding))
+                        requested.iter().all(|(name, binding)| {
+                            current
+                                .get(name)
+                                .is_some_and(|current| keeps_binding(binding, current))
+                        })
                     } else {
                         same_bindings(requested, current)
                     };
@@ -691,6 +697,44 @@ mod tests {
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
         let unchanged = f.decode_command(json!({"command":"deploy","databases":null}));
         assert_eq!(f.authorize(&unchanged), Ok(()));
+    }
+
+    #[test]
+    fn scoped_deploys_assert_their_committed_runtime_bindings() {
+        let mut f = Fixture::new();
+        let binding = |name: &str| DatabaseBinding {
+            name: name.into(),
+            server: "edge".into(),
+            peer_key: None,
+            engine: tako_core::DatabaseEngine::Sqlite,
+        };
+        f.databases.insert("main".into(), binding("shop"));
+        f.databases
+            .insert(tako_core::CHANNEL_REPLAY_BINDING.into(), binding("replay"));
+        f.databases
+            .insert(tako_core::WORKFLOWS_BINDING.into(), binding("runs"));
+        let deploy = |f: &Fixture, databases: Value| {
+            f.decode_command(json!({"command":"deploy","databases":databases}))
+        };
+        let runtime = |workflows: &str| {
+            json!({
+                "@channels": {"name": "replay", "server": "edge"},
+                "@workflows": {"name": workflows, "server": "edge"},
+            })
+        };
+        assert_eq!(f.authorize(&deploy(&f, runtime("runs"))), Ok(()));
+        let workflows = json!({"@workflows": {"name": "runs", "server": "edge"}});
+        assert_eq!(f.authorize(&deploy(&f, workflows)), Ok(()));
+        // A different target, or a binding never committed, needs a full client.
+        assert_eq!(
+            f.authorize(&deploy(&f, runtime("other"))),
+            Err(DATABASES_DENIED)
+        );
+        f.databases.remove(tako_core::WORKFLOWS_BINDING);
+        assert_eq!(
+            f.authorize(&deploy(&f, runtime("runs"))),
+            Err(DATABASES_DENIED)
+        );
     }
 
     #[test]

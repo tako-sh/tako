@@ -265,3 +265,26 @@ workers = 1
     let err = TakoToml::parse(toml).unwrap_err();
     assert!(err.to_string().contains("Workflow worker group"));
 }
+
+#[test]
+fn rejects_a_workflow_database_that_is_also_app_sql() {
+    let toml = r#"
+[envs.production]
+route = "api.example.com"
+servers = ["la"]
+db = { main = "runs" }
+
+[envs.production.workflows]
+db = "runs"
+"#;
+    let err = TakoToml::parse(toml).unwrap_err();
+    assert!(
+        err.to_string().contains("also binds as app SQL ('main')"),
+        "{err}"
+    );
+
+    let separate = toml.replace("main = \"runs\"", "main = \"app\"");
+    let config = TakoToml::parse(&separate).unwrap();
+    let workflows = config.envs["production"].workflows.as_ref().unwrap();
+    assert_eq!(workflows.db, "runs");
+}
