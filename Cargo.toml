@@ -7,7 +7,6 @@ members = [
   "tako-network",
   "tako-compose",
   "tako-socket",
-  "tako-sqlite",
   "tako-storage",
   "tako-runtime",
   "tako-channels",

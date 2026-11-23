@@ -549,14 +549,14 @@ route = "empty.test"
         .unwrap();
         migrate_environment(&project, &cfg, "development").unwrap();
         let dev_file = &dev_files(&project, &cfg, "development")["main"];
-        let dev = tako_sqlite::open_local(dev_file).unwrap();
+        let dev = rusqlite::Connection::open(dev_file).unwrap();
         dev.execute("INSERT INTO items VALUES ('keep')", [])
             .unwrap();
         migrate_environment(&project, &cfg, "test-e2e").unwrap();
         let test_files = dev_files(&project, &cfg, "test-e2e");
         assert_eq!(test_files.len(), 1);
         assert_ne!(&test_files["main"], dev_file);
-        let test = tako_sqlite::open_local(&test_files["main"]).unwrap();
+        let test = rusqlite::Connection::open(&test_files["main"]).unwrap();
         assert_eq!(
             test.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, i64>(0))
                 .unwrap(),

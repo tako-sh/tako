@@ -39,9 +39,7 @@ pingora-prometheus = "0.9"
 openssl.workspace = true
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 getrandom = "0.4"
-hmac = { version = "0.13", features = ["zeroize"] }
 rusqlite.workspace = true
-tako-sqlite = { path = "../tako-sqlite" }
 tako-storage = { path = "../tako-storage" }
 object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }
 futures-util = "0.3"
@@ -80,11 +78,8 @@ ipnet = "2.12"
 socket2 = "0.6"
 hickory-proto = "0.26.1"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4.7"
-rusqlite = { workspace = true, features = ["backup"] }
-
 [dev-dependencies]
+tako-db = { path = "../tako-db", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 h2 = "0.4"

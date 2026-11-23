@@ -18,7 +18,7 @@ mod upgrade;
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 16;
+pub const STATE_SCHEMA_VERSION: i32 = 17;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -54,6 +54,18 @@ pub struct SqliteStateStore {
     path: PathBuf,
     encryption_key: [u8; 32],
     conn: parking_lot::Mutex<Option<rusqlite::Connection>>,
+}
+
+/// Open the state database with WAL, so the old and new server processes can
+/// share it during a zero-downtime reload, plus a busy timeout, synchronous
+/// NORMAL, and foreign keys.
+fn open_local(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
 }
 
 impl SqliteStateStore {
@@ -100,7 +112,7 @@ impl SqliteStateStore {
                     Err(e) => return Err(StateStoreError::Sqlite(e.to_string())),
                 }
             }
-            *guard = Some(tako_sqlite::open_local(&self.path)?);
+            *guard = Some(open_local(&self.path)?);
         }
         Ok(parking_lot::MutexGuard::map(guard, |conn| {
             conn.as_mut().expect("connection opened above")

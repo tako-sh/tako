@@ -108,8 +108,7 @@ boringtun = { version = "0.7.1", default-features = false }
 smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
 zeroize = "1"
 
-# SQLite state store for dev-server
-tako-sqlite = { path = "../tako-sqlite" }
+# Dev daemon registrations
 redb = "5"
 rusqlite.workspace = true
 # Hosts local databases for `tako dev` and `tako run`
@@ -131,6 +130,8 @@ daemonize = "0.5"
 
 [dev-dependencies]
 tokio = { version = "=1.53.1", features = ["test-util"] }
+# Dev channel tests serve each test's replay database from its own host.
+tako-db = { path = "../tako-db", features = ["testing"] }
 # The tako.toml JSON Schema is generated and checked only by tests.
 tako-core = { path = "../tako-core", features = ["schema"] }
 tako-images = { path = "../tako-images", features = ["schema"] }
