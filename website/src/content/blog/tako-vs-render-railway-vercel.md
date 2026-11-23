@@ -39,7 +39,7 @@ A shared language or fetch-handler interface can reduce application changes, but
 
 - **Server access:** prepare a supported Linux host and connect it and your workstation to Tailscale. The [quickstart](/docs/quickstart/#remote-setup) covers registration and installation.
 - **Framework integration:** use the appropriate [framework adapter and preset](/docs/framework-guides/). An existing hosted deployment configuration does not configure Tako automatically.
-- **Data and secrets:** decide where the database and uploads will live, move credentials, and test recovery. Tako provides [persistent app data](/blog/stateful-apps-sqlite-uploads-tako-data-dir/) and [backups](/blog/back-up-tako-apps-to-s3-compatible-storage/), but you still need to configure and operate them.
+- **Data and secrets:** decide where the database and uploads will live, move credentials, and test recovery. Tako provides [hosted SQLite databases](/docs/databases/) with [backups](/docs/backups/), but you still need to configure and operate them.
 - **Provider features:** inventory preview environments, scheduled work, storage, authentication callbacks, and any provider-specific APIs your app uses. Keep or replace each dependency deliberately.
 - **Capacity:** allow enough memory for the app, background work, and overlapping instances during rolling updates.
 

@@ -21,7 +21,7 @@ In a TypeScript app, the same shape usually turns into a stack:
 
 | Need             | Sidekiq-style queue stack                                                                       | Tako workflow                                            |
 | ---------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Queue storage    | Redis-compatible service                                                                        | App-local SQLite at `data/tako/workflows.sqlite`         |
+| Queue storage    | Redis-compatible service                                                                        | A Tako-hosted SQLite database                            |
 | Job definition   | Ruby class with `perform`                                                                       | `workflows/*.ts` with `defineWorkflow`                   |
 | Enqueue          | `perform_async`, `perform_in`, `perform_at`                                                     | Typed `.enqueue(payload, opts?)`                         |
 | Retries          | [Job retry policy](https://github.com/sidekiq/sidekiq/wiki/Error-Handling), Retry set, Dead set | Run-level and step-level retries, terminal `dead` status |

@@ -111,4 +111,4 @@ There is no container, no Node-on-Bun shim, no Lambda cold start. It's a Linux p
 
 TanStack Start runs anywhere a fetch handler runs: Vercel, Netlify, Cloudflare Workers, Bun on a box. The hosted platforms are the loudest option in the room, and they're great at what they do — but they aren't the only option, and the lock-in tradeoff is real. With Tako you keep the same SSR app and the same fetch-handler interface, deployed to hardware you control, with [zero-downtime rolling updates](/blog/scale-to-zero-without-containers/) and [HTTPS in local dev](/blog/local-dev-with-real-https/) thrown in.
 
-Continue with the [deployment guide](/docs/deployment/) for secrets, multi-server routing, and rollbacks, and configure [backups](/blog/back-up-tako-apps-to-s3-compatible-storage/) for persistent app data.
+Continue with the [deployment guide](/docs/deployment/) for secrets, multi-server routing, and rollbacks, and configure [database backups](/docs/backups/) for persistent data.

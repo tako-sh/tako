@@ -5,7 +5,7 @@ description: "Keep React synchronized with your existing database using Tako Sto
 image: 62991c3db48d
 ---
 
-> **Updated November 15, 2026:** Store notifications still use independent SSE streams; they do not join the shared WS pool. Native multi-server SQLite support below replaces the earlier Postgres-only guidance. See the [Stores reference](/docs/stores/) for the current storage and recovery behavior.
+> **Updated November 15, 2026:** Store notifications still use independent SSE streams; they do not join the shared WS pool. Native multi-server SQLite support below replaces the earlier guidance. See the [Stores reference](/docs/stores/) for the current storage and recovery behavior.
 
 You save a message. The database has it. The person in the next browser tab is still looking at yesterday's conversation. Somewhere between “write succeeded” and “everyone can see it,” you need subscriptions, permission checks, reconnect handling, and a way to ask for fresh data.
 
@@ -162,6 +162,6 @@ await clearStoreCache(`${tenantId}:${userId}`);
 
 Offline reads are previously authorized data saved on that device. A disconnected browser cannot discover a remote permission revocation, so choose the data and expiry accordingly. The app shell must also already be available: Stores doesn't install a service worker. This release provides cached reads; queued writes, optimistic mutations, and conflict resolution aren't included.
 
-You can develop this flow with [`tako dev`](/docs/development/), which watches JavaScript Store definitions and enforces Store authorization locally. Notification state is in memory during development and uses Tako-managed SQLite by default in production. Native networks propagate Store notifications between servers without requiring Postgres; an explicitly configured `postgres_url` backend remains supported. Your application database remains the source of truth.
+You can develop this flow with [`tako dev`](/docs/development/), which watches JavaScript Store definitions and enforces Store authorization locally. Notification state is in memory during development and uses Tako-managed SQLite by default in production. Native networks propagate Store notifications between servers. Your application database remains the source of truth.
 
 Start with one view that's frustrating to keep fresh. Define its loader, connect the hook, and invalidate after its writes. The [Stores documentation](/docs/stores/) has the complete JavaScript, Go, and Rust examples; the [implementation is on GitHub](https://github.com/tako-sh/tako). Your database already knows what's new. Now your React UI has a way to find out.

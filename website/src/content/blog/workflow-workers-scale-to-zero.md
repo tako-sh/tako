@@ -53,7 +53,7 @@ A workflow file in `src/workflows/` is enough — `tako dev` and `tako deploy` p
 
 ## What the user sees
 
-Before the cooldown existed, a broken workflow meant silent accumulation. Rows piled up in `workflows.sqlite`. The supervisor tried to be helpful and respawned the worker. Your logs filled with identical stack traces. Eventually someone noticed nothing was running.
+Before the cooldown existed, a broken workflow meant silent accumulation. Rows piled up in the workflow database. The supervisor tried to be helpful and respawned the worker. Your logs filled with identical stack traces. Eventually someone noticed nothing was running.
 
 Now, the first enqueue after a cold crash returns `worker unhealthy: worker exited with status 1 after 84ms without claiming any runs`. That's the error your HTTP handler gets back from `sendEmail.enqueue()`, not a 500 from a crashed worker you never saw. The cooldown clears automatically once a worker claims a run — so a transient startup issue (a slow import, a cold filesystem) doesn't lock you out permanently.
 

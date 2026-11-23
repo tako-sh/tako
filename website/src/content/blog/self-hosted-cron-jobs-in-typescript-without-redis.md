@@ -20,7 +20,7 @@ A production cron job is not just a clock. The clock is the trigger; the durable
 | Job need         | Redis-backed queue stack                        | Tako workflow                                    |
 | ---------------- | ----------------------------------------------- | ------------------------------------------------ |
 | Schedule         | External scheduler or delayed-set polling       | `schedule` on `defineWorkflow`                   |
-| Durable state    | Redis persistence or another database           | App-local SQLite at `data/tako/workflows.sqlite` |
+| Durable state    | Redis persistence or another database           | A Tako-hosted SQLite database                  |
 | Dedupe           | Job id / uniqueness key in queue library        | `id`, plus internal cron keys                    |
 | Retries          | Worker library retry policy                     | Run-level and step-level retries                 |
 | Worker lifecycle | Separate worker process to deploy and supervise | Tako-supervised worker, scale-to-zero by default |

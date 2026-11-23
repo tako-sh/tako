@@ -27,7 +27,6 @@ Completion, payment, and audit records still belong in your app database. An eph
 | Reconnect recovery | Replay within retained history | Future live events only |
 | Message ID | Replay cursor | Empty string |
 | Slow subscriber | Can use retained replay | Skips events evicted from the live buffer |
-| Shared Postgres deployment | Supported | Rejected |
 
 Each active ephemeral channel has a **64-message buffer**. It is a small bounded fanout buffer, not a queue for future subscribers. If no subscriber is connected, publishing does not save the event for later. When the last subscriber disconnects, the channel's buffer is released. A slow subscriber skips events that have already been evicted.
 
@@ -142,7 +141,7 @@ The hook's existing `messages` array is browser memory, separate from server rep
 
 Test authorization separately in a deployed test environment. Local channel connections bypass authorization callbacks, so a successful local subscription doesn't prove that `readOperatorSession` rejects unauthorized access in production. Verify an allowed operator and a denied client through the deployed route.
 
-Production supports **one server or a native network of servers without a `postgres_url` credential**. Brokers forward live events to connected peers without storing messages or sequencing metadata. Disconnected peers miss events and resume with new ones after reconnection. Ordering is per originating broker, with no global order across concurrent publishers. A publish acknowledgement confirms local acceptance for best-effort fanout, not delivery to every subscriber. Shared Postgres stores still reject ephemeral publication and subscription, including on a single server.
+Production supports **one server or a native network of servers**. Brokers forward live events to connected peers without storing messages or sequencing metadata. Disconnected peers miss events and resume with new ones after reconnection. Ordering is per originating broker, with no global order across concurrent publishers. A publish acknowledgement confirms local acceptance for best-effort fanout, not delivery to every subscriber.
 
 Durable and ephemeral channels can coexist in the same supported app deployment. Keep durable events where replay matters, choose ephemeral events where loss is acceptable, and follow the [deployment guide](/docs/deployment/) when selecting servers and storage. For multiple servers, configure the native network and verify delivery between clients connected to different servers.
 

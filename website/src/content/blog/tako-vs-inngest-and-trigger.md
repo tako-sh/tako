@@ -35,7 +35,7 @@ If you want a hosted workflow platform with dashboards, observability tooling, a
 
 Inngest and Trigger.dev are workflow platforms. Even self-hosted, you're running _another system_ next to your app: Inngest self-hosting is a multi-service install (event API, runner, executor, state store, dashboard); Trigger.dev's self-host is Postgres + Redis + web + workers wired together with Docker Compose or a Helm chart. That's fine — it's what a full workflow platform requires.
 
-Tako's workflow engine lives inside `tako-server`, the same process that already runs your app's HTTP proxy, TLS, and scale-to-zero supervision. Single-server state lives in the app's `data/tako/workflows.sqlite` file. The worker is a subprocess. The protocol is a Unix socket. There is no second thing to deploy, monitor, or upgrade — [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy/) ships your HTTP handlers and your `workflows/*.ts` files in the same release.
+Tako's workflow engine lives inside `tako-server`, the same process that already runs your app's HTTP proxy, TLS, and scale-to-zero supervision. Run state lives in a Tako-hosted SQLite database that deploy creates for the app. The worker is a subprocess. The protocol is a Unix socket. There is no second thing to deploy, monitor, or upgrade — [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy/) ships your HTTP handlers and your `workflows/*.ts` files in the same release.
 
 ```d2
 direction: right

@@ -158,6 +158,6 @@ Use `"forever"` when you want to retain the deduplication record indefinitely. O
 
 Run deduplication protects enqueue. Inside a run, `ctx.run()` saves completed step results, but a worker can stop after a payment succeeds and before the checkpoint reaches storage. The next attempt can execute that step again. This is why the payout example uses `${ctx.runId}:transfer` as a provider idempotency key. Your adapter must implement that protection; the option belongs to the payment integration.
 
-Storage scope matters too. Global workflows across multiple servers use shared Postgres state. Workflows marked `local: true` have separate queues on each server, so their IDs do not deduplicate across servers. The [deployment docs](/docs/deployment/) explain environment setup, and the [workflow storage guide](/docs/workflows/#storage-and-multiple-servers) covers that choice.
+Every server of an environment shares one workflow database, so an ID deduplicates no matter which server enqueues it. The [deployment docs](/docs/deployment/) explain environment setup, and the [workflow storage guide](/docs/workflows/#storage-and-multiple-servers) covers where that database lives.
 
 Try one workflow through [`tako dev`](/docs/development/). Enqueue identical work twice, check that both calls return your ID, then change the payload and observe the conflict. Start with a business identifier you already have. Add the period or revision when the operation calls for it, keep retries consistent, and let Tako reuse the retained run.

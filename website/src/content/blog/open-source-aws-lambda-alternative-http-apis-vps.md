@@ -36,7 +36,7 @@ The difference is where the handler lives. Lambda runs inside AWS's managed exec
 | App shape     | Function handler receiving an event                       | Web-standard fetch handler or Go `http.Handler`                                                              |
 | Runtime       | AWS managed runtime environment                           | Native Bun, Node, or Go process                                                                              |
 | Billing unit  | Requests plus duration and configured memory              | The VPS bill you already chose                                                                               |
-| State         | Invocation model; use external services for durable state | Normal process plus [`TAKO_DATA_DIR`](/blog/stateful-apps-sqlite-uploads-tako-data-dir/) for app-owned files |
+| State         | Invocation model; use external services for durable state | Normal process plus [`TAKO_DATA_DIR`](/docs/storage/) for app-owned files |
 | Scale-to-zero | Built into the Lambda model                               | Opt in with [`tako scale 0`](/docs/cli/)                                                                     |
 | Deployment    | Zip/image plus AWS config/IaC                             | Build locally, upload artifact, rolling update via [`tako deploy`](/docs/deployment/)                        |
 

@@ -8,3 +8,9 @@
 /docs/service-contracts /docs/network-primitives 301
 /docs/service-contracts/ /docs/network-primitives 301
 /docs/service-contracts.md /docs/network-primitives.md 301
+/blog/self-hosted-websockets-workflows-multiple-vps-postgres /docs/workflows 301
+/blog/self-hosted-websockets-workflows-multiple-vps-postgres/ /docs/workflows 301
+/blog/stateful-apps-sqlite-uploads-tako-data-dir /docs/databases 301
+/blog/stateful-apps-sqlite-uploads-tako-data-dir/ /docs/databases 301
+/blog/back-up-tako-apps-to-s3-compatible-storage /docs/backups 301
+/blog/back-up-tako-apps-to-s3-compatible-storage/ /docs/backups 301
