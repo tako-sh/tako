@@ -161,15 +161,20 @@ impl PeerPool {
             let mut idle = self.idle.lock();
             let kept = idle.entry(upstream).or_default();
             kept.retain(|(used, _)| used.elapsed() < POOLED_FOR);
-            kept.pop().map(|(_, connection)| connection)
+            // One the other side closed meanwhile, as a restarting server
+            // does, is dropped before anything is sent on it.
+            std::iter::from_fn(|| kept.pop())
+                .map(|(_, connection)| connection)
+                .find(open)
         };
         let reply = match pooled
             .map(|mut connection| exchange(&mut connection, &line).map(|reply| (reply, connection)))
         {
             Some(Ok(done)) => done,
-            // A kept connection the other side closed before reading the
-            // request: send it again on a new one. Any other failure may
-            // come after the request was applied, so it is not repeated: a
+            // A kept connection the other side closed before the request was
+            // written: send it again on a new one. Once it was written, any
+            // failure may come after the request was applied, even the
+            // connection closing with no reply, so it is not repeated: a
             // repeated put would move its expiry, or undo a later write.
             Some(Err(Failure::NotDelivered(_))) | None => {
                 let mut connection = self
@@ -198,11 +203,27 @@ impl PeerPool {
 
 /// Why an exchange failed.
 enum Failure {
-    /// The other side closed the connection without reading the request:
-    /// writing it failed, or the connection ended with no reply at all.
+    /// Writing the request failed because the other side had closed the
+    /// connection, so it never received the whole line.
     NotDelivered(std::io::Error),
-    /// The request may have been applied: a timeout, or a broken reply.
+    /// The request may have been applied: it was written, and then the
+    /// reply timed out, broke off, or never came.
     Unknown(std::io::Error),
+}
+
+/// Whether a kept connection is still open: nothing is waiting to be read,
+/// and the other side has not closed it.
+fn open(connection: &Connection) -> bool {
+    let stream = connection.get_ref();
+    if !connection.buffer().is_empty() || stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    let idle = matches!(
+        stream.peek(&mut byte),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    );
+    stream.set_nonblocking(false).is_ok() && idle
 }
 
 impl Failure {
@@ -235,15 +256,11 @@ fn exchange(connection: &mut Connection, line: &[u8]) -> Result<Response, Failur
         .take(MAX_LINE_BYTES as u64 + 1)
         .read_until(b'\n', &mut reply);
     match read {
-        // The other side closed an idle connection; it never read the line.
         Ok(0) => {
-            return Err(Failure::NotDelivered(std::io::Error::new(
+            return Err(Failure::Unknown(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "the connection closed",
+                "the connection closed before replying",
             )));
-        }
-        Err(error) if reply.is_empty() && closed(error.kind()) => {
-            return Err(Failure::NotDelivered(error));
         }
         Err(error) => return Err(Failure::Unknown(error)),
         Ok(_) => {}
@@ -318,6 +335,37 @@ mod tests {
         // may have been applied, so it is not repeated on a new one.
         let error = pool.request(upstream, &request()).unwrap_err();
         assert!(error.message.contains("not reachable"), "{}", error.message);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn requests_the_peer_read_before_closing_are_not_sent_again() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream = listener.local_addr().unwrap();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counted = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut writer = stream.try_clone().unwrap();
+                let mut lines = BufReader::new(stream).lines();
+                // Answer the first request, then read the next one and close
+                // without replying, as a server stopping mid-request would.
+                if lines.next().is_some() {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    writer
+                        .write_all(b"{\"status\":\"ok\",\"data\":null}\n")
+                        .unwrap();
+                }
+                if lines.next().is_some() {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        let pool = PeerPool::new(Duration::from_secs(5), Duration::from_secs(5));
+        pool.request(upstream, &request()).unwrap();
+        assert!(pool.request(upstream, &request()).is_err());
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(seen.load(Ordering::SeqCst), 2);
     }

@@ -28,7 +28,7 @@ tako kv create sessions --server edge-a
 kv = { sessions = "auth-sessions", limits = "rate-limits" }
 ```
 
-Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. Deploys never create KV stores. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging.
+Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. Deploys never create KV stores. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
 
 `tako kv` commands find the network like `tako sqlite` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
 
