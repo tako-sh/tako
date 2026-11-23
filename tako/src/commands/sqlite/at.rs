@@ -21,7 +21,8 @@ pub(super) fn parse_at<Tz: TimeZone>(
         )
     };
     let at = if let Some(age) = parse_age(input) {
-        now - age
+        now.checked_sub_signed(age)
+            .ok_or_else(|| format!("`{input}` is further back than any time can be."))?
     } else if let Ok(at) = DateTime::parse_from_rfc3339(input) {
         at.with_timezone(&Utc)
     } else {
@@ -129,6 +130,8 @@ mod tests {
     #[test]
     fn future_and_malformed_times_are_refused() {
         let now = now();
+        assert!(parse_at("10000000000d", now, &utc()).is_err());
+        assert!(parse_at("100000000000000s", now, &utc()).is_err());
         assert!(
             parse_at("2099-01-01 00:00", now, &utc())
                 .unwrap_err()

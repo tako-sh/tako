@@ -649,9 +649,26 @@ async fn upload(
     stored: &StoredDatabase,
     slot: &mut Slot,
 ) -> Result<(), String> {
-    let open = slot.open.as_ref().ok_or("capture is not open")?;
     let spool = spool_dir(state, &stored.name);
     let pending = tako_backup::Replica::pending(&spool).map_err(|e| e.to_string())?;
+    let open = slot.open.as_mut().ok_or("capture is not open")?;
+    // A full image captured before a restart lost the point that dates it;
+    // its header still has the time.
+    for base in pending.iter().filter(|segment| segment.min_txid == 1) {
+        if open.points.iter().any(|point| point.txid == base.max_txid) {
+            continue;
+        }
+        match open.capture.captured_at(base.max_txid) {
+            Ok(created_at_ms) => open.points.push(Point {
+                created_at_ms,
+                txid: base.max_txid,
+                reason: reason_name(SnapshotReason::Scheduled).into(),
+            }),
+            Err(error) => {
+                tracing::debug!(database = %stored.name, error = %format!("{error:#}"), "Could not date a full image");
+            }
+        }
+    }
     if pending.is_empty() && open.points.is_empty() {
         return Ok(());
     }
@@ -674,11 +691,13 @@ async fn upload(
     // move the captures stay: they are this copy's history before the move,
     // which the new holder may be restoring from.
     let sent = tako_backup::Replica::receipted(&spool, &pending);
-    if !sent.is_empty() {
+    // A segment whose acknowledgement was lost to the deadline has no
+    // receipt but may be stored all the same.
+    if !sent.is_empty() || uploading.is_err() {
         let rechecked = check_holder(remote.as_ref(), stored, own.as_deref()).await;
         match rechecked {
             Err(refused @ Refused::Deleted(_)) => {
-                let removed = replica.remove(&sent).await;
+                let removed = replica.remove(&pending).await;
                 if let Err(cleanup) = removed {
                     tracing::warn!(database = %stored.name, error = %format!("{cleanup:#}"), "Could not remove backups uploaded after the database was deleted");
                 }
@@ -1463,11 +1482,17 @@ pub(crate) async fn restore(
     {
         // Another server may have restored the database meanwhile; its
         // claim stands.
+        // Only a claim this server can still see as its own is given back.
         let current = read_holder(remote.as_ref(), &stored).await;
-        if let Ok(current) = &current
-            && current.as_deref() != own.as_deref()
-        {
-            return restored;
+        match &current {
+            Ok(current) if current.as_deref() == own.as_deref() => {}
+            Ok(_) => return restored,
+            Err(read) => {
+                return Err(format!(
+                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako sqlite delete {} --server <this server>`)",
+                    stored.name, stored.name
+                ));
+            }
         }
         let given_back = match &previous {
             Some(holder) => claim_holder(remote.as_ref(), &stored, holder).await,
