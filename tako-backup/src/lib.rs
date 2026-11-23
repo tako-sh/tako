@@ -129,6 +129,22 @@ impl Capture {
         Ok(self.database.position())
     }
 
+    /// When a segment still in the spool was captured, from its header.
+    pub fn captured_at(&self, txid: u64) -> Result<i64> {
+        for level in [9, 0] {
+            if let Some(segment) = self
+                .spool
+                .list(level)?
+                .into_iter()
+                .find(|segment| segment.max_txid == txid)
+            {
+                let decoder = terse_ltx::Decoder::new(self.spool.open(&segment)?)?;
+                return Ok(decoder.header().timestamp);
+            }
+        }
+        bail!("transaction {txid} is not in the spool")
+    }
+
     pub fn position(&self) -> u64 {
         self.database.position()
     }

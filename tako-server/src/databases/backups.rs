@@ -511,16 +511,16 @@ async fn ensure_open(
     };
     remember_spool(&spool, stored, backup)?;
     let path = state.databases.database_path(&stored.name);
-    let captured_at_ms = now_unix_ms();
-    let (capture, base) =
-        tokio::task::spawn_blocking(move || -> tako_backup::anyhow::Result<(Capture, u64)> {
+    let (capture, base, captured_at_ms) = tokio::task::spawn_blocking(
+        move || -> tako_backup::anyhow::Result<(Capture, u64, i64)> {
             let mut capture = Capture::open(&path, &spool, floor)?;
-            let base = capture.snapshot()?;
-            Ok((capture, base))
-        })
-        .await
-        .map_err(|e| format!("capture stopped: {e}"))?
-        .map_err(|e| format!("start capture: {e:#}"))?;
+            let (base, captured_at) = full_image(&mut capture)?;
+            Ok((capture, base, captured_at))
+        },
+    )
+    .await
+    .map_err(|e| format!("capture stopped: {e}"))?
+    .map_err(|e| format!("start capture: {e:#}"))?;
     let now = Instant::now();
     slot.open = Some(Open {
         capture,
@@ -539,6 +539,14 @@ async fn ensure_open(
         checked: false,
     });
     Ok(())
+}
+
+/// Captures a full image and returns its transaction with the time its
+/// header records, which is when its read began: a restore point for it
+/// must not claim an earlier time than its contents.
+fn full_image(capture: &mut Capture) -> tako_backup::anyhow::Result<(u64, i64)> {
+    let txid = capture.snapshot()?;
+    Ok((txid, capture.captured_at(txid)?))
 }
 
 /// The destination a spool's captures belong to, recorded next to them, so a
@@ -954,12 +962,12 @@ async fn step(
     sync(state, stored, slot, false).await?;
     let open = slot.open.as_mut().expect("opened above");
     if open.changed_since_base && open.base_at.elapsed() >= tako_backup::SNAPSHOT_INTERVAL {
-        let txid = on_capture(slot, Capture::snapshot).await?;
+        let (txid, captured_at_ms) = on_capture(slot, full_image).await?;
         let open = slot.open.as_mut().expect("still open");
         open.base_at = Instant::now();
         open.changed_since_base = false;
         open.points.push(Point {
-            created_at_ms: now_unix_ms(),
+            created_at_ms: captured_at_ms,
             txid,
             reason: reason_name(SnapshotReason::Scheduled).into(),
         });
@@ -1074,17 +1082,23 @@ pub(crate) async fn full_snapshot(
         let opened = slot.open.is_none();
         ensure_open(state, stored, &backup, &mut slot).await?;
         // Opening captured a full image just now.
-        let txid = if opened {
-            slot.open.as_ref().expect("opened above").capture.position()
+        let (txid, created_at_ms) = if opened {
+            let open = slot.open.as_ref().expect("opened above");
+            let txid = open.capture.position();
+            let at = open
+                .points
+                .iter()
+                .find(|point| point.txid == txid)
+                .map_or_else(now_unix_ms, |point| point.created_at_ms);
+            (txid, at)
         } else {
             sync(state, stored, &mut slot, true).await?;
-            let txid = on_capture(&mut slot, Capture::snapshot).await?;
+            let taken = on_capture(&mut slot, full_image).await?;
             let open = slot.open.as_mut().expect("still open");
             open.base_at = Instant::now();
             open.changed_since_base = false;
-            txid
+            taken
         };
-        let created_at_ms = now_unix_ms();
         let open = slot.open.as_mut().expect("still open");
         // The image opening captured is this one.
         open.points.retain(|point| point.txid != txid);
@@ -1447,6 +1461,14 @@ pub(crate) async fn restore(
     if let (Err(error), Some(previous)) = (&restored, previous)
         && previous != own
     {
+        // Another server may have restored the database meanwhile; its
+        // claim stands.
+        let current = read_holder(remote.as_ref(), &stored).await;
+        if let Ok(current) = &current
+            && current.as_deref() != own.as_deref()
+        {
+            return restored;
+        }
         let given_back = match &previous {
             Some(holder) => claim_holder(remote.as_ref(), &stored, holder).await,
             None => match ObjectPath::parse(holder_key(&stored)) {
