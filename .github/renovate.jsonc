@@ -17,7 +17,9 @@
   },
   "labels": ["dependencies"],
   "postUpdateOptions": ["gomodTidy"],
-  "ignorePaths": ["**/node_modules/**", "e2e/fixtures/**"],
+  // vendor/pingora-core is the published pingora-core 0.9.0 source with local
+  // patches (see vendor/README.md); its manifest must match that release
+  "ignorePaths": ["**/node_modules/**", "e2e/fixtures/**", "vendor/**"],
   "packageRules": [
     // renovate-approve only approves PRs with automerge enabled;
     // keep major updates human-reviewed
@@ -29,6 +31,20 @@
     {
       "matchManagers": ["cargo"],
       "rangeStrategy": "replace",
+    },
+    // Pingora 0.9 creates zero-capacity buffers, which Tokio 1.54 rejects
+    // on every connection; keep the =1.53.1 pin until upstream fixes it
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tokio"],
+      "allowedVersions": "<1.54.0",
+    },
+    // each notify-debouncer-mini release requires a specific notify major;
+    // update them together
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["notify", "notify-debouncer-mini"],
+      "groupName": "notify",
     },
     // keep existing ^ ranges; bun.lock already gives reproducibility,
     // so skip best-practices' devDependency pinning churn

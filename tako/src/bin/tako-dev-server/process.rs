@@ -42,7 +42,18 @@ pub(crate) async fn monitor_handoff_pid(
     pid: u32,
 ) {
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
-    let mut sys = sysinfo::System::new();
+    let mut sys = match sysinfo::System::new() {
+        Ok(sys) => sys,
+        Err(error) => {
+            tracing::warn!(
+                config_path = %config_path,
+                pid = pid,
+                error = %error,
+                "cannot monitor handoff'd process"
+            );
+            return;
+        }
+    };
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
 

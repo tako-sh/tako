@@ -86,5 +86,5 @@ rusqlite = { workspace = true, features = ["backup"] }
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 h2 = "0.4"
-filetime = "=0.2.29"
+filetime = "=0.2.30"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
