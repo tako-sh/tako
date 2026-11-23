@@ -323,6 +323,30 @@ post_route_json() {
   fi
 }
 
+# After a restart, a group's workflows start once the private network
+# reaches the server that holds its workflow database; until then enqueues fail.
+wait_for_workflow_enqueue() {
+  local server_host=$1
+  local route_host=$2
+  local body_file="$TMP_ROOT/workflow-probe.json"
+  local status payload
+  for _ in $(seq 1 60); do
+    payload="{\"message\":\"probe\",\"id\":\"probe-${server_host}-$(date +%s%N)\"}"
+    status=$(curl -sS --http1.1 --connect-timeout 3 --max-time 10 \
+      -H "Host: ${route_host}" -H "X-Forwarded-Proto: https" -H "Forwarded: proto=https" \
+      -H "Connection: close" -H "Content-Type: application/json" \
+      -o "$body_file" -w "%{http_code}" -d "$payload" \
+      "http://${server_host}:8080/enqueue" || true)
+    if [[ "$status" == 200 ]] && jq -e '.ok == true' "$body_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Workflows did not start after the server restart (last status=$status)" >&2
+  cat "$body_file" >&2 || true
+  exit 1
+}
+
 fixture_has_secrets_for_env() {
   local env_name=$1
   [[ -f "$PROJECT_DIR/.tako/state.local.json" ]] && \
@@ -1060,6 +1084,7 @@ run_compose_sdk_checks() {
   [[ $(sdk_container_ids web) == "$web_id" ]]
   run_universal_http_checks "$server_host" "$route_host" /opt/tako
   sdk_assert_data
+  wait_for_workflow_enqueue "$server_host" "$route_host"
   run_channels_workflows_checks "$server_host" "$route_host"
 
   # A secret rotation replaces web and worker, but not redis or nginx.

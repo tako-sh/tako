@@ -108,7 +108,7 @@ pub(super) fn spawn_instance_reconcile(rt: &Runtime, state: Arc<ServerState>) {
 /// does.
 pub(super) fn spawn_workflow_retries(rt: &Runtime, state: Arc<ServerState>) {
     rt.spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(5));
+        let mut ticks = tokio::time::interval(Duration::from_secs(1));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
