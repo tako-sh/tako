@@ -70,31 +70,6 @@ fn parse_reads_app_secrets_and_storage_credentials() {
 }
 
 #[test]
-fn parse_reads_backup_keys_without_app_secret_name() {
-    let json = r#"{
-            "production": {
-                "key_id": "0123456789abcdef",
-                "backup_keys": [
-                    {
-                        "id": "backup-key-0123456789abcdef",
-                        "value": "encrypted-backup-key"
-                    }
-                ],
-                "app": {
-                    "DATABASE_URL": {"value": "encrypted-db"}
-                }
-            }
-        }"#;
-
-    let store = SecretsStore::parse(json).unwrap();
-    let backup_keys = store.get_backup_keys("production").unwrap();
-    assert_eq!(backup_keys.len(), 1);
-    assert_eq!(backup_keys[0].id, "backup-key-0123456789abcdef");
-    assert_eq!(backup_keys[0].value, "encrypted-backup-key");
-    assert_eq!(store.all_secret_names(), vec!["DATABASE_URL".to_string()]);
-}
-
-#[test]
 fn storage_credentials_do_not_appear_as_app_secret_names() {
     let json = r#"{
             "production": {
@@ -260,8 +235,35 @@ fn test_validate_secret_name_invalid_chars() {
 }
 
 #[test]
-fn validate_credential_name_accepts_postgres_url() {
+fn retired_credentials_load_and_remove_but_cannot_be_set() {
     assert!(validate_credential_name("postgres_url").is_ok());
+    let error = validate_settable_credential_name("postgres_url").unwrap_err();
+    assert!(error.to_string().contains("no longer used"), "{error}");
+    let mut store = SecretsStore::default();
+    store.ensure_env_key_id("production").unwrap();
+    assert!(
+        store
+            .set_credential(
+                "production",
+                "postgres_url",
+                EncryptedSecretValue::new("encrypted".to_string(), None),
+            )
+            .is_err()
+    );
+    store
+        .environments
+        .get_mut("production")
+        .unwrap()
+        .credentials
+        .insert(
+            "postgres_url".to_string(),
+            EncryptedSecretValue::new("encrypted".to_string(), None),
+        );
+    store.validate().unwrap();
+    store
+        .remove_credential("production", "postgres_url")
+        .unwrap();
+    assert!(!store.contains_credential("production", "postgres_url"));
 }
 
 #[test]
@@ -378,55 +380,6 @@ fn test_ensure_env_key_id_is_idempotent() {
 
     // Same key_id returned on repeated calls
     assert_eq!(key_id1, key_id2);
-}
-
-#[test]
-fn push_backup_key_appends_and_active_key_is_last() {
-    let mut store = SecretsStore::default();
-    store.ensure_env_key_id("production").unwrap();
-
-    store
-        .push_backup_key(
-            "production",
-            EncryptedBackupKey::new(
-                "backup-key-1111111111111111".to_string(),
-                "encrypted-one".to_string(),
-            ),
-        )
-        .unwrap();
-    store
-        .push_backup_key(
-            "production",
-            EncryptedBackupKey::new(
-                "backup-key-2222222222222222".to_string(),
-                "encrypted-two".to_string(),
-            ),
-        )
-        .unwrap();
-
-    let keys = store.get_backup_keys("production").unwrap();
-    assert_eq!(keys.len(), 2);
-    assert_eq!(
-        store
-            .active_backup_key("production")
-            .map(|key| key.id.as_str()),
-        Some("backup-key-2222222222222222")
-    );
-}
-
-#[test]
-fn push_backup_key_rejects_invalid_id() {
-    let mut store = SecretsStore::default();
-    store.ensure_env_key_id("production").unwrap();
-
-    let err = store
-        .push_backup_key(
-            "production",
-            EncryptedBackupKey::new("not-a-key".to_string(), "encrypted".to_string()),
-        )
-        .unwrap_err();
-
-    assert!(err.to_string().contains("Backup key id"), "{err}");
 }
 
 #[test]
@@ -702,31 +655,6 @@ fn save_omits_expires_on_when_unknown() {
             .is_none(),
         "{parsed:#}"
     );
-}
-
-#[test]
-fn save_preserves_backup_keys() {
-    let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().join(".tako").join("state.local.json");
-    let mut store = SecretsStore::default();
-    store.ensure_env_key_id("production").unwrap();
-    store
-        .push_backup_key(
-            "production",
-            EncryptedBackupKey::new(
-                "backup-key-0123456789abcdef".to_string(),
-                "encrypted-backup-key".to_string(),
-            ),
-        )
-        .unwrap();
-
-    store.save_to_file(&path).unwrap();
-    let loaded = SecretsStore::load_from_file(&path).unwrap();
-
-    let backup_keys = loaded.get_backup_keys("production").unwrap();
-    assert_eq!(backup_keys.len(), 1);
-    assert_eq!(backup_keys[0].id, "backup-key-0123456789abcdef");
-    assert_eq!(backup_keys[0].value, "encrypted-backup-key");
 }
 
 #[test]

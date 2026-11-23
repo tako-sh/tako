@@ -494,9 +494,6 @@ fn format_project_lines(
                 storage.binding, storage.resource
             ));
         }
-        if env.backup_key == Some(true) {
-            held.push("backup key".to_string());
-        }
         if !held.is_empty() {
             lines.push(format!("{indent}{}", held.join("  ")));
         }
@@ -756,13 +753,12 @@ mod tests {
             network_id: Some("0123456789abcdef0123456789abcdef".into()),
             servers: vec!["edge-a".into()],
             secrets: readable.then_some(3),
-            credentials: readable.then(|| vec!["postgres_url".into()]),
+            credentials: readable.then(|| vec!["ssl.cloudflare".into()]),
             storages: vec![StorageBinding {
                 binding: "uploads".into(),
                 resource: "media".into(),
                 credentials: readable.then_some(false),
             }],
-            backup_key: readable.then_some(true),
             databases: vec![
                 ProjectDatabase {
                     usage: DatabaseUsage::Binding {
@@ -799,12 +795,12 @@ mod tests {
             vec![
                 "App shop",
                 "  production  network main  servers edge-a",
-                "    3 secrets  credentials postgres_url  storage uploads → media (no credentials)  backup key",
+                "    3 secrets  credentials ssl.cloudflare  storage uploads → media (no credentials)",
                 "    databases main → orders on edge-a, channel replay → events on edge-b",
                 "  staging     network main (deploy client)  servers edge-a",
                 "    storage uploads → media",
                 "    databases main → orders on edge-a, channel replay → events on edge-b",
-                "    Secrets, credentials and backup keys need a full client.",
+                "    Secrets and credentials need a full client.",
             ]
         );
     }

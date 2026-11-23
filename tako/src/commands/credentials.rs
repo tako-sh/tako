@@ -2,9 +2,7 @@ use clap::Subcommand;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::config::{
-    EncryptedSecretValue, POSTGRES_CREDENTIAL_NAME, SSL_CLOUDFLARE_CREDENTIAL_NAME,
-};
+use crate::config::{EncryptedSecretValue, SSL_CLOUDFLARE_CREDENTIAL_NAME};
 use crate::output;
 
 #[derive(Subcommand)]
@@ -140,24 +138,17 @@ fn normalize_credential_name(name: &str) -> String {
 }
 
 fn credential_options() -> Vec<(String, String, &'static str)> {
-    vec![
-        (
-            SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
-            SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
-            "Cloudflare certificates",
-        ),
-        (
-            POSTGRES_CREDENTIAL_NAME.to_string(),
-            POSTGRES_CREDENTIAL_NAME.to_string(),
-            "Shared channel and workflow storage",
-        ),
-    ]
+    vec![(
+        SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+        SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+        "Cloudflare certificates",
+    )]
 }
 
 fn resolve_credential_name(requested: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(name) = requested {
         let name = normalize_credential_name(name);
-        crate::config::validate_credential_name(&name)?;
+        crate::config::validate_settable_credential_name(&name)?;
         return Ok(name);
     }
 
@@ -454,7 +445,7 @@ fn save_credential_value(
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = normalize_credential_name(name);
-    crate::config::validate_credential_name(&name)?;
+    crate::config::validate_settable_credential_name(&name)?;
     secrets.ensure_env_key_id(env)?;
     let key =
         crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;
@@ -532,8 +523,8 @@ mod tests {
             set_credential_value(
                 project.path(),
                 "production",
-                "POSTGRES_URL",
-                "postgres://runtime",
+                "SSL.CLOUDFLARE",
+                "cf-token",
                 None,
             )
             .unwrap();
@@ -541,12 +532,12 @@ mod tests {
             let secrets = crate::config::SecretsStore::load_from_dir(project.path()).unwrap();
             assert!(
                 secrets
-                    .get_credential("production", POSTGRES_CREDENTIAL_NAME)
+                    .get_credential("production", SSL_CLOUDFLARE_CREDENTIAL_NAME)
                     .is_some()
             );
             assert!(
                 secrets
-                    .get_credential("production", "POSTGRES_URL")
+                    .get_credential("production", "SSL.CLOUDFLARE")
                     .is_none()
             );
         });
@@ -561,17 +552,14 @@ mod tests {
                 .iter()
                 .map(|(label, _, _)| label.as_str())
                 .collect::<Vec<_>>(),
-            vec![SSL_CLOUDFLARE_CREDENTIAL_NAME, POSTGRES_CREDENTIAL_NAME]
+            vec![SSL_CLOUDFLARE_CREDENTIAL_NAME]
         );
         assert_eq!(
             options
                 .into_iter()
                 .map(|(_, credential, _)| credential)
                 .collect::<Vec<_>>(),
-            vec![
-                SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
-                POSTGRES_CREDENTIAL_NAME.to_string()
-            ]
+            vec![SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string()]
         );
     }
 
@@ -605,22 +593,13 @@ mod tests {
         assert_eq!(envs, vec!["production", "staging"]);
         assert_eq!(
             rows,
-            vec![
-                CredentialStatusRow {
-                    name: POSTGRES_CREDENTIAL_NAME.to_string(),
-                    envs: vec![
-                        ("production".to_string(), false),
-                        ("staging".to_string(), false)
-                    ]
-                },
-                CredentialStatusRow {
-                    name: SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
-                    envs: vec![
-                        ("production".to_string(), true),
-                        ("staging".to_string(), false)
-                    ]
-                },
-            ]
+            vec![CredentialStatusRow {
+                name: SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+                envs: vec![
+                    ("production".to_string(), true),
+                    ("staging".to_string(), false)
+                ]
+            },]
         );
     }
 
