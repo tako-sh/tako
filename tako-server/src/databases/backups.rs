@@ -35,6 +35,8 @@ const CONCURRENCY: usize = 8;
 const IDLE_SYNC: Duration = Duration::from_secs(60);
 /// Longest an upload of pending captures may take before it is retried.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Longest a restore may take to find the transaction a time selects.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// How often retention runs for a database.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long stopping waits for each database's final upload.
@@ -76,6 +78,9 @@ struct Open {
     changed_since_base: bool,
     /// Points to publish once their segments are uploaded.
     points: Vec<Point>,
+    /// Whether an upload since opening confirmed that no other history
+    /// lies above this capture's.
+    checked: bool,
 }
 
 /// Every database's slot.
@@ -142,25 +147,91 @@ async fn read_holder(
         .map(|holder| holder.server))
 }
 
+/// Why this server may not upload a database's backups.
+enum Refused {
+    /// Another server holds the database: this copy stops backing up until
+    /// the holder changes.
+    Moved(String),
+    /// The database was deleted: this copy stops too.
+    Deleted(String),
+    /// The holder could not be read.
+    Unavailable(String),
+}
+
+impl Refused {
+    fn fenced(&self) -> bool {
+        !matches!(self, Self::Unavailable(_))
+    }
+}
+
+impl From<Refused> for String {
+    fn from(refused: Refused) -> Self {
+        match refused {
+            Refused::Moved(message) | Refused::Deleted(message) | Refused::Unavailable(message) => {
+                message
+            }
+        }
+    }
+}
+
 /// Fails when another server holds the database.
 async fn check_holder(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
     own: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), Refused> {
     let Some(own) = own else {
         return Ok(());
     };
-    match read_holder(remote, stored).await? {
-        Some(holder) if holder == DELETED_HOLDER => Err(format!(
+    match read_holder(remote, stored)
+        .await
+        .map_err(Refused::Unavailable)?
+    {
+        Some(holder) if holder == DELETED_HOLDER => Err(Refused::Deleted(format!(
             "database {} was deleted; this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
             stored.name, stored.name
-        )),
-        Some(holder) if holder != own => Err(format!(
+        ))),
+        Some(holder) if holder != own => Err(Refused::Moved(format!(
             "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
             stored.name, stored.name
-        )),
+        ))),
         _ => Ok(()),
+    }
+}
+
+/// Marks a copy created by `CreateDatabase` until it is restored: a copy
+/// created for a move must not back up its empty file into the history it
+/// is about to restore from. A new database clears it on its first backup,
+/// when its prefix has no history yet.
+fn unrestored_marker(state: &ServerState, name: &str) -> PathBuf {
+    state.databases.database_dir(name).join("unrestored")
+}
+
+pub(crate) fn mark_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
+    std::fs::write(unrestored_marker(state, name), b"")
+        .map_err(|e| format!("mark the new copy of {name}: {e}"))
+}
+
+/// Marks a copy that found another server holding its database, or the
+/// database deleted. It captures nothing until a check of the holder passes,
+/// also after a restart.
+fn fenced_marker(state: &ServerState, name: &str) -> PathBuf {
+    state.databases.database_dir(name).join("fenced")
+}
+
+fn remove_marker(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("clear {}: {error}", path.display())),
+    }
+}
+
+fn clear_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
+    match std::fs::remove_file(unrestored_marker(state, name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("clear the restore marker of {name}: {error}")),
     }
 }
 
@@ -372,16 +443,23 @@ async fn on_capture<R: Send + 'static>(
 
 /// Opens capture of a database for its current destination. Capture starts
 /// with a full image, which the next upload sends.
+///
+/// A spool that holds a position resumes on this machine alone, so capture
+/// continues while storage is unavailable; the first upload checks that this
+/// server still holds the database. A new spool needs the history's position
+/// to start above it.
 async fn ensure_open(
     state: &ServerState,
     stored: &StoredDatabase,
     backup: &StorageBinding,
     slot: &mut Slot,
 ) -> Result<(), String> {
-    if let Some(open) = &slot.open {
+    if let Some(open) = slot.open.as_mut() {
         if open.generation == stored.generation
             && tako_core::same_backup_destination(&open.backup, backup)
         {
+            // The credentials can change without the destination changing.
+            open.backup = backup.clone();
             return Ok(());
         }
         // Another destination, or a database created again: its history
@@ -389,34 +467,60 @@ async fn ensure_open(
         close(slot).await;
         wipe_spool(state, &stored.name)?;
     }
-    let (replica, remote) = replica(stored, backup, None)?;
-    check_holder(
-        remote.as_ref(),
-        stored,
-        state.databases.server_id().as_deref(),
-    )
-    .await?;
     let spool = spool_dir(state, &stored.name);
     if !spool_matches(&spool, stored, backup) {
         wipe_spool(state, &stored.name)?;
     }
-    let floor = with_deadline(METADATA_TIMEOUT, async {
-        replica
-            .floor(&spool)
-            .await
-            .map_err(|e| format!("read the backup history: {e:#}"))
-    })
-    .await?;
+    let unrestored = unrestored_marker(state, &stored.name).exists();
+    let fenced = fenced_marker(state, &stored.name);
+    let positioned = tako_backup::spool_has_segments(&spool).map_err(|e| e.to_string())?;
+    let floor = if positioned && !unrestored && !fenced.exists() {
+        0
+    } else {
+        let (replica, remote) = replica(stored, backup, None)?;
+        check_holder(
+            remote.as_ref(),
+            stored,
+            state.databases.server_id().as_deref(),
+        )
+        .await?;
+        remove_marker(&fenced)?;
+        let newest = with_deadline(METADATA_TIMEOUT, async {
+            replica
+                .segments()
+                .await
+                .map_err(|e| format!("read the backup history: {e:#}"))
+        })
+        .await?
+        .iter()
+        .map(Stored::txid)
+        .max();
+        if unrestored {
+            if newest.is_some() {
+                return Err(format!(
+                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako sqlite restore {} --latest`)",
+                    stored.name, stored.name
+                ));
+            }
+            clear_unrestored(state, &stored.name)?;
+        }
+        // Above every history there: a new spool's, and a fenced copy's
+        // whose holder let it go again (an abandoned move may have left the
+        // other copy's history above it).
+        newest.map_or(0, |newest| newest.saturating_add(tako_backup::OWNER_JUMP))
+    };
     remember_spool(&spool, stored, backup)?;
     let path = state.databases.database_path(&stored.name);
-    let capture = tokio::task::spawn_blocking(move || -> tako_backup::anyhow::Result<Capture> {
-        let mut capture = Capture::open(&path, &spool, floor)?;
-        capture.snapshot()?;
-        Ok(capture)
-    })
-    .await
-    .map_err(|e| format!("capture stopped: {e}"))?
-    .map_err(|e| format!("start capture: {e:#}"))?;
+    let captured_at_ms = now_unix_ms();
+    let (capture, base) =
+        tokio::task::spawn_blocking(move || -> tako_backup::anyhow::Result<(Capture, u64)> {
+            let mut capture = Capture::open(&path, &spool, floor)?;
+            let base = capture.snapshot()?;
+            Ok((capture, base))
+        })
+        .await
+        .map_err(|e| format!("capture stopped: {e}"))?
+        .map_err(|e| format!("start capture: {e:#}"))?;
     let now = Instant::now();
     slot.open = Some(Open {
         capture,
@@ -425,7 +529,14 @@ async fn ensure_open(
         base_at: now,
         synced_at: now,
         changed_since_base: false,
-        points: Vec::new(),
+        // Names the full image, with its capture time: storage may take it
+        // much later.
+        points: vec![Point {
+            created_at_ms: captured_at_ms,
+            txid: base,
+            reason: reason_name(SnapshotReason::Scheduled).into(),
+        }],
+        checked: false,
     });
     Ok(())
 }
@@ -532,24 +643,45 @@ async fn upload(
 ) -> Result<(), String> {
     let open = slot.open.as_ref().ok_or("capture is not open")?;
     let spool = spool_dir(state, &stored.name);
-    let pending = !tako_backup::Replica::uploaded(&spool).map_err(|e| e.to_string())?;
-    if !pending && open.points.is_empty() {
+    let pending = tako_backup::Replica::pending(&spool).map_err(|e| e.to_string())?;
+    if pending.is_empty() && open.points.is_empty() {
         return Ok(());
     }
     let (replica, remote) = replica(stored, &open.backup, None)?;
-    check_holder(
-        remote.as_ref(),
-        stored,
-        state.databases.server_id().as_deref(),
-    )
-    .await?;
-    with_deadline(UPLOAD_TIMEOUT, async {
+    let own = state.databases.server_id();
+    let checked = check_holder(remote.as_ref(), stored, own.as_deref()).await;
+    if let Err(refused) = checked {
+        return Err(refuse(state, stored, slot, refused));
+    }
+    let uploading = with_deadline(UPLOAD_TIMEOUT, async {
         replica
             .upload(&spool)
             .await
+            .map(|_| ())
             .map_err(|e| format!("upload backups: {e:#}"))
     })
-    .await?;
+    .await;
+    // A move or a delete can land while the upload runs, also one that
+    // fails part way. What reached a deleted history is taken back. After a
+    // move the captures stay: they are this copy's history before the move,
+    // which the new holder may be restoring from.
+    let sent = tako_backup::Replica::receipted(&spool, &pending);
+    if !sent.is_empty() {
+        let rechecked = check_holder(remote.as_ref(), stored, own.as_deref()).await;
+        match rechecked {
+            Err(refused @ Refused::Deleted(_)) => {
+                let removed = replica.remove(&sent).await;
+                if let Err(cleanup) = removed {
+                    tracing::warn!(database = %stored.name, error = %format!("{cleanup:#}"), "Could not remove backups uploaded after the database was deleted");
+                }
+                return Err(refuse(state, stored, slot, refused));
+            }
+            Err(refused @ Refused::Moved(_)) => return Err(refuse(state, stored, slot, refused)),
+            Err(Refused::Unavailable(_)) | Ok(()) => {}
+        }
+    }
+    uploading?;
+    // The points name segments uploaded now or before.
     let points = std::mem::take(&mut slot.open.as_mut().expect("still open").points);
     for (index, point) in points.iter().enumerate() {
         let published = with_deadline(METADATA_TIMEOUT, async {
@@ -567,7 +699,50 @@ async fn upload(
             return Err(error);
         }
     }
+    // A capture that resumed from its spool continues below any history
+    // another copy uploaded meanwhile, which a latest restore would then
+    // prefer. It starts again above it, with a full image.
+    let open = slot.open.as_ref().expect("still open");
+    if !open.checked {
+        let position = open.capture.position();
+        let newest = with_deadline(METADATA_TIMEOUT, async {
+            replica
+                .segments()
+                .await
+                .map_err(|e| format!("read the backup history: {e:#}"))
+        })
+        .await?
+        .iter()
+        .map(Stored::txid)
+        .max();
+        if newest.is_some_and(|newest| newest > position) {
+            tracing::warn!(database = %stored.name, "Another copy's backups are newer; capture starts again above them");
+            close(slot).await;
+            wipe_spool(state, &stored.name)?;
+            return Ok(());
+        }
+        slot.open.as_mut().expect("still open").checked = true;
+    }
     Ok(())
+}
+
+/// Stops capture of a fenced copy, which would otherwise keep filling its
+/// spool with captures it can never upload. It stops without a final
+/// capture, and stays stopped across restarts until the holder lets it go.
+fn refuse(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    slot: &mut Slot,
+    refused: Refused,
+) -> String {
+    if refused.fenced() {
+        if let Err(error) = std::fs::write(fenced_marker(state, &stored.name), b"") {
+            tracing::warn!(database = %stored.name, %error, "Could not record that this copy no longer backs up");
+        }
+        // Dropping capture captures nothing more.
+        slot.open = None;
+    }
+    refused.into()
 }
 
 /// Starts the periodic backup of every database, and housekeeping.
@@ -910,7 +1085,10 @@ pub(crate) async fn full_snapshot(
             txid
         };
         let created_at_ms = now_unix_ms();
-        slot.open.as_mut().expect("still open").points.push(Point {
+        let open = slot.open.as_mut().expect("still open");
+        // The image opening captured is this one.
+        open.points.retain(|point| point.txid != txid);
+        open.points.push(Point {
             created_at_ms,
             txid,
             reason: reason_name(reason).into(),
@@ -1015,17 +1193,21 @@ pub(crate) async fn list_command(
         Ok((segments, points))
     })
     .await?;
-    let windows: Vec<serde_json::Value> = tako_backup::windows(&segments)
-        .iter()
-        .map(|window| {
-            serde_json::json!({
-                "from_transaction": window.first().txid(),
-                "to_transaction": window.last().txid(),
-                "from_unix_ms": window.first().uploaded_at_ms,
-                "to_unix_ms": window.last().uploaded_at_ms,
-            })
-        })
-        .collect();
+    // Captures can be uploaded long after they were captured, when storage
+    // was unavailable: the bounds are the times `restore --at` goes by. A
+    // window starts at a base, which is uploaded as soon as it is captured.
+    let mut windows = Vec::new();
+    for window in tako_backup::windows(&segments) {
+        let (first, last) = (window.first(), window.last());
+        let from_unix_ms = captured_at(&replica, first, &points).await;
+        let to_unix_ms = captured_at(&replica, last, &points).await;
+        windows.push(serde_json::json!({
+            "from_transaction": first.txid(),
+            "to_transaction": last.txid(),
+            "from_unix_ms": from_unix_ms,
+            "to_unix_ms": to_unix_ms,
+        }));
+    }
     let mut snapshots = snapshots(&segments, &points);
     snapshots.sort_by(|a, b| {
         (b.created_at_unix_secs, b.id.parse::<u64>().unwrap_or(0))
@@ -1038,6 +1220,36 @@ pub(crate) async fn list_command(
     }))
 }
 
+/// When a segment was captured, or else when it was uploaded.
+async fn captured_at(replica: &Replica, stored: &Stored, points: &[Point]) -> i64 {
+    let read = with_deadline(METADATA_TIMEOUT, async {
+        replica
+            .captured_at(stored, points)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await;
+    read.unwrap_or(stored.uploaded_at_ms)
+}
+
+/// A Unix-millisecond time in UTC, for messages.
+fn format_ms(at_ms: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(at_ms.div_euclid(1000)).map_or_else(
+        |_| format!("{at_ms} (Unix ms)"),
+        |at| {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                at.year(),
+                at.month() as u8,
+                at.day(),
+                at.hour(),
+                at.minute(),
+                at.second()
+            )
+        },
+    )
+}
+
 /// Full images and named transactions, one entry per transaction and
 /// reason, in no particular order.
 fn snapshots(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
@@ -1046,10 +1258,20 @@ fn snapshots(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
         .filter(|stored| stored.is_base())
         .map(|stored| (stored.txid(), stored))
         .collect();
+    let scheduled = reason_name(SnapshotReason::Scheduled);
+    // A transaction named for a reason is listed for it, not also as the
+    // full image capture took there.
+    let named_for: HashSet<u64> = points
+        .iter()
+        .filter(|point| point.reason != scheduled)
+        .map(|point| point.txid)
+        .collect();
     let mut seen = HashSet::new();
     let mut snapshots = Vec::new();
     for point in points {
-        if !seen.insert((point.txid, point.reason.clone())) {
+        if !seen.insert((point.txid, point.reason.clone()))
+            || (point.reason == scheduled && named_for.contains(&point.txid))
+        {
             continue;
         }
         let base = bases.get(&point.txid);
@@ -1254,38 +1476,55 @@ async fn restore_from(
     target: Target,
     moved: bool,
 ) -> Result<serde_json::Value, String> {
-    let segments = with_deadline(METADATA_TIMEOUT, async {
-        replica
+    let (segments, points) = with_deadline(METADATA_TIMEOUT, async {
+        let segments = replica
             .segments()
             .await
-            .map_err(|e| format!("list backups: {e:#}"))
+            .map_err(|e| format!("list backups: {e:#}"))?;
+        let points = replica
+            .points()
+            .await
+            .map_err(|e| format!("list backups: {e:#}"))?;
+        Ok((segments, points))
     })
     .await?;
-    let txid = replica
-        .resolve(&segments, target)
-        .await
-        .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
+    let resolved = with_deadline(RESOLVE_TIMEOUT, async {
+        replica
+            .resolve(&segments, &points, target)
+            .await
+            .map_err(
+                |error| match error.downcast_ref::<tako_backup::TooEarly>() {
+                    Some(early) => format!(
+                        "{error}; the earliest restorable time is {}",
+                        format_ms(early.earliest_ms)
+                    ),
+                    None => format!("{error:#}"),
+                },
+            )
+    })
+    .await;
+    let txid = resolved.map_err(|e| format!("Cannot restore {}: {e}.", stored.name))?;
     let plan = Replica::plan(&segments, txid).map_err(|e| format!("{e:#}"))?;
     let captured_at_ms = match plan.last() {
-        Some(last) => replica
-            .captured_at(last)
-            .await
-            .unwrap_or(last.uploaded_at_ms),
+        Some(last) => captured_at(replica, last, &points).await,
         None => 0,
     };
-    // The downloads, their decrypted forms, and the restored file.
+    // The downloads and their decrypted forms first; then the restored file,
+    // which compressed pages can make far larger, once its size is known.
+    // The segments stay on disk for the restore, where the free space
+    // already counts them.
     let downloaded: u64 = plan.iter().map(|stored| stored.size).sum();
-    let needed = downloaded.saturating_mul(3);
     let work = fresh_work_dir(state, &stored.name, "restore")?;
-    let available = crate::operations::available_bytes(&work.path)?;
-    let _space = state
-        .databases
-        .snapshot_space
-        .reserve(needed, available, "the restore")
-        .map_err(|error| format!("Cannot restore {}: {error}.", stored.name))?;
+    let downloads = reserve_restore(state, stored, &work, downloaded.saturating_mul(2))?;
+    let segments_dir = work.path.join("segments");
+    let restored_bytes = replica
+        .download(&plan, &segments_dir)
+        .await
+        .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
+    drop(downloads);
+    let _restored_space = reserve_restore(state, stored, &work, restored_bytes)?;
     let restored = work.path.join("restored.sqlite");
-    replica
-        .restore(&segments, txid, &restored, &work.path.join("segments"))
+    Replica::apply(&segments_dir, txid, &restored)
         .await
         .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
     {
@@ -1306,6 +1545,20 @@ async fn restore_from(
         },
         "warnings": warnings,
     }))
+}
+
+fn reserve_restore(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    work: &WorkDir,
+    needed: u64,
+) -> Result<SpaceReservation, String> {
+    let available = crate::operations::available_bytes(&work.path)?;
+    state
+        .databases
+        .snapshot_space
+        .reserve(needed, available, "the restore")
+        .map_err(|error| format!("Cannot restore {}: {error}.", stored.name))
 }
 
 /// Replaces a database's file with a verified `replacement` while its
@@ -1405,6 +1658,10 @@ async fn replace_inner(
     guard.mark_changed();
     drop(guard);
     swapped?;
+    // The copy now holds restored (or deliberately replaced) contents.
+    if let Err(error) = clear_unrestored(state, &stored.name) {
+        warnings.push(error);
+    }
     if moved {
         slot.open = None;
         if let Err(error) = wipe_spool(state, &stored.name) {

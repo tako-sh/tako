@@ -13,7 +13,7 @@ use crate::output;
 
 pub(crate) mod client;
 mod display;
-pub(crate) use display::{format_backup_time, local_offset};
+pub(crate) use display::format_backup_time;
 mod download;
 pub(crate) mod target;
 

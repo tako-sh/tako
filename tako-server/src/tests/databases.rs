@@ -1435,6 +1435,150 @@ async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
 }
 
 #[tokio::test]
+async fn a_new_copy_backs_up_nothing_until_it_is_restored() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("move-target-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&old, ID, "INSERT INTO items VALUES ('moved')").await;
+    ok(
+        &old,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    // A move creates the copy, and the scheduler can reach it before the
+    // restore lists the backups.
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("move-target-bucket")).await;
+    crate::databases::backups::back_up(&new, ID).await;
+    let status = ok(
+        &new,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
+    // it carries no secrets.
+    assert!(
+        status["databases"][0]["backup"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("until it is restored")),
+        "{status}"
+    );
+    // Its empty file was not uploaded, so the latest state is the old copy's.
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: None,
+            backup_key_base64: Some(key()),
+        },
+    )
+    .await;
+    assert_eq!(count(&new, ID).await, 1);
+    // Restored, it backs up.
+    query(&new, ID, "INSERT INTO items VALUES ('new')").await;
+    ok(
+        &new,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+}
+
+fn spool_segments(state: &ServerState) -> usize {
+    let ltx = state.databases.database_dir(ID).join("replica").join("ltx");
+    std::fs::read_dir(&ltx)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|level| {
+            std::fs::read_dir(level.path())
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn a_copy_that_lost_the_database_stops_capturing() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("lost-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    ok(
+        &old,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("lost-bucket")).await;
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            at_unix_ms: None,
+            backup_key_base64: Some(key()),
+        },
+    )
+    .await;
+    // The old copy, unreachable during the move, keeps taking writes.
+    query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
+    crate::databases::backups::back_up(&old, ID).await;
+    let status = ok(
+        &old,
+        Command::DatabaseStatus {
+            name: Some(ID.into()),
+        },
+    )
+    .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
+    // it carries no secrets.
+    assert!(
+        status["databases"][0]["backup"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("moved to another server")),
+        "{status}"
+    );
+    // It stopped capturing, so its spool no longer grows with each write.
+    let held = spool_segments(&old);
+    for round in 0..3 {
+        query(
+            &old,
+            ID,
+            &format!("INSERT INTO items VALUES ('stale {round}')"),
+        )
+        .await;
+        crate::databases::backups::back_up(&old, ID).await;
+    }
+    assert_eq!(spool_segments(&old), held);
+    // Nor after a restart, which forgets everything but the disk.
+    crate::databases::backups::forget(&old, ID, false)
+        .await
+        .unwrap();
+    crate::databases::backups::back_up(&old, ID).await;
+    assert_eq!(spool_segments(&old), held);
+}
+
+#[tokio::test]
 async fn a_failed_move_leaves_the_old_copy_snapshotting() {
     let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     let old = state(&old_dir);

@@ -847,7 +847,13 @@ impl ServerState {
             undo(true);
             return Err(format!("open database: {error}"));
         }
-        // Nothing to snapshot until something is written.
+        // A copy created for a move backs up only once it is restored; a
+        // new database clears this on its first backup.
+        if let Err(error) = backups::mark_unrestored(self, &id) {
+            undo(true);
+            return Err(error);
+        }
+        // Nothing to capture until something is written.
         self.databases.host.clear_changed(&database);
         tracing::info!(database = %id, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)?).expect("info serializes"))

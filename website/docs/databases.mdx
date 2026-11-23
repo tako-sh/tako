@@ -235,7 +235,7 @@ tako sqlite restore main --latest
 
 `backups` lists the window of time the database can be restored to and its restore points, newest first, with their IDs; `--json` prints `windows` (`from_unix_ms`, `to_unix_ms`, `from_transaction`, `to_transaction`) and `snapshots` (`id`, `created_at_unix_secs`, `reason`, `full`, `stored_bytes`). A restore takes exactly one of:
 
-- `--at <time>`: the newest transaction captured at or before that time, given as a local time (`2026-11-23 10:15` or `2026-11-23 10:15:30`), an RFC 3339 time (`2026-11-23T10:15:00Z`), or an age (`90s`, `15m`, `2h`, `1d`).
+- `--at <time>`: the newest transaction captured at or before that time, given as a local time (`2026-11-23 10:15` or `2026-11-23 10:15:30`, read with the offset your time zone has on that date), an RFC 3339 time (`2026-11-23T10:15:00Z`), or an age (`90s`, `15m`, `2h`, `1d`). The confirmation shows the time with its offset; a time before every backup fails with the earliest restorable time.
 - `--snapshot <id>`: a restore point from `backups`.
 - `--latest`: the newest transaction uploaded, which recovers a lost or damaged copy.
 
@@ -263,7 +263,7 @@ tako deploy --env production
 
 With `--server`, Tako creates the database on `edge-b` from its backups and records `edge-b` as its server in the network; `tako.toml` does not change. `--latest` restores everything the old server uploaded, so at most its last few seconds of writes are lost; `--at` and `--snapshot` work too. It reads the backups from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
 
-When the old server is still running, its copy stays, and Tako stops its backups so it cannot prune the new copy's history. An old server that was unreachable during the move stops uploading on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Until it notices, anything it still uploads stays apart from the new copy's history, which starts far above it, so a restore never mixes the two. Once every app is deployed, remove the old copy:
+When the old server is still running, its copy stays, and Tako stops its backups so it cannot prune the new copy's history. An old server that was unreachable during the move stops uploading on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Until it notices, anything it still uploads stays apart from the new copy's history, which starts far above it, so a restore never mixes the two; once it notices, it stops capturing, also across restarts. The copy a move creates on `edge-b` uploads nothing until its restore has finished, so its empty file never becomes the latest state. Once every app is deployed, remove the old copy:
 
 ```bash
 tako sqlite delete main --server edge-a

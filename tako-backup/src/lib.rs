@@ -326,7 +326,7 @@ impl Replica {
     ///
     /// No remote LIST or HEAD is used. A segment is created only where none
     /// exists; an existing object is compared before it is accepted.
-    pub async fn upload(&self, directory: &Path) -> Result<usize> {
+    pub async fn upload(&self, directory: &Path) -> Result<Vec<Segment>> {
         let spool = FileStore::new(directory);
         let _lock = self.upload_lock(&spool)?;
         let mut pending = Vec::new();
@@ -342,7 +342,32 @@ impl Replica {
             self.upload_segment(&spool, segment).await?;
         }
         trim(&spool)?;
-        Ok(pending.len())
+        Ok(pending)
+    }
+
+    /// The local segments not yet uploaded.
+    pub fn pending(directory: &Path) -> Result<Vec<Segment>> {
+        let spool = FileStore::new(directory);
+        let mut pending = Vec::new();
+        for level in 0..=9 {
+            for segment in spool.list(level)? {
+                if !receipt_path(&spool, &segment).exists() {
+                    pending.push(segment);
+                }
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Those of `segments` that are uploaded now, such as the ones an
+    /// upload that failed part way already sent.
+    pub fn receipted(directory: &Path, segments: &[Segment]) -> Vec<Segment> {
+        let spool = FileStore::new(directory);
+        segments
+            .iter()
+            .filter(|segment| receipt_path(&spool, segment).exists())
+            .copied()
+            .collect()
     }
 
     /// Whether every local segment is uploaded.
@@ -480,8 +505,14 @@ impl Replica {
         Ok(points)
     }
 
-    /// The transaction a target selects, which is restorable.
-    pub async fn resolve(&self, segments: &[Stored], target: Target) -> Result<u64> {
+    /// The transaction a target selects, which is restorable. `points` give
+    /// full images their capture times (see [`Self::captured_at`]).
+    pub async fn resolve(
+        &self,
+        segments: &[Stored],
+        points: &[Point],
+        target: Target,
+    ) -> Result<u64> {
         let windows = windows(segments);
         match target {
             Target::Latest => Ok(windows.last().context("no backups yet")?.last().txid()),
@@ -494,25 +525,23 @@ impl Replica {
             }
             Target::Time(at) => {
                 for window in windows.iter().rev() {
-                    if let Some(txid) = self.newest_at(window, at).await? {
+                    if let Some(txid) = self.newest_at(window, points, at).await? {
                         return Ok(txid);
                     }
                 }
-                let earliest = windows
-                    .first()
-                    .map(|window| window.first().uploaded_at_ms)
-                    .context("no backups yet")?;
-                bail!(
-                    "no backup was captured that early; the earliest is from {earliest} (Unix ms)"
-                )
+                let first = windows.first().context("no backups yet")?.first();
+                Err(TooEarly {
+                    earliest_ms: captured_base(first, points),
+                }
+                .into())
             }
         }
     }
 
     /// The newest transaction of `window` captured at or before `at`.
-    async fn newest_at(&self, window: &Window, at: i64) -> Result<Option<u64>> {
+    async fn newest_at(&self, window: &Window, points: &[Point], at: i64) -> Result<Option<u64>> {
         let members = &window.members;
-        if self.captured_at(&members[0]).await? > at {
+        if self.captured_at(&members[0], points).await? > at {
             return Ok(None);
         }
         // Capture times grow with transactions; find the last one at or
@@ -520,7 +549,7 @@ impl Replica {
         let (mut low, mut high) = (0, members.len() - 1);
         while low < high {
             let middle = low + (high - low).div_ceil(2);
-            if self.captured_at(&members[middle]).await? <= at {
+            if self.captured_at(&members[middle], points).await? <= at {
                 low = middle;
             } else {
                 high = middle - 1;
@@ -529,12 +558,12 @@ impl Replica {
         Ok(Some(members[low].txid()))
     }
 
-    /// When a segment was captured. A base is uploaded as soon as it is
-    /// captured, so its upload time stands in, without reading a full image;
-    /// a capture's own header records its time.
-    pub async fn captured_at(&self, stored: &Stored) -> Result<i64> {
+    /// When a segment was captured. A capture's own header records it. A
+    /// full image is not read for it: the point that names it records its
+    /// capture time, and without one its upload time stands in.
+    pub async fn captured_at(&self, stored: &Stored, points: &[Point]) -> Result<i64> {
         if stored.is_base() {
-            return Ok(stored.uploaded_at_ms);
+            return Ok(captured_base(stored, points));
         }
         let bytes = self
             .store
@@ -570,11 +599,17 @@ impl Replica {
         output: &Path,
         scratch: &Path,
     ) -> Result<()> {
-        ensure!(!output.exists(), "restore output already exists");
-        let listing = Listing(segments.iter().map(|stored| stored.segment).collect());
-        let plan = terse_litestream::restore_plan(&listing, Some(txid))?;
+        let plan = Self::plan(segments, txid)?;
+        self.download(&plan, scratch).await?;
+        Self::apply(scratch, txid, output).await
+    }
+
+    /// Downloads a restore's segments (see [`Self::plan`]) into `scratch`
+    /// and returns the size of the database they restore.
+    pub async fn download(&self, plan: &[Stored], scratch: &Path) -> Result<u64> {
         let spool = FileStore::with_durability(scratch, Durability::Scratch);
-        stream::iter(plan.iter().copied())
+        let segments: Vec<Segment> = plan.iter().map(|stored| stored.segment).collect();
+        stream::iter(segments)
             .map(|segment| {
                 let spool = spool.clone();
                 async move {
@@ -595,6 +630,17 @@ impl Replica {
             .buffer_unordered(DOWNLOADS)
             .try_collect::<Vec<()>>()
             .await?;
+        let last = plan.last().context("empty restore plan")?.segment;
+        let header = *terse_ltx::Decoder::new(spool.open(&last)?)?.header();
+        Ok(u64::from(header.commit) * u64::from(header.page_size))
+    }
+
+    /// Restores transaction `txid` to `output`, which must not exist, from
+    /// the segments [`Self::download`] put in `scratch`, after verifying
+    /// their checksums.
+    pub async fn apply(scratch: &Path, txid: u64, output: &Path) -> Result<()> {
+        ensure!(!output.exists(), "restore output already exists");
+        let spool = FileStore::with_durability(scratch, Durability::Scratch);
         let output = output.to_path_buf();
         let restored = tokio::task::spawn_blocking(move || {
             terse_litestream::restore(&spool, &output, Some(txid))
@@ -604,6 +650,30 @@ impl Replica {
             restored == txid,
             "restore stopped at transaction {restored}"
         );
+        Ok(())
+    }
+
+    /// Deletes segments, such as ones uploaded after this server lost the
+    /// database.
+    pub async fn remove(&self, segments: &[Segment]) -> Result<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+        let paths: Vec<ObjectPath> = segments
+            .iter()
+            .map(|segment| self.segment_key(segment))
+            .collect();
+        let count = paths.len();
+        let mut deletions = self
+            .raw
+            .delete_stream(Box::pin(stream::iter(paths.into_iter().map(Ok))));
+        for _ in 0..count {
+            match deletions.try_next().await {
+                Ok(Some(_)) | Err(object_store::Error::NotFound { .. }) => {}
+                Ok(None) => bail!("object store did not acknowledge all deletions"),
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
@@ -700,6 +770,30 @@ impl Replica {
             points: stale_points.len(),
         })
     }
+}
+
+/// A time target earlier than every restorable transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooEarly {
+    /// When the earliest restorable transaction was captured (Unix ms).
+    pub earliest_ms: i64,
+}
+
+impl std::fmt::Display for TooEarly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no backup was captured that early")
+    }
+}
+
+impl std::error::Error for TooEarly {}
+
+fn captured_base(stored: &Stored, points: &[Point]) -> i64 {
+    points
+        .iter()
+        .filter(|point| point.txid == stored.txid())
+        .map(|point| point.created_at_ms)
+        .min()
+        .unwrap_or(stored.uploaded_at_ms)
 }
 
 /// A listing, for planning a restore before downloading.

@@ -651,13 +651,7 @@ async fn run_async(
             yes,
         } => {
             let at = at
-                .map(|at| {
-                    at::parse_at(
-                        &at,
-                        time::OffsetDateTime::now_utc(),
-                        crate::commands::backups::local_offset(),
-                    )
-                })
+                .map(|at| at::parse_at(&at, chrono::Utc::now(), &chrono::Local))
                 .transpose()?;
             let ctx = Context::load(config_path, network).await?;
             restore(&ctx, &name, snapshot, at, server.as_deref(), yes).await
@@ -1165,7 +1159,7 @@ async fn restore(
         .map_or("its removed server", |home| home.name.as_str());
     let which = match (&snapshot, at_unix_ms) {
         (Some(snapshot), _) => format!("restore point {snapshot}"),
-        (None, Some(at)) => format!("its state at {}", format_time(at.max(0) as u64 / 1000)),
+        (None, Some(at)) => format!("its state at {}", at::describe(at)),
         (None, None) => "its newest backed-up state".to_owned(),
     };
     if moving {

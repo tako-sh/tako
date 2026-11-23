@@ -165,7 +165,7 @@ pub(super) fn format_status_failure(
     })
 }
 
-pub(crate) fn local_offset() -> UtcOffset {
+fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
 }
 

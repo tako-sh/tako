@@ -48,7 +48,8 @@ fn verify(path: &Path, expected: i64) -> Result<()> {
 
 async fn restore(replica: &Replica, target: Target, output: &Path) -> Result<u64> {
     let segments = replica.segments().await?;
-    let txid = replica.resolve(&segments, target).await?;
+    let points = replica.points().await?;
+    let txid = replica.resolve(&segments, &points, target).await?;
     let scratch = tempfile::tempdir()?;
     replica
         .restore(&segments, txid, output, scratch.path())
@@ -214,7 +215,52 @@ async fn a_time_restores_the_newest_capture_at_or_before_it() -> Result<()> {
         verify(&output, rows)?;
     }
     let segments = replica.segments().await?;
-    assert!(replica.resolve(&segments, Target::Time(0)).await.is_err());
+    let error = replica
+        .resolve(&segments, &[], Target::Time(0))
+        .await
+        .unwrap_err();
+    assert!(
+        error.downcast_ref::<tako_backup::TooEarly>().is_some(),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let database = dir.path().join("app.sqlite");
+    let spool = dir.path().join("spool");
+    let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
+    let replica = replica(remote)?;
+    let mut writer = Process::start("writer", &database, &spool)?;
+    writer.request(&inserts(1, 3))?;
+    // Storage is unavailable: the base and a capture wait in the spool.
+    let mut capture = Capture::open(&database, &spool, 0)?;
+    let base = capture.snapshot()?;
+    let base_at = chrono_millis();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    writer.request(&inserts(4, 6))?;
+    capture.sync()?;
+    let between = chrono_millis();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Storage is back; the point that names the base keeps its capture time.
+    replica.upload(&spool).await?;
+    replica
+        .put_point(&Point {
+            created_at_ms: base_at,
+            txid: base,
+            reason: "scheduled".into(),
+        })
+        .await?;
+    let output = dir.path().join("between.sqlite");
+    restore(&replica, Target::Time(between), &output).await?;
+    verify(&output, 6)?;
+    let early = dir.path().join("early.sqlite");
+    restore(&replica, Target::Time(base_at), &early).await?;
+    verify(&early, 3)?;
+    drop(capture);
+    drop(writer);
     Ok(())
 }
 
@@ -241,11 +287,11 @@ async fn failed_uploads_keep_segments_and_idle_uploads_make_no_requests() -> Res
     assert!(replica.upload(&spool).await.is_err());
     assert!(!Replica::uploaded(&spool)?);
     // The base and the capture.
-    assert_eq!(replica.upload(&spool).await?, 2);
+    assert_eq!(replica.upload(&spool).await?.len(), 2);
     assert!(Replica::uploaded(&spool)?);
     let calls =
         remote.calls.puts.load(Ordering::SeqCst) + remote.calls.lists.load(Ordering::SeqCst);
-    assert_eq!(replica.upload(&spool).await?, 0);
+    assert!(replica.upload(&spool).await?.is_empty());
     assert_eq!(
         remote.calls.puts.load(Ordering::SeqCst) + remote.calls.lists.load(Ordering::SeqCst),
         calls,
@@ -352,7 +398,7 @@ async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Resu
     // Missing: the chain has a gap, so the latest is no longer restorable.
     remote.delete(&path).await?;
     let segments = replica.segments().await?;
-    let latest = replica.resolve(&segments, Target::Latest).await?;
+    let latest = replica.resolve(&segments, &[], Target::Latest).await?;
     assert!(latest < first, "only the base before the gap restores");
     Ok(())
 }
