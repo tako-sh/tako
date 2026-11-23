@@ -4,3 +4,8 @@ runtime = "bun"
 
 [envs.production]
 route = "network-caller-e2e.example.com"
+
+# The network has two servers, so workflows need an explicit database. The
+# caller shares the main fixture's; each app keeps its own runs in it.
+[envs.production.workflows]
+db = "workflow-runs"
