@@ -1134,9 +1134,6 @@ impl ServerState {
         // Without the database's records its snapshots cannot be decrypted;
         // they go with it, unless another copy lives on and shares them.
         let mut warnings = Vec::new();
-        if stored.engine == DatabaseEngine::Kv {
-            return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
-        }
         if keep_snapshots {
             // A copy left by an unfinished move may still hold the
             // snapshots, which would keep the database's own copy from

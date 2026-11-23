@@ -66,13 +66,14 @@ func (k *KV) MarshalJSON() ([]byte, error) {
 type KVOption func(*kvPut)
 
 type kvPut struct {
-	ttl time.Duration
+	ttl    time.Duration
+	hasTTL bool
 }
 
-// WithTTL makes the key expire after ttl. Putting the key again replaces
-// its TTL; without WithTTL it stays until deleted.
+// WithTTL makes the key expire after ttl, which must be positive. Putting
+// the key again replaces its TTL; without WithTTL it stays until deleted.
 func WithTTL(ttl time.Duration) KVOption {
-	return func(put *kvPut) { put.ttl = ttl }
+	return func(put *kvPut) { put.ttl, put.hasTTL = ttl, true }
 }
 
 // Get decodes the key's JSON value into value and reports whether the key
@@ -110,8 +111,10 @@ func (k *KV) Put(ctx context.Context, key string, value any, options ...KVOption
 		return errors.New("tako: KV value exceeds 256 KiB")
 	}
 	request := map[string]any{"operation": "put", "json": string(encoded)}
-	if put.ttl != 0 {
-		if put.ttl < 0 {
+	if put.hasTTL {
+		// A zero TTL would otherwise mean no expiry, as from a deadline
+		// that has just passed.
+		if put.ttl <= 0 {
 			return errors.New("tako: KV ttl must be positive")
 		}
 		// Round up so a sub-millisecond TTL still expires rather than failing.

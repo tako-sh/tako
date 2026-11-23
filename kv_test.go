@@ -64,8 +64,10 @@ func TestKVRejectsInvalidRequestsBeforeSending(t *testing.T) {
 	if err := store.Put(ctx, "k", func() {}); err == nil {
 		t.Fatal("a value JSON cannot encode must be rejected")
 	}
-	if err := store.Put(ctx, "k", 1, WithTTL(-time.Second)); err == nil {
-		t.Fatal("a negative TTL must be rejected")
+	for _, ttl := range []time.Duration{-time.Second, 0} {
+		if err := store.Put(ctx, "k", 1, WithTTL(ttl)); err == nil {
+			t.Fatalf("a TTL of %v must be rejected", ttl)
+		}
 	}
 	socket.mu.Lock()
 	defer socket.mu.Unlock()

@@ -39,13 +39,19 @@ fn server() -> &'static Server {
 /// Serves an app's request from the internal socket. `config_path` is the
 /// registration of the calling app. Blocks.
 pub(crate) fn call(config_path: &str, token: &str, request: KvRequest) -> Response {
-    match server().host.call(config_path, token, request) {
+    match server().host.call(&host_scope(config_path), token, request) {
         Ok(value) => Response::ok(value),
         Err(error) => error.into_response(),
     }
 }
 
 /// A stable ID for a store file; it never leaves this process.
+/// The host scope of a registration. A config path may contain `#`, which
+/// scopes use for temporary bindings, so the path's digest stands for it.
+fn host_scope(config_path: &str) -> String {
+    hex::encode(Sha256::digest(config_path.as_bytes()))
+}
+
 fn local_id(path: &Path) -> StoreId {
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
     StoreId::parse(&format!("local-{}", hex::encode(&digest[..16])))
@@ -87,7 +93,9 @@ pub(crate) async fn connect(
                 return Err(error);
             }
         };
-    server.host.set_bindings(config_path, host_bindings);
+    server
+        .host
+        .set_bindings(&host_scope(config_path), host_bindings);
     let connections = scope
         .iter()
         .map(|(binding, (_, token))| (binding.clone(), KvConnection::new(token)))
@@ -157,7 +165,9 @@ pub(crate) async fn release(config_path: &str) {
     if registrations.scopes.remove(config_path).is_none() {
         return;
     }
-    server.host.set_bindings(config_path, Vec::new());
+    server
+        .host
+        .set_bindings(&host_scope(config_path), Vec::new());
     close_unused(server, &mut registrations).await;
 }
 
@@ -302,6 +312,21 @@ mod tests {
         );
         release("/d/tako.toml").await;
         assert!(!is_open(&kept).await);
+    }
+
+    #[tokio::test]
+    async fn config_paths_with_a_hash_reach_their_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hash.redb").display().to_string();
+        let bindings = HashMap::from([("auth".to_string(), file.clone())]);
+        let config = "/c#-tools/tako.toml";
+        let connected = connect(config, &bindings).await.unwrap();
+        assert!(matches!(
+            send(config, &connected["auth"], put("k")).await,
+            Response::Ok { .. }
+        ));
+        release(config).await;
+        assert!(!is_open(&file).await);
     }
 
     #[tokio::test]

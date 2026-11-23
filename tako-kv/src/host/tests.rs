@@ -160,6 +160,7 @@ async fn other_servers_forward_with_their_grant() {
     edge.set_bindings("shop/production#release", bind("wrong"));
     let error = call(get("challenge")).await.unwrap_err();
     assert_eq!(error.message, REFUSED);
+    assert_eq!(error.code, Some(ErrorCode::Unavailable));
     // A server that cannot be reached reports so.
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let gone = closed.local_addr().unwrap();

@@ -401,7 +401,7 @@ impl KvHost {
         peer.request.validate().map_err(KvError::invalid)?;
         let store = StoreId::parse(&peer.store).map_err(KvError::invalid)?;
         if !self.granted(&peer.scope, &store, &peer.grant) {
-            return Err(KvError::new(None, REFUSED));
+            return Err(KvError::unavailable(REFUSED));
         }
         self.serve(&store, peer.request)
     }

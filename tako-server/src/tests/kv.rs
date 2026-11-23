@@ -441,6 +441,27 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
     assert_eq!(get(&state, "sessions", "kept").await, json!(r#""third""#));
     assert!(matches!(import(file).await, Response::Ok { .. }));
     assert_eq!(get(&state, "sessions", "kept").await, json!(r#""first""#));
+
+    // Deleting the store deletes its snapshots too.
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            name: "sessions".into(),
+            generation: None,
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    let left: Vec<_> = {
+        use futures_util::TryStreamExt;
+        store.list(None).try_collect().await.unwrap()
+    };
+    assert!(
+        !left
+            .iter()
+            .any(|meta| meta.location.as_ref().ends_with(".redb.zst.enc")),
+        "{left:?}"
+    );
 }
 
 #[tokio::test]

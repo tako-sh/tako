@@ -123,7 +123,7 @@ pub struct SocketOptions {
 pub type CacheFn = Arc<dyn Fn(&str, bool, tako_core::CacheRequest) -> Response + Send + Sync>;
 
 /// Serves one KV call for the authenticated app: `(app, binding token,
-/// request)`. May wait on another server, so it runs on the network pool.
+/// request)`. May wait on another server, so it runs on a pool of its own.
 pub type KvFn = Arc<dyn Fn(&str, &str, tako_core::KvRequest) -> Response + Send + Sync>;
 
 /// Routes a validated destination after the socket has authenticated the caller.
@@ -356,6 +356,13 @@ fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The blocking pool a command runs on.
+enum Pool {
+    Storage,
+    Network,
+    Kv,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     listener: UnixListener,
@@ -392,10 +399,11 @@ async fn run(
                                     let cache = cache.clone();
                                     let kv = kv.clone();
                                     async move {
-                                        let is_network = matches!(
-                                            &cmd,
-                                            Command::NetworkCall { .. } | Command::Kv { .. }
-                                        );
+                                        let pool = match &cmd {
+                                            Command::NetworkCall { .. } => Pool::Network,
+                                            Command::Kv { .. } => Pool::Kv,
+                                            _ => Pool::Storage,
+                                        };
                                         let operation = move || {
                                             handle_command(
                                                 &lookup,
@@ -408,12 +416,14 @@ async fn run(
                                                 cmd,
                                             )
                                         };
-                                        let result = if is_network {
-                                            crate::blocking::run_network(operation).await
-                                        } else {
-                                            crate::blocking::run(operation)
+                                        let result = match pool {
+                                            Pool::Network => crate::blocking::run_network(operation).await,
+                                            Pool::Kv => crate::blocking::run_kv(operation)
                                                 .await
-                                                .map_err(|error| SocketError::unclassified(error.to_string()))
+                                                .map_err(|error| SocketError::unclassified(error.to_string())),
+                                            Pool::Storage => crate::blocking::run(operation)
+                                                .await
+                                                .map_err(|error| SocketError::unclassified(error.to_string())),
                                         };
                                         match result {
                                             Ok(response) => response,
