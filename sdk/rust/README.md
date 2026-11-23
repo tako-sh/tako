@@ -72,8 +72,8 @@ trusted subjects, room isolation, heartbeats, and expiry. `PresenceMember<T>` an
 `PresenceSnapshot<T>` expose the shared wire types. Native Rust does not add a
 separate WebSocket client.
 
-For multiple production servers, configure the shared `postgres_url` credential.
-Native registrations are not detected by the JavaScript-directory deploy preflight.
+Servers of a native network share presence. Native registrations are not
+detected by the JavaScript-directory deploy preflight.
 
 ## Stores
 
@@ -129,7 +129,7 @@ with `clearStoreCache` on logout. Offline reads cannot learn of remote revocatio
 while disconnected. This is cached-read support; no service worker or offline
 write queue is installed.
 
-Configure shared `postgres_url` explicitly for multiple production servers; native
+Store invalidations use the environment's channel replay database; native
 registrations are not discovered by the JS directory preflight. See the
 [Stores guide](https://tako.sh/docs/stores/) for frontend examples and limits.
 
