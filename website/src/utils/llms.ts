@@ -21,7 +21,7 @@ export const llmsNotes = [
   "Use Framework Guides to select the matching JavaScript, Go, or Rust integration. Use Docker for image-based releases; a Dockerfile still needs an SDK-aware app.",
   "Use Coding Agents to configure project-local skills and MCP. Bundled docs match the installed CLI; refresh agent setup after upgrading Tako.",
   "Use Channels for durable events, Presence for current connections, and Stores for authorized live data reads with explicit invalidation and optional offline caching.",
-  "Primitives also cover app Secrets, hosted SQLite Databases, network-wide KV Stores of JSON values with optional expiry, file Storage, public Images, and server-side Cache. Provider credentials such as postgres_url are separate from application secrets.",
+  "Primitives also cover app Secrets, hosted SQLite Databases, network-wide KV Stores of JSON values with optional expiry, file Storage, public Images, and server-side Cache. Provider credentials such as ssl.cloudflare are separate from application secrets.",
   "Use Servers for host setup, Deployment for build/rollout, Routing and TLS for domains and certificates, Operations for logs/scaling/rollback, and Backups for data recovery.",
 ];
 

@@ -87,7 +87,7 @@ Build precedence:
 
 Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks `node_modules` from the original tree for JS builds, omits source symlinks, runs build commands, merges assets into `public/`, verifies the resolved `main`, and archives the result without `node_modules`.
 
-The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
+The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed.
 
 Native network servers accept compressed artifacts up to 512 MiB. The upload deadline is five minutes plus six seconds per MiB, rounded up. A 102 MiB upload has 15 minutes and 12 seconds to finish. An upload that stops sending data for 30 seconds times out. Transfer errors include the number of bytes received and the declared size.
 
@@ -162,11 +162,11 @@ See [Operations](/operations/#scaling) for changing desired instance counts, sca
 
 ## Secrets And Credentials
 
-Configure [app secrets and provider credentials](/secrets/) before deployment. App secrets feed your SDK; `ssl.cloudflare` and `postgres_url` configure Tako-owned runtime services. Deployment sends the relevant changed values.
+Configure [app secrets and provider credentials](/secrets/) before deployment. App secrets feed your SDK; the `ssl.cloudflare` provider credential configures certificate management. Deployment sends the relevant changed values.
 
 ## Storage And Backups
 
-Use [Storage](/storage/) to bind app files and [Backups](/backups/) to protect the deployed data tree. Backup-only resources are not exposed as app storage bindings.
+Use [Storage](/storage/) to bind app files and [Backups](/backups/) to protect hosted databases and KV stores. Backup-only resources are not exposed as app storage bindings.
 
 ## TLS
 

@@ -37,7 +37,7 @@ Include the executable and its dependencies in the image. For the Go multi-stage
 
 In v0, one container release supports one configured workflow `run` command across the base and named workflow groups. Worker counts and concurrency values accepted by config do not currently control production supervision. The worker still follows the scale-to-zero workflow lifecycle.
 
-Keep workflow state configuration consistent with the number of servers. Shared workflows require `postgres_url` across multiple servers; Go workers have no source-level per-server opt-out. Configure that provider credential through [Secrets](/secrets/#provider-and-storage-credentials).
+Workflow state lives in a hosted database that every server of the environment shares. A single-server network gets one on deploy; on a larger network, create one with `tako db create` and set `[envs.<env>.workflows].db`. See [workflow storage](/workflows/#storage-and-multiple-servers).
 
 An HTTP container's inability to access the internal socket also affects enqueue/signal calls from that process. Do not infer HTTP-to-worker RPC availability merely because the image contains both executables.
 

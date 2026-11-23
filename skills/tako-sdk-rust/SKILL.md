@@ -170,9 +170,9 @@ partition membership; verified subjects identify users, while each tab has its
 own connection ID. Metadata is untrusted client JSON. The proxy and React hook
 manage leases, disconnect cleanup, and reconnects. Every authorized member of a
 scope sees its roster; permissions are checked again when the configured maximum
-connection lifetime expires. Native brokers keep presence leases in memory and
-exchange them across a network's servers without Postgres; Postgres stores them
-only when it is the selected channel backend.
+connection lifetime expires. Native brokers keep server-bound presence leases
+in memory and exchange them with the network's trusted servers; they never enter
+the replay database.
 
 Local Presence connections run the same auth callbacks as production and use
 in-memory state, so private-room rejection and trusted identities can be
@@ -237,11 +237,12 @@ External writers must invalidate explicitly; Tako does not inspect database
 dependencies. Publication errors do not roll back or retry the database write;
 use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
 read responses at 1 MiB. Invalidations use the environment's channel replay
-backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
-server of the network. Because `Cargo.toml` depends on the `tako` crate, a
-deploy with neither `[envs.<env>.channels].db` nor `postgres_url` selects a
-generated replay database; on a multi-server network, create one with
-`tako db create` and set `db` first (see
+database (a Tako-hosted SQLite database), so they reach every server of the
+network. Because `Cargo.toml` depends on the `tako` crate, a deploy without
+`[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
+created automatically on a network with exactly one trusted server; on a larger
+network, create one with `tako db create <name>` and set
+`[envs.<env>.channels].db` first (see
 https://tako.sh/docs/channels/#deploy-replay-storage). See
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.

@@ -44,7 +44,7 @@ Each environment can bind a different database under the same name, such as `mai
 
 `[envs.production.channels]` with `database = "chat-prod-replay"` selects a database for Tako to use on behalf of the app. It does **not** create an app SQL alias, run the project's SQL migrations against a replay-only database, or give the app, its workers or its release command a SQL token for replay. The same setting works for an SDK-enabled Compose group, which cannot use ordinary app SQL bindings.
 
-Without that setting or `postgres_url`, a channel-capable deploy selects a generated app/environment database. The automatically owned database cannot be bound as app SQL. If you intentionally select an ordinary database for replay and also bind it for SQL, the SQL binding can read or change **every table**: channel namespace isolation is not a SQL access restriction. Prefer a dedicated replay database.
+Without that setting, a channel-capable deploy selects a generated app/environment database. The automatically owned database cannot be bound as app SQL. If you intentionally select an ordinary database for replay and also bind it for SQL, the SQL binding can read or change **every table**: channel namespace isolation is not a SQL access restriction. Prefer a dedicated replay database.
 
 `tako db list --json` shows the home, `in_project`, `channel_replay_envs`, and `channel_owner` for an automatically owned database. `tako db status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
 

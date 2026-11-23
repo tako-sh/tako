@@ -65,8 +65,7 @@ it had to differ from the first draft, this note records what was built.
 - No command carries secret values. `Deploy`, `PrepareDeploy`, `PrepareRelease`
   and `RunRelease` stop carrying `secrets` (`PrepareRelease` has them today,
   `tako-core/src/protocol.rs:99`, for release commands and private dependency
-  installs), `runtime_credentials`, storage access keys, backup keys and the
-  Cloudflare token. Release preparation and release commands resolve the same
+  installs), storage access keys and the Cloudflare token. Release preparation and release commands resolve the same
   pinned snapshot on the server, so a deploy client with no local secrets can run
   release commands and install private dependencies.
   They carry non-secret binding configuration from `tako.toml` (provider, bucket,
@@ -86,8 +85,7 @@ it had to differ from the first draft, this note records what was built.
   anything: a wrong digest only fails the deploy.
 - With a matching digest the server decrypts with its own key, merges secret parts
   into the bindings, builds the app environment and stores the result as the
-  last-applied copy (`state_store` secrets, runtime credentials, storages, SSL,
-  backup).
+  last-applied copy (`state_store` secrets, storages, SSL).
 - Deploy-time secret validation stays on full clients, which read names and
   expiry dates from their local state without decrypting
   (`validate_release_secret_snapshot`, `tako/src/commands/deploy/config.rs`).
