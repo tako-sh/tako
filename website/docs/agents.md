@@ -8,6 +8,46 @@ Skills teach agents how to develop, deploy, verify, and debug Tako apps. MCP too
 let them inspect logs, diagnose local setup, manage deployments and servers, and
 use the same operations and credentials as the CLI.
 
+## Cloud environments
+
+In the environment's initialization script, run the standard installer as the
+agent user. If the environment checks out the Tako repository, run
+`sh scripts/initialize-cloud.sh` from its root. For an app repository, use:
+
+```bash
+set -e -o pipefail
+curl -fsSL https://tako.sh/install.sh | sh
+"$HOME/.local/bin/tako" --version
+```
+
+Include the installation directory (default `$HOME/.local/bin`) on the agent's
+runtime `PATH` so it can find both the CLI and the dev daemon. A public preview
+needs outbound HTTPS and WebSocket access to `tako.website`. Start one with
+`tako dev --tunnel --background --json` and open the ready record's `url`.
+After editing the app, add `--restart` and verify the change at that URL before
+sharing it. A tunnel preview needs no network identity.
+
+For deployment, create an identity on an authorized machine, replacing the
+example network and app/environment with your target:
+
+```bash
+tako network client add cloud-agent --network production --deploy shop/production --identity
+```
+
+Bind the output as the cloud secret `TAKO_CLIENT_IDENTITY` in the agent's
+runtime. Then `tako deploy --env production --ci` can deploy with the values
+already published on the server. A deploy-scoped identity cannot read secret
+values. A full client identity can manage published secrets. For an app that
+needs a development key, bind just that key as a cloud secret and pipe it into
+`tako secret set` before starting the preview:
+
+```bash
+printf '%s' "$DEV_API_KEY" | tako secret set API_KEY --env development
+```
+
+The `development` environment stores secrets locally. See [native network
+identities](/networks/) for permissions and revocation.
+
 ## Setup
 
 ```bash

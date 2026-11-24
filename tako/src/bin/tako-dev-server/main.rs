@@ -84,6 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // code). Same stores so both paths see the same messages. Registrations
     // hand each app its replay database.
     let channels = dev_channels::DevChannelStore::new();
+    let ca = load_or_create_ca()?;
+    let proxy_ca_pem = ca.ca_cert_pem().to_owned();
     // Start the Pingora proxy in a dedicated thread.
     // We exit the whole process when the control-plane tells us to shut down.
     {
@@ -111,7 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Dynamic per-SNI cert generation: OpenSSL rejects `*.tako` wildcards
         // (single-label TLD), so we generate a cert per hostname on the fly.
-        let ca = load_or_create_ca()?;
         let resolver = DevCertResolver::new(ca);
         let callbacks: Box<dyn TlsAccept + Send + Sync> = Box::new(resolver);
         // Keep dev HTTPS on HTTP/1.1. The dev E2E path holds an SSE response
@@ -129,9 +130,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = args.listen_addr;
     let listen_port = listen_port_from_addr(&listen_addr);
 
-    let loopback_ip = args.dns_ip.parse::<std::net::Ipv4Addr>()?;
-    let local_dns = local_dns::start(LOCAL_DNS_LISTEN_ADDR, loopback_ip).await?;
-    tracing::info!(listen = %local_dns.listen_addr(), "local DNS server listening");
+    let local_dns = if let Some(ip) = &args.dns_ip {
+        let dns = local_dns::start(LOCAL_DNS_LISTEN_ADDR, ip.parse()?).await?;
+        tracing::info!(listen = %dns.listen_addr(), "local DNS server listening");
+        Some(dns)
+    } else {
+        None
+    };
 
     let sock = default_socket_path();
     if let Some(parent) = sock.parent() {
@@ -167,11 +172,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(sock = %sock.display(), "tako-dev-server listening");
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-    let ca_pem = paths::tako_data_dir()
-        .ok()
-        .and_then(|dir| std::fs::read(dir.join("ca").join("ca.crt")).ok());
-    start_http_redirect_server(HTTP_REDIRECT_LISTEN_ADDR, shutdown_rx.clone(), ca_pem).await?;
-    tracing::info!(listen = %HTTP_REDIRECT_LISTEN_ADDR, "http redirect server listening");
+    if local_dns.is_some() {
+        start_http_redirect_server(
+            HTTP_REDIRECT_LISTEN_ADDR,
+            shutdown_rx.clone(),
+            Some(proxy_ca_pem.as_bytes().to_vec()),
+        )
+        .await?;
+        tracing::info!(listen = %HTTP_REDIRECT_LISTEN_ADDR, "http redirect server listening");
+    }
     // Bring up the internal socket early (shared for workflows + channels),
     // so app registrations can call DevWorkflows::ensure() immediately.
     let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -201,12 +210,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_tx,
         routes,
         events,
-        true,
-        local_dns.port(),
+        local_dns.is_some(),
+        local_dns.as_ref().map_or(0, local_dns::LocalDns::port),
         listen_port,
         listen_addr,
-        args.dns_ip,
+        args.dns_ip.unwrap_or_else(|| "127.0.0.1".to_string()),
     );
+    st.proxy_ca_pem = Some(proxy_ca_pem);
     st.workflows = Some(workflows.clone());
     st.channels = Some(channels.clone());
 

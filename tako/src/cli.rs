@@ -81,7 +81,7 @@ pub struct DevArgs {
     #[arg(long, visible_alias = "var")]
     pub variant: Option<String>,
 
-    /// Start with a temporary public tunnel URL enabled
+    /// Serve a temporary public preview without sudo or local routing setup
     #[arg(long)]
     pub tunnel: bool,
 

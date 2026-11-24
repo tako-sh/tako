@@ -197,6 +197,7 @@ pub async fn run(
         readiness_failure_hint,
         worker_command,
         dev_hosts,
+        display_hosts: hosts,
         env,
         secrets,
         interactive,
@@ -265,12 +266,15 @@ pub async fn run(
             workflow_retention_ms: cfg.workflows.retention_ms,
         })
         .await?;
+    let tunnel_url = if tunnel {
+        Some(crate::dev_server_client::enable_tunnel(&config_key).await?)
+    } else {
+        None
+    };
+    let url = tunnel_url.clone().unwrap_or_else(|| {
+        preferred_public_url(&primary_host, &reg_url, public_port, public_url_port)
+    });
     if background {
-        if tunnel {
-            crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
-        }
-        let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
         emit_background_ready(&app_name, &url, &hosts);
         return Ok(());
     }
@@ -283,14 +287,16 @@ pub async fn run(
                 .and_then(|v| v.as_bool())
         })
         .unwrap_or(false);
-    let initial_tunnel_enabled = false;
+    let initial_tunnel_enabled = tunnel_url.is_some();
 
     events::spawn_log_forwarder(config_key.clone(), log_tx.clone());
 
-    if reg_hosts.iter().any(|h| {
-        let host = h.split('/').next().unwrap_or(h);
-        host.ends_with(&format!(".{}", crate::dev::TAKO_DEV_DOMAIN))
-    }) && let Ok(info) = crate::dev_server_client::info().await
+    if !tunnel
+        && reg_hosts.iter().any(|h| {
+            let host = h.split('/').next().unwrap_or(h);
+            host.ends_with(&format!(".{}", crate::dev::TAKO_DEV_DOMAIN))
+        })
+        && let Ok(info) = crate::dev_server_client::info().await
     {
         let local_dns_enabled = info
             .get("info")
@@ -305,7 +311,7 @@ pub async fn run(
 
     if interactive {
         let public_port_for_output = public_url_port;
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
+        let hosts = hosts.clone();
         let app_name_for_output = app_name.clone();
         let adapter_name_for_output = runtime_name.clone();
         let control_tx_for_output = control_tx.clone();
@@ -319,7 +325,7 @@ pub async fn run(
                 hosts,
                 public_port_for_output,
                 initial_lan_enabled,
-                None,
+                tunnel_url,
                 log_rx,
                 event_rx,
                 control_tx_for_output,
@@ -330,16 +336,15 @@ pub async fn run(
     }
 
     let verbose = crate::output::is_verbose();
-    let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
     if crate::output::is_json() {
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
         json::emit(json::ready_record(&app_name, &url, &hosts));
     } else if !interactive {
         for line in dev_startup_lines(
             verbose,
             &app_name,
             &runtime_name,
-            &project_dir.join(&cmd[0]),
+            &cmd.first()
+                .map_or_else(|| project_dir.clone(), |entry| project_dir.join(entry)),
             &url,
         ) {
             crate::output::stream_line(&line);
@@ -356,10 +361,7 @@ pub async fn run(
     .start()?;
 
     if verbose && !interactive {
-        crate::output::stream_line(&format!(
-            "Starting server at {}…",
-            dev_url(&primary_host, public_url_port)
-        ));
+        crate::output::stream_line(&format!("Starting server at {url}…"));
         crate::output::stream_line("Press Ctrl+c or q to stop");
         crate::output::stream_blank_line();
     }
@@ -374,10 +376,6 @@ pub async fn run(
         should_exit_tx: should_exit_tx.clone(),
         terminate_requested: terminate_requested.clone(),
     });
-
-    if tunnel {
-        let _ = control_tx.send(output::ControlCmd::ToggleTunnel).await;
-    }
 
     reload::spawn_config_reload_loop(
         reload::ConfigReloadLoop {

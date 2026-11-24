@@ -183,3 +183,69 @@ fn old_daemon_is_reported_instead_of_an_empty_app_list() {
         assert!(output.contains("tako dev --restart"), "{output}");
     }
 }
+
+#[test]
+fn cloud_preview_returns_the_tunnel_on_start_attach_and_restart() {
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let temp = TempDir::new().unwrap();
+    let project = temp.path().canonicalize().unwrap();
+    let home = project.join("tako-home");
+    let config = project.join("tako.toml");
+    fs::write(&config, "name = 'preview'\nruntime = 'go'\nmain = 'app'\n").unwrap();
+    let registrations = Arc::new(AtomicUsize::new(0));
+    let launches = registrations.clone();
+    let mut enable_attempts = 0;
+    const URL: &str = "https://preview.example.com/";
+    let _daemon =
+        FakeDevServer::start_with_handler(&home, move |req| match req["type"].as_str()? {
+            "Info" => Some(json!({"type":"Info","info":{
+                "protocol_version": tako_core::PROTOCOL_VERSION, "listen":"127.0.0.1:47831",
+                "advertised_ip":"127.0.0.1", "local_dns_enabled":false
+            }})),
+            "RegisterApp" => {
+                launches.fetch_add(1, Ordering::SeqCst);
+                Some(json!({"type":"AppRegistered","url":"https://preview.test/"}))
+            }
+            "ListRegisteredApps" if launches.load(Ordering::SeqCst) > 0 => Some(json!({
+                "type":"RegisteredApps","apps":[{
+                    "config_path":config, "config_file":config, "project_dir":config.parent(),
+                    "environment":"development", "app_name":"preview", "status":"running",
+                    "hosts":["preview.test"], "upstream_port":12345, "tunnel_url":URL
+                }]
+            })),
+            "ToggleTunnel" => {
+                assert_eq!(req["enabled"], true);
+                enable_attempts += 1;
+                Some(if enable_attempts == 4 {
+                    json!({"type":"Error","message":"relay unavailable"})
+                } else {
+                    json!({"type":"TunnelToggled","url":URL,"enabled":true})
+                })
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut args = vec!["dev", "--tunnel", "--background", "--json"];
+    for (restart, expected_launches) in [(false, 1), (false, 1), (true, 2)] {
+        if restart {
+            args.push("--restart");
+        }
+        let out = run_tako_with_env(&args, &project, &project, &home);
+        assert!(out.status.success(), "{}", stderr_str(&out));
+        let ready: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(ready["url"], URL);
+        assert_eq!(ready["hosts"], json!([]));
+        assert_eq!(ready["type"], "ready");
+        assert_eq!(registrations.load(Ordering::SeqCst), expected_launches);
+    }
+    let out = run_tako_with_env(&args, &project, &project, &home);
+    assert!(!out.status.success());
+    assert!(stdout_str(&out).contains("relay unavailable"));
+    assert!(
+        !home.join("ca").exists(),
+        "the CLI should leave the private loopback CA to the daemon"
+    );
+}

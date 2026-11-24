@@ -128,7 +128,6 @@ async fn assert_slow_response_isolated(bulk: bool, abort_session: bool) {
     let acceptor = Arc::new(acceptor.build());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let client = local_proxy_client_with_root("app.test", &addr, ca.ca_cert_pem()).unwrap();
     let (closed_tx, closed_rx) = oneshot::channel();
     let closed_tx = Arc::new(Mutex::new(Some(closed_tx)));
     let server = tokio::spawn(async move {
@@ -189,12 +188,12 @@ async fn assert_slow_response_isolated(bulk: bool, abort_session: bool) {
         listen_addr: addr,
     };
     let state = tunnel_state_with_app(&snapshot.config_path, 0, false);
-    let task = tokio::spawn(run_connection(
+    state.lock().unwrap().proxy_ca_pem = Some(ca.ca_cert_pem().to_owned());
+    let task = tokio::spawn(run_tunnel_connection(
         client_socket,
         snapshot.clone(),
         state,
         snapshot.config_path,
-        client,
     ));
     send_relay(&mut relay, test_request("slow", "/sse")).await;
     assert!(

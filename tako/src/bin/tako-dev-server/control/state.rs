@@ -18,6 +18,8 @@ pub(crate) struct State {
     pub(crate) local_dns_enabled: bool,
     pub(crate) local_dns_port: u16,
 
+    /// Public CA of the running loopback proxy, used only for tunnel forwarding.
+    pub(crate) proxy_ca_pem: Option<String>,
     pub(crate) listen_port: u16,
     pub(crate) listen_addr: String,
     pub(crate) advertised_ip: String,
@@ -72,6 +74,7 @@ impl State {
             routes,
             local_dns_enabled,
             local_dns_port,
+            proxy_ca_pem: None,
             listen_port,
             listen_addr,
             advertised_ip,

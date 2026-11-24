@@ -10,7 +10,7 @@ pub use apps::{
     list_registered_apps, register_app, registered_tunnel_enabled, restart_app, unregister_app,
 };
 pub(crate) use commands::{DevServerStop, stop_server_if_running};
-pub use commands::{info, stop_server, toggle_lan, toggle_tunnel};
+pub use commands::{enable_tunnel, info, stop_server, toggle_lan, toggle_tunnel};
 #[allow(unused_imports)]
 pub(crate) use connection::LineClient;
 pub(crate) use connection::{DAEMON_UPGRADE_HINT, current_protocol};

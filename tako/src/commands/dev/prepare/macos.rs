@@ -16,6 +16,7 @@ mod resolver;
 #[cfg(target_os = "macos")]
 pub(crate) use resolver::{
     ensure_local_dns_resolver_configured, explain_pending_sudo_setup, local_dns_resolver_values,
+    short_dns_resolver_configured,
 };
 #[cfg(test)]
 pub(crate) use resolver::{
@@ -476,7 +477,7 @@ pub(crate) fn ensure_installed() -> Result<(), Box<dyn std::error::Error>> {
 
     if !crate::output::is_interactive() && !crate::output::is_root() {
         return Err(
-            "local dev proxy is not configured; run `tako dev` interactively once to install it"
+            "local dev proxy is not configured; run `tako dev` interactively once to install it, or use `tako dev --tunnel` for a public preview without sudo"
                 .into(),
         );
     }

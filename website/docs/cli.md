@@ -102,12 +102,18 @@ tako dev vite dev
 tako dev --variant preview
 tako dev --var preview
 tako dev --tunnel
+tako dev --tunnel --restart --background --json
 tako dev --restart
 tako dev --background --json
 tako dev --env test-e2e --background --json
 ```
 
 Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. `--variant foo` uses a variant hostname such as `myapp-foo.test`; `--restart` restarts the process with the current config instead of attaching. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
+
+`--tunnel` requests a public HTTPS preview and skips system DNS, proxy and CA
+installation. A fresh machine only needs the daemon's unprivileged loopback
+listener. The ready record's `url` is the public URL, including when attaching
+to a running app. Plain `tako dev` keeps local routing in non-interactive shells.
 
 `--env` defaults to `development`. A custom environment must be configured in
 `[envs.<env>]`, `[vars.<env>]`, or Compose service `x-tako.envs.<env>`.

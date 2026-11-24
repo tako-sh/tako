@@ -245,7 +245,16 @@ pub(super) async fn run_tunnel_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
+    let ca = state
+        .lock()
+        .map_err(|_| "dev server state poisoned".to_string())?
+        .proxy_ca_pem
+        .clone();
+    let client = local_proxy_client_with_trusted_root(
+        &snapshot.local_host,
+        &snapshot.listen_addr,
+        ca.as_deref(),
+    )?;
     run_connection(socket, snapshot, state, config_path, client).await
 }
 

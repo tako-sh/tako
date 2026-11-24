@@ -12,7 +12,7 @@ pub(super) const DEV_SERVER_STARTUP_WAIT_INTERVAL_MS: u64 = 50;
 
 pub async fn ensure_running(
     listen_addr: &str,
-    dns_ip: &str,
+    dns_ip: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sock = socket_path()?;
     let log_path = dev_server_log_path().unwrap_or_else(|_| PathBuf::from("dev-server.log"));
@@ -94,11 +94,16 @@ pub(super) fn format_dev_server_connect_error(
 
 fn spawn_dev_server(
     listen_addr: &str,
-    dns_ip: &str,
+    dns_ip: Option<&str>,
     log_path: &Path,
 ) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     use std::process::Stdio;
 
+    let mut args = vec!["--listen", listen_addr];
+    match dns_ip {
+        Some(ip) => args.extend(["--dns-ip", ip]),
+        None => args.push("--tunnel-only"),
+    }
     let mut running_from_source_checkout = false;
 
     // Try repo-local target paths first when running from a source checkout.
@@ -119,7 +124,7 @@ fn spawn_dev_server(
                 let log_file = open_dev_server_log(log_path)?;
                 let log_file_err = log_file.try_clone()?;
                 let child = std::process::Command::new(cand)
-                    .args(["--listen", listen_addr, "--dns-ip", dns_ip])
+                    .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::from(log_file))
                     .stderr(Stdio::from(log_file_err))
@@ -133,7 +138,7 @@ fn spawn_dev_server(
     let log_file = open_dev_server_log(log_path)?;
     let log_file_err = log_file.try_clone()?;
     match std::process::Command::new("tako-dev-server")
-        .args(["--listen", listen_addr, "--dns-ip", dns_ip])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))

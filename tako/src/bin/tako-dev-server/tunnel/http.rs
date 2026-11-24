@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn local_proxy_client(
     local_host: &str,
     listen_addr: &str,
