@@ -485,7 +485,7 @@ async fn a_restored_release_outranks_the_failed_candidates_schedules() {
     state.install_app_workflows(app_id, Some(candidate));
 
     state
-        .restore_app_workflows(app_id, &release, Some("/bin/sh"))
+        .restore_app_workflows(app_id, "v1", &release, Some("/bin/sh"))
         .await;
     let restored = state
         .state_store
@@ -497,6 +497,30 @@ async fn a_restored_release_outranks_the_failed_candidates_schedules() {
         "{restored} <= {candidate_revision}"
     );
     assert!(state.workflows.has(app_id));
+    assert!(state.workflows_waiting.lock().is_empty());
+
+    // A database that does not answer stops the candidate's runtime and
+    // leaves the release to the retry, under a newer revision again.
+    let token = tako_db::testing::TestServer::start()
+        .database("tests#workflows")
+        .token;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    state.workflows.set_store_resolver(Arc::new(move |app| {
+        Some(tako_workflows::WorkflowStoreConfig::hosted(
+            url.clone(),
+            token.clone(),
+            app,
+        ))
+    }));
+    state
+        .restore_app_workflows(app_id, "v1", &release, Some("/bin/sh"))
+        .await;
+    assert!(!state.workflows.is_running(app_id));
+    let waiting = state.workflows_waiting.lock()[app_id].clone();
+    assert_eq!(waiting.version, "v1");
+    assert!(waiting.fresh_revision);
 }
 
 #[tokio::test]

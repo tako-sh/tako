@@ -808,21 +808,32 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
                 tracing::warn!(%error, "failed to stop stale Compose app; will retry");
                 continue;
             }
-            {
+            let (app_name, workflows) = {
                 let mut s = state.lock().unwrap();
                 s.events.forget_app(&config_path);
-                if let Some(app) = s.apps.remove(&config_path) {
+                let app_name = s.apps.remove(&config_path).map(|app| {
                     if let Some(pid) = app.pid {
                         kill_app_process(pid);
                     }
                     state::remove_pid_file(&app.project_dir, &config_path);
-                }
+                    app.name
+                });
                 s.routes.remove_app(&format!("reg:{config_path}"));
+                (app_name.unwrap_or_default(), s.workflows.clone())
+            };
+            // As an unregistration does: the app's workers and its workflow
+            // database go with it.
+            if let Some(workflows) = workflows
+                && !app_name.is_empty()
+            {
+                workflows.stop(&app_name, Duration::from_secs(1)).await;
+                workflows.stop_pinned_socket(&app_name).await;
             }
             crate::databases::release(&config_path).await;
             crate::kv::release(&config_path).await;
             let channels = state.lock().unwrap().channels.clone();
             crate::dev_channels::release(channels.as_ref(), &config_path).await;
+            crate::dev_workflows::release(&config_path, &app_name).await;
         }
     }
 }

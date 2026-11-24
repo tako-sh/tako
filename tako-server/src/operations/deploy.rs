@@ -306,6 +306,8 @@ impl crate::ServerState {
         if previous_compose {
             let _lifecycle = app.lifecycle_gate.write().await;
             if let Err(error) = self.app_manager.stop_app_locked(&app).await {
+                self.databases
+                    .apply_bindings(app_name, &[&previous_databases]);
                 app.set_state(AppState::Error);
                 app.set_last_error(format!("Failed to stop the previous stack: {error}"));
                 return Response::error(format!("Failed to stop the previous stack: {error}"));

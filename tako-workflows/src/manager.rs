@@ -910,6 +910,15 @@ impl WorkflowManager {
         self.apps.read().contains_key(app)
     }
 
+    /// Whether `app` has an installed runtime taking new work, not one that
+    /// only drains after [`Self::retire`].
+    pub fn is_running(&self, app: &str) -> bool {
+        self.apps
+            .read()
+            .get(app)
+            .is_some_and(|entry| entry.accepting_new_work.load(Ordering::SeqCst))
+    }
+
     pub(crate) fn monitored_stores(&self) -> Vec<(String, Arc<RunsDb>)> {
         self.apps
             .read()

@@ -214,6 +214,7 @@ impl crate::ServerState {
                         .flatten();
                         self.restore_app_workflows(
                             &app_name,
+                            &previous_config.version,
                             &previous_release,
                             runtime_bin.as_deref(),
                         )

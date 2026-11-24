@@ -56,34 +56,60 @@ impl ServerState {
     /// fell back to. The candidate's workers may have registered its
     /// schedules already, so the restored release takes a newer revision
     /// than the candidate's, and keeps it for later recoveries.
+    /// If its database does not answer, the candidate's runtime stops and a
+    /// background task restores the release's once it does.
     pub(crate) async fn restore_app_workflows(
         &self,
         app_name: &str,
+        version: &str,
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) {
         if self.is_draining() {
             return;
         }
-        let restored = async {
-            let revision = self
-                .sync_app_workflows_as(
-                    app_name,
-                    release_path,
-                    runtime_bin_path,
-                    ScheduleActivation::Deploy,
-                )
-                .await?;
-            if let Some(revision) = revision {
-                self.state_store
-                    .set_workflow_schedule_revision(app_name, revision)?;
-            }
-            Ok::<_, StateStoreError>(())
+        let Err(error) = self
+            .reinstall_app_workflows(app_name, release_path, runtime_bin_path)
+            .await
+        else {
+            return;
+        };
+        tracing::warn!(app = app_name, %error, "Failed to restore workflows");
+        self.workflows.retire(app_name);
+        if matches!(error, StateStoreError::WorkflowStoreUnavailable(_)) {
+            self.workflows_waiting.lock().insert(
+                app_name.to_string(),
+                crate::server_state::WaitingWorkflows {
+                    version: version.to_string(),
+                    release_path: release_path.to_path_buf(),
+                    runtime_bin_path: runtime_bin_path.map(str::to_string),
+                    fresh_revision: true,
+                },
+            );
         }
-        .await;
-        if let Err(error) = restored {
-            tracing::warn!(app = app_name, %error, "Failed to restore workflows");
+    }
+
+    /// Install the release's runtime under a new schedule revision, and keep
+    /// that revision for later recoveries.
+    async fn reinstall_app_workflows(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) -> Result<(), StateStoreError> {
+        let revision = self
+            .sync_app_workflows_as(
+                app_name,
+                release_path,
+                runtime_bin_path,
+                ScheduleActivation::Deploy,
+            )
+            .await?;
+        if let Some(revision) = revision {
+            self.state_store
+                .set_workflow_schedule_revision(app_name, revision)?;
         }
+        Ok(())
     }
 
     /// Install the release's runtime and return its schedule revision.
@@ -411,19 +437,27 @@ impl ServerState {
             }
             let lock = self.get_deploy_lock(&app_name).await;
             let _guard = lock.lock().await;
+            // A drain may have begun while this waited for the lock.
+            if self.is_draining() {
+                return;
+            }
             let current = self.app_manager.get_app(&app_name).filter(|app| {
                 let config = app.config.read();
                 config.version == waiting.version && !config.stopped
             });
-            if current.is_some() && !self.workflows.has(&app_name) {
-                match self
-                    .try_sync_app_workflows(
-                        &app_name,
-                        &waiting.release_path,
-                        waiting.runtime_bin_path.as_deref(),
-                    )
-                    .await
-                {
+            // A retired runtime may still drain; only a running one, which a
+            // deploy installed meanwhile, ends the wait.
+            if current.is_some() && !self.workflows.is_running(&app_name) {
+                let release_path = &waiting.release_path;
+                let runtime_bin_path = waiting.runtime_bin_path.as_deref();
+                let started = if waiting.fresh_revision {
+                    self.reinstall_app_workflows(&app_name, release_path, runtime_bin_path)
+                        .await
+                } else {
+                    self.try_sync_app_workflows(&app_name, release_path, runtime_bin_path)
+                        .await
+                };
+                match started {
                     Err(StateStoreError::WorkflowStoreUnavailable(_)) => continue,
                     Err(error) => {
                         tracing::warn!(app = %app_name, %error, "Failed to start workflows")

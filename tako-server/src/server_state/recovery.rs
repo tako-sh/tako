@@ -227,6 +227,7 @@ impl ServerState {
                             version: config.version.clone(),
                             release_path: release_path.clone(),
                             runtime_bin_path: runtime_bin_path.clone(),
+                            fresh_revision: false,
                         },
                     );
                 } else {

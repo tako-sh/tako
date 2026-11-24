@@ -156,6 +156,9 @@ pub(crate) struct WaitingWorkflows {
     pub(crate) version: String,
     pub(crate) release_path: std::path::PathBuf,
     pub(crate) runtime_bin_path: Option<String>,
+    /// The release replaces a failed deployment's runtime, whose schedules
+    /// may have registered, so it takes a newer schedule revision.
+    pub(crate) fresh_revision: bool,
 }
 
 /// Why a persisted app was left unregistered at restore.
