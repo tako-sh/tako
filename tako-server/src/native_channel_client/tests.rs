@@ -1,4 +1,5 @@
 use super::*;
+use crate::channels::test_replay::TestReplay;
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -117,59 +118,56 @@ async fn notice(stream: &mut DuplexStream, notification: Notification) {
     stream.write_u32(bytes.len() as u32).await.unwrap();
     stream.write_all(&bytes).await.unwrap();
 }
-async fn attached() -> (ProxyChannelStore, Arc<FakeBroker>, DuplexStream) {
+/// The app's history, with its state created as the broker's writer creates it.
+async fn replay() -> TestReplay {
+    let replay = TestReplay::start(scope().as_str());
+    let config = replay.target().config(&scope());
+    tokio::task::spawn_blocking(move || ChannelStore::open_config(config).unwrap())
+        .await
+        .unwrap();
+    replay
+}
+async fn reader(replay: &TestReplay) -> Arc<ChannelStore> {
+    let config = replay.target().config(&scope());
+    tokio::task::spawn_blocking(move || Arc::new(ChannelStore::open_reader_config(config).unwrap()))
+        .await
+        .unwrap()
+}
+async fn attached() -> (ProxyChannelStore, Arc<FakeBroker>, DuplexStream, TestReplay) {
+    let replay = replay().await;
     let link = Arc::new(FakeBroker::default());
     let server = link.stream().await;
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
-    let proxy =
-        ProxyChannelStore::subscribe(store, scope(), ChannelTarget::Local, link.clone(), None)
-            .await
-            .unwrap();
-    (proxy, link, server)
+    let store = reader(&replay).await;
+    let proxy = ProxyChannelStore::subscribe(store, scope(), replay.target(), link.clone())
+        .await
+        .unwrap();
+    (proxy, link, server, replay)
 }
 
 #[tokio::test]
 async fn initial_registration_and_subscription_precede_reader_exposure() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("channels.sqlite");
-    let writer = ChannelStore::open_sqlite(&path).unwrap();
+    let replay = replay().await;
     let link = Arc::new(FakeBroker::default());
     let _server = link.stream().await;
-    let proxy =
-        ProxyChannelStore::open_with_link(path, scope(), ChannelTarget::Local, link.clone())
-            .await
-            .unwrap();
+    let proxy = ProxyChannelStore::open_with_link(scope(), replay.target(), link.clone())
+        .await
+        .unwrap();
     proxy.ensure_ready().await.unwrap();
     assert_eq!(*link.calls.lock(), vec!["register", "subscribe"]);
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
-    drop(writer);
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
-async fn replaced_sqlite_tree_invalidates_cached_reader_and_notifications() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("data");
-    std::fs::create_dir(&root).unwrap();
-    let path = root.join("channels.sqlite");
-    let _writer = ChannelStore::open_sqlite(&path).unwrap();
-    let link = Arc::new(FakeBroker::default());
-    let mut notices = link.stream().await;
-    let proxy =
-        ProxyChannelStore::open_with_link(path, scope(), ChannelTarget::Local, link.clone())
-            .await
-            .unwrap();
+async fn backend_change_notice_stops_the_subscription_and_fails_closed() {
+    let (proxy, _link, mut notices, _replay) = attached().await;
     let mut resets = proxy.resets("events");
-    std::fs::rename(&root, temp.path().join("previous-data")).unwrap();
-    std::fs::create_dir(&root).unwrap();
-    assert!(
-        proxy.check_backend(&ChannelTarget::Local).is_err(),
-        "cache must reopen a replaced database"
-    );
-    assert!(
-        proxy.ensure_ready().await.is_err(),
-        "old readers must fail closed"
-    );
-    notice(&mut notices, Notification::Gap).await;
+    notice(&mut notices, Notification::BackendChanged).await;
     tokio::time::timeout(Duration::from_secs(1), resets.changed())
         .await
         .unwrap()
@@ -181,10 +179,14 @@ async fn replaced_sqlite_tree_invalidates_cached_reader_and_notifications() {
     })
     .await
     .expect("stale subscriptions must stop instead of reconnecting the old reader");
+    assert!(
+        proxy.ensure_ready().await.is_err(),
+        "old readers must fail closed"
+    );
 }
 #[tokio::test]
 async fn notification_delivery_does_not_reinsert_or_republish() {
-    let (proxy, _link, mut server) = attached().await;
+    let (proxy, _link, mut server, _replay) = attached().await;
     let mut changes = proxy.changes("events");
     let mut publications = proxy.publications();
     notice(
@@ -199,7 +201,13 @@ async fn notification_delivery_does_not_reinsert_or_republish() {
         .await
         .unwrap()
         .unwrap();
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(publications.try_recv().is_err());
     let mut events = proxy.subscribe_ephemeral("events").unwrap();
     notice(
@@ -224,11 +232,17 @@ async fn notification_delivery_does_not_reinsert_or_republish() {
         .await
         .unwrap()
         .unwrap();
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 #[tokio::test]
 async fn disconnect_resets_and_reconnects_registration_before_delivery() {
-    let (proxy, link, first) = attached().await;
+    let (proxy, link, first, _replay) = attached().await;
     let mut second = link.stream().await;
     let mut resets = proxy.resets("events");
     drop(first);
@@ -253,11 +267,17 @@ async fn disconnect_resets_and_reconnects_registration_before_delivery() {
         .await
         .unwrap()
         .unwrap();
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 #[tokio::test]
 async fn native_sync_and_publish_never_write_the_reader_or_deliver_ack_twice() {
-    let (proxy, link, _server) = attached().await;
+    let (proxy, link, _server, _replay) = attached().await;
     let mut changes = proxy.changes("events");
     let mut publications = proxy.publications();
     proxy.sync_channel_async("events", &auth()).await.unwrap();
@@ -273,7 +293,13 @@ async fn native_sync_and_publish_never_write_the_reader_or_deliver_ack_twice() {
         .await
         .unwrap();
     assert_eq!(*link.calls.lock(), vec!["subscribe", "sync", "publish"]);
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(!changes.has_changed().unwrap());
     assert!(publications.try_recv().is_err());
     link.reject.store(true, Ordering::SeqCst);
@@ -290,21 +316,28 @@ async fn native_sync_and_publish_never_write_the_reader_or_deliver_ack_twice() {
             .await
             .is_err()
     );
-    assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
+    assert!(
+        proxy
+            .read_after_async("events", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(publications.try_recv().is_err());
     changes.borrow_and_update();
 }
 #[tokio::test]
 async fn backend_change_is_explicit_and_subscription_task_does_not_retain_store() {
-    let (proxy, _link, mut server) = attached().await;
+    let (proxy, _link, mut server, _replay) = attached().await;
+    let rotated = tako_db::generate_token();
     let error = proxy
-        .check_backend(&ChannelTarget::Postgres {
-            url: zeroize::Zeroizing::new("postgres://secret".into()),
+        .check_backend(&ChannelTarget::Hosted {
+            token: zeroize::Zeroizing::new(rotated.clone()),
         })
         .unwrap_err()
         .to_string();
     assert!(error.contains("configuration changed"));
-    assert!(!error.contains("secret"));
+    assert!(!error.contains(&rotated));
     let weak = Arc::downgrade(proxy.store());
     drop(proxy);
     let mut byte = [0];
@@ -319,10 +352,11 @@ async fn backend_change_is_explicit_and_subscription_task_does_not_retain_store(
 }
 #[tokio::test]
 async fn failed_initial_subscription_does_not_expose_a_ready_reader() {
+    let replay = replay().await;
     let link = Arc::new(FakeBroker::default());
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let store = reader(&replay).await;
     assert!(
-        ProxyChannelStore::subscribe(store, scope(), ChannelTarget::Local, link, None)
+        ProxyChannelStore::subscribe(store, scope(), replay.target(), link)
             .await
             .is_err()
     );
@@ -337,7 +371,7 @@ fn canonical_scope_defaults_to_production_without_allowing_paths() {
 
 #[tokio::test]
 async fn terminated_subscription_worker_cannot_leave_reader_marked_ready() {
-    let (proxy, _link, _server) = attached().await;
+    let (proxy, _link, _server, _replay) = attached().await;
     proxy.native.as_ref().unwrap().task.abort();
     tokio::task::yield_now().await;
     assert!(proxy.ensure_ready().await.is_err());
@@ -345,7 +379,7 @@ async fn terminated_subscription_worker_cannot_leave_reader_marked_ready() {
 
 #[tokio::test]
 async fn native_presence_uses_ipc_writer_and_drop_cleanup_keeps_wrapper_until_leave() {
-    let (proxy, link, _server) = attached().await;
+    let (proxy, link, _server, _replay) = attached().await;
     let proxy = Arc::new(proxy);
     let mut presence = tako_channels::PresenceSession::new_with_writer(
         proxy.clone(),

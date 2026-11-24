@@ -1,7 +1,7 @@
 use super::*;
 use crate::stream::close_payload;
 use std::path::PathBuf;
-use tako_database::{Binding, DatabaseHost, DatabaseId, Home, generate_token, hash_token};
+use tako_db::testing::TestServer;
 
 struct Db {
     url: String,
@@ -21,32 +21,15 @@ impl Db {
 
 // Run the production SQL and result decoder through the real authenticated host.
 async fn with_database(test: impl FnOnce(Db) + Send + 'static) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("database.sqlite");
-    DatabaseHost::create_file(&path).unwrap();
-    let db = DatabaseId::generate();
-    let host = DatabaseHost::new(Default::default());
-    host.register(db.clone(), path.clone()).unwrap();
-    let token = generate_token();
-    host.set_bindings(
-        "test#channels",
-        vec![Binding {
-            database: db,
-            token_hash: hash_token(&token),
-            home: Home::Local,
-        }],
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(tako_database::http::serve(
-        host,
-        listener,
-        tako_database::http::Access::Apps,
-    ));
-    tokio::task::spawn_blocking(move || test(Db { url, token, path }))
-        .await
-        .unwrap();
-    server.abort();
+    let server = TestServer::start();
+    let database = server.database("test#channels");
+    let db = Db {
+        url: server.url.clone(),
+        token: database.token,
+        path: database.path,
+    };
+    tokio::task::spawn_blocking(move || test(db)).await.unwrap();
+    drop(server);
 }
 
 fn event(data: &str) -> ChannelPublishPayload {
@@ -87,7 +70,7 @@ async fn appends_delete_their_own_expired_history_and_leave_other_streams_and_ap
         // A quiet stream's expired row is already invisible; maintenance deletes it.
         assert_eq!(rows("one", "b"), 1);
         assert!(app.read_after("b", None, 10).unwrap().is_empty());
-        app.prune(0).unwrap();
+        app.prune().unwrap();
         assert_eq!(rows("one", "b"), 0);
         // Another app's identical stream keeps its own history.
         assert_eq!(other.read_after("a", None, 10).unwrap(), [other_event]);
@@ -159,7 +142,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             )
             .unwrap();
         assert_eq!(old, (1, 60_000));
-        app.prune(i64::MIN).unwrap(); // Only database time counts.
+        app.prune().unwrap();
         assert_eq!(
             sql.query_row("SELECT stream_count FROM tako_replay_apps", [], |r| r
                 .get::<_, i64>(0))
@@ -167,7 +150,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             0
         );
         assert!(app.publish("room", &event("reopened"), None).unwrap().1);
-        app.prune(i64::MAX).unwrap();
+        app.prune().unwrap();
         assert_eq!(app.read_after("room", None, 10).unwrap().len(), 1);
     })
     .await;
@@ -295,7 +278,7 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
             reader.latest_ids(&channels).unwrap(),
             (vec![("a".into(), 1)], false)
         );
-        // `tako sqlite reset` leaves an empty file under the open handles.
+        // `tako db reset` leaves an empty file under the open handles.
         db.sql().execute_batch(RESET).unwrap();
         assert!(reader.latest_ids(&channels).is_err());
         assert!(reader.read_after("a", None, 10).is_err());
@@ -330,7 +313,7 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
         // Maintenance recovers an idle writer, and readers never create state.
         db.sql().execute_batch(RESET).unwrap();
         assert!(HostedChannelStore::open(&db.url, &db.token, "one", true).is_err());
-        app.prune(0).unwrap();
+        app.prune().unwrap();
         db.open("one", true);
     })
     .await;

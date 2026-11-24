@@ -452,7 +452,7 @@ fn failed_rolling_update_keeps_previous_release_serving() {
     );
 
     let state_db = server.data_dir().join("state.sqlite");
-    let conn = tako_sqlite::open_local(&state_db).unwrap();
+    let conn = rusqlite::Connection::open(&state_db).unwrap();
     let ssl_rows: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM app_ssl WHERE app = ?1",

@@ -51,8 +51,6 @@ mod runtime_events;
 mod scaling;
 mod secret_snapshot;
 mod server_state;
-#[cfg(target_os = "linux")]
-mod snapshot_live_wal;
 mod socket;
 mod startup;
 mod state_store;
@@ -296,27 +294,6 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub extract_dest: Option<String>,
 
-    /// Snapshot an app data directory into a private work directory.
-    #[arg(long, hide = true, num_args = 3, value_names = ["DATA_DIR", "RELATIVE_SOURCE", "DESTINATION"])]
-    pub snapshot_data: Option<Vec<std::path::PathBuf>>,
-
-    /// Snapshot only the SQLite databases of an app data directory.
-    #[arg(long, hide = true, num_args = 3, value_names = ["DATA_DIR", "RELATIVE_SOURCE", "DESTINATION"])]
-    pub snapshot_databases: Option<Vec<std::path::PathBuf>>,
-
-    /// Print the bytes of the SQLite databases in an app data directory.
-    #[arg(long, hide = true, num_args = 2, value_names = ["DATA_DIR", "RELATIVE_SOURCE"])]
-    pub measure_databases: Option<Vec<std::path::PathBuf>>,
-
-    /// Run one step of a backup restore described by a JSON request.
-    #[arg(long, hide = true, value_name = "REQUEST")]
-    pub restore_worker: Option<String>,
-
-    /// Read a busy WAL database within the filesystem ruleset supplied on stdin.
-    #[cfg(target_os = "linux")]
-    #[arg(long, hide = true, num_args = 2, value_names = ["SOURCE", "DESTINATION"])]
-    pub snapshot_live_wal: Option<Vec<std::path::PathBuf>>,
-
     /// Run the isolated image transform worker protocol on stdin/stdout.
     #[arg(long, hide = true)]
     pub image_worker: bool,
@@ -378,30 +355,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             command,
             Path::new(args.data_dir.as_deref().unwrap_or("/opt/tako")),
         );
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(paths) = &args.snapshot_live_wal {
-        snapshot_live_wal::run(&paths[0], &paths[1])?;
-        return Ok(());
-    }
-    if let Some(paths) = &args.snapshot_data {
-        operations::snapshot_data_tree(&paths[0], &paths[1], &paths[2])?;
-        return Ok(());
-    }
-    if let Some(paths) = &args.snapshot_databases {
-        operations::snapshot_database_tree(&paths[0], &paths[1], &paths[2])?;
-        return Ok(());
-    }
-    if let Some(request) = &args.restore_worker {
-        println!("{}", operations::run_restore_worker(request)?);
-        return Ok(());
-    }
-    if let Some(paths) = &args.measure_databases {
-        println!(
-            "{}",
-            operations::measure_database_tree(&paths[0], &paths[1])?
-        );
-        return Ok(());
     }
     if args.network_bootstrap {
         let data_dir = args.data_dir.as_deref().unwrap_or("/opt/tako");

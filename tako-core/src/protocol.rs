@@ -14,7 +14,6 @@ pub const PROTOCOL_VERSION: u32 = 0;
 pub const UPGRADE_RELOAD_MARKER_FILE: &str = ".upgrade-reload";
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
 pub const MAX_RELEASE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-pub const DEFAULT_BACKUP_RETENTION_DAYS: u16 = 30;
 /// Operations on the authenticated caller's server-local cache.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
@@ -286,40 +285,9 @@ pub enum Command {
         /// SSL certificate provider. Defaults to Let's Encrypt when omitted.
         #[serde(default)]
         ssl: SslBinding,
-        /// Private backup target for this app/environment, without access
-        /// keys or backup keys. When absent, any existing backup configuration
-        /// for the app is cleared.
-        #[serde(default)]
-        backup: Option<Box<BackupBinding>>,
         #[serde(default)]
         force: bool,
     },
-
-    /// Create a backup for the app immediately. When backup is provided, the
-    /// server fills its keys from the app environment's current secrets and
-    /// stores it before running the backup.
-    BackupNow {
-        app: String,
-        #[serde(default)]
-        backup: Option<Box<BackupBinding>>,
-        /// The app environment's secret snapshot to take the backup keys and
-        /// storage credentials from, from [`Command::SecretsDigest`]. Every
-        /// target server applies the same snapshot.
-        #[serde(default)]
-        secrets_digest: Option<String>,
-    },
-
-    /// List backups recorded in the app's remote backup index.
-    ListBackups { app: String },
-
-    /// Get backup configuration and latest backup status for an app.
-    BackupStatus { app: String },
-
-    /// Create a short-lived download URL for a backup archive.
-    BackupDownloadUrl { app: String, backup_id: String },
-
-    /// Restore a full backup, or the SQLite databases of a database snapshot, on this server.
-    RestoreBackup { app: String, backup_id: String },
 
     /// Create a database hosted on this server.
     CreateDatabase {
@@ -402,7 +370,7 @@ pub enum Command {
         backup_key_base64: Option<String>,
     },
 
-    /// Run one SQL statement as an administrator, for `tako sqlite shell`.
+    /// Run one SQL statement as an administrator, for `tako db shell`.
     QueryDatabase { name: String, sql: String },
 
     /// Read or write one key of a KV store this server hosts, as an
@@ -760,9 +728,10 @@ pub enum Command {
         request: crate::network::NetworkRequest,
     },
 
-    /// Operator: list an app's workflow runs on this server's store, newest
-    /// first. `limit` defaults to [`WORKFLOW_RUNS_DEFAULT_LIMIT`] and must be
-    /// between 1 and [`WORKFLOW_RUNS_MAX_LIMIT`].
+    /// Operator: list an app's workflow runs, newest first. Every server of
+    /// the environment reads the same shared store. `limit` defaults to
+    /// [`WORKFLOW_RUNS_DEFAULT_LIMIT`] and must be between 1 and
+    /// [`WORKFLOW_RUNS_MAX_LIMIT`].
     ListWorkflowRuns {
         app: String,
         #[serde(default)]
@@ -978,15 +947,6 @@ impl std::str::FromStr for WorkflowRunStatus {
     }
 }
 
-/// Which workflow store answered. A `postgres` store is shared by every
-/// server of the app/environment; a `sqlite` store belongs to one server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowStoreKind {
-    Sqlite,
-    Postgres,
-}
-
 /// A stored JSON value, capped for management replies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CappedJson {
@@ -1025,7 +985,6 @@ pub struct WorkflowRunSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListWorkflowRunsResponse {
     pub app: String,
-    pub store: WorkflowStoreKind,
     pub runs: Vec<WorkflowRunSummary>,
     /// True when more runs match than `runs` holds.
     pub has_more: bool,
@@ -1091,12 +1050,11 @@ pub struct WorkflowRunDetail {
     pub signals_total: u64,
 }
 
-/// Response payload for `Command::GetWorkflowRun`. `run` is null when this
-/// store has no run with that ID.
+/// Response payload for `Command::GetWorkflowRun`. `run` is null when the
+/// app has no run with that ID.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetWorkflowRunResponse {
     pub app: String,
-    pub store: WorkflowStoreKind,
     pub run: Option<WorkflowRunDetail>,
 }
 
@@ -1104,7 +1062,6 @@ pub struct GetWorkflowRunResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowRunTransition {
     pub app: String,
-    pub store: WorkflowStoreKind,
     pub id: String,
     pub previous_status: WorkflowRunStatus,
     pub status: WorkflowRunStatus,
@@ -1149,8 +1106,8 @@ pub enum SslProvider {
 }
 
 /// A secret record version a client published for an app environment:
-/// its record kind (`app`, `credential`, `storage`, `backup_key` or
-/// `backup_active`), name and the revision the server accepted.
+/// its record kind (`app`, `credential` or `storage`), name and the
+/// revision the server accepted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishedSecret {
@@ -1176,193 +1133,20 @@ impl Default for SslBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackupBinding {
-    pub storage: StorageBinding,
-    #[serde(default)]
-    pub backup_keys: Vec<BackupKeyBinding>,
-    #[serde(default = "default_backup_retention_days")]
-    pub retention_days: u16,
-}
-
+/// A key that encrypts a hosted database's snapshot files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackupKeyBinding {
     pub id: String,
     pub key_base64: String,
 }
 
-fn default_backup_retention_days() -> u16 {
-    DEFAULT_BACKUP_RETENTION_DAYS
-}
-
+/// How a snapshot file was encrypted, as its manifest records it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEncryptionInfo {
     pub algorithm: String,
     pub key_id: String,
     pub nonce_base64: String,
     pub tag_base64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupInfo {
-    pub id: String,
-    pub app: String,
-    pub environment: String,
-    pub server: String,
-    pub created_at_unix_secs: i64,
-    pub size_bytes: u64,
-    pub sha256_hex: String,
-    pub archive_key: String,
-    pub manifest_key: String,
-    pub encryption: BackupEncryptionInfo,
-    /// Entries written before kinds existed are full archives.
-    #[serde(default)]
-    pub kind: BackupKind,
-    /// Keyed digest of the SQLite databases the entry captured, used to skip
-    /// unchanged database snapshots. Absent on older entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub database_digest: Option<String>,
-    /// Paths, relative to the app data directory, of the SQLite databases a
-    /// database snapshot contains. Empty for full archives.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub databases: Vec<String>,
-}
-
-impl BackupInfo {
-    /// File name for saving a download of the encrypted archive. Built from
-    /// the id and kind, never from the storage object key: the index is
-    /// remote text that anyone with write access to the bucket can change.
-    /// Fails unless the id has the form Tako creates, `b<secs>-<nanoid>` for
-    /// a full archive or `d<secs>-<nanoid>` for a database snapshot.
-    pub fn archive_file_name(&self) -> Result<String, String> {
-        let prefix = match self.kind {
-            BackupKind::Full => 'b',
-            BackupKind::Databases => 'd',
-        };
-        let valid = self.id.strip_prefix(prefix).is_some_and(|rest| {
-            rest.split_once('-').is_some_and(|(secs, suffix)| {
-                !secs.is_empty()
-                    && secs.bytes().all(|byte| byte.is_ascii_digit())
-                    && !suffix.is_empty()
-                    && suffix
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-            })
-        });
-        if !valid {
-            return Err(format!(
-                "Backup id {:?} is not a valid {} backup id",
-                self.id,
-                self.kind.as_str()
-            ));
-        }
-        Ok(match self.kind {
-            BackupKind::Full => format!("{}.tar.zst.enc", self.id),
-            BackupKind::Databases => format!("{}.databases.tar.zst.enc", self.id),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupKind {
-    /// The whole app data tree.
-    #[default]
-    Full,
-    /// Only the SQLite databases of the app data tree.
-    Databases,
-}
-
-impl BackupKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Databases => "databases",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupListResponse {
-    pub app: String,
-    pub backups: Vec<BackupInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupStatusResponse {
-    pub app: String,
-    pub enabled: bool,
-    #[serde(default)]
-    pub retention_days: Option<u16>,
-    /// The latest full archive.
-    #[serde(default)]
-    pub last_backup: Option<BackupInfo>,
-    /// The latest failed manual full archive attempt.
-    #[serde(default)]
-    pub last_backup_failure: Option<BackupFailure>,
-    /// Restore records that still need attention, even if backups are disabled.
-    #[serde(default)]
-    pub unfinished_restores: Vec<BackupRestoreStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupRestoreStatus {
-    pub path: String,
-    pub state: BackupRestoreState,
-    pub blocks_app: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupRestoreState {
-    InProgress,
-    Unfinished,
-    Abandoned,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupFailureReason {
-    /// Creating or uploading the full archive failed.
-    Failed,
-    /// Too little free disk for the archive's temporary copies.
-    InsufficientDisk,
-    /// The remote archive index could not be read.
-    IndexUnreadable,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupFailure {
-    pub at_unix_secs: i64,
-    pub reason: BackupFailureReason,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupDownloadUrlResponse {
-    pub backup: BackupInfo,
-    pub url: String,
-    pub expires_in_seconds: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupRestoreResponse {
-    pub backup: BackupInfo,
-    /// What a database snapshot restore changed. Absent for full archives.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub databases: Option<RestoredDatabases>,
-}
-
-/// Paths relative to the app data directory.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RestoredDatabases {
-    /// Live databases replaced by their snapshot copies.
-    pub replaced: Vec<String>,
-    /// Snapshot databases that did not exist live and were created.
-    pub created: Vec<String>,
-    /// Live databases the snapshot does not contain, left as they were.
-    pub untouched: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

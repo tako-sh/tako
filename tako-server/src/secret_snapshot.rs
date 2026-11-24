@@ -4,13 +4,13 @@
 //! by digest, and every target server opens the same record versions with its
 //! own key grants through the local network agent.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::Instant;
 
 use serde::Deserialize;
-use tako_core::{BackupBinding, BackupKeyBinding, PublishedSecret, SslBinding, StorageBinding};
+use tako_core::{PublishedSecret, SslBinding, StorageBinding};
 use tako_network::shared::{PublishedVersion, RecordKind, ScopeSecrets};
 
 /// How long a server waits for a pinned snapshot to replicate to it.
@@ -18,7 +18,6 @@ const WAIT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(250);
 
 pub(crate) const SSL_CLOUDFLARE: &str = "ssl.cloudflare";
-pub(crate) const POSTGRES_URL: &str = "postgres_url";
 
 /// An app environment's values as one deploy applies them.
 pub(crate) struct Resolved {
@@ -27,8 +26,6 @@ pub(crate) struct Resolved {
     credentials: HashMap<String, String>,
     /// Storage resource name to its access key ID and secret access key.
     storages: HashMap<String, (String, String)>,
-    /// Older keys first; the active key last.
-    backup_keys: Vec<BackupKeyBinding>,
     /// Values past their expiry, in snapshot order, with the refusal to
     /// report: the storage resource for storage credentials, `None` for app
     /// secrets and provider credentials. Each operation refuses only the ones
@@ -67,12 +64,14 @@ impl Resolved {
         let mut app = HashMap::new();
         let mut credentials = HashMap::new();
         let mut storages = HashMap::new();
-        let mut keys = BTreeMap::new();
-        let mut active = None;
         let mut expired = Vec::new();
         for value in scope.values {
             let content = value.content;
-            if matches!(value.kind, RecordKind::App | RecordKind::Credential)
+            // Only values a deploy applies can stop it: a credential this
+            // server does not use, such as a retired `postgres_url`, cannot.
+            let applied = value.kind == RecordKind::App
+                || (value.kind == RecordKind::Credential && value.name == SSL_CLOUDFLARE);
+            if applied
                 && let Some(expires_on) = &content.expires_on
                 && expires_on.as_str() <= today.as_str()
             {
@@ -116,35 +115,16 @@ impl Resolved {
                         (stored.access_key_id.value, stored.secret_access_key.value),
                     );
                 }
-                RecordKind::BackupKey => {
-                    keys.insert(value.name, text);
-                }
-                RecordKind::BackupActive => active = Some(text),
+                // Legacy app data archive keys, which nothing uses any more.
+                RecordKind::BackupKey | RecordKind::BackupActive => {}
                 RecordKind::Database | RecordKind::DatabaseKey => {}
             }
-        }
-        let mut backup_keys: Vec<_> = keys
-            .iter()
-            .filter(|(id, _)| Some(*id) != active.as_ref())
-            .map(|(id, key)| BackupKeyBinding {
-                id: id.clone(),
-                key_base64: key.clone(),
-            })
-            .collect();
-        if let Some(active) = &active
-            && let Some(key) = keys.get(active)
-        {
-            backup_keys.push(BackupKeyBinding {
-                id: active.clone(),
-                key_base64: key.clone(),
-            });
         }
         Ok(Self {
             digest: scope.digest,
             app,
             credentials,
             storages,
-            backup_keys,
             expired,
             env,
         })
@@ -157,15 +137,6 @@ impl Resolved {
             Some((_, refusal)) => Err(refusal.clone()),
             None => Ok(()),
         }
-    }
-
-    /// The credentials the server itself uses at runtime. Never passed to app
-    /// code.
-    pub(crate) fn runtime_credentials(&self) -> HashMap<String, String> {
-        self.credentials
-            .get(POSTGRES_URL)
-            .map(|url| HashMap::from([(POSTGRES_URL.to_string(), url.clone())]))
-            .unwrap_or_default()
     }
 
     /// Supply the Cloudflare token when the environment has one.
@@ -215,19 +186,6 @@ impl Resolved {
         for (name, binding) in storages {
             self.fill_storage(name, binding)?;
         }
-        Ok(())
-    }
-
-    /// Supply a backup target's access keys and backup encryption keys.
-    pub(crate) fn fill_backup(&self, backup: &mut BackupBinding) -> Result<(), String> {
-        self.fill_storage("backup", &mut backup.storage)?;
-        if self.backup_keys.is_empty() {
-            return Err(format!(
-                "Backup encryption key is missing for environment '{}'. Deploy from a full client or run `tako backup now` to create it.",
-                self.env
-            ));
-        }
-        backup.backup_keys = self.backup_keys.clone();
         Ok(())
     }
 }
@@ -318,6 +276,7 @@ async fn read(
 pub(crate) mod test_file {
     use super::*;
     use serde::Serialize;
+    use std::collections::BTreeMap;
 
     pub(crate) const NAME: &str = "test-secrets.json";
 
@@ -330,8 +289,6 @@ pub(crate) mod test_file {
         pub(crate) credentials: BTreeMap<String, String>,
         #[serde(default)]
         pub(crate) storages: BTreeMap<String, (String, String)>,
-        #[serde(default)]
-        pub(crate) backup_keys: Vec<(String, String)>,
     }
 
     /// The digest servers report for `scope` read from the test file.
@@ -402,12 +359,6 @@ pub(crate) mod test_file {
             });
             push(RecordKind::Storage, name, stored.to_string());
         }
-        for (id, key) in &entry.backup_keys {
-            push(RecordKind::BackupKey, id, key.clone());
-        }
-        if let Some((active, _)) = entry.backup_keys.last() {
-            push(RecordKind::BackupActive, "active", active.clone());
-        }
         Ok(Some(ScopeSecrets {
             digest,
             caught_up: true,
@@ -448,28 +399,15 @@ mod tests {
             APP,
             TestScope {
                 app: [("API_KEY".into(), "app-secret".into())].into(),
-                credentials: [
-                    (SSL_CLOUDFLARE.into(), "cf-token".into()),
-                    (POSTGRES_URL.into(), "postgres://runtime".into()),
-                ]
-                .into(),
+                credentials: [(SSL_CLOUDFLARE.into(), "cf-token".into())].into(),
                 storages: [("r2".into(), ("access".into(), "secret".into()))].into(),
-                backup_keys: vec![
-                    ("backup-key-new".into(), "new".into()),
-                    ("backup-key-old".into(), "old".into()),
-                ],
             },
         );
         let resolved = resolve(dir.path(), APP, Some(&digest), &[]).await.unwrap();
         assert_eq!(resolved.digest, digest);
         assert_eq!(resolved.app["API_KEY"], "app-secret");
-        // App code never receives provider credentials, and the server keeps
-        // only the one it uses at runtime.
+        // App code never receives provider credentials.
         assert!(!resolved.app.contains_key(SSL_CLOUDFLARE));
-        assert_eq!(
-            resolved.runtime_credentials(),
-            HashMap::from([(POSTGRES_URL.to_string(), "postgres://runtime".to_string())])
-        );
 
         let mut ssl = SslBinding::default();
         resolved.fill_ssl(&mut ssl);
@@ -489,21 +427,6 @@ mod tests {
                 .unwrap_err()
                 .contains("tako storage credentials other --env production")
         );
-
-        // The active key, the last one written, goes last.
-        let mut backup = BackupBinding {
-            storage: s3("r2"),
-            backup_keys: Vec::new(),
-            retention_days: 7,
-        };
-        resolved.fill_backup(&mut backup).unwrap();
-        let ids: Vec<_> = backup
-            .backup_keys
-            .iter()
-            .map(|key| key.id.as_str())
-            .collect();
-        assert_eq!(ids, ["backup-key-new", "backup-key-old"]);
-        assert_eq!(backup.storage.access_key_id.as_deref(), Some("access"));
     }
 
     #[tokio::test]
@@ -577,86 +500,14 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_needs_only_its_target_and_keys_to_be_current() {
-        let value = |kind, name: &str, value: String, expires_on: Option<&str>| {
-            tako_network::shared::ScopeValue {
-                kind,
-                name: name.into(),
-                content: tako_network::shared::RecordContent {
-                    value: value.into(),
-                    expires_on: expires_on.map(Into::into),
-                },
-            }
-        };
-        let storage = |expires_on: &str| {
-            serde_json::json!({
-                "access_key_id": {"value": "access"},
-                "secret_access_key": {"value": "secret", "expires_on": expires_on},
-            })
-            .to_string()
-        };
-        let scope = ScopeSecrets {
-            digest: "d".into(),
-            caught_up: true,
-            missing_keys: Vec::new(),
-            values: vec![
-                value(RecordKind::App, "OLD_KEY", "x".into(), Some("2000-01-01")),
-                value(
-                    RecordKind::Credential,
-                    POSTGRES_URL,
-                    "postgres://old".into(),
-                    Some("2000-01-01"),
-                ),
-                value(RecordKind::Storage, "uploads", storage("2000-01-01"), None),
-                value(RecordKind::Storage, "backups", storage("2999-01-01"), None),
-                value(RecordKind::BackupKey, "backup-key-1", "key".into(), None),
-                value(
-                    RecordKind::BackupActive,
-                    "active",
-                    "backup-key-1".into(),
-                    None,
-                ),
-            ],
-        };
-        let resolved = Resolved::from_scope(APP, scope).unwrap();
-
-        // A deploy still refuses the expired app secret.
-        let error = resolved.refuse_expired().unwrap_err();
-        assert!(error.contains("Secret 'OLD_KEY'"), "{error}");
-
-        // A backup to a current target succeeds with an expired app secret,
-        // credential, and unrelated storage resource.
-        let mut backup = BackupBinding {
-            storage: s3("backups"),
-            backup_keys: Vec::new(),
-            retention_days: 7,
-        };
-        resolved.fill_backup(&mut backup).unwrap();
-        assert_eq!(backup.storage.secret_access_key.as_deref(), Some("secret"));
-        assert_eq!(backup.backup_keys.len(), 1);
-
-        // A backup to the expired target is refused.
-        let mut backup = BackupBinding {
-            storage: s3("uploads"),
-            backup_keys: Vec::new(),
-            retention_days: 7,
-        };
-        let error = resolved.fill_backup(&mut backup).unwrap_err();
-        assert!(
-            error.contains("Storage credentials for 'uploads'"),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn published_versions_read_record_kinds() {
         let versions = published_versions(&[PublishedSecret {
-            kind: "backup_key".into(),
-            name: "backup-key-1".into(),
+            kind: "storage".into(),
+            name: "r2".into(),
             revision: 3,
         }])
         .unwrap();
-        assert_eq!(versions[0].kind, RecordKind::BackupKey);
+        assert_eq!(versions[0].kind, RecordKind::Storage);
         assert!(
             published_versions(&[PublishedSecret {
                 kind: "unknown".into(),

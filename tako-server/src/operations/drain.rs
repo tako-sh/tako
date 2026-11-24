@@ -37,8 +37,6 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::FinalizeRelease { .. }
         | Command::RunRelease { .. }
         | Command::Deploy { .. }
-        | Command::BackupNow { .. }
-        | Command::RestoreBackup { .. }
         | Command::Scale { .. }
         | Command::Start { .. }
         | Command::Stop {
@@ -58,9 +56,6 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::CleanupRelease { .. }
         | Command::CheckDeploySpace { .. }
         | Command::SecretsDigest { .. }
-        | Command::ListBackups { .. }
-        | Command::BackupStatus { .. }
-        | Command::BackupDownloadUrl { .. }
         | Command::Stop { service: None, .. }
         | Command::Delete { .. }
         | Command::Status { .. }

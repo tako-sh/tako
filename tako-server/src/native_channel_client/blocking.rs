@@ -129,8 +129,11 @@ async fn send(
 ) -> Result<ChannelMessage, SocketError> {
     // Resolve at dispatch, so a publish queued before a rollout doesn't
     // register obsolete credentials after it.
-    let target =
-        resolve(publication.app.as_str()).map_err(|_| busy("channel credentials unavailable"))?;
+    let target = resolve(publication.app.as_str()).map_err(|error| match error {
+        // The app has no channels until a release that uses them deploys.
+        tako_channels::ChannelError::NotProvisioned => error.into(),
+        _ => busy("channel credentials unavailable"),
+    })?;
     link.register(publication.app.clone(), target)
         .await
         .map_err(|_| busy("native channel registration rejected or unavailable"))?;

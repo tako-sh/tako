@@ -5,11 +5,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, OnceLock, Weak},
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::broadcast;
 
 const CAPACITY: usize = 64;
@@ -58,8 +54,6 @@ impl EphemeralHub {
             channel: channel.into(),
             payload: payload.clone(),
             ephemeral: true,
-            lifecycle: None,
-            created_at_unix_ms: None,
         };
         let message = message(&event);
         self.deliver(&message);
@@ -107,19 +101,6 @@ impl EphemeralHub {
         Ok(RemoteIngest::Applied)
     }
 
-    /// Publishing and proxy stores open separate connections to the same app DB.
-    pub(crate) fn for_path(path: PathBuf) -> Arc<Self> {
-        static HUBS: OnceLock<Mutex<HashMap<PathBuf, Weak<EphemeralHub>>>> = OnceLock::new();
-        let mut hubs = HUBS.get_or_init(Default::default).lock();
-        hubs.retain(|_, hub| hub.strong_count() > 0);
-        if let Some(hub) = hubs.get(&path).and_then(Weak::upgrade) {
-            return hub;
-        }
-        let hub = Arc::new(Self::default());
-        hubs.insert(path, Arc::downgrade(&hub));
-        hub
-    }
-
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         channel: &str,
@@ -137,6 +118,11 @@ impl EphemeralHub {
             receiver: Some(receiver),
             resets,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn channel_count(&self) -> usize {
+        self.channels.lock().len()
     }
 
     pub(crate) fn deliver(&self, message: &ChannelMessage) {
@@ -233,14 +219,11 @@ pub async fn serve_events(
     }
 }
 
-pub(crate) fn unsupported() -> ChannelError {
-    ChannelError::BadRequest("ephemeral channels require SQLite channel storage".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelLifecycle, ChannelPublishPayload, ChannelStore};
+    use crate::test_db::TestDb;
+    use crate::{ChannelLifecycle, ChannelPublishPayload};
     use std::time::Duration;
     fn payload(n: i32) -> ChannelPublishPayload {
         ChannelPublishPayload {
@@ -250,65 +233,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishing_and_receiving_need_no_sqlite_access_and_gaps_preserve_replay() {
-        let a = ChannelStore::open_in_memory().unwrap();
-        let b = ChannelStore::open_in_memory().unwrap();
-        let durable = a.append("durable", &payload(0)).unwrap();
-        let replay = a.replay_cursor("durable", durable.id.parse().ok()).unwrap();
+    async fn publishing_and_receiving_need_no_database_and_gaps_preserve_replay() {
+        let db = TestDb::start();
+        let (a, b) = (db.open_for("one").await, db.open_for("two").await);
+        let durable = a.append_async("durable", &payload(0)).await.unwrap();
+        let replay = durable.id.parse().ok();
         let resets = b.resets("durable");
         let mut outbound = a.ephemeral_publications();
         let mut inbound = b.subscribe_ephemeral("live").unwrap();
-        // Holding both database mutexes makes any accidental DB access deadlock.
-        // Run the operation on a thread so the deadline detects that regression.
-        let a = Arc::new(a);
-        let b = Arc::new(b);
-        let (done, finished) = tokio::sync::oneshot::channel();
-        let task = {
-            let (a, b) = (a.clone(), b.clone());
-            std::thread::spawn(move || {
-                let _a_db = a.sqlite_conn();
-                let _b_db = b.sqlite_conn();
-                a.publish_ephemeral("live", &payload(1)).unwrap();
-                let skipped = outbound.try_recv().unwrap();
-                a.publish_ephemeral("live", &payload(2)).unwrap();
-                let received = outbound.try_recv().unwrap();
-                assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Applied);
-                assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Duplicate);
-                assert_eq!(b.ingest_remote(&skipped).unwrap(), RemoteIngest::Duplicate);
-                done.send(()).unwrap();
-            })
-        };
-        tokio::time::timeout(Duration::from_secs(2), finished)
-            .await
-            .unwrap()
-            .unwrap();
-        task.join().unwrap();
+        a.publish_ephemeral("live", &payload(1)).unwrap();
+        let skipped = outbound.try_recv().unwrap();
+        a.publish_ephemeral("live", &payload(2)).unwrap();
+        let received = outbound.try_recv().unwrap();
+        assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Applied);
+        assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Duplicate);
+        assert_eq!(b.ingest_remote(&skipped).unwrap(), RemoteIngest::Duplicate);
         assert_eq!(inbound.recv().await.unwrap().data, 2);
         assert!(!resets.has_changed().unwrap());
-        assert_eq!(a.replay_cursor("durable", replay).unwrap(), replay);
         assert_eq!(
-            a.raw_query_i64("SELECT sequence FROM channel_event_sequence", []),
-            1
+            a.replay_cursor_async("durable", replay).await.unwrap(),
+            replay
         );
         assert_eq!(
-            b.raw_query_i64("SELECT COUNT(*) FROM channel_remote_origins", []),
+            db.query_i64("SELECT COUNT(*) FROM tako_replay_streams WHERE channel = 'live'"),
             0
         );
+        // Live delivery keeps working while the database is unreachable.
+        drop(db);
+        let event = b.publish_ephemeral("live", &payload(3)).unwrap();
+        assert_eq!(inbound.recv().await.unwrap().event_id, event.event_id);
     }
 
     #[test]
     fn reopening_starts_a_new_live_identity_without_persisting_a_sequence() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("channels.sqlite");
-        let first = {
-            let store = ChannelStore::open(&path).unwrap();
-            store
-                .publish_ephemeral("live", &payload(1))
-                .unwrap()
-                .event_id
-                .unwrap()
-        };
-        let store = ChannelStore::open(&path).unwrap();
+        let db = TestDb::start();
+        let first = db
+            .writer()
+            .publish_ephemeral("live", &payload(1))
+            .unwrap()
+            .event_id
+            .unwrap();
+        let store = db.writer();
         let second = store
             .publish_ephemeral("live", &payload(2))
             .unwrap()
@@ -317,25 +282,20 @@ mod tests {
         assert_ne!(first.origin, second.origin);
         assert_eq!(first.sequence, 1);
         assert_eq!(second.sequence, 1);
-        assert_eq!(
-            store.raw_query_i64("SELECT sequence FROM channel_event_sequence", []),
-            0
-        );
+        assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
     }
 
     #[tokio::test]
-    async fn separate_stores_share_live_events_without_replay_rows() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("channels.sqlite");
-        let writer = ChannelStore::open(&path).unwrap();
-        let reader = ChannelStore::open(&path).unwrap();
+    async fn subscriptions_share_live_events_without_replay_rows() {
+        let db = TestDb::start();
+        let store = db.open().await;
         let auth = serde_json::from_value(serde_json::json!({"ok":true,"ephemeral":true})).unwrap();
-        writer.sync_channel("live", &auth).unwrap();
-        writer.publish_ephemeral("live", &payload(0)).unwrap();
-        let mut first = reader.subscribe_ephemeral("live").unwrap();
-        let mut second = writer.subscribe_ephemeral("live").unwrap();
-        let mut unrelated = reader.subscribe_ephemeral("other").unwrap();
-        let sent = writer.publish_ephemeral("live", &payload(1)).unwrap();
+        store.sync_channel_async("live", &auth).await.unwrap();
+        store.publish_ephemeral("live", &payload(0)).unwrap();
+        let mut first = store.subscribe_ephemeral("live").unwrap();
+        let mut second = store.subscribe_ephemeral("live").unwrap();
+        let mut unrelated = store.subscribe_ephemeral("other").unwrap();
+        let sent = store.publish_ephemeral("live", &payload(1)).unwrap();
         assert_eq!(sent.id, "");
         for events in [&mut first, &mut second] {
             assert_eq!(
@@ -351,35 +311,30 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(reader.read_after("live", None, 100).unwrap().is_empty());
-        assert_eq!(
-            writer.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
-            0
+        assert!(
+            store
+                .read_after_async("live", None, 100)
+                .await
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(
-            writer.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
-            0
-        );
+        assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
+        assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_messages"), 0);
         drop(first);
         drop(second);
-        writer.publish_ephemeral("live", &payload(2)).unwrap();
-        let mut reconnected = reader.subscribe_ephemeral("live").unwrap();
-        writer.publish_ephemeral("live", &payload(3)).unwrap();
+        store.publish_ephemeral("live", &payload(2)).unwrap();
+        let mut reconnected = store.subscribe_ephemeral("live").unwrap();
+        store.publish_ephemeral("live", &payload(3)).unwrap();
         assert_eq!(reconnected.recv().await.unwrap().data, 3);
         drop(reconnected);
         drop(unrelated);
-        assert!(
-            EphemeralHub::for_path(std::fs::canonicalize(&path).unwrap())
-                .channels
-                .lock()
-                .is_empty()
-        );
+        assert_eq!(store.ephemeral_channels(), 0);
     }
 
     #[tokio::test]
     async fn slow_subscribers_skip_evicted_events_and_apps_are_isolated() {
-        let one = ChannelStore::open_in_memory().unwrap();
-        let two = ChannelStore::open_in_memory().unwrap();
+        let db = TestDb::start();
+        let (one, two) = (db.open_for("one").await, db.open_for("two").await);
         let mut events = one.subscribe_ephemeral("live").unwrap();
         let mut other_app = two.subscribe_ephemeral("live").unwrap();
         for n in 0..100 {
@@ -391,8 +346,14 @@ mod tests {
                 .await
                 .is_err()
         );
-        one.append("durable", &payload(1)).unwrap();
-        assert_eq!(one.read_after("durable", None, 10).unwrap().len(), 1);
+        one.append_async("durable", &payload(1)).await.unwrap();
+        assert_eq!(
+            one.read_after_async("durable", None, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -423,7 +384,7 @@ mod tests {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use crate::{ChannelPublishPayload, ChannelStore};
+    use crate::ChannelPublishPayload;
     use pingora_core::protocols::l4::stream::Stream;
     use pingora_proxy::Session;
     use tokio::net::TcpListener;
@@ -432,7 +393,8 @@ mod transport_tests {
     async fn sse_delivers_live_data_without_replay_ids() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+        let db = crate::test_db::TestDb::start();
+        let store = db.open().await;
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut session = Session::new_h1(Box::new(Stream::from(socket)));
@@ -500,7 +462,7 @@ mod transport_tests {
 #[cfg(test)]
 mod duplex_tests {
     use super::*;
-    use crate::{ChannelPublishPayload, ChannelStore};
+    use crate::ChannelPublishPayload;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     #[tokio::test]
@@ -513,7 +475,8 @@ mod duplex_tests {
                 .unwrap();
             let mut session = pingora_proxy::Session::new_h1(Box::new(io));
             session.read_request().await.unwrap();
-            let store = ChannelStore::open_in_memory().unwrap();
+            let db = crate::test_db::TestDb::start();
+            let store = db.open().await;
             let payload = ChannelPublishPayload {
                 r#type: "progress".into(),
                 data: 1.into(),
@@ -580,11 +543,14 @@ mod duplex_tests {
                 })]
             );
             assert_eq!(events[0], serde_json::to_value(sent).unwrap());
-            assert!(store.read_after("live", None, 10).unwrap().is_empty());
-            assert_eq!(
-                store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
-                0
+            assert!(
+                store
+                    .read_after_async("live", None, 10)
+                    .await
+                    .unwrap()
+                    .is_empty()
             );
+            assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
         })
         .await
         .unwrap();

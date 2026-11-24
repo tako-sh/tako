@@ -334,11 +334,11 @@ fn declarations_include_custom_environment_secrets_and_bindings_alongside_develo
     let source = r#"
         [envs.development]
         storages = { uploads = "dev_uploads" }
-        databases = { main = "dev_main" }
+        db = { main = "dev_main" }
         [envs.test-e2e]
         route = "app-test-e2e.test"
         storages = { fixtures = "local" }
-        databases = { assertions = "test_main" }
+        db = { assertions = "test_main" }
         [vars.test-e2e]
         TEST_MODE = "on"
     "#;
@@ -377,7 +377,7 @@ fn declarations_include_custom_environment_secrets_and_bindings_alongside_develo
         for name in ["main", "assertions"] {
             assert!(
                 content.contains(&format!(
-                    "readonly {name}: import(\"tako.sh\").TakoDatabase;"
+                    "readonly {name}: import(\"tako.sh\").TakoDbConnection;"
                 )),
                 "{content}"
             );
@@ -413,7 +413,7 @@ fn write_tako_declarations_type_database_bindings() {
         dir.path().join("tako.toml"),
         r#"
 [envs.production]
-databases = { main = "shop", "audit-log" = "audit" }
+db = { main = "shop", "audit-log" = "audit" }
 "#,
     )
     .unwrap();
@@ -421,9 +421,9 @@ databases = { main = "shop", "audit-log" = "audit" }
     write_tako_declarations(dir.path()).unwrap();
 
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
-    assert!(content.contains("export interface TakoDatabases {"));
-    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDatabase;"));
-    assert!(content.contains("readonly \"audit-log\": import(\"tako.sh\").TakoDatabase;"));
+    assert!(content.contains("export interface TakoDb {"));
+    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbConnection;"));
+    assert!(content.contains("readonly \"audit-log\": import(\"tako.sh\").TakoDbConnection;"));
 }
 
 #[test]
@@ -444,7 +444,7 @@ kv = { sessions = "auth", "rate-limits" = "limits" }
     assert!(content.contains("export interface TakoKv {"));
     assert!(content.contains("readonly sessions: import(\"tako.sh\").TakoKvStore;"));
     assert!(content.contains("readonly \"rate-limits\": import(\"tako.sh\").TakoKvStore;"));
-    assert!(content.contains("export interface TakoDatabases {}"));
+    assert!(content.contains("export interface TakoDb {}"));
 }
 
 #[test]
@@ -452,19 +452,19 @@ fn write_tako_declarations_with_config_type_the_selected_configs_bindings() {
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("tako.toml"),
-        "[envs.production]\ndatabases = { stale = \"shop\" }\n",
+        "[envs.production]\ndb = { stale = \"shop\" }\n",
     )
     .unwrap();
     // As with `tako --config release.toml`, which binds other names.
     let config = crate::config::TakoToml::parse(
-        "[envs.production]\nroute = \"app.example.com\"\ndatabases = { main = \"shop\" }\n",
+        "[envs.production]\nroute = \"app.example.com\"\ndb = { main = \"shop\" }\n",
     )
     .unwrap();
 
     write_tako_declarations_with_config(dir.path(), BuildAdapter::Unknown, &config, None).unwrap();
 
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
-    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDatabase;"));
+    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbConnection;"));
     assert!(!content.contains("stale"), "{content}");
 }
 

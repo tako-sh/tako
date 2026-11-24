@@ -6,7 +6,13 @@ pub(crate) struct WorkflowBindings<'a> {
     pub(crate) storages: &'a HashMap<String, tako_core::StorageBinding>,
     pub(crate) databases: &'a HashMap<String, tako_core::DatabaseConnection>,
     pub(crate) kv: &'a HashMap<String, tako_core::KvConnection>,
-    pub(crate) postgres_url: Option<&'a String>,
+    /// The hosted store of the app's workflow runs, from its `@workflows`
+    /// binding. A release that defines workflows gets no runtime without it.
+    pub(crate) store: Option<tako_workflows::WorkflowStoreConfig>,
+    /// Whether such a release fails instead, as a deploy does: only a full
+    /// client can provision the database, so the deploy must not seem to
+    /// succeed without it.
+    pub(crate) require_store: bool,
 }
 
 impl ServerState {
@@ -39,12 +45,86 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) -> Result<(), StateStoreError> {
+        let activation =
+            ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?);
+        self.sync_app_workflows_as(app_name, release_path, runtime_bin_path, activation)
+            .await
+            .map(|_| ())
+    }
+
+    /// Reinstall the runtime of the committed release a failed deployment
+    /// fell back to. The candidate's workers may have registered its
+    /// schedules already, so the restored release takes a newer revision
+    /// than the candidate's, and keeps it for later recoveries.
+    /// If its database does not answer, the candidate's runtime stops and a
+    /// background task restores the release's once it does.
+    pub(crate) async fn restore_app_workflows(
+        &self,
+        app_name: &str,
+        version: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) {
+        if self.is_draining() {
+            return;
+        }
+        let Err(error) = self
+            .reinstall_app_workflows(app_name, release_path, runtime_bin_path)
+            .await
+        else {
+            return;
+        };
+        tracing::warn!(app = app_name, %error, "Failed to restore workflows");
+        self.workflows.retire(app_name);
+        if matches!(error, StateStoreError::WorkflowStoreUnavailable(_)) {
+            self.workflows_waiting.lock().insert(
+                app_name.to_string(),
+                crate::server_state::WaitingWorkflows {
+                    version: version.to_string(),
+                    release_path: release_path.to_path_buf(),
+                    runtime_bin_path: runtime_bin_path.map(str::to_string),
+                    fresh_revision: true,
+                },
+            );
+        }
+    }
+
+    /// Install the release's runtime under a new schedule revision, and keep
+    /// that revision for later recoveries.
+    async fn reinstall_app_workflows(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) -> Result<(), StateStoreError> {
+        let revision = self
+            .sync_app_workflows_as(
+                app_name,
+                release_path,
+                runtime_bin_path,
+                ScheduleActivation::Deploy,
+            )
+            .await?;
+        if let Some(revision) = revision {
+            self.state_store
+                .set_workflow_schedule_revision(app_name, revision)?;
+        }
+        Ok(())
+    }
+
+    /// Install the release's runtime and return its schedule revision.
+    async fn sync_app_workflows_as(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+        activation: ScheduleActivation,
+    ) -> Result<Option<i64>, StateStoreError> {
         let secrets = self.state_store.get_secrets(app_name)?;
         let storages = self.state_store.get_storages(app_name)?;
         let bindings = self.state_store.get_app_databases(app_name)?;
         let databases = self.databases.connections(&bindings);
         let kv = crate::databases::kv_connections(&bindings);
-        let runtime_credentials = self.state_store.get_runtime_credentials(app_name)?;
         let prepared = self
             .prepare_app_workflows(
                 app_name,
@@ -55,13 +135,19 @@ impl ServerState {
                     storages: &storages,
                     databases: &databases,
                     kv: &kv,
-                    postgres_url: runtime_credentials.get("postgres_url"),
+                    // The committed binding, through the same resolver
+                    // operator commands use.
+                    store: self.workflows.workflow_store_config(app_name),
+                    require_store: false,
                 },
-                ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
+                activation,
             )
             .await?;
+        let revision = prepared
+            .as_ref()
+            .and_then(|runtime| runtime.schedule_revision());
         self.install_app_workflows(app_name, prepared);
-        Ok(())
+        Ok(revision)
     }
 
     pub(crate) fn install_app_workflows(&self, app_name: &str, prepared: Option<PreparedWorkflow>) {
@@ -119,11 +205,8 @@ impl ServerState {
                 .filter(|build| !build.is_empty())
                 .cloned()
                 .unwrap_or_else(|| manifest.version.clone());
-            let store = match bindings.postgres_url {
-                Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
-                None => tako_workflows::WorkflowStoreConfig::sqlite(
-                    self.workflows.workflows_db_path(app_name),
-                ),
+            let Some(store) = bindings.store else {
+                return without_store(app_name, bindings.require_store);
             };
             return self
                 .workflows
@@ -135,7 +218,7 @@ impl ServerState {
                 )
                 .await
                 .map(Some)
-                .map_err(|error| StateStoreError::InvalidData(error.to_string()));
+                .map_err(workflow_error);
         }
         let internal_socket = self.workflows.socket_path();
 
@@ -144,7 +227,8 @@ impl ServerState {
             storages,
             databases,
             kv,
-            postgres_url,
+            store,
+            require_store,
         } = bindings;
         let mut worker_env = manifest.env_vars.clone();
         // Older manifests can omit the version. Their release directory still
@@ -250,7 +334,9 @@ impl ServerState {
                 } else {
                     app_path.join(js_app_root).join("workflows")
                 };
-                if !workflows_dir.is_dir() {
+                // The same rule the deploy client uses to provision the
+                // workflow database: a directory without definitions runs none.
+                if !tako_workflows::has_js_workflow_sources(&workflows_dir) {
                     return Ok(None);
                 }
 
@@ -306,11 +392,8 @@ impl ServerState {
         };
 
         self.ensure_internal_socket_started()?;
-        let store = match postgres_url {
-            Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
-            None => tako_workflows::WorkflowStoreConfig::sqlite(
-                self.workflows.workflows_db_path(app_name),
-            ),
+        let Some(store) = store else {
+            return without_store(app_name, require_store);
         };
         let mut spec = crate::workflows::worker_spec_for_command(
             app_name,
@@ -335,6 +418,79 @@ impl ServerState {
             .prepare(store, manifest.workflow_retention_ms, spec, activation)
             .await
             .map(Some)
-            .map_err(|error| StateStoreError::InvalidData(error.to_string()))
+            .map_err(workflow_error)
     }
+
+    /// Start the workflow runtimes that recovery left waiting for their
+    /// database. An app deployed, stopped or removed since then is dropped:
+    /// its own operation decided its runtime.
+    pub(crate) async fn retry_waiting_workflows(&self) {
+        let waiting: Vec<_> = self
+            .workflows_waiting
+            .lock()
+            .iter()
+            .map(|(app, waiting)| (app.clone(), waiting.clone()))
+            .collect();
+        for (app_name, waiting) in waiting {
+            if self.is_draining() {
+                return;
+            }
+            let lock = self.get_deploy_lock(&app_name).await;
+            let _guard = lock.lock().await;
+            // A drain may have begun while this waited for the lock.
+            if self.is_draining() {
+                return;
+            }
+            let current = self.app_manager.get_app(&app_name).filter(|app| {
+                let config = app.config.read();
+                config.version == waiting.version && !config.stopped
+            });
+            // A retired runtime may still drain; only a running one, which a
+            // deploy installed meanwhile, ends the wait.
+            if current.is_some() && !self.workflows.is_running(&app_name) {
+                let release_path = &waiting.release_path;
+                let runtime_bin_path = waiting.runtime_bin_path.as_deref();
+                let started = if waiting.fresh_revision {
+                    self.reinstall_app_workflows(&app_name, release_path, runtime_bin_path)
+                        .await
+                } else {
+                    self.try_sync_app_workflows(&app_name, release_path, runtime_bin_path)
+                        .await
+                };
+                match started {
+                    Err(StateStoreError::WorkflowStoreUnavailable(_)) => continue,
+                    Err(error) => {
+                        tracing::warn!(app = %app_name, %error, "Failed to start workflows")
+                    }
+                    Ok(()) => tracing::info!(app = %app_name, "Started workflows"),
+                }
+            }
+            self.workflows_waiting.lock().remove(&app_name);
+        }
+    }
+}
+
+/// A database that did not answer stays retryable.
+fn workflow_error(error: tako_workflows::manager::WorkflowManagerError) -> StateStoreError {
+    if error.is_unavailable() {
+        StateStoreError::WorkflowStoreUnavailable(error.to_string())
+    } else {
+        StateStoreError::InvalidData(error.to_string())
+    }
+}
+
+/// A release defines workflows, but its environment has no workflow
+/// database: deploys from a full client provision one. A deploy fails
+/// without it; recovery starts the app without its workflow engine.
+fn without_store(app: &str, require: bool) -> Result<Option<PreparedWorkflow>, StateStoreError> {
+    if require {
+        return Err(StateStoreError::InvalidData(format!(
+            "this release runs workflows, but {app} has no workflow database; deploy once with full access to provision it"
+        )));
+    }
+    tracing::warn!(
+        app,
+        "Skipping workflow engine: the environment has no workflow database; deploy it again from a full client"
+    );
+    Ok(None)
 }

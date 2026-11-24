@@ -323,6 +323,30 @@ post_route_json() {
   fi
 }
 
+# After a restart, a group's workflows start once the private network
+# reaches the server that holds its workflow database; until then enqueues fail.
+wait_for_workflow_enqueue() {
+  local server_host=$1
+  local route_host=$2
+  local body_file="$TMP_ROOT/workflow-probe.json"
+  local status payload
+  for _ in $(seq 1 60); do
+    payload="{\"message\":\"probe\",\"id\":\"probe-${server_host}-$(date +%s%N)\"}"
+    status=$(curl -sS --http1.1 --connect-timeout 3 --max-time 10 \
+      -H "Host: ${route_host}" -H "X-Forwarded-Proto: https" -H "Forwarded: proto=https" \
+      -H "Connection: close" -H "Content-Type: application/json" \
+      -o "$body_file" -w "%{http_code}" -d "$payload" \
+      "http://${server_host}:8080/enqueue" || true)
+    if [[ "$status" == 200 ]] && jq -e '.ok == true' "$body_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Workflows did not start after the server restart (last status=$status)" >&2
+  cat "$body_file" >&2 || true
+  exit 1
+}
+
 fixture_has_secrets_for_env() {
   local env_name=$1
   [[ -f "$PROJECT_DIR/.tako/state.local.json" ]] && \
@@ -654,20 +678,22 @@ create_fixture_databases() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
   databases=$(bun -e '
     const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
-    console.log([...new Set([...Object.values(env.databases ?? {}), env.channels?.database].filter(Boolean))].join("\n"));
+    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db, env.workflows?.db].filter(Boolean))].join("\n"));
   ' "$PROJECT_DIR/tako.toml")
   [[ -n "$databases" ]] || return 0
   while IFS= read -r database; do
-    "${tako[@]}" sqlite create "$database" --server "$server_host"
+    "${tako[@]}" db create "$database" --server "$server_host"
   done <<< "$databases"
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
-    "${tako[@]}" --json sqlite list | jq -e --arg home "$server_host" '
+    "${tako[@]}" --json db list | jq -e --arg home "$server_host" '
       (.databases | any(.name == "messages" and .in_project)) and
-      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"]))
+      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"])) and
+      (.databases | any(.name == "workflow-runs" and .server == $home and .workflow_envs == ["production"]))
     ' >/dev/null
     "${tako[@]}" --dry-run --json deploy --env production | jq -e --arg home "$server_host" '
       .dry_run and .create_databases == [] and
-      .channel_database == {name: "channel-replay", server: $home, implicit: false}
+      .channel_database == {name: "channel-replay", server: $home, implicit: false} and
+      .workflows_database == {name: "workflow-runs", server: $home, implicit: false}
     ' >/dev/null
   fi
 }
@@ -682,7 +708,7 @@ run_database_checks() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
 
   echo "Running hosted database checks after deploying to $server_host"
-  if ! "${tako[@]}" --json sqlite status messages >"$status_json" 2>"$log"; then
+  if ! "${tako[@]}" --json db status messages >"$status_json" 2>"$log"; then
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
@@ -695,7 +721,7 @@ run_database_checks() {
     jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
   fi
 
-  if ! "${tako[@]}" --json sqlite shell messages "SELECT count(*) AS n FROM messages" \
+  if ! "${tako[@]}" --json db shell messages "SELECT count(*) AS n FROM messages" \
     >"$query_json" 2>"$log"; then
     cat "$log" "$query_json" >&2 || true
     exit 1
@@ -707,7 +733,7 @@ run_database_checks() {
     exit 1
   fi
 
-  if ! "${tako[@]}" sqlite export messages "$export_file" >"$log" 2>&1; then
+  if ! "${tako[@]}" db export messages "$export_file" >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
@@ -719,7 +745,7 @@ run_database_checks() {
   fi
 
   # Replacing the database with its own export pauses and resumes app access.
-  if ! "${tako[@]}" sqlite import messages "$export_file" --yes >"$log" 2>&1; then
+  if ! "${tako[@]}" db import messages "$export_file" --yes >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
@@ -1058,6 +1084,7 @@ run_compose_sdk_checks() {
   [[ $(sdk_container_ids web) == "$web_id" ]]
   run_universal_http_checks "$server_host" "$route_host" /opt/tako
   sdk_assert_data
+  wait_for_workflow_enqueue "$server_host" "$route_host"
   run_channels_workflows_checks "$server_host" "$route_host"
 
   # A secret rotation replaces web and worker, but not redis or nginx.
@@ -1259,7 +1286,7 @@ if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
   # Go fixtures use the SDK, which registers channels at runtime, so a
   # multi-member network needs an explicit replay placement.
-  printf '\n[envs.production.channels]\ndatabase = "channel-replay"\n' >> "$PROJECT_DIR/tako.toml"
+  printf '\n[envs.production.channels]\ndb = "channel-replay"\n' >> "$PROJECT_DIR/tako.toml"
   # Copy the Go SDK source (go.mod + *.go + internal/) so the fixture's replace directive resolves.
   mkdir -p "$JS_WORKSPACE_DIR/internal"
   cp "$WORKSPACE/go.mod" "$WORKSPACE/"*.go "$JS_WORKSPACE_DIR/"

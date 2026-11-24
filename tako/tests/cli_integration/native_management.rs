@@ -223,8 +223,8 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
             &[
                 "--ci",
                 "--dry-run",
-                "backup",
-                "now",
+                "scale",
+                "2",
                 "--env",
                 "production",
                 "--server",
@@ -468,7 +468,6 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
         vec!["logs"],
         vec!["scale", "2", "--env", "production"],
         vec!["release", "list"],
-        vec!["backup", "status"],
         vec!["deploy", "--yes"],
     ] {
         let mut args = vec!["--ci", "--dry-run"];
@@ -696,8 +695,8 @@ fn project_operations_use_each_apps_placement_on_a_shared_network() {
                 &[
                     "--ci",
                     "--dry-run",
-                    "backup",
-                    "now",
+                    "scale",
+                    "2",
                     "--env",
                     "production",
                     "--server",

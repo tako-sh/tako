@@ -1,57 +1,72 @@
 //! Run enqueue + per-step persistence + lifecycle transitions.
 //!
-//! All run state lives in two tables:
-//!   - `runs` - one row per run; tracks status, attempts, lease.
-//!   - `steps` - append-only memoization of completed step results.
+//! Every app's runs live in its Tako-hosted workflow database (see
+//! [`WorkflowStoreConfig`]), shared by every server that runs the app:
+//!   - runs: one row per run; tracks status, attempts, lease.
+//!   - steps: append-only memoization of completed step results.
+//!   - event waits, run inboxes and cron schedules.
 //!
-//! Operations are synchronous; call from `tokio::task::spawn_blocking` when
-//! invoking from async contexts.
+//! Operations are synchronous and block on the database; call them from
+//! `tokio::task::spawn_blocking` (or `crate::blocking::run`) when invoking
+//! from async contexts.
 
+mod hosted;
+pub(crate) mod legacy;
 pub(crate) mod operator;
-mod sqlite;
+mod replacement;
 
-use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tako_core::{
     EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec, SignalRunStatus,
     WORKFLOW_EVENT_NAME_MAX_BYTES, WORKFLOW_RUN_MAX_STEPS, WORKFLOW_SIGNAL_INBOX_MAX_BYTES,
     WORKFLOW_SIGNAL_INBOX_MAX_ENTRIES, WorkflowRunDetail, WorkflowRunStatus, WorkflowRunSummary,
-    WorkflowStoreKind,
 };
 
 pub use operator::{CancelledRun, OPERATOR_CANCEL_REASON};
 
-use super::postgres_store::PostgresRunsDb;
-use sqlite::SqliteRunsDb;
+use hosted::HostedRunsDb;
+#[cfg(test)]
+pub(crate) use hosted::testing::HostedFixture;
 
-pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
+pub use replacement::{keep_live_schedules, schema_sql};
+
 /// Finished history and run IDs remain reserved for at least six calendar months.
 pub const DEFAULT_RETENTION_MS: i64 = 184 * 24 * 60 * 60 * 1000;
 
 pub use tako_core::RunResult;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkflowStoreConfig {
-    Sqlite {
-        path: PathBuf,
-    },
-    Postgres {
-        url: String,
-        schema: String,
-        app_id: String,
-    },
+/// An app's workflow store: a Tako-hosted database, reached through this
+/// server's local endpoint (`http://127.0.0.1:<port>`) with the token of the
+/// app's `@workflows` binding. Every table is scoped by `app_id`, so several
+/// apps can share one database.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WorkflowStoreConfig {
+    pub url: String,
+    pub token: String,
+    pub app_id: String,
+}
+
+/// Leaves out the endpoint and the token, which is a credential.
+impl std::fmt::Debug for WorkflowStoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkflowStoreConfig")
+            .field("url", &"<redacted>")
+            .field("token", &"<redacted>")
+            .field("app_id", &self.app_id)
+            .finish()
+    }
 }
 
 impl WorkflowStoreConfig {
-    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
-        Self::Sqlite { path: path.into() }
-    }
-
-    pub fn postgres(url: impl Into<String>, app_id: impl Into<String>) -> Self {
-        Self::Postgres {
+    pub fn hosted(
+        url: impl Into<String>,
+        token: impl Into<String>,
+        app_id: impl Into<String>,
+    ) -> Self {
+        Self {
             url: url.into(),
-            schema: POSTGRES_WORKFLOWS_SCHEMA.to_string(),
+            token: token.into(),
             app_id: app_id.into(),
         }
     }
@@ -63,7 +78,7 @@ impl WorkflowStoreConfig {
 const MAX_LEASE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// Saturating cast of client-supplied lease length (in ms) to the signed
-/// millisecond value we store in sqlite. Prevents `u64::MAX as i64 -> -1`
+/// millisecond value the store keeps. Prevents `u64::MAX as i64 -> -1`
 /// from producing a negative `lease_until` that would be reclaimed
 /// instantly.
 pub(crate) fn clamp_lease_ms(lease_ms: u64) -> i64 {
@@ -72,10 +87,10 @@ pub(crate) fn clamp_lease_ms(lease_ms: u64) -> i64 {
 
 #[derive(thiserror::Error, Debug)]
 pub enum RunsDbError {
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] postgres::Error),
+    /// Carries SQLite's error name, never the statement's message, which
+    /// can contain app data.
+    #[error("workflow store error: {0}")]
+    Hosted(#[from] tako_db::client::ClientError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
@@ -113,6 +128,12 @@ pub enum RunsDbError {
 }
 
 impl RunsDbError {
+    /// Whether the workflow database did not answer, so the same call can
+    /// succeed later.
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Hosted(error) if error.is_unavailable())
+    }
+
     /// The internal-socket code a worker or enqueue command failing with this
     /// error replies with. Operator-only failures (`RunNotFound`, ...) and
     /// storage errors an SDK cannot act on have none.
@@ -123,12 +144,7 @@ impl RunsDbError {
             Self::IdConflict { .. } => Some(ErrorCode::RunIdConflict),
             Self::InvalidId | Self::InvalidEventName(_) => Some(ErrorCode::InvalidRequest),
             Self::SignalInboxFull { .. } => Some(ErrorCode::SignalInboxFull),
-            Self::Sqlite(error) => matches!(
-                error.sqlite_error_code(),
-                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-            )
-            .then_some(ErrorCode::Unavailable),
-            Self::Postgres(error) => postgres_unavailable(error).then_some(ErrorCode::Unavailable),
+            Self::Hosted(error) => error.is_unavailable().then_some(ErrorCode::Unavailable),
             Self::Json(_)
             | Self::Storage(_)
             | Self::UnsupportedBackend(_)
@@ -147,26 +163,8 @@ impl RunsDbError {
     }
 }
 
-/// A lost connection or a server refusing connections, not a rejected query.
-fn postgres_unavailable(error: &postgres::Error) -> bool {
-    use postgres::error::SqlState;
-    if error.is_closed() {
-        return true;
-    }
-    error.code().is_some_and(|code| {
-        code.code().starts_with("08")
-            || [
-                SqlState::ADMIN_SHUTDOWN,
-                SqlState::CRASH_SHUTDOWN,
-                SqlState::CANNOT_CONNECT_NOW,
-                SqlState::TOO_MANY_CONNECTIONS,
-            ]
-            .contains(code)
-    })
-}
-
 pub struct RunsDb {
-    backend: RunsDbBackend,
+    store: HostedRunsDb,
     pub(crate) monitoring: crate::monitoring::StoreMonitoring,
     schedules: ScheduleRegistration,
 }
@@ -178,52 +176,69 @@ struct ScheduleRegistration {
     done: parking_lot::Mutex<bool>,
 }
 
-enum RunsDbBackend {
-    Sqlite(SqliteRunsDb),
-    Postgres(Box<PostgresRunsDb>),
-}
-
 impl RunsDb {
-    pub fn open_config(config: WorkflowStoreConfig) -> Result<Self, RunsDbError> {
-        match config {
-            WorkflowStoreConfig::Sqlite { path } => Self::open_sqlite(&path),
-            WorkflowStoreConfig::Postgres {
-                url,
-                schema,
-                app_id,
-            } => Ok(Self {
-                schedules: Default::default(),
-                monitoring: crate::monitoring::StoreMonitoring::postgres(&url, &schema, &app_id)?,
-                backend: RunsDbBackend::Postgres(Box::new(PostgresRunsDb::open(
-                    &url, &schema, &app_id,
-                )?)),
-            }),
+    /// Import `app`'s runs from the per-server SQLite store an earlier
+    /// release kept at `path`, then rename that file. A store that cannot
+    /// be read is left in place, and the import is tried again on the next
+    /// deploy or restart.
+    pub(crate) fn import_legacy_store(&self, path: &std::path::Path) {
+        let imported = legacy::read(path)
+            .map_err(|error| error.to_string())
+            .and_then(|rows| {
+                self.store
+                    .import_legacy(&rows)
+                    .map(|()| rows.len())
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|count| {
+                legacy::retire(path)
+                    .map(|()| count)
+                    .map_err(|error| error.to_string())
+            });
+        match imported {
+            Ok(rows) => tracing::info!(
+                path = %path.display(),
+                rows,
+                "Imported workflow runs from this server's earlier store"
+            ),
+            Err(error) => tracing::warn!(
+                path = %path.display(),
+                %error,
+                "Could not import workflow runs from this server's earlier store; retrying on the next start"
+            ),
         }
     }
 
-    pub fn open(path: &Path) -> Result<Self, RunsDbError> {
-        Self::open_sqlite(path)
+    /// Opens the store, creating its tables when they are missing.
+    pub fn open(config: WorkflowStoreConfig) -> Result<Self, RunsDbError> {
+        Ok(Self::with_store(HostedRunsDb::open(
+            &config.url,
+            &config.token,
+            &config.app_id,
+        )?))
     }
 
-    pub fn open_sqlite(path: &Path) -> Result<Self, RunsDbError> {
-        Ok(Self {
-            schedules: Default::default(),
-            backend: RunsDbBackend::Sqlite(SqliteRunsDb::open(path)?),
-            monitoring: Default::default(),
-        })
-    }
-
-    pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, RunsDbError> {
-        Self::open_config(WorkflowStoreConfig::postgres(url, app_id))
-    }
-
+    /// A handle on a server whose clock (for scheduling and history, not
+    /// leases) is `clock`.
     #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self, RunsDbError> {
-        Ok(Self {
-            schedules: Default::default(),
-            backend: RunsDbBackend::Sqlite(SqliteRunsDb::open_in_memory()?),
+    pub(crate) fn open_with_clock(
+        config: WorkflowStoreConfig,
+        clock: fn() -> i64,
+    ) -> Result<Self, RunsDbError> {
+        Ok(Self::with_store(HostedRunsDb::open_with_clock(
+            &config.url,
+            &config.token,
+            &config.app_id,
+            clock,
+        )?))
+    }
+
+    fn with_store(store: HostedRunsDb) -> Self {
+        Self {
+            store,
             monitoring: Default::default(),
-        })
+            schedules: Default::default(),
+        }
     }
 
     /// Insert a run, or reuse a retained run with the same supplied ID and inputs.
@@ -237,35 +252,37 @@ impl RunsDb {
         if let Some(id) = &opts.id {
             validate_run_id(id)?;
         }
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.enqueue(name, payload, opts),
-            RunsDbBackend::Postgres(db) => db.enqueue(name, payload, opts),
-        }
+        self.store.enqueue(name, payload, opts)
     }
 
-    /// Test-only raw SQL escape hatches against the sqlite backend.
+    /// Test-only SQL. `{runs}`, `{steps}`, `{event_waiters}`, `{run_inbox}`
+    /// and `{schedules}` name the store's tables; arguments are JSON
+    /// scalars. A statement reaches every app in the database.
     #[cfg(test)]
-    pub(crate) fn raw_execute(&self, sql: &str, params: impl rusqlite::Params) {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.raw_execute(sql, params),
-            RunsDbBackend::Postgres(_) => {
-                panic!("sqlite connection requested for postgres workflow store")
-            }
-        }
+    pub(crate) fn test_execute(&self, sql: &str, args: Vec<serde_json::Value>) {
+        self.test_rows(sql, args);
     }
 
+    /// Like [`Self::test_execute`], for a query returning one row.
     #[cfg(test)]
-    pub(crate) fn raw_query_values(
+    pub(crate) fn test_query_row(
         &self,
         sql: &str,
-        params: impl rusqlite::Params,
-    ) -> Vec<rusqlite::types::Value> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.raw_query_values(sql, params),
-            RunsDbBackend::Postgres(_) => {
-                panic!("sqlite connection requested for postgres workflow store")
-            }
-        }
+        args: Vec<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let mut rows = self.test_rows(sql, args);
+        assert_eq!(rows.len(), 1, "{sql}");
+        rows.pop().unwrap()
+    }
+
+    #[cfg(test)]
+    fn test_rows(&self, sql: &str, args: Vec<serde_json::Value>) -> Vec<Vec<serde_json::Value>> {
+        let sql = ["runs", "steps", "event_waiters", "run_inbox", "schedules"]
+            .into_iter()
+            .fold(sql.to_string(), |sql, table| {
+                sql.replace(&format!("{{{table}}}"), &format!("tako_workflow_{table}"))
+            });
+        self.store.test_rows(&sql, args)
     }
 
     /// Atomically claim the oldest eligible run for one of `names`. Bumps
@@ -282,10 +299,7 @@ impl RunsDb {
             .claims
             .get()
             .map(|_| std::time::Instant::now());
-        let result = match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.claim(worker_id, names, lease_ms),
-            RunsDbBackend::Postgres(db) => db.claim(worker_id, names, lease_ms),
-        };
+        let result = self.store.claim(worker_id, names, lease_ms);
         if let Some(started) = started {
             let outcome = match &result {
                 Ok(Some(_)) => 0,
@@ -301,16 +315,13 @@ impl RunsDb {
         result
     }
 
-    /// All of these lifecycle writes are guarded by `worker_id = ?1 AND
-    /// status = 'running'`. If a worker's lease expired and another worker
-    /// already reclaimed the run, the UPDATE affects 0 rows and we return
-    /// `StaleWorker` so the SDK can log/raise rather than silently
-    /// marking the run in a state the new worker didn't intend.
+    /// All of these lifecycle writes are guarded by the run's current
+    /// owner and `status = 'running'`. If a worker's lease expired and
+    /// another worker already reclaimed the run, the write changes nothing
+    /// and returns `StaleWorker` so the SDK can log/raise rather than
+    /// silently marking the run in a state the new worker didn't intend.
     pub fn heartbeat(&self, id: &str, worker_id: &str, lease_ms: u64) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.heartbeat(id, worker_id, lease_ms),
-            RunsDbBackend::Postgres(db) => db.heartbeat(id, worker_id, lease_ms),
-        }
+        self.store.heartbeat(id, worker_id, lease_ms)
     }
 
     /// Persist a single completed step result. Guarded by the run's
@@ -325,17 +336,11 @@ impl RunsDb {
         step_name: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.save_step(run_id, worker_id, step_name, result),
-            RunsDbBackend::Postgres(db) => db.save_step(run_id, worker_id, step_name, result),
-        }
+        self.store.save_step(run_id, worker_id, step_name, result)
     }
 
     pub fn result(&self, name: &str, id: &str) -> Result<Option<RunResult>, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.result(name, id),
-            RunsDbBackend::Postgres(db) => db.result(name, id),
-        }
+        self.store.result(name, id)
     }
 
     pub fn complete(
@@ -344,20 +349,14 @@ impl RunsDb {
         worker_id: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.complete(id, worker_id, result),
-            RunsDbBackend::Postgres(db) => db.complete(id, worker_id, result),
-        }
+        self.store.complete(id, worker_id, result)
     }
 
     /// Delete at most `limit` terminal runs completed before `cutoff_ms`.
     /// Returns the number of runs deleted, so housekeeping can retry soon
     /// when a backlog remains.
     pub fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.prune_finished_before(cutoff_ms, limit),
-            RunsDbBackend::Postgres(db) => db.prune_finished_before(cutoff_ms, limit),
-        }
+        self.store.prune_finished_before(cutoff_ms, limit)
     }
 
     pub fn cancel(
@@ -366,10 +365,7 @@ impl RunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.cancel(id, worker_id, reason),
-            RunsDbBackend::Postgres(db) => db.cancel(id, worker_id, reason),
-        }
+        self.store.cancel(id, worker_id, reason)
     }
 
     pub fn fail(
@@ -380,10 +376,8 @@ impl RunsDb {
         next_run_at_ms: Option<i64>,
         finalize: bool,
     ) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.fail(id, worker_id, error, next_run_at_ms, finalize),
-            RunsDbBackend::Postgres(db) => db.fail(id, worker_id, error, next_run_at_ms, finalize),
-        }
+        self.store
+            .fail(id, worker_id, error, next_run_at_ms, finalize)
     }
 
     /// Reschedule a run for later without bumping attempts (for durable
@@ -395,10 +389,7 @@ impl RunsDb {
         worker_id: &str,
         wake_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.defer(id, worker_id, wake_at_ms),
-            RunsDbBackend::Postgres(db) => db.defer(id, worker_id, wake_at_ms),
-        }
+        self.store.defer(id, worker_id, wake_at_ms)
     }
 
     /// Take back every run whose lease expired and return how many there
@@ -420,10 +411,7 @@ impl RunsDb {
     }
 
     fn reclaim(&self) -> Result<Reclaimed, RunsDbError> {
-        let reclaimed = match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.reclaim_expired(),
-            RunsDbBackend::Postgres(db) => db.reclaim_expired(),
-        }?;
+        let reclaimed = self.store.reclaim_expired()?;
         // No worker is left to report these runs, so the server does.
         for run_id in &reclaimed.dead {
             tracing::warn!(%run_id, "Workflow run lost its worker on its last attempt; marked dead");
@@ -434,13 +422,12 @@ impl RunsDb {
     /// Snapshot of `worker_id -> in-flight count` over currently-running
     /// rows. Used to rehydrate [`InFlightLimiter`] on startup so cached
     /// counts match reality before the socket starts serving claims.
+    ///
+    /// [`InFlightLimiter`]: crate::InFlightLimiter
     pub fn in_flight_by_worker(
         &self,
     ) -> Result<std::collections::HashMap<String, u32>, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.in_flight_by_worker(),
-            RunsDbBackend::Postgres(db) => db.in_flight_by_worker(),
-        }
+        self.store.in_flight_by_worker()
     }
 
     /// Park a run waiting for a named event. Stores the waiter and defers
@@ -458,14 +445,8 @@ impl RunsDb {
         event_name: &str,
         timeout_at_ms: Option<i64>,
     ) -> Result<bool, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => {
-                db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
-            }
-            RunsDbBackend::Postgres(db) => {
-                db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
-            }
-        }
+        self.store
+            .wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
     }
 
     /// Park a run until `target_id`, a run of `target_name` in this store,
@@ -485,24 +466,14 @@ impl RunsDb {
         timeout_at_ms: Option<i64>,
     ) -> Result<bool, RunsDbError> {
         validate_run_id(target_id)?;
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.wait_for_run(
-                run_id,
-                worker_id,
-                step_name,
-                target_name,
-                target_id,
-                timeout_at_ms,
-            ),
-            RunsDbBackend::Postgres(db) => db.wait_for_run(
-                run_id,
-                worker_id,
-                step_name,
-                target_name,
-                target_id,
-                timeout_at_ms,
-            ),
-        }
+        self.store.wait_for_run(
+            run_id,
+            worker_id,
+            step_name,
+            target_name,
+            target_id,
+            timeout_at_ms,
+        )
     }
 
     /// Deliver an event payload. Wakes every parked waiter with matching
@@ -517,10 +488,7 @@ impl RunsDb {
         if event_name.starts_with(RESERVED_EVENT_PREFIX) {
             return Err(RunsDbError::InvalidEventName(RESERVED_EVENT_NAME));
         }
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.signal(event_name, payload),
-            RunsDbBackend::Postgres(db) => db.signal(event_name, payload),
-        }
+        self.store.signal(event_name, payload)
     }
 
     /// Deliver an event payload to one run. A run waiting for `event_name`
@@ -538,34 +506,18 @@ impl RunsDb {
     ) -> Result<SignalRunStatus, RunsDbError> {
         validate_run_id(run_id)?;
         validate_event_name(event_name)?;
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.signal_run(run_id, event_name, payload),
-            RunsDbBackend::Postgres(db) => db.signal_run(run_id, event_name, payload),
-        }
+        self.store.signal_run(run_id, event_name, payload)
     }
 
     pub fn pending_count(&self) -> Result<u64, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.pending_count(),
-            RunsDbBackend::Postgres(db) => db.pending_count(),
-        }
+        self.store.pending_count()
     }
 
     /// Returns true when at least one pending run is due for workers to
     /// claim now. Future `run_at` rows stay durable without waking a
     /// scale-to-zero worker until the dispatcher scan sees them become due.
     pub fn has_runnable_work(&self) -> Result<bool, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.has_runnable_work(),
-            RunsDbBackend::Postgres(db) => db.has_runnable_work(),
-        }
-    }
-
-    pub fn store_kind(&self) -> WorkflowStoreKind {
-        match &self.backend {
-            RunsDbBackend::Sqlite(_) => WorkflowStoreKind::Sqlite,
-            RunsDbBackend::Postgres(_) => WorkflowStoreKind::Postgres,
-        }
+        self.store.has_runnable_work()
     }
 
     /// Newest runs first, at most `limit` and the reply budget, and whether
@@ -577,23 +529,19 @@ impl RunsDb {
         limit: u32,
     ) -> Result<(Vec<WorkflowRunSummary>, bool), RunsDbError> {
         let status = status.map(WorkflowRunStatus::as_str);
-        let fetch = limit.saturating_add(1);
-        let rows = match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.list_runs(status, name, fetch),
-            RunsDbBackend::Postgres(db) => db.list_runs(status, name, fetch),
-        }?;
+        let rows = self
+            .store
+            .list_runs(status, name, limit.saturating_add(1))?;
         operator::summary_page(rows, limit as usize)
     }
 
     /// Every field of a run with its most recent steps, capped for a
     /// management reply.
     pub fn get_run(&self, id: &str) -> Result<Option<WorkflowRunDetail>, RunsDbError> {
-        let limit = WORKFLOW_RUN_MAX_STEPS as i64;
-        let record = match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.get_run(id, limit),
-            RunsDbBackend::Postgres(db) => db.get_run(id, limit),
-        }?;
-        record.map(operator::RunRecord::into_detail).transpose()
+        self.store
+            .get_run(id, WORKFLOW_RUN_MAX_STEPS as i64)?
+            .map(operator::RunRecord::into_detail)
+            .transpose()
     }
 
     /// Return a `dead` or `cancelled` run to `pending`, due now, with its
@@ -601,34 +549,28 @@ impl RunsDb {
     /// Leftover event waits are dropped; the handler parks again if needed.
     /// Returns the previous status.
     pub fn retry_run(&self, id: &str) -> Result<WorkflowRunStatus, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.retry_run(id),
-            RunsDbBackend::Postgres(db) => db.retry_run(id),
-        }
+        self.store.retry_run(id)
     }
 
     /// Cancel a `pending` or `running` run for an operator. A running
     /// attempt loses ownership, so its later writes fail with `StaleWorker`
     /// and reclaim, which only takes back running rows, leaves it alone.
     pub fn cancel_run(&self, id: &str) -> Result<CancelledRun, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.cancel_run(id),
-            RunsDbBackend::Postgres(db) => db.cancel_run(id),
-        }
+        self.store.cancel_run(id)
     }
 
+    /// Servers share the store, so an older release restarting must not
+    /// replace a newer release's schedules. A deploy takes a revision above
+    /// every earlier one; a recovery keeps the revision its release had.
     pub(crate) fn prepare_schedule_registration(
         &mut self,
         build: Option<String>,
         activation: crate::manager::ScheduleActivation,
     ) -> Result<(), RunsDbError> {
         use crate::manager::ScheduleActivation;
-        self.schedules.revision = match (&self.backend, activation) {
-            (RunsDbBackend::Postgres(db), ScheduleActivation::Deploy) => {
-                Some(db.next_schedule_revision()?)
-            }
-            (RunsDbBackend::Postgres(_), ScheduleActivation::Recover(revision)) => revision,
-            (RunsDbBackend::Sqlite(_), _) => None,
+        self.schedules.revision = match activation {
+            ScheduleActivation::Deploy => Some(self.store.next_schedule_revision()?),
+            ScheduleActivation::Recover(revision) => revision,
         };
         self.schedules.build = build.filter(|build| !build.is_empty());
         Ok(())
@@ -639,7 +581,7 @@ impl RunsDb {
     }
 
     pub(crate) fn needs_schedule_registration(&self) -> bool {
-        // Registration may be committing to Postgres on a blocking thread.
+        // Registration may be committing to the store on a blocking thread.
         self.schedules.done.try_lock().is_some_and(|done| !*done)
     }
 
@@ -661,28 +603,19 @@ impl RunsDb {
     }
 
     pub(crate) fn replace_schedules(&self, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.replace_schedules(schedules),
-            RunsDbBackend::Postgres(db) => db.replace_schedules(
-                schedules,
-                self.schedules.build.as_deref(),
-                self.schedules.revision,
-            ),
-        }
+        self.store.replace_schedules(
+            schedules,
+            self.schedules.build.as_deref(),
+            self.schedules.revision,
+        )
     }
 
     pub(crate) fn list_schedules(&self) -> Result<Vec<ScheduleRow>, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.list_schedules(),
-            RunsDbBackend::Postgres(db) => db.list_schedules(),
-        }
+        self.store.list_schedules()
     }
 
     pub(crate) fn set_schedule_last_run_at(&self, name: &str, ts: i64) -> Result<(), RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.set_schedule_last_run_at(name, ts),
-            RunsDbBackend::Postgres(db) => db.set_schedule_last_run_at(name, ts),
-        }
+        self.store.set_schedule_last_run_at(name, ts)
     }
 }
 
@@ -729,13 +662,6 @@ pub(crate) struct ScheduleRow {
 /// Event names starting with this are reserved for Tako's own waits.
 pub(crate) const RESERVED_EVENT_PREFIX: &str = "__";
 
-/// Whether something that arrived at `at` came after a wait's deadline. The
-/// outcome of a wait may not depend on how soon its run registers or is
-/// claimed, only on whether its value arrived in time.
-pub(crate) fn arrived_late(at: i64, timeout_at_ms: Option<i64>) -> bool {
-    timeout_at_ms.is_some_and(|deadline| at > deadline)
-}
-
 /// The event a run waiting on another run's outcome parks on. The reserved
 /// prefix keeps app signals from reaching it.
 pub(crate) fn run_event_name(id: &str) -> String {
@@ -777,9 +703,8 @@ fn validate_event_name(name: &str) -> Result<(), RunsDbError> {
     Ok(())
 }
 
-/// Rejects a signal that would take the run's inbox past either limit.
-/// Called inside the transaction that inserts it, after reading the
-/// inbox's current size under the run's write lock.
+/// Rejects a signal that would take the run's inbox past either limit,
+/// given the inbox's size when the signal was refused.
 pub(super) fn check_inbox_room(
     run_id: &str,
     entries: i64,

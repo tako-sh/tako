@@ -7,9 +7,10 @@ use crate::socket::{AppState, InstanceState, Response};
 pub(super) struct ComposeDeployment {
     pub config: AppConfig,
     pub routes: Vec<String>,
-    pub runtime_credentials: HashMap<String, String>,
     pub ssl: Option<tako_core::SslBinding>,
-    pub backup: Option<tako_core::BackupBinding>,
+    /// A deploy fails when an SDK group has no workflow database; scaling,
+    /// starting and stopping keep the group running without one.
+    pub require_workflow_store: bool,
 }
 
 impl crate::ServerState {
@@ -19,9 +20,8 @@ impl crate::ServerState {
         let ComposeDeployment {
             mut config,
             routes,
-            runtime_credentials,
             ssl,
-            backup,
+            require_workflow_store,
         } = request;
         let app_name = config.deployment_id();
         if config.compose.as_ref().map(|c| {
@@ -73,7 +73,19 @@ impl crate::ServerState {
                 .is_some_and(|compose| compose.has_sdk_services());
         let mut schedule_revision = None;
         let mut workflows = None;
+        // The bindings served until this deployment commits.
+        let previous_databases = if sdk_workflows {
+            self.state_store
+                .get_app_databases(&app_name)
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
         if sdk_workflows {
+            // The workflow store opens with the new binding's token, so the
+            // host must know it first; the running group's tokens stay valid.
+            self.databases
+                .apply_bindings(&app_name, &[&previous_databases, &config.databases]);
             let prepared = self
                 .prepare_app_workflows(
                     &app_name,
@@ -84,7 +96,8 @@ impl crate::ServerState {
                         storages: &config.storages,
                         databases: &HashMap::new(),
                         kv: &HashMap::new(),
-                        postgres_url: runtime_credentials.get("postgres_url"),
+                        store: crate::databases::workflow_store(&app_name, &config.databases),
+                        require_store: require_workflow_store,
                     },
                     tako_workflows::manager::ScheduleActivation::Deploy,
                 )
@@ -95,6 +108,8 @@ impl crate::ServerState {
                     workflows = Some(prepared);
                 }
                 Err(error) => {
+                    self.databases
+                        .apply_bindings(&app_name, &[&previous_databases]);
                     return Response::error(format!("Deploy failed to prepare workflows: {error}"));
                 }
             }
@@ -107,6 +122,10 @@ impl crate::ServerState {
             .state_store
             .begin_compose_deployment(&app_name, &runtime.project)
         {
+            if sdk_workflows {
+                self.databases
+                    .apply_bindings(&app_name, &[&previous_databases]);
+            }
             return Response::error(format!(
                 "Could not record pending Compose deployment: {error}"
             ));
@@ -153,14 +172,7 @@ impl crate::ServerState {
                 .await
                 .map_err(|e| e.to_string())?;
             self.state_store
-                .commit_deployment(
-                    &config,
-                    &routes,
-                    &runtime_credentials,
-                    ssl.as_ref(),
-                    backup.as_ref(),
-                    schedule_revision,
-                )
+                .commit_deployment(&config, &routes, ssl.as_ref(), schedule_revision)
                 .map_err(|e| format!("Could not commit Compose deployment: {e}"))?;
             self.databases
                 .apply_bindings(&app_name, &[&config.databases]);
@@ -171,6 +183,11 @@ impl crate::ServerState {
         .await;
 
         if let Err(error) = result {
+            // Nothing committed, so the previous bindings stay served.
+            if sdk_workflows {
+                self.databases
+                    .apply_bindings(&app_name, &[&previous_databases]);
+            }
             // The transaction owns containers; killing this logical instance
             // only detaches its log client until ownership has been committed.
             for instance in &instances {
@@ -195,8 +212,9 @@ impl crate::ServerState {
                         .await
                         .ok()
                         .flatten();
-                        self.sync_app_workflows(
+                        self.restore_app_workflows(
                             &app_name,
+                            &previous_config.version,
                             &previous_release,
                             runtime_bin.as_deref(),
                         )
@@ -461,15 +479,8 @@ impl crate::ServerState {
 
     pub(super) async fn apply_compose_config(&self, config: AppConfig) -> Response {
         let app = config.deployment_id();
-        let bindings = (|| -> Result<_, crate::state_store::StateStoreError> {
-            Ok((
-                self.state_store.get_runtime_credentials(&app)?,
-                self.state_store.get_ssl(&app)?,
-                self.state_store.get_backup(&app)?,
-            ))
-        })();
-        let (runtime_credentials, ssl, backup) = match bindings {
-            Ok(bindings) => bindings,
+        let ssl = match self.state_store.get_ssl(&app) {
+            Ok(ssl) => ssl,
             Err(error) => {
                 return Response::error(format!("Could not load deployment credentials: {error}"));
             }
@@ -480,9 +491,8 @@ impl crate::ServerState {
         self.deploy_compose(ComposeDeployment {
             config,
             routes,
-            runtime_credentials,
             ssl,
-            backup,
+            require_workflow_store: false,
         })
         .await
     }

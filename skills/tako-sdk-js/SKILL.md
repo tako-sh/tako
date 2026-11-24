@@ -68,7 +68,7 @@ On deploy or scale-down, Tako waits up to 30 seconds for an old instance's in-fl
 
 ## Runtime state: `tako.sh` + `tako.d.ts`
 
-`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, typed `tako.databases` and `tako.kv` bindings, channel metadata, store metadata, workflow metadata, and user-defined env vars on `process.env` / `import.meta.env`. Tako-owned runtime values are typed through `tako.sh` exports such as `tako.env`, `tako.build`, and `tako.dataDir`, not through generated env-var globals. It writes to the app's package (the nearest directory with a `package.json` between `app_root` and `tako.toml`, else the project root) and keeps an existing declaration in that directory's `app/`, `src/`, or root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel("<file-stem>")` or `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit names. Generated `TakoChannels` entries use the declared name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport metadata. App code imports `tako` from `tako.sh` for project runtime state:
+`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, typed `tako.db` and `tako.kv` bindings, channel metadata, store metadata, workflow metadata, and user-defined env vars on `process.env` / `import.meta.env`. Tako-owned runtime values are typed through `tako.sh` exports such as `tako.env`, `tako.build`, and `tako.dataDir`, not through generated env-var globals. It writes to the app's package (the nearest directory with a `package.json` between `app_root` and `tako.toml`, else the project root) and keeps an existing declaration in that directory's `app/`, `src/`, or root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel("<file-stem>")` or `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit names. Generated `TakoChannels` entries use the declared name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport metadata. App code imports `tako` from `tako.sh` for project runtime state:
 
 ```typescript
 import { tako } from "tako.sh";
@@ -83,31 +83,31 @@ export default function fetch(request: Request) {
 
 ### Surface
 
-| Export           | Description                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------- |
-| `tako`           | Frozen runtime object with env, ports, paths, logger, secrets, storages, databases, kv, and cache |
-| `tako.env`       | `ENV` value (`"development"`, `"production"`, ...)                                                |
-| `tako.isDev`     | `true` when `tako.env === "development"`                                                          |
-| `tako.isProd`    | `true` when `tako.env === "production"`                                                           |
-| `tako.port`      | Port assigned to this app instance                                                                |
-| `tako.host`      | Host/address Tako bound this app instance to                                                      |
-| `tako.build`     | Build identifier (from `TAKO_BUILD`)                                                              |
-| `tako.dataDir`   | Persistent app-owned data directory — writes survive restarts                                     |
-| `tako.appDir`    | Directory the app is running from (equivalent to `process.cwd()`)                                 |
-| `tako.secrets`   | Typed secret bag (interface regenerated from the local secret state and published cache)          |
-| `tako.storages`  | Typed storage bag (interface regenerated from `tako.toml`)                                        |
-| `tako.databases` | Typed database bindings, each `{ url, authToken }` for libSQL drivers                             |
-| `tako.kv`        | Typed KV store bindings, each with `get`, `put` (optional `ttl`), and `delete` of JSON values     |
-| `tako.cache`     | Client for the server-owned, bounded JSON cache                                                   |
-| `tako.logger`    | Structured JSON logger (`tako.logger.info(...)`)                                                  |
-| `Env`            | TypeScript union of configured environment names                                                  |
-| `TakoSecrets`    | TypeScript interface of secret names                                                              |
-| `TakoStorages`   | TypeScript interface of storage names                                                             |
-| `TakoDatabases`  | TypeScript interface of database binding names                                                    |
-| `TakoDatabase`   | `{ readonly url: string; readonly authToken: string }`                                            |
-| `TakoKv`         | TypeScript interface of KV store binding names                                                    |
-| `TakoKvStore`    | `{ readonly url: string }`                                                                        |
-| `TakoRuntime`    | TypeScript type of the exported `tako` object                                                     |
+| Export             | Description                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------- |
+| `tako`             | Frozen runtime object with env, ports, paths, logger, secrets, storages, databases, kv, and cache |
+| `tako.env`         | `ENV` value (`"development"`, `"production"`, ...)                                                |
+| `tako.isDev`       | `true` when `tako.env === "development"`                                                          |
+| `tako.isProd`      | `true` when `tako.env === "production"`                                                           |
+| `tako.port`        | Port assigned to this app instance                                                                |
+| `tako.host`        | Host/address Tako bound this app instance to                                                      |
+| `tako.build`       | Build identifier (from `TAKO_BUILD`)                                                              |
+| `tako.dataDir`     | Persistent app-owned data directory — writes survive restarts                                     |
+| `tako.appDir`      | Directory the app is running from (equivalent to `process.cwd()`)                                 |
+| `tako.secrets`     | Typed secret bag (interface regenerated from the local secret state and published cache)          |
+| `tako.storages`    | Typed storage bag (interface regenerated from `tako.toml`)                                        |
+| `tako.db`          | Typed database bindings, each `{ url, authToken }` for libSQL drivers                             |
+| `tako.kv`          | Typed KV store bindings, each with `get`, `put` (optional `ttl`), and `delete` of JSON values     |
+| `tako.cache`       | Client for the server-owned, bounded JSON cache                                                   |
+| `tako.logger`      | Structured JSON logger (`tako.logger.info(...)`)                                                  |
+| `Env`              | TypeScript union of configured environment names                                                  |
+| `TakoSecrets`      | TypeScript interface of secret names                                                              |
+| `TakoStorages`     | TypeScript interface of storage names                                                             |
+| `TakoDb`           | TypeScript interface of database binding names                                                    |
+| `TakoDbConnection` | `{ readonly url: string; readonly authToken: string }`                                            |
+| `TakoKv`           | TypeScript interface of KV store binding names                                                    |
+| `TakoKvStore`      | `{ readonly url: string }`                                                                        |
+| `TakoRuntime`      | TypeScript type of the exported `tako` object                                                     |
 
 ### Secrets
 
@@ -138,7 +138,7 @@ if (!profile) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of serialized JSON; `ttl` is milliseconds and keys are limited to 1 KiB. `delete(key)` removes one key. The runtime owns a persistent redb cache per app/environment on each server; backups omit it. It requires the internal socket (native, SDK-enabled Compose services, and socket-equipped workers; standalone HTTP containers have none). A writable `TAKO_DATA_DIR` is not a substitute. Each server has its own cache, so a value put on one server is a miss on the others; use [`tako.kv`](#kv-stores) for values every server must read, such as challenges and sessions.
+`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of serialized JSON; `ttl` is milliseconds and keys are limited to 1 KiB. `delete(key)` removes one key. The runtime owns a persistent redb cache per app/environment on each server; it is never backed up. It requires the internal socket (native, SDK-enabled Compose services, and socket-equipped workers; standalone HTTP containers have none). A writable `TAKO_DATA_DIR` is not a substitute. Each server has its own cache, so a value put on one server is a miss on the others; use [`tako.kv`](#kv-stores) for values every server must read, such as challenges and sessions.
 
 ## Images
 
@@ -203,6 +203,8 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 
 Storage URLs are private by default. S3-compatible bindings use SigV4; local
 bindings use signed app-local GET/PUT routes under `/_tako/storages/<binding>/<key>`.
+Local objects belong to their server and are not backed up; use S3-compatible
+storage when objects must survive losing the server.
 `createImageUrl(key, { public: true, width })` uses the storage `public_base_url`
 and the public image optimizer. `createImageSrcSet(key, { public: true, width,
 layout })` returns responsive public image attributes. Private storage image
@@ -214,19 +216,19 @@ object URLs.
 Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Create one with the CLI (administrator permission), bind it in `tako.toml`, then use the binding with `@libsql/client` or `@tursodatabase/serverless`:
 
 ```bash
-tako sqlite create main --server <server>
+tako db create main --server <server>
 ```
 
 ```toml
 [envs.production]
-databases = { main = "main" } # binding = database name
+db = { main = "main" } # binding = database name
 ```
 
 ```typescript
 import { createClient } from "@libsql/client";
 import { tako } from "tako.sh";
 
-const main = tako.databases.main;
+const main = tako.db.main;
 if (!main) throw new Error("No database is bound as main");
 const db = createClient(main); // { url, authToken }
 
@@ -234,12 +236,12 @@ const { rows } = await db.execute({ sql: "SELECT * FROM users WHERE id = ?", arg
 await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] }], "write");
 ```
 
-- `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako sqlite list` shows them. Apps on every server of the network can bind it. Snapshots go to the environment's `backup.storage`.
+- `tako.db.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].db = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako db list` shows them. Apps on every server of the network can bind it. Its backups go to the environment's `backup.storage`, or to `[db.<database>].backup`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
 - `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
-- Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako sqlite migration new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
-- `tako sqlite reset <name> --local` empties the local database and re-applies migrations; without `--local` it resets the hosted one after backing it up (a database the production environment binds also needs `--force`). `tako sqlite migration list` shows what is pending.
-- Drizzle: `drizzle(createClient(tako.databases.main))` from `drizzle-orm/libsql`. Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`.
+- Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako db migration new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
+- `tako db reset <name> --local` empties the local database and re-applies migrations; without `--local` it resets the hosted one after backing it up (a database the production environment binds also needs `--force`). `tako db migration list` shows what is pending.
+- Drizzle: `drizzle(createClient(tako.db.main))` from `drizzle-orm/libsql`. Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`.
 - Use a write transaction (`db.transaction("write")`) for read-modify-write logic. Idle transactions roll back after 10 seconds; statements stop after 30 seconds.
 - `ATTACH`, `VACUUM INTO`, `load_extension`, and `PRAGMA` writes other than connection settings, `user_version`, `application_id`, and `auto_vacuum` are refused. Tako manages WAL and `synchronous`; `foreign_keys` is on.
 - Container and Compose releases cannot bind databases yet.
@@ -271,7 +273,7 @@ const issued = await sessions.get<{ challenge: string }>(`challenge:${userId}`);
 await sessions.delete(`challenge:${userId}`);
 ```
 
-- `tako.kv.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].kv = { <binding> = "<store>" }`; several apps and environments can bind one store and share its keys, so prefix keys with the app or feature. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases; `tako kv list` shows the stores and their servers. A deploy fails when a bound name is not a KV store in the network.
+- `tako.kv.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].kv = { <binding> = "<store>" }`; several apps and environments can bind one store and share its keys, so prefix keys with the app or feature. An environment's `db` and `kv` share one set of binding names, and store names share the network's namespace with databases; `tako kv list` shows the stores and their servers. A deploy fails when a bound name is not a KV store in the network.
 - `get<T>(key)` resolves to the value or `undefined` for a missing or expired key; a stored `null` comes back as `null`. `put(key, value, { ttl })` replaces the value and its TTL; `delete(key)` succeeds for a missing key. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. There are no atomic counters, compare-and-set, scans, or transactions: concurrent read-modify-write of one key can lose an update. Use a hosted database for that.
 - Rejections are `TakoError` with `code: "TAKO_RPC_ERROR"` and `reason` `invalid_request` or `unavailable` (binding changed, store's server unreachable or restarting). A store has no size limit beyond its server's disk, and nothing is evicted. Requests go through the internal socket with the binding's token; logging or serializing a binding never shows the token, and KV calls are server-only.
 - Every write is on disk before it is acknowledged. With `[envs.<env>].backup.storage` or `[kv.<store>].backup`, the server snapshots a changing store hourly, before release commands, before restores and imports, and on demand (`tako kv backup`), like hosted databases. `tako kv restore <store> --latest`, `export`, and `import` replace or copy every key at once; `restore --latest --server <server>` recovers a lost server's store.
@@ -369,9 +371,9 @@ interface TakoStatus {
 
 ## Channels
 
-Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks, using broker memory rather than the replay database; Postgres as the channel backend rejects ephemeral publication/subscription (Postgres used only for workflows does not). Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
+Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks, using broker memory rather than the replay database. Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
 
-Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
+Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); `tako dev` keeps it in the project's `.tako/data/tako/channels.sqlite`, served through the same SQLite server protocol as production.
 
 ### Defining channels (file-based)
 
@@ -436,7 +438,7 @@ await chat({ roomId: "room1" }).publish({
 await chat({ roomId: "room1" }).close();
 ```
 
-`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors: a publish to a closed stream has `reason: "channel_closed"`, rejected params `"channel_params_invalid"`, and a channel the build does not define `"channel_unknown"`. Hosted SQLite and shared Postgres order publishes and closes in one database, so finish publishing before closing, even when publishers run on different servers. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
+`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors: a publish to a closed stream has `reason: "channel_closed"`, rejected params `"channel_params_invalid"`, and a channel the build does not define `"channel_unknown"`. The hosted replay database orders publishes and closes, so finish publishing before closing, even when publishers run on different servers. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
 
 #### Resumable streams (LLM replies)
 
@@ -517,15 +519,17 @@ message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
 response that ends without `tako.close` stay reconnectable.
 
 In production, durable replay lives in the environment's Tako-hosted SQLite
-database (one home server, reached by the others over the private network), or
-in shared Postgres when `postgres_url` is configured and
-`[envs.<env>.channels].database` is not. Ephemeral channels and native presence
+database (one home server, reached by the others over the private network).
+`[envs.<env>.channels].db = "<name>"` binds one created with
+`tako db create <name>`; without it, a deploy to a network with exactly one
+trusted server creates a generated `channels-<slug>-<hash>` database, and a
+larger network needs the explicit setting. Ephemeral channels and presence
 leases stay in broker memory. Replay gaps, expired history, and a restore or
 import of the replay database trigger quiet SDK resync, not business reset
-messages; reload authoritative state. This does not migrate durable workflows
-or app databases. Credential failures stop deployment rather than switching
-backends. See https://tako.sh/docs/channels/#deploy-replay-storage for backend
-selection and multi-server placement.
+messages; reload authoritative state. Credential failures stop deployment
+rather than switching backends. See
+https://tako.sh/docs/channels/#deploy-replay-storage for database selection and
+multi-server placement.
 Verify replay expiry, a current-state reload, async callback failure, and clean
 shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
 
@@ -561,7 +565,7 @@ update({ typing: true });
 
 `members` contains `{ connectionId, subject?, data }`, including the current membership. Every hook call creates a distinct member entry even when several subscriptions share a physical socket; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
-In production, native brokers keep expiring server-bound presence leases in memory and exchange them with trusted servers, without Postgres; when Postgres is the selected channel backend, it stores the leases. Database backups and restores do not include membership. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
+In production, native brokers keep expiring server-bound presence leases in memory and exchange them with trusted servers; leases never enter the replay database. Database backups and restores do not include membership. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
 
 ### Stores
 
@@ -647,10 +651,10 @@ write queue, or conflict-resolution engine is installed.
 
 Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
 16 KiB and complete read responses at 1 MiB. Invalidations use the environment's
-channel replay backend (hosted SQLite or shared Postgres), so every server reads
-the same bounded history. See https://tako.sh/docs/stores/ for the complete
-lifecycle. Verify scoped invalidation, reconnection, user switching, and offline
-expiry, not just the initial render.
+hosted channel replay database, so every server reads the same bounded history.
+See https://tako.sh/docs/stores/ for the complete lifecycle. Verify scoped
+invalidation, reconnection, user switching, and offline expiry, not just the
+initial render.
 
 ### React
 
@@ -779,7 +783,6 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
   retries: 3, // retries after first attempt (default 2)
   schedule: "0 9 * * *", // cron: daily at 9am (5-field)
   worker: "email", // worker group; omitted means "default"
-  local: true, // optional per-server local storage/cron for multi-server deploys
   backoff: { base: 1_000, max: 3_600_000 }, // exponential backoff
   handler: async (payload, ctx) => {
     ctx.logger.info("send-email started");
@@ -795,7 +798,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Channel replay storage is separate: a hosted replay database selected with `[envs.<env>.channels].database` neither satisfies this requirement nor moves workflow runs, and with it set `postgres_url` serves workflows only. Ephemeral channels use memory-only delivery without replay.
+Runs, steps, and schedules live in a hosted database that every server of the environment shares: a run enqueued on one server can run on another, and each schedule fires once per due time. `[envs.<env>.workflows].db = "<name>"` binds one explicitly; it may be the same database as `[envs.<env>.channels].db`, but do not also bind it as app SQL. Without it, a deploy to a network with exactly one trusted server creates `workflows-<slug>-<hash>`. On a network with several servers, run `tako db create <name> --server <server>` and set `[envs.<env>.workflows].db`; otherwise deploy refuses with that hint. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`, served through the same SQLite server protocol as production.
 
 ### Enqueuing
 
@@ -942,4 +945,4 @@ const dbUrl = tako.secrets.DATABASE_URL;
 
 ### SQLite files in the data directory
 
-`tako.dataDir` / `TAKO_DATA_DIR` is private app data. `tako.sharedDataDir` / `TAKO_SHARED_DATA_DIR` is local shared data for apps on one server (or projects using the same local `TAKO_HOME`). Both are plain file directories: Tako does not capture or back up SQLite files in them, and `backup = { databases = [...] }` is rejected. Use a hosted database through `tako.databases` instead. To move an existing file, create a database, then `tako sqlite import <name> <file>` during a write freeze. Full-directory archives (`tako backup now`) still include files under the app data directory; deploys and schedules do not create archives.
+`tako.dataDir` / `TAKO_DATA_DIR` is private app data. `tako.sharedDataDir` / `TAKO_SHARED_DATA_DIR` is local shared data for apps on one server (or projects using the same local `TAKO_HOME`). Both are plain file directories that Tako does not back up, and `backup = { databases = [...] }` is rejected. Use a hosted database through `tako.db` instead. To move an existing file, create a database, then `tako db import <name> <file>` during a write freeze.

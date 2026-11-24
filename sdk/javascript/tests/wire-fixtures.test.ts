@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
-import { loadDatabases } from "../src/database";
+import { loadDb } from "../src/db";
 import { loadKv } from "../src/kv";
 import { cache } from "../src/cache";
 import { call, channel, setNetworkCaller, workflow } from "../src/network";
@@ -438,7 +438,7 @@ describe("bootstrap fixture", () => {
     expect(secrets["DATABASE_URL"]).toBe("postgres://db/app");
     expect(secrets["API_KEY"]).toBe("key-123");
     expect({ ...getStorageBindings() }).toEqual(envelope.storages);
-    const main = loadDatabases()["main"];
+    const main = loadDb()["main"];
     expect(main?.url).toBe(envelope.databases["main"]!.url);
     expect(main?.authToken).toBe(envelope.databases["main"]!.authToken);
     const sessions = loadKv()["sessions"];

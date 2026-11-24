@@ -1,10 +1,23 @@
-use std::collections::HashMap;
-
 use super::{SqliteStateStore, StateStoreError, app_registry::upsert_app_on, encryption};
 use crate::instances::AppConfig;
 use rusqlite::OptionalExtension;
 
 impl SqliteStateStore {
+    /// The schedule revision of the app's committed release, replaced when a
+    /// failed deployment restores that release's runtime.
+    pub(crate) fn set_workflow_schedule_revision(
+        &self,
+        app: &str,
+        revision: i64,
+    ) -> Result<(), StateStoreError> {
+        self.lock_conn()?.execute(
+            "INSERT INTO app_schedule_revisions (app, revision) VALUES (?1, ?2)
+             ON CONFLICT (app) DO UPDATE SET revision = excluded.revision",
+            (app, revision),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn workflow_schedule_revision(
         &self,
         app: &str,
@@ -55,9 +68,7 @@ impl SqliteStateStore {
         &self,
         config: &AppConfig,
         routes: &[String],
-        runtime_credentials: &HashMap<String, String>,
         ssl: Option<&tako_core::SslBinding>,
-        backup: Option<&tako_core::BackupBinding>,
         schedule_revision: Option<i64>,
     ) -> Result<(), StateStoreError> {
         let encode = |value: serde_json::Value| -> Result<Vec<u8>, StateStoreError> {
@@ -79,18 +90,8 @@ impl SqliteStateStore {
                 Some(encode(serde_json::json!(config.databases))?),
             ),
             (
-                "app_runtime_credentials",
-                Some(encode(serde_json::json!(runtime_credentials))?),
-            ),
-            (
                 "app_ssl",
                 ssl.map(|value| encode(serde_json::json!(value)))
-                    .transpose()?,
-            ),
-            (
-                "app_backups",
-                backup
-                    .map(|value| encode(serde_json::json!(value)))
                     .transpose()?,
             ),
         ];
@@ -149,9 +150,7 @@ mod tests {
             ..Default::default()
         };
         let commit = |store: &SqliteStateStore, config: &AppConfig| {
-            store
-                .commit_deployment(config, &[], &HashMap::new(), None, None, None)
-                .unwrap()
+            store.commit_deployment(config, &[], None, None).unwrap()
         };
         commit(&store, &config);
         let raw: Vec<u8> = store
@@ -197,14 +196,7 @@ mod tests {
         config.compose_replicas.insert("worker".into(), 0);
         config.compose_stopped.insert("web".into());
         store
-            .commit_deployment(
-                &config,
-                &["old.example".into()],
-                &HashMap::new(),
-                None,
-                None,
-                Some(1),
-            )
+            .commit_deployment(&config, &["old.example".into()], None, Some(1))
             .unwrap();
         store
             .begin_compose_deployment("app/production", "tako-test")
@@ -220,14 +212,7 @@ mod tests {
         store.lock_conn().unwrap().execute_batch("CREATE TRIGGER fail_commit BEFORE DELETE ON app_compose_pending BEGIN SELECT RAISE(ABORT, 'injected commit failure'); END;").unwrap();
         assert!(
             store
-                .commit_deployment(
-                    &config,
-                    &["new.example".into()],
-                    &HashMap::new(),
-                    None,
-                    None,
-                    Some(2),
-                )
+                .commit_deployment(&config, &["new.example".into()], None, Some(2),)
                 .is_err()
         );
         let persisted = store.load_apps().unwrap();
@@ -252,14 +237,7 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_commit;")
             .unwrap();
         store
-            .commit_deployment(
-                &config,
-                &["new.example".into()],
-                &HashMap::new(),
-                None,
-                None,
-                Some(2),
-            )
+            .commit_deployment(&config, &["new.example".into()], None, Some(2))
             .unwrap();
         assert_eq!(store.load_apps().unwrap()[0].config.version, "v2");
         assert_eq!(

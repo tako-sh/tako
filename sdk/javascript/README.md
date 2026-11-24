@@ -88,7 +88,7 @@ const { members, connectionId, status, error, update } = usePresence("lobby", {
 update({ typing: true }); // Replace metadata from an event handler.
 ```
 
-Members contain `{ connectionId, subject?, data }`. Each hook call creates one connection. The server controls identity; metadata is client-provided JSON (up to 16 KiB). The hook handles heartbeats, reconnects, and leaving on unmount. Metadata starts with `data`; later changes use `update()`. Presence changes arrive within approximately one second, and unresponsive connections expire after 45 seconds. Presence uses separate expiring storage and has no event replay. Multi-server deployments share Postgres. Schema-validated params scope membership, so different `chatId` values have separate member lists. Auth should verify access to that chat. Local development permits connections without auth verification, like channels.
+Members contain `{ connectionId, subject?, data }`. Each hook call creates one connection. The server controls identity; metadata is client-provided JSON (up to 16 KiB). The hook handles heartbeats, reconnects, and leaving on unmount. Metadata starts with `data`; later changes use `update()`. Presence changes arrive within approximately one second, and unresponsive connections expire after 45 seconds. Presence uses separate expiring storage and has no event replay. Servers of a native network share membership. Schema-validated params scope membership, so different `chatId` values have separate member lists. Auth should verify access to that chat. Local development permits connections without auth verification, like channels.
 
 ## Stores
 
@@ -276,7 +276,7 @@ export default defineChannel("chat", {
 - Dynamic values are typed params from `paramsSchema`, and they select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use them. Params are flat string, number, or boolean values, and cannot be named `from` or `last_message_id` (reserved on channel routes; `defineChannel` throws). Keep context that must not split the stream, such as a client version, in headers or the credential.
 - `auth` is optional — omit or set `false` for public channels. Declarative auth receives `{ header?, cookie?, params, channel, operation }`.
 - Call `.$messageTypes<T>()` to type the per-message-type payloads. Set `transport: "ws"` to enable WebSocket client publishing; omit it for SSE subscriptions.
-- By default, every publish is stored in Tako's bounded channel replay log before delivery. Single-server production stores replay in local SQLite by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process. Native networks replicate bounded SQLite replay between servers; an explicitly configured `postgres_url` backend remains supported. `replayWindowMs` defaults to 10 minutes and can be overridden per durable channel.
+- By default, every publish is stored in Tako's bounded channel replay log before delivery. Production stores replay in a Tako-hosted SQLite database scoped by deployed app id (`{name}/{env}`), shared by every server of the environment; `tako dev` keeps it in the project's dev database. `replayWindowMs` defaults to 10 minutes and can be overridden per durable channel.
 - SSE subscriptions reconnect until closed, and the React `useChannel` hook reconnects WS subscriptions with the latest complete message's cursor. A lower-level `Channel.connect()` returns a logical subscription by default; its caller owns reconnection.
 - Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every retained message before live ones; an explicit cursor wins, and reconnects resume by cursor.
 - When server code calls `close()` on a stream, readers get every earlier message, then `onClose` once, and stop without reconnecting; `useChannel` reports `closed: true` and `status: "closed"`, and WebSocket `send()` throws after the close (code 4200).
@@ -304,7 +304,7 @@ await room.close();
 
 `close()` runs only in the Tako server runtime and rejects ephemeral channels. Closing twice is safe. The stream stays closed while `replayWindowMs` retains its marker. See [Stream A Reply That Survives A Refresh](https://tako.sh/docs/channels/#stream-a-reply-that-survives-a-refresh) for resumable output such as LLM replies.
 
-For memory-only live events, use `defineChannel("live-progress", { ephemeral: true })`. This disables persistence and replay; messages have `id: ""`, and slow subscribers may miss events. Do not combine it with `replayWindowMs`. Supported in local dev, single-server production, and native networks without shared Postgres; shared Postgres rejects ephemeral delivery.
+For memory-only live events, use `defineChannel("live-progress", { ephemeral: true })`. This disables persistence and replay; messages have `id: ""`, and slow subscribers may miss events. Do not combine it with `replayWindowMs`. Supported in local dev, single-server production, and native networks.
 
 ## Workflows
 
@@ -331,7 +331,7 @@ export default defineWorkflow<{ userId: string }>("send-email", {
 
 The production server starts a separate scale-to-zero process for each named JavaScript worker group. A workflow with `worker: "email"` runs in the process that claims that group. Worker counts, concurrency, and per-server overrides in `tako.toml` are parsed but not yet applied by production supervision.
 
-Set `local: true` in the workflow opts when a multi-server deploy should use per-server local queues and cron for that workflow. Local cron runs once per server and enqueue uniqueness is scoped to each server.
+Workflow runs live in a Tako-hosted database shared by every server of the environment, so cron fires once per due time and an enqueue `id` deduplicates across servers.
 
 When a worker starts, Tako replaces the server-side cron schedule set with the schedules in the current release. Removing `schedule` from a workflow deregisters its cron entry on the next worker startup.
 

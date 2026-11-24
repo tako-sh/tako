@@ -132,7 +132,7 @@ TEST_MODE = "1"
 
 [envs.test-e2e]
 route = "myapp-test-e2e.test"
-databases = { main = "myapp-tests" }
+db = { main = "myapp-tests" }
 storages = { uploads = "local" }
 ```
 
@@ -256,16 +256,16 @@ tako run -- cargo run --bin migrate
 
 `--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
 
-The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets, storage bindings, and database and KV store bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`, `tako.databases`, and `tako.kv`.
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets, storage bindings, and database and KV store bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`, `tako.db`, and `tako.kv`.
 
 Secrets are not raw process env vars.
 
 ## Databases In Dev
 
-`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].databases`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
+`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].db`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
 
 With `tako dev --env <env>`, a custom environment binds only
-`[envs.<env>].databases` and stores files at
+`[envs.<env>].db` and stores files at
 `.tako/data/envs/<env>/databases/<database-name>.sqlite`.
 
 ## KV Stores In Dev
@@ -284,7 +284,7 @@ Use the matching JavaScript, Go, or Rust [Secrets example](/secrets/#read-from-a
 
 Storage bindings from `[envs.development].storages` are delivered through `tako.storages`. In development, undeclared storage resource names default to local storage. Backup storage is not exposed to the SDK unless the same resource is also bound as app storage.
 
-Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. The runtime owns the [bounded disk cache](/cache), which persists across restarts and is excluded from backups.
+Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. The runtime owns the [bounded disk cache](/cache), which persists across restarts and is never backed up.
 
 See [Secrets](/secrets/) for value rotation and SDK access, [Storage](/storage/) for upload/download URLs, [Cache](/cache/) for key isolation and TTLs, and [Images](/images/) for public optimization. These primitives have their own configuration and persistence boundaries.
 
@@ -296,7 +296,7 @@ Presence uses the dev daemon’s in-memory store with separate membership for ea
 
 [Stores](/stores/) loads backend data with live invalidation and optional cached offline reads. Store reads and subscriptions enforce authorization in development, as channel and presence subscriptions do. Invalidate a store after committed writes; each validated params scope has its own notification stream.
 
-Channel subscriptions and WebSocket connections run the app's auth callback as in production, after the daemon wakes the app. If the app cannot answer its channel registry or authorize endpoint, the request fails with `503` instead of being allowed. Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev replay, Store notifications and presence stay in memory. Restarting the daemon drops them. Setting `[envs.<env>.channels].database` for a deployment does not open a hosted database locally or add it to `tako.databases`. To verify placement and persistence, check a [deployed replay database](/channels/#deploy-replay-storage).
+Channel subscriptions and WebSocket connections run the app's auth callback as in production, after the daemon wakes the app. If the app cannot answer its channel registry or authorize endpoint, the request fails with `503` instead of being allowed. Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev replay, Store notifications and presence stay in memory. Restarting the daemon drops them. Setting `[envs.<env>.channels].db` for a deployment does not open a hosted database locally or add it to `tako.db`. To verify placement and persistence, check a [deployed replay database](/channels/#deploy-replay-storage).
 
 Workflows in dev use the same architecture as production: the dev daemon owns the runs database, internal socket, dispatcher, and scale-to-zero worker supervisor. The worker exits after a short idle window and restarts for the next runnable enqueue, signal, cron tick, or retry, so code edits take effect on fresh work.
 

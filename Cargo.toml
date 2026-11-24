@@ -7,7 +7,6 @@ members = [
   "tako-network",
   "tako-compose",
   "tako-socket",
-  "tako-sqlite",
   "tako-storage",
   "tako-runtime",
   "tako-channels",
@@ -18,7 +17,7 @@ members = [
   "tako-spawn",
   "tako-workflows",
   "tako-images",
-  "tako-database",
+  "tako-db",
   "sdk/rust",
 ]
 

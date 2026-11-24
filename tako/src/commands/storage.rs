@@ -10,9 +10,6 @@ use crate::config::{
 };
 use crate::output;
 
-mod backup;
-pub(crate) use backup::{ensure_backup_keys_for_env, plain_backup_binding};
-
 #[derive(Subcommand)]
 pub enum StorageCommands {
     /// Attach a storage resource to this app
@@ -478,9 +475,9 @@ fn decrypt_s3_storage_binding(
 }
 
 /// The decrypted storage binding a database's snapshots upload to, from the
-/// `backup` storage resource of its `[databases.<name>]` entry.
+/// `backup` storage resource of its `[db.<name>]` entry.
 /// The storage resource that receives a database's snapshots, and the
-/// setting that names it: `[databases.<name>].backup`, else the
+/// setting that names it: `[db.<name>].backup`, else the
 /// environment's `backup.storage`.
 pub(crate) fn database_backup_setting(
     config: &TakoToml,
@@ -492,7 +489,7 @@ pub(crate) fn database_backup_setting(
         .get(database_name)
         .and_then(|database| database.backup.clone())
     {
-        return Some((backup, format!("[databases.{database_name}].backup")));
+        return Some((backup, format!("[db.{database_name}].backup")));
     }
     if let Some(backup) = config
         .kv

@@ -191,7 +191,7 @@ mod tests {
         secrets
             .set_credential(
                 "production",
-                crate::config::POSTGRES_CREDENTIAL_NAME,
+                crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME,
                 crate::config::EncryptedSecretValue::new("encrypted".to_string(), None),
             )
             .unwrap();

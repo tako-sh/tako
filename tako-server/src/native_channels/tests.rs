@@ -6,10 +6,11 @@ use super::{
     wire::{Budget, MAX_FRAME},
 };
 use crate::channels::ChannelTarget;
+use crate::channels::test_replay::{TestReplay, target_at};
 use std::net::IpAddr;
 use tako_channels::{
-    ChannelError, ChannelEvent, ChannelEventId, ChannelMessage, ChannelPublication,
-    ChannelPublishPayload, ChannelStore,
+    ChannelEvent, ChannelEventId, ChannelMessage, ChannelPublication, ChannelPublishPayload,
+    ChannelStore,
 };
 use tako_network::{
     AppEnv, DeviceKind, LocalDeviceKeys, Member, MemberKind, NetworkId, Permissions, ServerInfo,
@@ -26,11 +27,6 @@ fn local_id() -> DeviceId {
 }
 fn app() -> AppEnv {
     "chat/production".parse().unwrap()
-}
-fn postgres_target() -> ChannelTarget {
-    ChannelTarget::Postgres {
-        url: zeroize::Zeroizing::new("test credential".into()),
-    }
 }
 fn payload(n: usize) -> ChannelPublishPayload {
     ChannelPublishPayload {
@@ -247,56 +243,27 @@ fn signatures_bind_both_identities_challenges_network_and_direction() {
         .is_err()
     );
 }
-async fn new_broker() -> (tempfile::TempDir, Broker) {
-    let temp = tempfile::tempdir().unwrap();
-    let mut broker = Broker::new(temp.path().into(), Budget::new(8 * MAX_FRAME), local_id());
+async fn new_broker() -> (TestReplay, Broker) {
+    let replay = TestReplay::start(app().as_str());
+    let broker = broker_for(&replay, local_id(), Budget::new(8 * MAX_FRAME)).await;
+    (replay, broker)
+}
+/// A server's broker for the app, writing to its shared history.
+async fn broker_for(replay: &TestReplay, local: DeviceId, notifications: Budget) -> Broker {
+    let mut broker = Broker::new(notifications, local);
     assert!(matches!(
         broker
             .local(Request::Register {
                 app: app(),
-                target: ChannelTarget::Local
+                target: replay.target()
             })
             .await
             .unwrap(),
         Reply::Response(Response::Ok)
     ));
-    (temp, broker)
+    broker
 }
 
-#[tokio::test]
-async fn registration_reopens_channels_after_data_tree_restore() {
-    let (temp, mut broker) = new_broker().await;
-    publish(&mut broker, 1).await;
-    let previous = broker.apps.get(&app()).unwrap().store.clone();
-    let root = temp.path().join(app().as_str());
-    std::fs::rename(root.join("data"), root.join("previous-data")).unwrap();
-    std::fs::create_dir_all(root.join("data/tako")).unwrap();
-    assert!(matches!(
-        broker
-            .local(Request::Register {
-                app: app(),
-                target: ChannelTarget::Local
-            })
-            .await
-            .unwrap(),
-        Reply::Response(Response::Ok)
-    ));
-    let current = broker.apps.get(&app()).unwrap().store.clone();
-    assert!(
-        !Arc::ptr_eq(&previous, &current),
-        "restore must replace the old writer"
-    );
-    publish(&mut broker, 2).await;
-    assert_eq!(current.read_after("events", None, 10).unwrap().len(), 1);
-    let reader = ChannelStore::open_reader_config(tako_channels::ChannelStoreConfig::sqlite(
-        root.join("data/tako/channels.sqlite"),
-    ))
-    .unwrap();
-    assert_eq!(
-        reader.read_after("events", None, 10).unwrap()[0].data,
-        serde_json::json!(2)
-    );
-}
 async fn publish(broker: &mut Broker, n: usize) -> ChannelMessage {
     match broker
         .local(Request::Publish {
@@ -313,11 +280,16 @@ async fn publish(broker: &mut Broker, n: usize) -> ChannelMessage {
         _ => panic!("publish rejected"),
     }
 }
-fn stale(store: &ChannelStore, message: &ChannelMessage) {
-    assert!(matches!(
-        store.replay_cursor("events", Some(message.id.parse().unwrap())),
-        Err(ChannelError::StaleCursor)
-    ));
+async fn current(store: &Arc<ChannelStore>, message: &ChannelMessage) {
+    let cursor = message.id.parse().ok();
+    assert_eq!(
+        store.replay_cursor_async("events", cursor).await.unwrap(),
+        cursor,
+        "the shared history keeps every committed cursor"
+    );
+}
+async fn rows(store: &Arc<ChannelStore>) -> Vec<ChannelMessage> {
+    store.read_after_async("events", None, 100).await.unwrap()
 }
 #[tokio::test]
 async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() {
@@ -364,41 +336,51 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
     while let Some(result) = jobs.join_next().await {
         result.unwrap();
     }
-    let mut durable = Vec::new();
+    let mut wakes = 0;
     let mut live_sequence = 0;
     for _ in 0..32 {
         let packet = outgoing.recv().await.unwrap();
         let frame: Frame = serde_json::from_slice(&packet.bytes).unwrap();
         let Frame::Publication {
             app: scope,
-            publication: ChannelPublication::Event(event),
+            publication,
         } = frame
         else {
-            panic!("missing event");
+            panic!("missing publication");
         };
         assert_eq!(scope, app());
-        if event.ephemeral {
-            live_sequence += 1;
-            assert_eq!(event.id.sequence, live_sequence);
-        } else {
-            assert_eq!(event.id.sequence, durable.len() as u64 + 1);
-            durable.push(event.id);
+        match publication {
+            ChannelPublication::Event(event) => {
+                assert!(event.ephemeral, "durable history travels as wake hints");
+                live_sequence += 1;
+                assert_eq!(event.id.sequence, live_sequence);
+            }
+            ChannelPublication::Wake { channel } => {
+                assert_eq!(channel, "events");
+                wakes += 1;
+            }
         }
     }
-    let rows = store.read_after("events", None, 100).unwrap();
-    assert_eq!(
-        rows.iter()
-            .map(|m| m.event_id.clone().unwrap())
-            .collect::<Vec<_>>(),
-        durable
-    );
+    assert_eq!((wakes, live_sequence), (16, 16));
+    let positions: Vec<i64> = rows(&store)
+        .await
+        .iter()
+        // Replay ids are opaque; only their trailing position orders them.
+        .map(|m| m.id.rsplit('.').next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(positions, (1..=16).collect::<Vec<_>>());
     shutdown.send_replace(true);
     actor.await.unwrap().unwrap();
 }
 #[tokio::test]
-async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersisting() {
-    let (_temp, mut broker) = new_broker().await;
-    let source = ChannelStore::open_in_memory().unwrap();
+async fn remote_publications_are_not_echoed_and_notified_without_repersisting() {
+    let (replay, mut broker) = new_broker().await;
+    // Another server's writer for the same app and history.
+    let config = replay.target().config(&app());
+    let source =
+        tokio::task::spawn_blocking(move || Arc::new(ChannelStore::open_config(config).unwrap()))
+            .await
+            .unwrap();
     let mut publications = source.publications();
     let mut live_publications = source.ephemeral_publications();
     let (_, _, _, _, mb) = identities();
@@ -415,7 +397,7 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
         if ephemeral {
             source.publish_ephemeral("events", &payload(1)).unwrap();
         } else {
-            source.append("events", &payload(1)).unwrap();
+            source.append_async("events", &payload(1)).await.unwrap();
         }
         let publication = if ephemeral {
             ChannelPublication::Event(live_publications.recv().await.unwrap())
@@ -434,6 +416,7 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
             panic!()
         };
         if ephemeral {
+            // A live event is delivered once.
             assert!(matches!(
                 notification,
                 Notification::Committed {
@@ -442,19 +425,14 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
                 }
             ));
         } else {
+            // A wake is only a hint: a repeated one wakes readers again.
             assert!(matches!(notification, Notification::Wake { .. }));
+            notices.recv().await.unwrap();
         }
         assert!(notices.try_recv().is_err());
     }
     assert!(outgoing.try_recv().is_err());
-    assert_eq!(
-        broker.apps[&app()]
-            .store
-            .read_after("events", None, 10)
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(rows(&broker.apps[&app()].store).await.len(), 1);
 }
 #[tokio::test]
 async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes() {
@@ -530,107 +508,103 @@ async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes(
     shutdown.send_replace(true);
     actor.await.unwrap().unwrap();
 
-    // Peers received the message and the marker, each exactly once.
-    let mut replicated = Vec::new();
+    // Peers were woken for the message and the marker, each exactly once.
+    let mut woken = 0;
     while let Ok(packet) = outgoing.try_recv() {
         let Frame::Publication {
-            publication: ChannelPublication::Event(event),
+            publication: ChannelPublication::Wake { channel },
             ..
         } = serde_json::from_slice(&packet.bytes).unwrap()
         else {
             panic!("unexpected frame");
         };
-        replicated.push(event.payload.r#type);
+        assert_eq!(channel, "events");
+        woken += 1;
     }
-    assert_eq!(
-        replicated,
-        vec!["update", tako_channels::CLOSE_MESSAGE_TYPE]
-    );
-    // The broker fenced replay when it stopped; the history itself is intact.
-    let retained = store.read_after("events", None, 10).unwrap();
+    assert_eq!(woken, 2);
+    // The broker fenced live delivery when it stopped; the history is intact.
+    let retained = rows(&store).await;
     assert_eq!(
         retained
             .iter()
-            .map(|message| (message.event_id.clone(), message.r#type.as_str()))
+            .map(|message| (message.id.clone(), message.r#type.as_str()))
             .collect::<Vec<_>>(),
         vec![
-            (sent.event_id, "update"),
-            (marker.event_id, tako_channels::CLOSE_MESSAGE_TYPE)
+            (sent.id, "update"),
+            (marker.id, tako_channels::CLOSE_MESSAGE_TYPE)
         ]
     );
 }
 #[tokio::test]
-async fn unknown_remote_app_never_creates_database() {
-    let (temp, mut broker) = new_broker().await;
-    broker
-        .remote(
-            &remote_id(),
-            Frame::Publication {
-                app: "unknown/production".parse().unwrap(),
-                publication: ChannelPublication::Event(ChannelEvent {
-                    id: ChannelEventId {
-                        origin: "remote".into(),
-                        sequence: 1,
-                    },
-                    channel: "events".into(),
-                    payload: payload(1),
-                    ephemeral: false,
-                    lifecycle: None,
-                    created_at_unix_ms: None,
-                }),
+async fn unknown_remote_app_never_creates_database_state() {
+    let (replay, mut broker) = new_broker().await;
+    let unknown: AppEnv = "unknown/production".parse().unwrap();
+    for publication in [
+        ChannelPublication::Wake {
+            channel: "events".into(),
+        },
+        ChannelPublication::Event(ChannelEvent {
+            id: ChannelEventId {
+                origin: "remote".into(),
+                sequence: 1,
             },
-        )
-        .await
-        .unwrap();
-    assert!(!temp.path().join("unknown").exists());
+            channel: "events".into(),
+            payload: payload(1),
+            ephemeral: false,
+        }),
+    ] {
+        broker
+            .remote(
+                &remote_id(),
+                Frame::Publication {
+                    app: unknown.clone(),
+                    publication,
+                },
+            )
+            .await
+            .unwrap();
+    }
     assert_eq!(broker.apps.len(), 1);
+    let apps: i64 = replay
+        .sql()
+        .query_row("SELECT COUNT(*) FROM tako_replay_apps", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(apps, 1);
 }
 #[tokio::test]
-async fn queue_overflow_commits_successfully_and_persists_gap_without_subscribers() {
-    let (_temp, mut broker) = new_broker().await;
+async fn queue_overflow_commits_successfully_and_fences_live_subscribers() {
+    let (_replay, mut broker) = new_broker().await;
     let first = publish(&mut broker, 1).await;
+    let store = broker.apps[&app()].store.clone();
+    let resets = store.resets("events");
     let (_, _, _, _, mb) = identities();
     let (sender, _blocked_receiver) = wire::queue(Budget::new(1));
     broker.peers.lock().insert(mb.device_id, sender);
     let second = publish(&mut broker, 2).await;
-    stale(&broker.apps[&app()].store, &first);
-    stale(&broker.apps[&app()].store, &second);
-    assert_eq!(
-        first.event_id.as_ref().unwrap().origin,
-        second.event_id.as_ref().unwrap().origin
-    );
+    assert!(resets.has_changed().unwrap());
     assert!(broker.peers.lock().is_empty());
-    assert_eq!(
-        broker.apps[&app()]
-            .store
-            .read_after("events", None, 10)
-            .unwrap()
-            .len(),
-        2
-    );
+    current(&store, &first).await;
+    current(&store, &second).await;
+    assert_eq!(rows(&store).await.len(), 2);
 }
 #[tokio::test]
-async fn first_registration_after_restart_invalidates_offline_cursor() {
-    let (temp, mut broker) = new_broker().await;
+async fn first_registration_after_restart_keeps_the_shared_history() {
+    let (replay, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     drop(broker);
-    let mut restarted = Broker::new(temp.path().into(), Budget::new(MAX_FRAME), local_id());
-    restarted
-        .local(Request::Register {
-            app: app(),
-            target: ChannelTarget::Local,
-        })
-        .await
-        .unwrap();
-    stale(&restarted.apps[&app()].store, &before);
+    let mut restarted = broker_for(&replay, local_id(), Budget::new(MAX_FRAME)).await;
+    current(&restarted.apps[&app()].store, &before).await;
     let after = publish(&mut restarted, 2).await;
+    let rows = rows(&restarted.apps[&app()].store).await;
     assert_eq!(
-        before.event_id.unwrap().origin,
-        after.event_id.unwrap().origin
+        rows.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        [&before.id, &after.id]
     );
 }
 #[tokio::test]
-async fn control_disconnect_fences_persistently_and_rejects_old_generation() {
+async fn control_disconnect_fences_live_delivery_and_rejects_old_generation() {
     let (_temp, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     let store = broker.apps[&app()].store.clone();
@@ -647,7 +621,7 @@ async fn control_disconnect_fences_persistently_and_rejects_old_generation() {
         .await
         .unwrap()
         .unwrap();
-    stale(&store, &before);
+    current(&store, &before).await;
     let (_, _, _, _, mb) = identities();
     let (sender, _rx) = wire::queue(Budget::new(MAX_FRAME));
     let (reply, answer) = oneshot::channel();
@@ -723,9 +697,8 @@ async fn pump_preserves_partial_inbound_frame_while_sending_keepalives() {
 }
 
 #[tokio::test]
-async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only_hint() {
-    let (_temp, mut broker) = new_broker().await;
-    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
+async fn wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only_hint() {
+    let (replay, mut broker) = new_broker().await;
     let store = broker.apps[&app()].store.clone();
     let changes = store.changes("events");
     let mut publications = store.publications();
@@ -772,14 +745,12 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
                     channel: "events".into(),
                     payload: payload(1),
                     ephemeral: false,
-                    lifecycle: None,
-                    created_at_unix_ms: None,
                 }),
             },
         )
         .await
         .unwrap();
-    assert!(store.read_after("events", None, 100).unwrap().is_empty());
+    assert!(rows(&store).await.is_empty());
     assert!(publications.try_recv().is_err());
     assert!(notifications.try_recv().is_err());
     assert!(outgoing.try_recv().is_err());
@@ -809,14 +780,17 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
             ..
         }
     ));
-    assert!(!String::from_utf8_lossy(&packet.bytes).contains("test credential"));
-    assert!(store.read_after("events", None, 100).unwrap().is_empty());
+    let ChannelTarget::Hosted { token } = replay.target();
+    assert!(!String::from_utf8_lossy(&packet.bytes).contains(token.as_str()));
+    assert!(rows(&store).await.is_empty());
 }
 
 #[tokio::test]
 async fn transport_frame_overflow_is_gap_after_successful_commit() {
-    let (_temp, mut broker) = new_broker().await;
+    let (_replay, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
+    let store = broker.apps[&app()].store.clone();
+    let resets = store.resets("events");
     let reply = broker
         .local(Request::Publish {
             app: app(),
@@ -831,15 +805,9 @@ async fn transport_frame_overflow_is_gap_after_successful_commit() {
         .await
         .unwrap();
     assert!(matches!(reply, Reply::Response(Response::Published { .. })));
-    stale(&broker.apps[&app()].store, &before);
-    assert_eq!(
-        broker.apps[&app()]
-            .store
-            .read_after("events", None, 10)
-            .unwrap()
-            .len(),
-        2
-    );
+    assert!(resets.has_changed().unwrap());
+    current(&store, &before).await;
+    assert_eq!(rows(&store).await.len(), 2);
 }
 
 #[test]
@@ -936,7 +904,7 @@ async fn rejects_reverse_canonical_connection_direction() {
 }
 
 #[tokio::test]
-async fn peer_loss_control_fences_offline_replay_without_membership_change() {
+async fn peer_loss_control_fences_live_delivery_without_membership_change() {
     let (_temp, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     let store = broker.apps[&app()].store.clone();
@@ -956,7 +924,7 @@ async fn peer_loss_control_fences_offline_replay_without_membership_change() {
         .await
         .unwrap()
         .unwrap();
-    stale(&store, &before);
+    current(&store, &before).await;
     shutdown.send_replace(true);
     actor.await.unwrap().unwrap();
 }
@@ -1026,16 +994,8 @@ async fn presence_members(broker: &mut Broker) -> Vec<tako_channels::PresenceMem
 }
 #[tokio::test]
 async fn presence_updates_and_leaves_cross_peers_once_with_origin_bound_identity() {
-    let (_left_dir, mut left) = new_broker().await;
-    let right_dir = tempfile::tempdir().unwrap();
-    let mut right = Broker::new(right_dir.path().into(), Budget::new(MAX_FRAME), remote_id());
-    right
-        .local(Request::Register {
-            app: app(),
-            target: ChannelTarget::Local,
-        })
-        .await
-        .unwrap();
+    let (replay, mut left) = new_broker().await;
+    let mut right = broker_for(&replay, remote_id(), Budget::new(MAX_FRAME)).await;
     let (send, mut frames) = wire::queue(Budget::new(MAX_FRAME));
     left.peers.lock().insert(remote_id(), send);
     let (send, mut echoes) = wire::queue(Budget::new(MAX_FRAME));
@@ -1139,58 +1099,6 @@ async fn presence_rejects_foreign_identity_and_drops_peer_leases_on_gap() {
     assert_eq!(presence_members(&mut broker).await, vec![presence_member()]);
 }
 #[tokio::test]
-async fn postgres_presence_seam_uses_shared_table_and_does_not_forward_or_reinsert() {
-    let (_temp, mut broker) = new_broker().await;
-    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
-    let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
-    broker.peers.lock().insert(remote_id(), sender);
-    broker
-        .local(Request::UpdatePresence {
-            app: app(),
-            channel: "room".into(),
-            member: presence_member(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(presence_members(&mut broker).await, vec![presence_member()]);
-    assert_eq!(
-        broker.apps[&app()].store.presence("room", 0).unwrap().len(),
-        1
-    );
-    assert!(outgoing.try_recv().is_err());
-    let remote_member =
-        super::presence::local_member(&remote_id(), "room", &presence_member()).unwrap();
-    broker
-        .remote(
-            &remote_id(),
-            Frame::Presence {
-                app: app(),
-                publication: super::presence::Publication::Update {
-                    channel: "room".into(),
-                    member: remote_member,
-                    expires_at_ms: i64::MAX,
-                    sequence: 1,
-                },
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        broker.apps[&app()].store.presence("room", 0).unwrap().len(),
-        1
-    );
-    broker
-        .local(Request::RemovePresence {
-            app: app(),
-            channel: "room".into(),
-            connection_id: presence_member().connection_id,
-        })
-        .await
-        .unwrap();
-    assert!(presence_members(&mut broker).await.is_empty());
-    assert!(outgoing.try_recv().is_err());
-}
-#[tokio::test]
 async fn presence_ipc_roundtrips_over_real_duplex() {
     let (_temp, broker) = new_broker().await;
     let (commands, receiver) = broker::commands(8);
@@ -1236,7 +1144,7 @@ async fn presence_ipc_roundtrips_over_real_duplex() {
 
 #[tokio::test]
 async fn first_presence_query_discovers_existing_peer_leases_without_client_renewal() {
-    let (_left_dir, mut left) = new_broker().await;
+    let (replay, mut left) = new_broker().await;
     left.local(Request::UpdatePresence {
         app: app(),
         channel: "room".into(),
@@ -1244,15 +1152,7 @@ async fn first_presence_query_discovers_existing_peer_leases_without_client_rene
     })
     .await
     .unwrap();
-    let right_dir = tempfile::tempdir().unwrap();
-    let mut right = Broker::new(right_dir.path().into(), Budget::new(MAX_FRAME), remote_id());
-    right
-        .local(Request::Register {
-            app: app(),
-            target: ChannelTarget::Local,
-        })
-        .await
-        .unwrap();
+    let mut right = broker_for(&replay, remote_id(), Budget::new(MAX_FRAME)).await;
     let (left_sender, mut left_out) = wire::queue(Budget::new(MAX_FRAME));
     let (right_sender, mut right_out) = wire::queue(Budget::new(MAX_FRAME));
     left.peers.lock().insert(remote_id(), left_sender);
@@ -1312,7 +1212,7 @@ async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
         assert!(budget.take(MAX_FRAME).is_ok());
         assert!(replies.take(MAX_FRAME).is_ok());
     }
-    assert!(store.read_after("events", None, 10).unwrap().is_empty());
+    assert!(rows(&store).await.is_empty());
 }
 
 #[tokio::test]
@@ -1390,16 +1290,15 @@ async fn ipc_reply_budget_survives_blocked_write_and_releases_on_disconnect() {
 
 #[tokio::test]
 async fn backend_registration_change_rejects_without_replacing_writer_and_same_config_recovers() {
-    let (_temp, mut broker) = new_broker().await;
+    let (replay, mut broker) = new_broker().await;
     let old = broker.apps[&app()].store.clone();
     let first = publish(&mut broker, 1).await;
+    // A binding the database does not know cannot open the app's history.
     assert!(matches!(
         broker
             .local(Request::Register {
                 app: app(),
-                target: ChannelTarget::Postgres {
-                    url: zeroize::Zeroizing::new("postgres://secret".into())
-                },
+                target: target_at(&replay.server.url),
             })
             .await
             .unwrap(),
@@ -1410,7 +1309,7 @@ async fn backend_registration_change_rejects_without_replacing_writer_and_same_c
         broker
             .local(Request::Register {
                 app: app(),
-                target: ChannelTarget::Local
+                target: replay.target()
             })
             .await
             .unwrap(),
@@ -1418,7 +1317,8 @@ async fn backend_registration_change_rejects_without_replacing_writer_and_same_c
     ));
     publish(&mut broker, 2).await;
     assert_eq!(
-        old.read_after("events", Some(first.id.parse().unwrap()), 10)
+        old.read_after_async("events", Some(first.id.parse().unwrap()), 10)
+            .await
             .unwrap()
             .len(),
         1
@@ -1501,7 +1401,7 @@ async fn authenticated_peer_loss_requests_fence_even_when_admission_fails() {
 
 #[tokio::test]
 async fn re_registration_with_a_changed_backend_replaces_the_store_and_retires_old_subscriptions() {
-    let (_temp, mut broker) = new_broker().await;
+    let (replay, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     let previous = broker.apps[&app()].store.clone();
     let Reply::Subscription(mut notices) = broker
@@ -1511,12 +1411,13 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_retires_o
     else {
         panic!()
     };
-    broker.apps.get_mut(&app()).unwrap().target = postgres_target();
+    // As if the broker had registered the app before its credential rotated.
+    broker.apps.get_mut(&app()).unwrap().target = target_at(&replay.server.url);
     assert!(matches!(
         broker
             .local(Request::Register {
                 app: app(),
-                target: ChannelTarget::Local
+                target: replay.target()
             })
             .await
             .unwrap(),
@@ -1524,7 +1425,7 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_retires_o
     ));
     let application = &broker.apps[&app()];
     assert!(!Arc::ptr_eq(&previous, &application.store));
-    assert!(matches!(application.target, ChannelTarget::Local));
+    assert!(application.target == replay.target());
     assert!(application.subscribers.lock().is_empty());
     let packet = notices.recv().await.unwrap();
     assert!(matches!(
@@ -1533,20 +1434,18 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_retires_o
             notification: Notification::BackendChanged
         }
     ));
-    stale(&broker.apps[&app()].store, &before);
+    // The rotated binding names the same history.
+    current(&broker.apps[&app()].store, &before).await;
     let after = publish(&mut broker, 2).await;
-    let rows = broker.apps[&app()]
-        .store
-        .read_after("events", None, 10)
-        .unwrap();
+    let rows = rows(&broker.apps[&app()].store).await;
     assert_eq!(rows.last().map(|row| row.id.clone()), Some(after.id));
 }
 
 #[tokio::test]
 async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling_other_apps() {
-    let (_temp, mut broker) = new_broker().await;
-    // A server that accepts the connection and then never answers the startup
-    // message, released shortly after the broker's deadline so the worker exits.
+    let (replay, mut broker) = new_broker().await;
+    // A database endpoint that accepts the connection and then never answers,
+    // released shortly after the broker's deadline so the worker exits.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
@@ -1560,11 +1459,7 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
         .local_until(
             Request::Register {
                 app: stalled.clone(),
-                target: ChannelTarget::Postgres {
-                    url: zeroize::Zeroizing::new(format!(
-                        "postgres://tako:secret@127.0.0.1:{port}/tako"
-                    )),
-                },
+                target: target_at(&format!("http://127.0.0.1:{port}")),
             },
             started + Duration::from_millis(300),
         )
@@ -1580,7 +1475,7 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
             Duration::from_secs(2),
             broker.local(Request::Register {
                 app: other.clone(),
-                target: ChannelTarget::Local
+                target: replay.target()
             })
         )
         .await

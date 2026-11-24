@@ -33,7 +33,7 @@ The operational cost of that power is the cluster. A production self-hosted Temp
 
 ### The cluster is a file
 
-Tako's workflow engine runs inside `tako-server` — the same process that already handles your app's HTTP proxy, TLS, secrets, and [scale-to-zero supervision](/blog/scale-to-zero-without-containers/). The "cluster" is one app-local SQLite file at `data/tako/workflows.sqlite` with WAL enabled. The "worker fleet" is a subprocess that the supervisor spawns on demand. The "API" is a unix socket.
+Tako's workflow engine runs inside `tako-server` — the same process that already handles your app's HTTP proxy, TLS, secrets, and [scale-to-zero supervision](/blog/scale-to-zero-without-containers/). The "cluster" is one Tako-hosted SQLite database. The "worker fleet" is a subprocess that the supervisor spawns on demand. The "API" is a unix socket.
 
 ```d2
 direction: right

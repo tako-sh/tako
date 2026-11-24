@@ -32,13 +32,12 @@ use packaging::{build_container_target_artifacts, build_target_artifacts};
 #[derive(Default)]
 struct DeploymentBindings {
     storages: HashMap<String, tako_core::StorageBinding>,
-    backup: Option<tako_core::BackupBinding>,
     ssl: tako_core::SslBinding,
 }
 
 /// The deploy's bindings without secret parts, the same for every client.
-/// Servers fill access keys, backup keys and the Cloudflare token from the
-/// pinned secret snapshot.
+/// Servers fill access keys and the Cloudflare token from the pinned secret
+/// snapshot.
 fn deployment_bindings(config: &TakoToml, env: &str) -> Result<DeploymentBindings, String> {
     let ssl = tako_core::SslBinding {
         provider: config.get_ssl_provider(env),
@@ -46,8 +45,6 @@ fn deployment_bindings(config: &TakoToml, env: &str) -> Result<DeploymentBinding
     };
     Ok(DeploymentBindings {
         storages: crate::commands::storage::plain_storage_bindings(env, config)
-            .map_err(|e| e.to_string())?,
-        backup: crate::commands::storage::plain_backup_binding(env, config)
             .map_err(|e| e.to_string())?,
         ssl,
     })
@@ -139,7 +136,6 @@ pub(super) async fn prepare_build_phase(
         }
         let DeploymentBindings {
             storages: deploy_storages,
-            backup: deploy_backup,
             ssl: deploy_ssl,
         } = deployment_bindings(&tako_config, &env)?;
 
@@ -165,7 +161,6 @@ pub(super) async fn prepare_build_phase(
             manifest_main: "container".to_string(),
             deploy_storages,
             deploy_ssl,
-            deploy_backup,
             use_unified_target_process: true,
             artifacts_by_target,
         });
@@ -289,7 +284,6 @@ pub(super) async fn prepare_build_phase(
     manifest.sdk = detect_release_sdk(runtime_adapter.id(), &eff_app_dir, &source_root);
     let DeploymentBindings {
         storages: deploy_storages,
-        backup: deploy_backup,
         ssl: deploy_ssl,
     } = deployment_bindings(&tako_config, &env)?;
 
@@ -347,7 +341,6 @@ pub(super) async fn prepare_build_phase(
         manifest_main,
         deploy_storages,
         deploy_ssl,
-        deploy_backup,
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })

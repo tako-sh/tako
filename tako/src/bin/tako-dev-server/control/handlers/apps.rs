@@ -194,7 +194,13 @@ pub(super) async fn register_app(
             )
         })
         .transpose()?;
-    // KV stores first: if a database then fails to open, the KV bindings
+    // The channel replay binding first: it never changes for a registration,
+    // so a later failure leaves it as the running app holds it.
+    provision_channels(&state, &config_path, &project_dir, &app_name).await?;
+    crate::dev_workflows::provision(&config_path, &project_dir, &app_name)
+        .await
+        .map_err(|e| format!("failed to serve the local workflow database: {e}"))?;
+    // KV stores next: if a database then fails to open, the KV bindings
     // go back to what the running app holds, and neither changes.
     let kv_before = crate::kv::snapshot(&config_path).await;
     let kv = crate::kv::connect(&config_path, &kv)
@@ -480,7 +486,7 @@ async fn ensure_workflow_runtime(
         }) as tako_workflows::WorkerLogSink
     });
     let spec_app = app.clone();
-    let spec_fn = move |_db_path: PathBuf| tako_workflows::WorkerSpec {
+    let spec = tako_workflows::WorkerSpec {
         env: build_worker_env(&spec_app, &env, &socket, app_root.as_deref()),
         app: spec_app.clone(),
         workers: 0,
@@ -497,13 +503,33 @@ async fn ensure_workflow_runtime(
         isolation: None,
         external: false,
     };
-    if let Err(e) = workflows.ensure(&app, workflow_retention_ms, spec_fn).await {
+    if let Err(e) = workflows.ensure(&app, workflow_retention_ms, spec).await {
         tracing::warn!(
             app = %app,
             error = %e,
             "failed to register app with workflow manager; workflows / channel publish will not work",
         );
     }
+}
+
+/// Serve the project's dev replay database to the app's channel store.
+async fn provision_channels(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+    project_dir: &str,
+    app_name: &str,
+) -> Result<(), String> {
+    let Some(channels) = state.lock().unwrap().channels.clone() else {
+        return Ok(());
+    };
+    crate::dev_channels::provision(&channels, config_path, project_dir, app_name)
+        .await
+        .map_err(|e| format!("failed to serve the local channel replay database: {e}"))
+}
+
+async fn release_channels(state: &Arc<Mutex<State>>, config_path: &str) {
+    let channels = state.lock().unwrap().channels.clone();
+    crate::dev_channels::release(channels.as_ref(), config_path).await;
 }
 
 pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
@@ -581,6 +607,8 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     }
     crate::databases::release(&config_path).await;
     crate::kv::release(&config_path).await;
+    release_channels(state, &config_path).await;
+    crate::dev_workflows::release(&config_path, &app_name).await;
 
     Response::AppUnregistered { config_path }
 }

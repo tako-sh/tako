@@ -56,10 +56,8 @@ async function resume(server: string, after: string, expected: Event[]) {
   }
 }
 
-function sqlite(...args: string[]) {
-  return JSON.parse(
-    execFileSync(cli!, ["--ci", "--json", "sqlite", ...args], { encoding: "utf8" }),
-  );
+function db(...args: string[]) {
+  return JSON.parse(execFileSync(cli!, ["--ci", "--json", "db", ...args], { encoding: "utf8" }));
 }
 
 const first = await publish(home, 1);
@@ -73,7 +71,7 @@ const tail = concurrent.map(({ event }) => event).sort((a, b) => position(a) - p
 assert.ok(position(tail[0]!) < position(tail[1]!), "writers must get distinct positions");
 
 const database = "channel-replay";
-const { rows } = sqlite(
+const { rows } = db(
   "shell",
   database,
   `SELECT id, json_extract(data_json, '$.message') FROM tako_replay_messages
@@ -90,11 +88,9 @@ await resume(home, cursor, tail);
 await resume(peer, cursor, tail);
 
 const scope = "cw-e2e/production#channels";
-const [record] = sqlite("status", database).databases;
+const [record] = db("status", database).databases;
 assert.equal(record.name, database);
 assert.equal(record.server, home);
 assert.deepEqual(record.status.bindings, [scope]);
 assert.deepEqual(record.status.remote_grants, [scope]);
-console.log(
-  `Hosted channel replay verified through ${home}, ${peer}, and sqlite shell ${database}`,
-);
+console.log(`Hosted channel replay verified through ${home}, ${peer}, and db shell ${database}`);

@@ -86,7 +86,7 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `kv`, `channels`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `network`, `servers`, `storages`, `db`, `kv`, `channels`, `workflows`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
 `[envs.<env>].network` is the stable 32-character lowercase hexadecimal network ID from `tako network list --json`. Local aliases are not accepted in the config. Set it explicitly or let the first deploy record its chosen network, then commit the config. `development` runs locally and cannot set `network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
@@ -192,40 +192,49 @@ Top-level storage resources store non-secret metadata. S3 resources require `buc
 
 ```toml
 [envs.production]
-databases = { main = "main" }
+db = { main = "main" }
 
 [envs.development]
-databases = { main = "main" }
+db = { main = "main" }
 
 # Optional: back this database up to another storage than backup.storage.
-[databases.main]
+[db.main]
 backup = "private_backups"
 ```
 
-`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names in the environment's network. On a one-server network a full client's deploy creates missing databases there. On a larger network, first run `tako sqlite create <name> --server <server>` with full access; the database can live outside this app's target servers. Development uses local files in `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds the app SQL aliases from the other environments.
+`[envs.<env>].db` maps app-facing binding names, read as `tako.db.<binding>`, to database names in the environment's network. On a one-server network a full client's deploy creates missing databases there. On a larger network, first run `tako db create <name> --server <server>` with full access; the database can live outside this app's target servers. Development uses local files in `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].db`, development binds the app SQL aliases from the other environments.
 
-`[databases.<name>]` is optional and has one field:
+`[db.<name>]` is optional and has one field:
 
 | Field    | Purpose                                                                                                                                                                                                                                                                                           |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backup` | Private S3 storage resource that receives the database's encrypted continuous backups, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database is not backed up; removing them and deploying stops its backups. |
 
-`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot expose app SQL bindings. See [Databases](/databases/).
+`id`, `server`, and `access` are rejected: run `tako db list` to see where databases live. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot expose app SQL bindings. See [Databases](/databases/).
 
 ## Channel replay
 
 ```toml
 [envs.production.channels]
-database = "chat-prod-replay"
+db = "chat-prod-replay"
 ```
 
-The table is optional. When present, `database` is the name of a hosted SQLite database used by the channel runtime, not an app SQL alias. It overrides `postgres_url` for channels only. Without it, channel-capable deploys use the environment's Postgres credential if set, otherwise a generated app/environment database. The same single-server creation and multi-server placement rules apply as for app databases. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in memory. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's backend.
+The table is optional. When present, `db` is the name of a hosted SQLite database used by the channel runtime, not an app SQL alias. Without it, channel-capable deploys use a generated app/environment database. The same single-server creation and multi-server placement rules apply as for app databases. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in the project's `.tako/data/tako/channels.sqlite`. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's database.
+
+## Workflow Storage
+
+```toml
+[envs.production.workflows]
+db = "shop-workflows"
+```
+
+The table is optional. When present, `db` is the name of the hosted SQLite database that holds the environment's workflow runs; it is not an app SQL alias and app code never receives its token. Without it, a deploy of a release that runs workflows uses a generated app/environment database, created by a full client on a one-server network. On a larger network, create the database with `tako db create <name> --server <server>` and name it here. Channels and workflows may name the same database. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`. See [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## KV Stores
 
 ```toml
 [envs.production]
-databases = { main = "main" }
+db = { main = "main" }
 kv = { auth = "sessions", limits = "rate-limits" }
 
 [envs.staging]
@@ -236,11 +245,11 @@ kv = { auth = "sessions_staging" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `databases` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
+`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `db` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
 
 Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`.
 
-`[kv.<name>]` is optional and has one field, `backup`: the private S3 storage resource that receives the store's encrypted snapshots, instead of the deploying environment's `backup.storage`, with the same rules as `[databases.<name>].backup`. A name cannot have both a `[databases.<name>]` and a `[kv.<name>]` table. `tako kv delete` removes a deleted store's bindings and `[kv.<name>]` table and preserves the rest of the file. Container and Compose releases cannot bind KV stores yet. See [KV stores](/kv/).
+`[kv.<name>]` is optional and has one field, `backup`: the private S3 storage resource that receives the store's encrypted snapshots, instead of the deploying environment's `backup.storage`, with the same rules as `[db.<name>].backup`. A name cannot have both a `[db.<name>]` and a `[kv.<name>]` table. `tako kv delete` removes a deleted store's bindings and `[kv.<name>]` table and preserves the rest of the file. Container and Compose releases cannot bind KV stores yet. See [KV stores](/kv/).
 
 ## Backups
 
@@ -255,9 +264,9 @@ endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 ```
 
-`backup` enables manual full app-directory archives (`tako backup now`) for the environment. Its storage also receives the continuous backups of the hosted databases the environment binds, unless `[databases.<name>].backup` names another. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
+`backup` names the default backup storage of the hosted databases and KV stores the environment binds, unless `[db.<name>].backup` or `[kv.<name>].backup` names another. Files in the app's data directories are not backed up. The former `databases` and `shared_databases` lists are rejected with instructions to move each file to a hosted database. See [Backups](/backups/) for restore commands and retention.
 
-Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
+Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`.
 
 ## SSL Credentials
 
@@ -291,7 +300,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Selecting a hosted channel replay database neither satisfies this requirement nor moves workflow runs. See [Workflows](/workflows/).
+Workflow runs live in a hosted database that every server of the environment shares. On a one-server network a full client's deploy creates it; on a larger network, create it with `tako db create <name> --server <server>` and name it in `[envs.<env>.workflows].db`. See [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## Complete Example
 
@@ -316,7 +325,7 @@ API_URL = "https://staging-api.example.com"
 route = "app.example.com"
 servers = ["la", "nyc"]
 storages = { uploads = "prod_uploads" }
-databases = { main = "main" }
+db = { main = "main" }
 kv = { auth = "sessions" }
 backup = { storage = "private_backups" }
 ssl = "letsencrypt"

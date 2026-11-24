@@ -22,6 +22,13 @@ use crate::config::LocalNetwork;
 /// How long a publication may be retried before it expires.
 const PUBLICATION_SECONDS: u64 = 10 * 60;
 
+/// The server-owned service a generated database was created for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceOwner {
+    Channels,
+    Workflows,
+}
+
 /// Where a database lives.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +45,9 @@ pub(crate) struct DatabaseRecord {
     /// Set only when deploy creates an implicit replay database for this app/env.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_owner: Option<String>,
+    /// Set only when deploy creates an implicit workflow database for this app/env.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows_owner: Option<String>,
 }
 
 fn scope() -> Result<AppEnv> {
@@ -231,6 +241,7 @@ mod tests {
             created_at_unix_secs: 1,
             engine: tako_core::DatabaseEngine::Sqlite,
             channel_owner: None,
+            workflows_owner: Some("shop/production".into()),
         };
         let json = serde_json::to_string(&record).unwrap();
         assert_eq!(

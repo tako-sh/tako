@@ -44,7 +44,7 @@ export default defineWorkflow<{ orderId: string }>("fulfill-order", {
 });
 ```
 
-The interesting line is `ctx.waitFor`. When the run hits it, the worker doesn't sit and spin — it serializes the run state, marks the row `pending` in the app-local SQLite queue, inserts an `event_waiters` row keyed by the event name, and exits the handler. If nothing else is in flight, the worker subprocess itself shuts down. Zero CPU, zero memory, zero open connections — just a row in `data/tako/workflows.sqlite`.
+The interesting line is `ctx.waitFor`. When the run hits it, the worker doesn't sit and spin — it serializes the run state, marks the row `pending` in the app's workflow database, inserts an `event_waiters` row keyed by the event name, and exits the handler. If nothing else is in flight, the worker subprocess itself shuts down. Zero CPU, zero memory, zero open connections — just a row in the workflow database.
 
 ## The signal
 

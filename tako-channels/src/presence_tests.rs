@@ -1,3 +1,4 @@
+use crate::test_db::TestDb;
 use crate::{ChannelStore, PresenceMember};
 use serde_json::json;
 
@@ -17,7 +18,8 @@ fn presence_scopes_are_canonical_and_isolate_conversations() {
         presence_scope("chat", &json!({"chatId":"one"})),
         presence_scope("chat", &json!({"chatId":"two"}))
     );
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let now = crate::store::now_unix_ms();
     let member = PresenceMember {
         connection_id: "one".into(),
@@ -41,7 +43,8 @@ fn presence_scopes_are_canonical_and_isolate_conversations() {
 
 #[test]
 fn presence_tracks_connections_updates_and_channel_isolation() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let now = crate::store::now_unix_ms();
     let member = PresenceMember {
         connection_id: "tab-1".into(),
@@ -64,7 +67,8 @@ fn presence_tracks_connections_updates_and_channel_isolation() {
 
 #[test]
 fn presence_expires_and_is_not_replayed() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let now = crate::store::now_unix_ms();
     let member = PresenceMember {
         connection_id: "tab-1".into(),
@@ -79,7 +83,8 @@ fn presence_expires_and_is_not_replayed() {
 
 #[test]
 fn presence_rejects_large_client_metadata() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let now = crate::store::now_unix_ms();
     let member = PresenceMember {
         connection_id: "tab-1".into(),
@@ -92,8 +97,8 @@ fn presence_rejects_large_client_metadata() {
 #[tokio::test]
 async fn session_uses_verified_identity_and_cleans_up_on_drop() {
     use crate::PresenceSession;
-    use std::sync::Arc;
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let db = TestDb::start();
+    let store = db.open().await;
     let mut session =
         PresenceSession::new(store.clone(), "lobby", Some("verified".into())).unwrap();
     session.update(br#"{"type":"tako.presence","subject":"forged","connectionId":"forged","data":{"typing":true}}"#).await.unwrap();
@@ -105,8 +110,7 @@ async fn session_uses_verified_identity_and_cleans_up_on_drop() {
     drop(session);
     for _ in 0..100 {
         let members = store
-            .run(|store| store.presence("lobby", crate::store::now_unix_ms()))
-            .await
+            .presence("lobby", crate::store::now_unix_ms())
             .unwrap();
         if members.is_empty() {
             return;
@@ -190,9 +194,10 @@ async fn cancellation_removes_presence_after_in_flight_joins_and_renewals_commit
         }
     }
 
+    let db = TestDb::start();
     for already_joined in [false, true] {
         let writer = Arc::new(DelayedWriter {
-            store: Arc::new(ChannelStore::open_in_memory().unwrap()),
+            store: db.open().await,
             delay: AtomicBool::new(false),
             started: Notify::new(),
             release: Arc::new(Notify::new()),
@@ -229,108 +234,14 @@ async fn cancellation_removes_presence_after_in_flight_joins_and_renewals_commit
     }
 }
 
-#[test]
-fn postgres_presence_is_shared_and_scoped_by_app_when_configured() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!(
-        "presence-test/{}-{}",
-        std::process::id(),
-        crate::store::now_unix_ms()
-    );
-    let writer = ChannelStore::open_postgres(&url, &app).unwrap();
-    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
-    let other = ChannelStore::open_postgres(&url, &format!("{app}-other")).unwrap();
-    let member = PresenceMember {
-        connection_id: "tab".into(),
-        subject: Some("user".into()),
-        data: json!({}),
-    };
-    let now = crate::store::now_unix_ms();
-    writer.update_presence("lobby", &member, now).unwrap();
-    assert_eq!(reader.presence("lobby", now).unwrap(), vec![member.clone()]);
-    assert!(other.presence("lobby", now).unwrap().is_empty());
-    writer.remove_presence("lobby", "tab").unwrap();
-    assert!(reader.presence("lobby", now).unwrap().is_empty());
-
-    let mut context = [0u8; 4096];
-    getrandom::fill(&mut context).unwrap();
-    let context: String = context.iter().map(|byte| format!("{byte:02x}")).collect();
-    let scope = crate::presence_scope("chat", &json!({"context": context}));
-    writer.update_presence(&scope, &member, now).unwrap();
-    assert_eq!(reader.presence(&scope, now).unwrap(), vec![member]);
-    writer.remove_presence(&scope, "tab").unwrap();
-}
-
-#[test]
-fn postgres_presence_ignores_each_servers_clock() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!(
-        "presence-clock/{}-{}",
-        std::process::id(),
-        crate::store::now_unix_ms()
-    );
-    let writer = ChannelStore::open_postgres(&url, &app).unwrap();
-    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
-    let member = PresenceMember {
-        connection_id: "tab".into(),
-        subject: None,
-        data: json!({}),
-    };
-    writer.update_presence("lobby", &member, 0).unwrap();
-    reader.prune_at(i64::MAX);
-    assert_eq!(
-        reader.presence("lobby", i64::MAX).unwrap(),
-        vec![member.clone()]
-    );
-    writer.update_presence("lobby", &member, i64::MAX).unwrap();
-    let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    db.execute(
-        "UPDATE tako_channels.presence SET expires_at = $2 WHERE app_id = $1",
-        &[&app, &i64::MAX],
-    )
-    .unwrap();
-    writer.prune_at(0);
-    let remaining: i64 = db
-        .query_one(
-            "SELECT expires_at - (extract(epoch from now()) * 1000)::BIGINT
-             FROM tako_channels.presence WHERE app_id = $1",
-            &[&app],
-        )
-        .unwrap()
-        .get(0);
-    assert!(
-        (0..=45_000).contains(&remaining),
-        "old lease kept for {remaining} ms"
-    );
-    db.execute(
-        "UPDATE tako_channels.presence SET expires_at = 0 WHERE app_id = $1",
-        &[&app],
-    )
-    .unwrap();
-    assert!(reader.presence("lobby", 0).unwrap().is_empty());
-    writer.prune_at(0);
-    let count: i64 = db
-        .query_one(
-            "SELECT COUNT(*) FROM tako_channels.presence WHERE app_id = $1",
-            &[&app],
-        )
-        .unwrap()
-        .get(0);
-    assert_eq!(count, 0);
-}
-
 // Snapshots are sampled and deduplicated per session. A member that joins and
 // leaves between two samples is never reported to another session, so callers
 // must judge membership from one session's own view (see e2e/shared-channels.ts).
 #[tokio::test]
 async fn a_member_between_two_samples_is_not_reported_to_other_sessions() {
     use crate::PresenceSession;
-    use std::sync::Arc;
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let db = TestDb::start();
+    let store = db.open().await;
     let update = br#"{"type":"tako.presence","data":{"page":"chat"}}"#;
     let mut observer = PresenceSession::new(store.clone(), "lobby", None).unwrap();
     observer.update(update).await.unwrap();

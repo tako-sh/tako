@@ -1,8 +1,27 @@
 use super::*;
+use crate::enqueue::HostedFixture;
 use tako_core::EnqueueOpts;
 use tako_socket::{read_json_line, write_json_line};
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
+
+/// The store client blocks; async tests run it beside the runtime, on a
+/// multi-threaded test runtime.
+fn blocking<T>(operation: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(operation)
+    } else {
+        operation()
+    }
+}
+
+/// App `a`'s store in its own hosted database, served while the fixture
+/// lives.
+fn store() -> (Arc<RunsDb>, HostedFixture) {
+    let fixture = HostedFixture::start();
+    let db = blocking(|| Arc::new(fixture.open("a")));
+    (db, fixture)
+}
 
 fn test_limiter() -> Arc<crate::in_flight::InFlightLimiter> {
     Arc::new(crate::in_flight::InFlightLimiter::new(10))
@@ -437,15 +456,15 @@ fn app_socket_gid_is_unchanged_when_tako_app_is_missing() {
     assert_eq!(gid, None);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn pinned_socket_serves_only_its_app_through_a_moved_directory_and_a_rebind() {
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
     let host = tmp.path().join("host");
     std::fs::create_dir(&host).unwrap();
-    let db_group = Arc::new(RunsDb::open_in_memory().unwrap());
-    let db_other = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db_group, _db_group_store) = store();
+    let (db_other, _db_other_store) = store();
     let lookup = lookup_for(std::collections::HashMap::from([
         ("shop/production".to_string(), db_group.clone()),
         ("other/production".to_string(), db_other.clone()),
@@ -499,23 +518,23 @@ async fn pinned_socket_serves_only_its_app_through_a_moved_directory_and_a_rebin
         rejected.error_message(),
         Some("internal socket app mismatch for other/production")
     );
-    assert_eq!(db_group.pending_count().unwrap(), 1);
-    assert_eq!(db_other.pending_count().unwrap(), 0);
+    assert_eq!(blocking(|| db_group.pending_count().unwrap()), 1);
+    assert_eq!(blocking(|| db_other.pending_count().unwrap()), 0);
     handle.shutdown().await;
 
     // The next server process re-binds the same mounted directory.
     let handle = spawn_pinned(&mounted);
     assert!(enqueue(&socket, "shop/production").await.is_ok());
-    assert_eq!(db_group.pending_count().unwrap(), 2);
+    assert_eq!(blocking(|| db_group.pending_count().unwrap()), 2);
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn enqueue_routes_by_app() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db_a = Arc::new(RunsDb::open_in_memory().unwrap());
-    let db_b = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db_a, _db_a_store) = store();
+    let (db_b, _db_b_store) = store();
 
     let mut map = std::collections::HashMap::new();
     map.insert("a".to_string(), db_a.clone());
@@ -537,17 +556,17 @@ async fn enqueue_routes_by_app() {
     assert!(resp.is_ok());
 
     // App 'a' should have one pending run; app 'b' should have zero.
-    assert_eq!(db_a.pending_count().unwrap(), 1);
-    assert_eq!(db_b.pending_count().unwrap(), 0);
+    assert_eq!(blocking(|| db_a.pending_count().unwrap()), 1);
+    assert_eq!(blocking(|| db_b.pending_count().unwrap()), 0);
 
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn enqueue_rejects_when_health_check_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
 
     let db_for_lookup = db.clone();
     let lookup: AppLookup = Arc::new(move |_app: &str| {
@@ -581,18 +600,20 @@ async fn enqueue_rejects_when_health_check_fails() {
     );
     assert_eq!(resp.error_code(), Some(ErrorCode::Unavailable));
     // DB must stay empty — enqueue short-circuited before db.enqueue().
-    assert_eq!(db.pending_count().unwrap(), 0);
+    assert_eq!(blocking(|| db.pending_count().unwrap()), 0);
 
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn draining_runtime_rejects_enqueue_and_claims_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
-    db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
+    let (db, _db_store) = store();
+    blocking(|| {
+        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+    });
 
     let db_for_lookup = db.clone();
     let lookup: AppLookup = Arc::new(move |_app: &str| {
@@ -631,18 +652,20 @@ async fn draining_runtime_rejects_enqueue_and_claims_nothing() {
     write_json_line(&mut w, &claim).await.unwrap();
     let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
     assert!(resp.data().unwrap().is_null());
-    assert_eq!(db.pending_count().unwrap(), 1);
+    assert_eq!(blocking(|| db.pending_count().unwrap()), 1);
 
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn claim_run_fires_on_claimed() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
-    db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
+    let (db, _db_store) = store();
+    blocking(|| {
+        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+    });
 
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = count.clone();
@@ -679,18 +702,20 @@ async fn claim_run_fires_on_claimed() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn claim_respects_in_flight_limiter() {
     use crate::in_flight::InFlightLimiter;
 
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     // Seed 3 runs so there's always something the DB could return.
-    for _ in 0..3 {
-        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-            .unwrap();
-    }
+    blocking(|| {
+        for _ in 0..3 {
+            db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+        }
+    });
     // Cap at 2 concurrent in-flight for this worker.
     let limiter = Arc::new(InFlightLimiter::new(2));
 
@@ -740,15 +765,17 @@ async fn claim_respects_in_flight_limiter() {
     let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
     assert!(resp.data().unwrap().is_null());
     // One run still pending — limiter refused BEFORE the DB claim fired.
-    assert_eq!(db.pending_count().unwrap(), 1);
+    assert_eq!(blocking(|| db.pending_count().unwrap()), 1);
 
     // Complete one run → slot frees → next claim succeeds.
-    db.complete(
-        &claimed[0].id,
-        &claimed[0].worker_id,
-        &serde_json::Value::Null,
-    )
-    .unwrap();
+    blocking(|| {
+        db.complete(
+            &claimed[0].id,
+            &claimed[0].worker_id,
+            &serde_json::Value::Null,
+        )
+        .unwrap()
+    });
     limiter.release_claim(&claimed[0].worker_id);
     let cmd = Command::ClaimRun {
         app: "a".into(),
@@ -763,13 +790,13 @@ async fn claim_respects_in_flight_limiter() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn claim_without_work_does_not_hold_a_slot() {
     use crate::in_flight::InFlightLimiter;
 
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     let limiter = Arc::new(InFlightLimiter::new(1));
 
     let db_for_lookup = db.clone();
@@ -808,15 +835,17 @@ async fn claim_without_work_does_not_hold_a_slot() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn complete_releases_a_slot() {
     use crate::in_flight::InFlightLimiter;
 
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
-    db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
+    let (db, _db_store) = store();
+    blocking(|| {
+        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+    });
     let limiter = Arc::new(InFlightLimiter::new(1));
 
     let db_for_lookup = db.clone();
@@ -890,11 +919,11 @@ async fn unknown_app_returns_error() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn enqueue_and_request_errors_carry_codes_on_the_socket() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     let mut map = std::collections::HashMap::new();
     map.insert("a".to_string(), db.clone());
     let handle = spawn(&sock, lookup_for(map), None, None, None).unwrap();
@@ -941,11 +970,11 @@ async fn enqueue_and_request_errors_carry_codes_on_the_socket() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn on_enqueue_fires_for_signal_with_waiters_only() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let counter = count.clone();
@@ -979,11 +1008,12 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // Now seed a waiter and signal again — should fire.
-    let r = db
-        .enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap();
-    let _ = db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.wait_for_event(&r.id, "w1", "step", "evt", None).unwrap();
+    let r = blocking(|| {
+        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+    });
+    let _ = blocking(|| db.claim("w1", &["w".into()], 30_000).unwrap());
+    blocking(|| db.wait_for_event(&r.id, "w1", "step", "evt", None).unwrap());
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (_r, mut w) = stream.into_split();
@@ -1000,11 +1030,11 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
     handle.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = count.clone();
     let on_enq: OnEnqueue = Arc::new(move || {
@@ -1036,10 +1066,11 @@ async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
         }
     };
     let fired = || count.load(std::sync::atomic::Ordering::SeqCst);
-    let id = db
-        .enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap()
-        .id;
+    let id = blocking(|| {
+        db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+            .id
+    });
     let signal = |event: &str| {
         serde_json::json!({
             "command": "signal", "app": "a", "event_name": event,
@@ -1055,11 +1086,12 @@ async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
     assert_eq!(reply["data"]["status"], "duplicate");
 
     // The wait consumes it and makes the run due, which wakes the dispatcher.
-    let owner = db
-        .claim("w1", &["w".into()], 30_000)
-        .unwrap()
-        .unwrap()
-        .worker_id;
+    let owner = blocking(|| {
+        db.claim("w1", &["w".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .worker_id
+    });
     let reply = send(serde_json::json!({
         "command": "wait_for_event", "app": "a", "id": id, "worker_id": owner,
         "step_name": "approval", "event_name": "approval", "timeout_at_ms": null,
@@ -1069,11 +1101,12 @@ async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
     assert_eq!(fired(), 1);
 
     // A run already waiting is woken directly.
-    let owner = db
-        .claim("w1", &["w".into()], 30_000)
-        .unwrap()
-        .unwrap()
-        .worker_id;
+    let owner = blocking(|| {
+        db.claim("w1", &["w".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .worker_id
+    });
     let reply = send(serde_json::json!({
         "command": "wait_for_event", "app": "a", "id": id, "worker_id": owner,
         "step_name": "shipped", "event_name": "shipped", "timeout_at_ms": null,
@@ -1085,22 +1118,27 @@ async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
     assert_eq!(fired(), 2);
 
     // A parent waiting on a run that already finished is due at once.
-    let child = db
-        .enqueue("kid", &serde_json::json!({}), &EnqueueOpts::default())
-        .unwrap()
-        .id;
-    let child_owner = db
-        .claim("w2", &["kid".into()], 30_000)
-        .unwrap()
-        .unwrap()
-        .worker_id;
-    db.complete(&child, &child_owner, &serde_json::json!(1))
-        .unwrap();
-    let owner = db
-        .claim("w1", &["w".into()], 30_000)
-        .unwrap()
-        .unwrap()
-        .worker_id;
+    let child = blocking(|| {
+        db.enqueue("kid", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+            .id
+    });
+    let child_owner = blocking(|| {
+        db.claim("w2", &["kid".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .worker_id
+    });
+    blocking(|| {
+        db.complete(&child, &child_owner, &serde_json::json!(1))
+            .unwrap()
+    });
+    let owner = blocking(|| {
+        db.claim("w1", &["w".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .worker_id
+    });
     let reply = send(serde_json::json!({
         "command": "wait_for_run", "app": "a", "id": id, "worker_id": owner,
         "step_name": "outcome", "target_name": "kid", "target_id": child, "timeout_at_ms": null,
@@ -1282,21 +1320,26 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
 }
 
 #[test]
-fn sqlite_same_process_reclaim_rejects_old_attempt() {
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+fn same_process_reclaim_rejects_old_attempt() {
+    let (db, _store) = store();
     assert_same_process_takeover(db.clone(), |id| {
-        db.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id])
+        db.test_execute(
+            "UPDATE {runs} SET lease_until = 0 WHERE id = ?1",
+            vec![id.into()],
+        )
     });
 }
 
 #[test]
 fn remotely_reclaimed_claim_does_not_exhaust_local_worker_budget() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("workflows.sqlite");
-    let db = Arc::new(RunsDb::open(&path).unwrap());
-    let remote = RunsDb::open(&path).unwrap();
+    let (db, store) = store();
+    // Another server's handle on the same store.
+    let remote = store.open("a");
     assert_remote_reclaim_recovers_budget(db, |id| {
-        remote.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id]);
+        remote.test_execute(
+            "UPDATE {runs} SET lease_until = 0 WHERE id = ?1",
+            vec![id.into()],
+        );
         remote.reclaim_expired_with_workers().unwrap()
     });
 }
@@ -1354,58 +1397,11 @@ fn assert_remote_reclaim_recovers_budget(
     assert!(claim().is_none());
 }
 
-#[test]
-fn postgres_remote_reclaim_recovers_local_worker_budget() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!("remote-reclaim-{}", nanoid::nanoid!());
-    let db = Arc::new(RunsDb::open_postgres(&url, &app).unwrap());
-    let remote = RunsDb::open_postgres(&url, &app).unwrap();
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    assert_remote_reclaim_recovers_budget(db, |id| {
-        client
-            .execute(
-                "UPDATE tako_workflows.runs SET lease_until=0 WHERE app_id=$1 AND id=$2",
-                &[&app, &id],
-            )
-            .unwrap();
-        remote.reclaim_expired_with_workers().unwrap()
-    });
-    client
-        .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
-        .unwrap();
-}
-
-#[test]
-fn postgres_same_process_reclaim_rejects_old_attempt() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app = format!("claim-owner-{}", nanoid::nanoid!());
-    let db = Arc::new(RunsDb::open_postgres(&url, &app).unwrap());
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    assert_same_process_takeover(db, |id| {
-        client
-            .execute(
-                "UPDATE tako_workflows.runs SET lease_until=0 WHERE app_id=$1 AND id=$2",
-                &[&app, &id],
-            )
-            .unwrap();
-    });
-    client
-        .execute("DELETE FROM tako_workflows.steps WHERE app_id=$1", &[&app])
-        .unwrap();
-    client
-        .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
-        .unwrap();
-}
-
 /// Operator commands belong to the management path. An app process may not
 /// list, show, retry, or cancel runs, neither its own nor another app's.
 #[test]
 fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
-    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let (db, _db_store) = store();
     let id = db
         .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
         .unwrap()

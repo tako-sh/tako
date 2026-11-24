@@ -87,7 +87,7 @@ Build precedence:
 
 Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks `node_modules` from the original tree for JS builds, omits source symlinks, runs build commands, merges assets into `public/`, verifies the resolved `main`, and archives the result without `node_modules`.
 
-The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
+The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed.
 
 Native network servers accept compressed artifacts up to 512 MiB. The upload deadline is five minutes plus six seconds per MiB, rounded up. A 102 MiB upload has 15 minutes and 12 seconds to finish. An upload that stops sending data for 30 seconds times out. Transfer errors include the number of bytes received and the declared size.
 
@@ -132,7 +132,7 @@ release = ""
 
 The release command runs once on the leader server after extract and production install but before rolling update. Followers wait for the leader result. If the command fails, times out, or exits by signal, deploy aborts on every server and leaves the old release serving.
 
-The command runs with the same env as new HTTP instances, plus freshly decrypted secrets as env vars. When the environment binds [hosted databases](/databases/) or [KV stores](/kv/), the command also receives temporary bindings to them in `TAKO_BOOTSTRAP_DATA`, so a migration script reads `tako.databases.<binding>` or `tako.kv.<binding>` like the app. With KV bindings it also receives `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`, which KV requests go through. The bindings are revoked when the command finishes. Before the command runs, Tako uploads what each bound database with backups configured has captured and records a restore point before the release, snapshots each bound KV store that changed and has backups configured, then applies the project's [migrations](/databases/#migrations). The hard timeout is 10 minutes.
+The command runs with the same env as new HTTP instances, plus freshly decrypted secrets as env vars. When the environment binds [hosted databases](/databases/) or [KV stores](/kv/), the command also receives temporary bindings to them in `TAKO_BOOTSTRAP_DATA`, so a migration script reads `tako.db.<binding>` or `tako.kv.<binding>` like the app. With KV bindings it also receives `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`, which KV requests go through. The bindings are revoked when the command finishes. Before the command runs, Tako uploads what each bound database with backups configured has captured and records a restore point before the release, snapshots each bound KV store that changed and has backups configured, then applies the project's [migrations](/databases/#migrations). The hard timeout is 10 minutes.
 
 Release commands, production installs, and container builds retain the last 64 KiB of each output stream for diagnostics. Output is drained throughout execution, including when a command writes binary data.
 
@@ -162,11 +162,11 @@ See [Operations](/operations/#scaling) for changing desired instance counts, sca
 
 ## Secrets And Credentials
 
-Configure [app secrets and provider credentials](/secrets/) before deployment. App secrets feed your SDK; `ssl.cloudflare` and `postgres_url` configure Tako-owned runtime services. Deployment sends the relevant changed values.
+Configure [app secrets and provider credentials](/secrets/) before deployment. App secrets feed your SDK; the `ssl.cloudflare` provider credential configures certificate management. Deployment sends the relevant changed values.
 
 ## Storage And Backups
 
-Use [Storage](/storage/) to bind app files and [Backups](/backups/) to protect the deployed data tree. Backup-only resources are not exposed as app storage bindings.
+Use [Storage](/storage/) to bind app files and [Backups](/backups/) to protect hosted databases and KV stores. Backup-only resources are not exposed as app storage bindings.
 
 ## TLS
 

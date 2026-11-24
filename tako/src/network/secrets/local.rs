@@ -1,7 +1,5 @@
 use super::*;
-use crate::config::{
-    EncryptedBackupKey, EncryptedSecretValue, EncryptedStorageCredentials, EnvironmentSecrets,
-};
+use crate::config::{EncryptedSecretValue, EncryptedStorageCredentials, EnvironmentSecrets};
 use crate::crypto::{EncryptionKey, decrypt, encrypt};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -60,29 +58,7 @@ pub(super) fn rows(values: Option<&EnvironmentSecrets>) -> Result<Rows> {
             None,
         );
     }
-    for value in &values.backup_keys {
-        add(RecordKind::BackupKey, &value.id, &value.value, None);
-    }
-    if let Some(active) = values.backup_keys.last() {
-        add(RecordKind::BackupActive, "active", &active.id, None);
-    }
     Ok(rows)
-}
-
-/// The order to publish changed rows in. Pending publications drain in this
-/// order, so a backup key is published before the selection that makes it
-/// active, and is removed only after the selection stops naming it.
-pub(super) fn publication_order(dirty: BTreeSet<RowKey>, current: &Rows) -> Vec<RowKey> {
-    let mut order: Vec<_> = dirty.into_iter().collect();
-    order.sort_by_key(|key| {
-        let phase = match key.kind {
-            RecordKind::BackupActive => 1,
-            RecordKind::BackupKey if !current.contains_key(key) => 2,
-            _ => 0,
-        };
-        (phase, key.clone())
-    });
-    order
 }
 
 pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecrets> {
@@ -90,7 +66,6 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
         key_id,
         ..Default::default()
     };
-    let mut active = None;
     for row in rows.values() {
         let value = EncryptedSecretValue::new(row.value.clone(), row.expires_on.clone());
         match row.key.kind {
@@ -104,37 +79,19 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
                 env.storages
                     .insert(row.key.name.clone(), serde_json::from_str(&row.value)?);
             }
-            RecordKind::BackupKey => env.backup_keys.push(EncryptedBackupKey::new(
-                row.key.name.clone(),
-                row.value.clone(),
-            )),
-            RecordKind::BackupActive => active = Some(row.value.clone()),
-            // Database records belong to the network, not an environment.
-            RecordKind::Database | RecordKind::DatabaseKey => {}
+            // Database records belong to the network, not an environment, and
+            // legacy app data archive keys belong to nothing.
+            RecordKind::Database
+            | RecordKind::DatabaseKey
+            | RecordKind::BackupKey
+            | RecordKind::BackupActive => {}
         }
-    }
-    if let Some(active) = active {
-        let index = env
-            .backup_keys
-            .iter()
-            .position(|key| key.id == active)
-            .ok_or(
-                "Active backup key has not arrived; sync through the server that published it",
-            )?;
-        let key = env.backup_keys.remove(index);
-        env.backup_keys.push(key);
-    } else if !env.backup_keys.is_empty() {
-        return Err(
-            "Backup key selection has not arrived; sync through the server that published it"
-                .into(),
-        );
     }
     Ok(env)
 }
 
 pub(super) fn plaintext(row: &Row, key: &EncryptionKey) -> Result<RecordContent> {
     let value = match row.key.kind {
-        RecordKind::BackupActive => row.value.clone(),
         RecordKind::Storage => {
             let mut credentials: EncryptedStorageCredentials = serde_json::from_str(&row.value)?;
             credentials.access_key_id.value = decrypt(&credentials.access_key_id.value, key)?;
@@ -157,10 +114,6 @@ pub(super) fn encrypted(
 ) -> Result<Row> {
     content.validate()?;
     let value = match key.kind {
-        RecordKind::BackupActive => {
-            crate::config::validate_backup_key_id(&content.value)?;
-            content.value.to_string()
-        }
         RecordKind::Storage => {
             let mut credentials: EncryptedStorageCredentials =
                 serde_json::from_str(&content.value)?;

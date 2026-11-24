@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use tako_database::Migration;
+use tako_db::Migration;
 
 use crate::config::TakoToml;
 
@@ -102,14 +102,13 @@ pub(crate) fn load(
         .len();
     if encoded > MAX_ENCODED_BYTES {
         return Err(format!(
-            "The migrations in {} take {} KiB, more than the {} KiB one request carries. Load large data with `tako sqlite import` instead, or replace files every database has applied with one smaller file that is safe to run again (such as `CREATE TABLE IF NOT EXISTS`), numbered after them.",
+            "The migrations in {} take {} KiB, more than the {} KiB one request carries. Load large data with `tako db import` instead, or replace files every database has applied with one smaller file that is safe to run again (such as `CREATE TABLE IF NOT EXISTS`), numbered after them.",
             dir.display(),
             encoded / 1024,
             MAX_ENCODED_BYTES / 1024
         ));
     }
-    tako_database::migrate::order(&migrations)
-        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    tako_db::migrate::order(&migrations).map_err(|error| format!("{}: {error}", dir.display()))?;
     Ok(migrations)
 }
 
@@ -186,8 +185,9 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    const ONE: &str = "name = \"shop\"\n[envs.development]\ndatabases = { main = \"shop\" }\n";
-    const TWO: &str = "name = \"shop\"\n[envs.development]\ndatabases = { main = \"shop\", events = \"events\" }\n";
+    const ONE: &str = "name = \"shop\"\n[envs.development]\ndb = { main = \"shop\" }\n";
+    const TWO: &str =
+        "name = \"shop\"\n[envs.development]\ndb = { main = \"shop\", events = \"events\" }\n";
 
     #[test]
     fn a_single_binding_reads_the_top_level_folder() {
@@ -232,7 +232,7 @@ mod tests {
     fn a_database_takes_migrations_from_one_binding() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(
-            "name = \"shop\"\n[envs.development]\ndatabases = { main = \"shop\", reports = \"shop\", events = \"events\" }\n",
+            "name = \"shop\"\n[envs.development]\ndb = { main = \"shop\", reports = \"shop\", events = \"events\" }\n",
         );
         write(dir.path(), "migrations/main/0001_a.sql", "SELECT 1;");
         write(dir.path(), "migrations/events/0001_a.sql", "SELECT 2;");

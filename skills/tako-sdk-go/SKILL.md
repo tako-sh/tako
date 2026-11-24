@@ -109,9 +109,9 @@ Returns time since process start.
 
 Returns a secret value by name. Prefer the generated `Secrets` struct instead of calling this directly.
 
-### `tako.GetDatabase(name string) (tako.Database, bool)`
+### `tako.GetDB(name string) (tako.DB, bool)`
 
-Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
+Returns the hosted database bound as `name` in `[envs.<env>].db`, or `false` when the environment does not bind it. `tako.DBNames()` lists bound names.
 
 ### `tako.GetKV(name string) (*tako.KV, bool)`
 
@@ -119,7 +119,7 @@ Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the e
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako sqlite create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
+Tako-hosted SQLite databases are created with `tako db create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
 
 ```go
 import (
@@ -130,7 +130,7 @@ import (
 	"tako.sh"
 )
 
-main, ok := tako.GetDatabase("main")
+main, ok := tako.GetDB("main")
 if !ok {
 	log.Fatal("no database is bound as main")
 }
@@ -180,7 +180,7 @@ func consume(ctx context.Context, userID string) (Challenge, bool, error) {
 }
 ```
 
-`Get(ctx, key, &value)` JSON-decodes into `value` and reports whether the key was set; a missing or expired key leaves `value` unchanged. `Put` JSON-encodes the value and replaces its TTL; `Delete` succeeds for a missing key. Each call honors `ctx` and stops after 30 seconds. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. Rejections are `*tako.ServerError`; match them with `errors.Is(err, tako.ErrInvalidRequest)` or `tako.ErrUnavailable` (binding changed, store's server unreachable or restarting). A store has no size limit beyond its server's disk, and nothing is evicted. There are no atomic counters, compare-and-set, or transactions: concurrent read-modify-write of one key can lose an update. Formatting a `*KV` or encoding it as JSON shows only its binding name. An environment's `databases` and `kv` share one set of binding names, and store names share the network's namespace with databases. Every write is on disk before it is acknowledged, and stores are backed up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`). `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Container releases cannot bind KV stores yet.
+`Get(ctx, key, &value)` JSON-decodes into `value` and reports whether the key was set; a missing or expired key leaves `value` unchanged. `Put` JSON-encodes the value and replaces its TTL; `Delete` succeeds for a missing key. Each call honors `ctx` and stops after 30 seconds. Keys are 1 byte to 1 KiB; values are at most 256 KiB of JSON. Rejections are `*tako.ServerError`; match them with `errors.Is(err, tako.ErrInvalidRequest)` or `tako.ErrUnavailable` (binding changed, store's server unreachable or restarting). A store has no size limit beyond its server's disk, and nothing is evicted. There are no atomic counters, compare-and-set, or transactions: concurrent read-modify-write of one key can lose an update. Formatting a `*KV` or encoding it as JSON shows only its binding name. An environment's `db` and `kv` share one set of binding names, and store names share the network's namespace with databases. Every write is on disk before it is acknowledged, and stores are backed up like databases (`[envs.<env>].backup.storage` or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`). `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Container releases cannot bind KV stores yet.
 
 ## Secrets
 
@@ -256,7 +256,7 @@ func registerChatPresence() {
 
 A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
 
-Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Native brokers keep presence leases in memory and exchange them across a network's servers without Postgres; Postgres stores them only when it is the selected channel backend. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Native brokers keep server-bound presence leases in memory and exchange them with the network's trusted servers; they never enter the replay database. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
 
 ## Stores
 
@@ -312,11 +312,13 @@ writers must explicitly invalidate; no SQL dependency tracking is performed.
 Invalidation failure does not undo or retry the committed database write. Use
 an application outbox for durable commit-and-notify. Params are limited to 16 KiB
 and read responses to 1 MiB. Invalidations use the environment's channel replay
-backend (a Tako-hosted SQLite database, or shared Postgres), so they reach every
-server of the network. Because `go.mod` depends on `tako.sh`, a deploy with
-neither `[envs.<env>.channels].database` nor `postgres_url` selects a generated
-replay database; on a multi-server network, create one with `tako sqlite create`
-and set `database` first (see https://tako.sh/docs/channels/#deploy-replay-storage).
+database (a Tako-hosted SQLite database), so they reach every server of the
+network. Because `go.mod` depends on `tako.sh`, a deploy without
+`[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
+created automatically on a network with exactly one trusted server; on a larger
+network, create one with `tako db create <name>` and set
+`[envs.<env>.channels].db` first (see
+https://tako.sh/docs/channels/#deploy-replay-storage).
 See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
 
 ## Internal Protocol
@@ -370,7 +372,7 @@ tako.ListenAndServe(mux)
 
 ## Ephemeral Channels
 
-Register `tako.ChannelDefinition{ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true}}` with `tako.Channels.Register`. Leave `ReplayWindowMs` zero; registration panics if a nonzero replay window is supplied. Authorization grants cannot change the definition's delivery mode. This supports local dev, single-server production, and native server networks, in broker memory. Ephemeral events never enter replay storage, have `id: ""`, reach only connected subscribers, and use a bounded 64-message buffer that skips evicted events for slow subscribers. Postgres as the channel backend rejects ephemeral publishing/subscribing. Native peers forward live events without per-event database access; disconnected peers miss events, and ordering is per originating broker rather than global. Test two live subscribers, then disconnect one and verify it receives only new events after reconnect. Go supports registration and WebSocket browser publishing; the JavaScript SDK provides the server-side publish and close helpers, and Go has neither. Channel params select separate streams; `Verify` must still check that the caller may use them. `ParamsSchema` properties cannot be named `from` or `last_message_id` (reserved on channel routes); `Register` panics if one is declared, and also when `ParamsSchema` is not one object schema with its params under top-level `properties` (a top-level `$ref`, or an `allOf`, `anyOf`, `oneOf`, `not`, or `if` that declares a property the top-level `properties` lacks; one that only adds constraints, such as `required` or a `const` on a declared property, is allowed). tako-server rejects channel and presence params that `ParamsSchema` does not list under `properties` unless it sets `"additionalProperties": true`; a nil `ParamsSchema` takes no params.
+Register `tako.ChannelDefinition{ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true}}` with `tako.Channels.Register`. Leave `ReplayWindowMs` zero; registration panics if a nonzero replay window is supplied. Authorization grants cannot change the definition's delivery mode. This supports local dev, single-server production, and native server networks, in broker memory. Ephemeral events never enter replay storage, have `id: ""`, reach only connected subscribers, and use a bounded 64-message buffer that skips evicted events for slow subscribers. Native peers forward live events without per-event database access; disconnected peers miss events, and ordering is per originating broker rather than global. Test two live subscribers, then disconnect one and verify it receives only new events after reconnect. Go supports registration and WebSocket browser publishing; the JavaScript SDK provides the server-side publish and close helpers, and Go has neither. Channel params select separate streams; `Verify` must still check that the caller may use them. `ParamsSchema` properties cannot be named `from` or `last_message_id` (reserved on channel routes); `Register` panics if one is declared, and also when `ParamsSchema` is not one object schema with its params under top-level `properties` (a top-level `$ref`, or an `allOf`, `anyOf`, `oneOf`, `not`, or `if` that declares a property the top-level `properties` lacks; one that only adds constraints, such as `required` or a `const` on a declared property, is allowed). tako-server rejects channel and presence params that `ParamsSchema` does not list under `properties` unless it sets `"additionalProperties": true`; a nil `ParamsSchema` takes no params.
 
 ## Network primitive callers
 

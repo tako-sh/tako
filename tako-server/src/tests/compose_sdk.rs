@@ -1,19 +1,27 @@
 use super::*;
+use base64::Engine as _;
 use tako_compose::ComposeRuntime;
 
 const APP: &str = "sdk/production";
+/// The group's workflow database, hosted on the test server.
+const WORKFLOWS: &str = "sdk-workflows";
 
-fn state(dir: &Path) -> ServerState {
-    ServerState::new(
-        dir.into(),
-        Arc::new(CertManager::new(CertManagerConfig {
-            cert_dir: dir.join("certs"),
-            ..Default::default()
-        })),
-        None,
-        empty_challenge_tokens(),
-    )
-    .unwrap()
+/// A server whose database host is open, as after startup.
+async fn state(dir: &Path) -> Arc<ServerState> {
+    let state = Arc::new(
+        ServerState::new(
+            dir.into(),
+            Arc::new(CertManager::new(CertManagerConfig {
+                cert_dir: dir.join("certs"),
+                ..Default::default()
+            })),
+            None,
+            empty_challenge_tokens(),
+        )
+        .unwrap(),
+    );
+    state.open_databases(None).await.unwrap();
+    state
 }
 
 /// A shell SDK stand-in: it answers Tako's SDK check with the group token
@@ -108,7 +116,8 @@ async fn deploy(state: &ServerState, dir: &Path, secret: &str) {
             serde_json::from_value(serde_json::json!({
                 "command":"deploy", "app":APP, "version":"v1",
                 "path":crate::release::app_release_root(dir, APP, "v1"),
-                "routes":["sdk.localhost"], "secrets_digest":digest
+                "routes":["sdk.localhost"], "secrets_digest":digest,
+                "databases": {"@workflows": {"name": WORKFLOWS, "server": "local"}}
             }))
             .unwrap(),
         )
@@ -215,7 +224,17 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
     let _cleanup = Cleanup(runtime.clone());
     runtime.prepare("v1").await.unwrap();
 
-    let server = state(dir.path());
+    let server = state(dir.path()).await;
+    let created = server
+        .handle_command(Command::CreateDatabase {
+            name: WORKFLOWS.into(),
+            engine: tako_core::DatabaseEngine::Sqlite,
+            generation: "0123456789abcdef0123456789abcdef".into(),
+            backup_key_base64: base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+            backup: None,
+        })
+        .await;
+    assert!(matches!(created, Response::Ok { .. }), "{created:?}");
     deploy(&server, dir.path(), "first").await;
     let token = server.state_store.get_compose_token(APP).unwrap().unwrap();
     assert_eq!(token.len(), 64);
@@ -314,7 +333,7 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
     server.app_manager.shutdown_all().await;
     server.workflows.shutdown_all(Duration::from_secs(1)).await;
     drop(server);
-    let restarted = state(dir.path());
+    let restarted = state(dir.path()).await;
     restarted.restore_from_state_store().await.unwrap();
     assert_eq!(container(&runtime, "web").await, web);
     assert_eq!(container(&runtime, "worker").await, worker);

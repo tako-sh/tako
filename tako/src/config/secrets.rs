@@ -6,18 +6,16 @@ use time::{Date, Duration, Month, OffsetDateTime};
 
 use super::error::{ConfigError, Result};
 
-mod backup_keys;
 mod serialization;
 #[cfg(test)]
 mod tests;
 
-use backup_keys::validate_encrypted_backup_key_value;
-pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
-
 /// This worktree's local state: drafts and cached values of the network state.
 const SECRETS_FILE_NAME: &str = "state.local.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
-pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
+/// Credentials earlier releases used. Existing state still loads with them,
+/// and `tako credential rm` removes them, but they can no longer be set.
+const RETIRED_CREDENTIAL_NAMES: &[&str] = &["postgres_url"];
 
 /// Per-environment secrets with a random key id.
 ///
@@ -28,9 +26,6 @@ pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
 pub struct EnvironmentSecrets {
     /// Local key id under Tako's data directory.
     pub key_id: String,
-    /// Backup encryption keys, encrypted with this environment key.
-    #[serde(default)]
-    pub backup_keys: Vec<EncryptedBackupKey>,
     /// App secret name to encrypted value.
     #[serde(default)]
     pub app: HashMap<String, EncryptedSecretValue>,
@@ -40,6 +35,9 @@ pub struct EnvironmentSecrets {
     /// Tako/provider credential name to encrypted value.
     #[serde(default)]
     pub credentials: HashMap<String, EncryptedSecretValue>,
+    /// App data archive keys of earlier releases: read and dropped.
+    #[serde(default, rename = "backup_keys", skip_serializing)]
+    pub(crate) legacy_backup_keys: serde::de::IgnoredAny,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,10 +156,9 @@ pub fn current_unix_timestamp() -> i64 {
 /// }
 /// ```
 ///
-/// App secret names, storage resource names, credential names, and backup key
-/// ids are plaintext (allows listing without decryption). Secret values,
-/// backup keys, storage credentials, and provider credentials are encrypted
-/// with AES-256-GCM.
+/// App secret names, storage resource names, and credential names are
+/// plaintext (allows listing without decryption). Secret values, storage
+/// credentials, and provider credentials are encrypted with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecretsStore {
@@ -248,10 +245,6 @@ impl SecretsStore {
             for (secret_name, secret) in &env_secrets.app {
                 validate_secret_name(secret_name)?;
                 validate_encrypted_secret_value(&format!("Secret '{secret_name}' value"), secret)?;
-            }
-            for backup_key in &env_secrets.backup_keys {
-                validate_backup_key_id(&backup_key.id)?;
-                validate_encrypted_backup_key_value(backup_key)?;
             }
             for (storage_name, credentials) in &env_secrets.storages {
                 super::validate_storage_name(storage_name)?;
@@ -374,10 +367,7 @@ impl SecretsStore {
                 .entry(env.to_string())
                 .or_insert_with(|| EnvironmentSecrets {
                     key_id: crate::crypto::generate_key_id(),
-                    backup_keys: Vec::new(),
-                    app: HashMap::new(),
-                    storages: HashMap::new(),
-                    credentials: HashMap::new(),
+                    ..Default::default()
                 });
 
         Ok(env_secrets.key_id.clone())
@@ -392,10 +382,7 @@ impl SecretsStore {
             env.to_string(),
             EnvironmentSecrets {
                 key_id: key_id.to_string(),
-                backup_keys: Vec::new(),
-                app: HashMap::new(),
-                storages: HashMap::new(),
-                credentials: HashMap::new(),
+                ..Default::default()
             },
         );
         Ok(())
@@ -414,7 +401,6 @@ impl SecretsStore {
 
         // Remove environment if no secrets remain.
         if env_secrets.app.is_empty()
-            && env_secrets.backup_keys.is_empty()
             && env_secrets.storages.is_empty()
             && env_secrets.credentials.is_empty()
         {
@@ -437,7 +423,6 @@ impl SecretsStore {
         // Remove empty environments
         self.environments.retain(|_, env_secrets| {
             !env_secrets.app.is_empty()
-                || !env_secrets.backup_keys.is_empty()
                 || !env_secrets.storages.is_empty()
                 || !env_secrets.credentials.is_empty()
         });
@@ -511,7 +496,6 @@ impl SecretsStore {
     pub fn env_has_encrypted_values(&self, env: &str) -> bool {
         self.environments.get(env).is_some_and(|env_secrets| {
             !env_secrets.app.is_empty()
-                || !env_secrets.backup_keys.is_empty()
                 || !env_secrets.storages.is_empty()
                 || !env_secrets.credentials.is_empty()
         })
@@ -552,7 +536,7 @@ impl SecretsStore {
         value: EncryptedSecretValue,
     ) -> Result<()> {
         validate_environment_name(env)?;
-        validate_credential_name(name)?;
+        validate_settable_credential_name(name)?;
         validate_encrypted_secret_value(&format!("Credential '{name}' value"), &value)?;
 
         let env_secrets = self.environments.get_mut(env).ok_or_else(|| {
@@ -573,7 +557,6 @@ impl SecretsStore {
         };
         env_secrets.credentials.remove(name);
         if env_secrets.app.is_empty()
-            && env_secrets.backup_keys.is_empty()
             && env_secrets.storages.is_empty()
             && env_secrets.credentials.is_empty()
         {
@@ -791,14 +774,26 @@ fn validate_secret_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// A credential name that stored state may hold, including retired ones.
 pub fn validate_credential_name(name: &str) -> Result<()> {
+    if RETIRED_CREDENTIAL_NAMES.contains(&name) {
+        return Ok(());
+    }
+    validate_settable_credential_name(name)
+}
+
+/// A credential name `tako credentials set` accepts.
+pub fn validate_settable_credential_name(name: &str) -> Result<()> {
     match name {
-        SSL_CLOUDFLARE_CREDENTIAL_NAME | POSTGRES_CREDENTIAL_NAME => Ok(()),
+        SSL_CLOUDFLARE_CREDENTIAL_NAME => Ok(()),
         "" => Err(ConfigError::Validation(
             "Credential name cannot be empty".to_string(),
         )),
+        _ if RETIRED_CREDENTIAL_NAMES.contains(&name) => Err(ConfigError::Validation(format!(
+            "Credential '{name}' is no longer used: workflows and channels keep their state in hosted databases. Remove it with `tako credential rm {name}`."
+        ))),
         _ => Err(ConfigError::Validation(format!(
-            "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}, {POSTGRES_CREDENTIAL_NAME}"
+            "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}"
         ))),
     }
 }

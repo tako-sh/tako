@@ -5,12 +5,13 @@
 
 use serde_json::{Value, json};
 use tako_core::{
-    CappedJson, WorkflowRunDetail, WorkflowRunStatus, WorkflowRunTransition, WorkflowStoreKind,
+    CappedJson, ListWorkflowRunsResponse, WorkflowRunDetail, WorkflowRunStatus,
+    WorkflowRunTransition,
 };
 use time::UtcOffset;
 use unicode_width::UnicodeWidthStr;
 
-use super::merge::{FoundRun, MergedRuns};
+use super::{Answer, ServerError};
 use crate::output;
 
 const ERROR_COLUMN_MAX_CHARS: usize = 60;
@@ -96,66 +97,44 @@ impl Clock {
 pub(super) struct Heading<'a> {
     pub app: &'a str,
     pub env: &'a str,
-    /// Shown when the result belongs to one server of several.
-    pub server: Option<&'a str>,
 }
 
 impl Heading<'_> {
     fn line(&self) -> String {
-        match self.server {
-            Some(server) => format!("{} ({}) on {server}", self.app, self.env),
-            None => format!("{} ({})", self.app, self.env),
-        }
+        format!("{} ({})", self.app, self.env)
     }
 }
 
 pub(super) fn list_lines(
     heading: &Heading<'_>,
-    merged: &MergedRuns,
-    show_server: bool,
+    list: &ListWorkflowRunsResponse,
     clock: &Clock,
 ) -> Vec<Line> {
     let mut lines = vec![
         Line::Section("Workflow runs".to_string()),
         Line::Text(heading.line()),
     ];
-    if merged.runs.is_empty() {
+    if list.runs.is_empty() {
         lines.push(Line::Muted("No workflow runs found.".to_string()));
         return lines;
     }
 
-    let mut header = vec!["ID", "WORKFLOW", "STATUS", "ATTEMPTS"];
-    if show_server {
-        header.push("SERVER");
-    }
-    header.extend(["WHEN", "ERROR"]);
-    let rows: Vec<Vec<String>> = merged
+    let header = ["ID", "WORKFLOW", "STATUS", "ATTEMPTS", "WHEN", "ERROR"];
+    let rows: Vec<Vec<String>> = list
         .runs
         .iter()
-        .map(|row| {
-            let run = &row.run;
-            let mut cells = vec![
+        .map(|run| {
+            vec![
                 run.id.clone(),
                 run.name.clone(),
                 run.status.to_string(),
                 format!("{}/{}", run.attempts, run.max_attempts),
-            ];
-            if show_server {
-                cells.push(row.server.clone().unwrap_or_else(|| "-".to_string()));
-            }
-            cells.push(format_when(
-                run.status,
-                run.run_at_ms,
-                run.finished_at_ms,
-                clock,
-            ));
-            cells.push(
+                format_when(run.status, run.run_at_ms, run.finished_at_ms, clock),
                 run.last_error
                     .as_deref()
                     .map(|error| single_line(error, ERROR_COLUMN_MAX_CHARS))
                     .unwrap_or_default(),
-            );
-            cells
+            ]
         })
         .collect();
     let widths: Vec<usize> = (0..header.len())
@@ -174,10 +153,10 @@ pub(super) fn list_lines(
             .map(|cells| Line::Text(table_row(cells, &widths))),
     );
 
-    if merged.has_more {
+    if list.has_more {
         lines.push(Line::Muted(format!(
             "Showing the newest {} runs. Narrow with --status or --name, or raise --limit (up to {}).",
-            merged.runs.len(),
+            list.runs.len(),
             tako_core::WORKFLOW_RUNS_MAX_LIMIT
         )));
     }
@@ -420,74 +399,63 @@ fn compact(value: &CappedJson) -> String {
     truncate_chars(&value.value.to_string(), STEP_RESULT_MAX_CHARS)
 }
 
-pub(super) fn transition_line(
-    action: &str,
-    transition: &WorkflowRunTransition,
-    server: Option<&str>,
-) -> String {
-    let location = server.map(|name| format!(" on {name}")).unwrap_or_default();
+pub(super) fn transition_line(action: &str, transition: &WorkflowRunTransition) -> String {
     format!(
-        "{action} {}{location}: {} -> {}",
+        "{action} {}: {} -> {}",
         transition.id, transition.previous_status, transition.status
     )
 }
 
-pub(super) fn errors_json(errors: &[super::merge::ServerError]) -> Value {
-    json!(errors)
-}
-
-pub(super) fn list_json(app: &str, env: &str, merged: &MergedRuns) -> Value {
-    json!({
-        "ok": true,
-        "command": "workflow",
-        "app": app,
-        "environment": env,
-        "store": merged.store,
-        "runs": merged.runs,
-        "has_more": merged.has_more,
-        "errors": errors_json(&merged.errors),
-    })
-}
-
-pub(super) fn show_json(app: &str, env: &str, found: &FoundRun) -> Value {
-    json!({
-        "ok": true,
-        "command": "workflow",
-        "app": app,
-        "environment": env,
-        "store": found.store,
-        "server": found.server_label(),
-        "run": found.run,
-        "errors": errors_json(&found.errors),
-    })
-}
-
-pub(super) fn transition_json(
+pub(super) fn list_json(
     app: &str,
     env: &str,
-    found: &FoundRun,
-    transition: &WorkflowRunTransition,
+    list: &ListWorkflowRunsResponse,
+    errors: &[ServerError],
 ) -> Value {
     json!({
         "ok": true,
         "command": "workflow",
         "app": app,
         "environment": env,
-        "store": transition.store,
-        "server": (transition.store == WorkflowStoreKind::Sqlite).then_some(found.server.as_str()),
+        "runs": list.runs,
+        "has_more": list.has_more,
+        "errors": errors,
+    })
+}
+
+pub(super) fn show_json(app: &str, env: &str, found: &Answer<WorkflowRunDetail>) -> Value {
+    json!({
+        "ok": true,
+        "command": "workflow",
+        "app": app,
+        "environment": env,
+        "run": found.reply,
+        "errors": found.errors,
+    })
+}
+
+pub(super) fn transition_json(
+    app: &str,
+    env: &str,
+    transition: &WorkflowRunTransition,
+    errors: &[ServerError],
+) -> Value {
+    json!({
+        "ok": true,
+        "command": "workflow",
+        "app": app,
+        "environment": env,
         "id": transition.id,
         "previous_status": transition.previous_status,
         "status": transition.status,
-        "errors": errors_json(&found.errors),
+        "errors": errors,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::merge::tests::{detail, summary};
-    use super::super::merge::{ListedRun, ServerError};
+pub(super) mod tests {
     use super::*;
-    use tako_core::{WorkflowRunSignal, WorkflowRunStep, WorkflowRunWait};
+    use tako_core::{WorkflowRunSignal, WorkflowRunStep, WorkflowRunSummary, WorkflowRunWait};
 
     // 2026-11-12 12:00:00 UTC
     const NOW_MS: i64 = 1_794_484_800_000;
@@ -512,24 +480,66 @@ mod tests {
             .collect()
     }
 
-    fn heading(server: Option<&str>) -> Heading<'_> {
+    fn summary(id: &str, created_at_ms: i64) -> WorkflowRunSummary {
+        WorkflowRunSummary {
+            id: id.to_string(),
+            name: "send-email".to_string(),
+            status: WorkflowRunStatus::Dead,
+            attempts: 3,
+            max_attempts: 3,
+            created_at_ms,
+            run_at_ms: Some(created_at_ms),
+            finished_at_ms: Some(created_at_ms + 1_000),
+            last_error: Some("SMTP timeout".to_string()),
+            last_error_truncated: false,
+        }
+    }
+
+    pub(crate) fn detail(id: &str) -> WorkflowRunDetail {
+        WorkflowRunDetail {
+            id: id.to_string(),
+            name: "send-email".to_string(),
+            status: WorkflowRunStatus::Dead,
+            attempts: 3,
+            max_attempts: 3,
+            created_at_ms: 0,
+            run_at_ms: Some(0),
+            finished_at_ms: Some(1_000),
+            lease_until_ms: None,
+            worker_id: None,
+            last_error: Some("SMTP timeout".to_string()),
+            last_error_truncated: false,
+            payload: CappedJson {
+                value: json!({"to": "a@example.com"}),
+                truncated: false,
+                bytes: 22,
+                preview: None,
+            },
+            result: None,
+            steps: Vec::new(),
+            steps_total: 0,
+            waits: Vec::new(),
+            signals: Vec::new(),
+            signals_total: 0,
+        }
+    }
+
+    fn heading() -> Heading<'static> {
         Heading {
             app: "demo",
             env: "production",
-            server,
         }
     }
 
-    fn merged(runs: Vec<ListedRun>, has_more: bool) -> MergedRuns {
-        MergedRuns {
-            store: WorkflowStoreKind::Sqlite,
+    fn list(runs: Vec<WorkflowRunSummary>, has_more: bool) -> ListWorkflowRunsResponse {
+        ListWorkflowRunsResponse {
+            app: "demo/production".to_string(),
             runs,
             has_more,
-            errors: Vec::new(),
         }
     }
 
-    fn sample_rows() -> Vec<ListedRun> {
+    fn sample_rows() -> Vec<WorkflowRunSummary> {
         let mut dead = summary("run_dead", NOW_MS - 3 * HOUR);
         dead.finished_at_ms = Some(NOW_MS - 2 * HOUR);
         dead.last_error = Some("SMTP timeout\n    at send (mail.ts:10)".into());
@@ -545,49 +555,30 @@ mod tests {
         running.attempts = 1;
         running.finished_at_ms = None;
         running.last_error = None;
-        vec![
-            ListedRun {
-                run: running,
-                server: Some("nyc".into()),
-            },
-            ListedRun {
-                run: pending,
-                server: Some("la".into()),
-            },
-            ListedRun {
-                run: dead,
-                server: Some("la".into()),
-            },
-        ]
+        vec![running, pending, dead]
     }
 
     #[test]
-    fn list_renders_a_table_with_server_column() {
-        let lines = list_lines(
-            &heading(None),
-            &merged(sample_rows(), false),
-            true,
-            &clock(),
-        );
+    fn list_renders_a_table() {
+        let lines = list_lines(&heading(), &list(sample_rows(), false), &clock());
         assert_eq!(
             texts(&lines),
             [
                 "# Workflow runs",
                 "demo (production)",
-                "ID        WORKFLOW    STATUS   ATTEMPTS  SERVER  WHEN             ERROR",
-                "run_live  send-email  running  1/3       nyc     running",
-                "run_next  send-email  pending  1/5       la      next in 5m",
-                "run_dead  send-email  dead     3/3       la      finished 2h ago  SMTP timeout at send (mail.ts:10)",
+                "ID        WORKFLOW    STATUS   ATTEMPTS  WHEN             ERROR",
+                "run_live  send-email  running  1/3       running",
+                "run_next  send-email  pending  1/5       next in 5m",
+                "run_dead  send-email  dead     3/3       finished 2h ago  SMTP timeout at send (mail.ts:10)",
             ]
         );
     }
 
     #[test]
-    fn list_without_server_column_and_with_more_runs_hint() {
+    fn list_with_more_runs_hint() {
         let lines = list_lines(
-            &heading(None),
-            &merged(sample_rows()[2..].to_vec(), true),
-            false,
+            &heading(),
+            &list(sample_rows()[2..].to_vec(), true),
             &clock(),
         );
         assert_eq!(
@@ -604,7 +595,7 @@ mod tests {
 
     #[test]
     fn list_empty_state() {
-        let lines = list_lines(&heading(None), &merged(Vec::new(), false), false, &clock());
+        let lines = list_lines(&heading(), &list(Vec::new(), false), &clock());
         assert_eq!(
             texts(&lines),
             [
@@ -684,12 +675,12 @@ mod tests {
 
     #[test]
     fn show_renders_fields_payload_steps_and_error() {
-        let lines = show_lines(&heading(Some("la")), &sample_detail(), &clock());
+        let lines = show_lines(&heading(), &sample_detail(), &clock());
         assert_eq!(
             texts(&lines),
             [
                 "# Workflow run",
-                "demo (production) on la",
+                "demo (production)",
                 "ID        run_dead",
                 "Workflow  send-email",
                 "Status    dead",
@@ -751,7 +742,7 @@ mod tests {
             },
         ];
         run.signals_total = 3;
-        let lines = show_lines(&heading(None), &run, &clock());
+        let lines = show_lines(&heading(), &run, &clock());
         assert_eq!(
             texts(&lines),
             [
@@ -780,14 +771,9 @@ mod tests {
         );
     }
 
-    fn transition(
-        store: WorkflowStoreKind,
-        previous: WorkflowRunStatus,
-        status: WorkflowRunStatus,
-    ) -> WorkflowRunTransition {
+    fn transition(previous: WorkflowRunStatus, status: WorkflowRunStatus) -> WorkflowRunTransition {
         WorkflowRunTransition {
             app: "demo/production".into(),
-            store,
             id: "run_dead".into(),
             previous_status: previous,
             status,
@@ -799,24 +785,14 @@ mod tests {
         assert_eq!(
             transition_line(
                 "Retried",
-                &transition(
-                    WorkflowStoreKind::Sqlite,
-                    WorkflowRunStatus::Dead,
-                    WorkflowRunStatus::Pending
-                ),
-                Some("la")
+                &transition(WorkflowRunStatus::Dead, WorkflowRunStatus::Pending)
             ),
-            "Retried run_dead on la: dead -> pending"
+            "Retried run_dead: dead -> pending"
         );
         assert_eq!(
             transition_line(
                 "Cancelled",
-                &transition(
-                    WorkflowStoreKind::Postgres,
-                    WorkflowRunStatus::Running,
-                    WorkflowRunStatus::Cancelled
-                ),
-                None
+                &transition(WorkflowRunStatus::Running, WorkflowRunStatus::Cancelled)
             ),
             "Cancelled run_dead: running -> cancelled"
         );
@@ -824,12 +800,16 @@ mod tests {
 
     #[test]
     fn json_shapes_are_stable() {
-        let mut list = merged(sample_rows()[2..].to_vec(), false);
-        list.errors.push(ServerError {
+        let errors = [ServerError {
             name: "nyc".into(),
             error: "connection refused".into(),
-        });
-        let value = list_json("demo", "production", &list);
+        }];
+        let value = list_json(
+            "demo",
+            "production",
+            &list(sample_rows()[2..].to_vec(), false),
+            &errors,
+        );
         assert_eq!(
             value,
             json!({
@@ -837,7 +817,6 @@ mod tests {
                 "command": "workflow",
                 "app": "demo",
                 "environment": "production",
-                "store": "sqlite",
                 "runs": [{
                     "id": "run_dead",
                     "name": "send-email",
@@ -849,37 +828,37 @@ mod tests {
                     "finished_at_ms": NOW_MS - 2 * HOUR,
                     "last_error": "SMTP timeout\n    at send (mail.ts:10)",
                     "last_error_truncated": false,
-                    "server": "la",
                 }],
                 "has_more": false,
                 "errors": [{"name": "nyc", "error": "connection refused"}],
             })
         );
 
-        let found = FoundRun {
+        let found = Answer {
             server: "la".into(),
-            store: WorkflowStoreKind::Postgres,
-            run: detail("run_dead"),
+            reply: detail("run_dead"),
             errors: Vec::new(),
         };
         let value = show_json("demo", "production", &found);
-        assert_eq!(value["server"], Value::Null);
-        assert_eq!(value["store"], "postgres");
+        assert_eq!(
+            value,
+            json!({
+                "ok": true,
+                "command": "workflow",
+                "app": "demo",
+                "environment": "production",
+                "run": detail("run_dead"),
+                "errors": [],
+            })
+        );
         assert_eq!(value["run"]["payload"]["value"]["to"], "a@example.com");
         assert_eq!(value["run"]["steps_total"], 0);
 
         let value = transition_json(
             "demo",
             "production",
-            &FoundRun {
-                store: WorkflowStoreKind::Sqlite,
-                ..found
-            },
-            &transition(
-                WorkflowStoreKind::Sqlite,
-                WorkflowRunStatus::Pending,
-                WorkflowRunStatus::Cancelled,
-            ),
+            &transition(WorkflowRunStatus::Pending, WorkflowRunStatus::Cancelled),
+            &[],
         );
         assert_eq!(
             value,
@@ -888,8 +867,6 @@ mod tests {
                 "command": "workflow",
                 "app": "demo",
                 "environment": "production",
-                "store": "sqlite",
-                "server": "la",
                 "id": "run_dead",
                 "previous_status": "pending",
                 "status": "cancelled",

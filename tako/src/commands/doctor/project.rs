@@ -160,7 +160,7 @@ pub(super) fn checks(
                 Some(Ok(_)) => {
                     for binding in env.databases.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
-                            "{}: {} uses {}, which has no network record; create it with `tako sqlite create {}`",
+                            "{}: {} uses {}, which has no network record; create it with `tako db create {}`",
                             env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }
@@ -260,7 +260,6 @@ mod tests {
             secrets: None,
             credentials: None,
             storages: vec![],
-            backup_key: None,
             databases: vec![ProjectDatabase {
                 usage: DatabaseUsage::Binding {
                     binding: "main".into(),
@@ -317,7 +316,7 @@ mod tests {
         assert_eq!(expiring.message, "production: OLD expired");
         let databases = by_id(&checks, "database_records");
         assert_eq!(databases.status, CheckStatus::Warning);
-        assert!(databases.message.contains("tako sqlite create orders"));
+        assert!(databases.message.contains("tako db create orders"));
         let grants = by_id(&checks, "key_grants");
         assert_eq!(grants.status, CheckStatus::Warning);
         assert!(

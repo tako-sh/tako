@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
-use super::{EncryptedBackupKey, EncryptedSecretValue, EnvironmentSecrets};
+use super::{EncryptedSecretValue, EnvironmentSecrets};
 
 pub(super) fn to_pretty_json(
     environments: &HashMap<String, EnvironmentSecrets>,
@@ -22,7 +22,6 @@ fn sorted_environments(
                 env_name,
                 SortedEnvironmentSecrets {
                     key_id: &env_secrets.key_id,
-                    backup_keys: &env_secrets.backup_keys,
                     app: sorted_app,
                     storages: sorted_storages,
                     credentials: sorted_credentials,
@@ -35,8 +34,6 @@ fn sorted_environments(
 #[derive(Serialize)]
 struct SortedEnvironmentSecrets<'a> {
     key_id: &'a str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    backup_keys: &'a Vec<EncryptedBackupKey>,
     app: BTreeMap<&'a String, &'a EncryptedSecretValue>,
     storages: BTreeMap<&'a String, &'a crate::config::EncryptedStorageCredentials>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

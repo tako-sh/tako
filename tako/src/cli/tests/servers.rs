@@ -355,7 +355,7 @@ fn every_command_accepts_a_network() {
             "staging",
         ],
         vec!["ssh", "edge", "--network", "staging"],
-        vec!["sqlite", "list", "--network", "staging"],
+        vec!["db", "list", "--network", "staging"],
     ] {
         let cli = Cli::try_parse_from(std::iter::once("tako").chain(args.iter().copied()))
             .unwrap_or_else(|error| panic!("{args:?}: {error}"));

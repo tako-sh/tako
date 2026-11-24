@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tako_core::DatabaseConnection;
-use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 use tokio::sync::{Mutex, OnceCell};
 
 struct Server {
@@ -43,8 +43,7 @@ async fn server() -> Result<&'static Server, String> {
             let host = DatabaseHost::new(HostConfig::default());
             let serve_host = host.clone();
             tokio::spawn(async move {
-                tako_database::http::serve(serve_host, listener, tako_database::http::Access::Apps)
-                    .await;
+                tako_db::http::serve(serve_host, listener, tako_db::http::Access::Apps).await;
             });
             let _reaper = host.spawn_reaper();
             tracing::info!(url = %url, "Serving local databases");
@@ -119,10 +118,10 @@ pub(crate) async fn connect(
         };
         let token = match previous.get(binding) {
             Some((previous_path, token)) if *previous_path == path => token.clone(),
-            _ => tako_database::generate_token(),
+            _ => tako_db::generate_token(),
         };
         host_bindings.push(Binding {
-            token_hash: tako_database::hash_token(&token),
+            token_hash: tako_db::hash_token(&token),
             database: id,
             home: Home::Local,
         });

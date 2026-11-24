@@ -112,49 +112,46 @@ fn restarting_a_standby_preserves_the_primary_upgrade_lock() {
     drop(standby);
 }
 
-/// A standby never runs apps while a restore runs: its start waits for the
-/// restore's exclusive standby lock, fails once the wait runs out, and holds
-/// a shared one for as long as it runs, which restores refuse to start under.
+/// A standby never runs apps while release cleanup runs: its start waits
+/// for cleanup's exclusive standby lock, fails once the wait runs out, and
+/// holds a shared one for as long as it runs, which cleanup skips under.
 #[test]
-fn a_standby_start_waits_for_a_running_restore_and_then_locks_restores_out() {
+fn a_standby_start_waits_for_release_cleanup_and_then_locks_it_out() {
     use crate::state_store::DrainLease;
     let tmp = tempfile::tempdir().unwrap();
-    let restoring = |exclusive| DrainLease::try_standby_in(tmp.path(), exclusive).unwrap();
+    let cleaning = |exclusive| DrainLease::try_standby_in(tmp.path(), exclusive).unwrap();
 
-    let restore = restoring(true).unwrap();
+    let cleanup = cleaning(true).unwrap();
     let release = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
-        drop(restore);
+        drop(cleanup);
     });
     let standby = start_state(tmp.path(), true);
     release.join().unwrap();
+    assert!(standby.is_ok(), "the standby must start once cleanup ends");
     assert!(
-        standby.is_ok(),
-        "the standby must start once the restore ends"
-    );
-    assert!(
-        restoring(true).is_none(),
-        "a running standby must lock restores out"
+        cleaning(true).is_none(),
+        "a running standby must lock release cleanup out"
     );
     drop(standby);
-    assert!(restoring(true).is_some(), "a stopped standby holds nothing");
+    assert!(cleaning(true).is_some(), "a stopped standby holds nothing");
 
     let primary = start_state(tmp.path(), false);
     assert!(
-        primary.is_ok() && restoring(true).is_some(),
+        primary.is_ok() && cleaning(true).is_some(),
         "only a standby holds the standby lock"
     );
     drop(primary);
 
-    let _restore = restoring(true).unwrap();
+    let _cleanup = cleaning(true).unwrap();
     assert!(
         start_state(tmp.path(), true).is_err(),
-        "a standby must not start while a restore runs"
+        "a standby must not start while release cleanup runs"
     );
 }
 
 /// A normal start holds the drain activity lease exclusively while it
-/// recovers backup restores, which can take longer than a service manager
+/// sweeps the data directory, which can take longer than a service manager
 /// allows for quick restarts: another start waits for it instead of failing
 /// at once, and fails only once the wait runs out.
 #[test]
@@ -181,11 +178,11 @@ fn a_start_waits_while_another_start_recovers_the_data_directory() {
     );
 }
 
-/// A normal start never rolls back a restore while another server process
-/// (a hot standby serving the same apps) holds the drain activity lease,
-/// and none can start serving app data while a normal start recovers.
+/// A normal start never sweeps while another server process (a hot standby
+/// serving the same apps) holds the drain activity lease, and none can start
+/// serving app data while a normal start sweeps.
 #[test]
-fn a_normal_start_only_reports_restores_while_another_server_serves_the_data() {
+fn a_normal_start_only_sweeps_while_no_other_server_serves_the_data() {
     use crate::operations::RecoveryMode;
     let tmp = tempfile::tempdir().unwrap();
     let store =

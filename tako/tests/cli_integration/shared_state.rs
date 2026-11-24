@@ -288,20 +288,17 @@ impl ApiServer {
                     stream.read_exact(&mut bytes).unwrap();
                     let (status, body) = if headers.starts_with("POST /v1/management/rpc ") {
                         let command: tako_core::Command = serde_json::from_slice(&bytes).unwrap();
+                        let app = tako_core::deployment_app_id("demo", "production");
                         assert!(
-                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None, secrets_digest: None}
-                            if app == &tako_core::deployment_app_id("demo", "production"))
+                            matches!(command, tako_core::Command::ListWorkflowRuns {app: ref listed, ..}
+                            if listed == &app)
                         );
-                        let backup = serde_json::json!({
-                            "id":"b1-test", "app":"demo", "environment":"production", "server":"edge",
-                            "created_at_unix_secs":1, "size_bytes":10, "sha256_hex":"hash",
-                            "archive_key":"archive", "manifest_key":"manifest", "encryption":{
-                                "algorithm":"aes-256-gcm", "key_id":"fixture", "nonce_base64":"AA==", "tag_base64":"AA=="
-                            }
+                        let runs = serde_json::json!({
+                            "app": app, "runs": [], "has_more": false
                         });
                         (
                             200,
-                            serde_json::to_vec(&tako_core::Response::ok(backup)).unwrap(),
+                            serde_json::to_vec(&tako_core::Response::ok(runs)).unwrap(),
                         )
                     } else {
                         let signed = SignedRequest::from_slice(&bytes).unwrap();
@@ -814,8 +811,8 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &server.owner_home,
         &owner,
-        &["credential", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/app"),
+        &["credential", "set", "ssl.cloudflare", "--env", "production"],
+        Some("cf-token-fixture"),
     );
     assert!(server.store.0.lock().unwrap().1.records.is_empty());
     server.ok(
@@ -989,13 +986,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["network", "join", "--invitation-stdin"],
         Some(&scoped_invitation),
     );
-    let config = scoped_project.join("tako.toml");
-    let mut contents = fs::read_to_string(&config).unwrap();
-    contents.push_str(
-        "backup = { storage = 'archives' }\n[storages.archives]\nprovider='s3'\nbucket='fixture'\nregion='auto'\nendpoint='https://archives.example.test'\n"
-    );
-    fs::write(config, contents).unwrap();
-    server.ok(&scoped_home, &scoped_project, &["backup", "now"], None);
+    server.ok(&scoped_home, &scoped_project, &["workflow", "list"], None);
     assert!(!scoped_project.join(".tako/state.local.json").exists());
     let devices = fs::read_dir(
         scoped_home
@@ -1023,8 +1014,8 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             "refused",
         ),
         (
-            ["credential", "set", "postgres_url", "--env", "production"],
-            "postgres://fixture:example@db.example.test/forbidden",
+            ["credential", "set", "ssl.cloudflare", "--env", "production"],
+            "cf-token-forbidden",
         ),
     ] {
         server.ok(&scoped_home, &scoped_project, &command, Some(value));
@@ -1356,8 +1347,8 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     server.ok(
         &server.owner_home,
         &owner,
-        &["credential", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/app"),
+        &["credential", "set", "ssl.cloudflare", "--env", "production"],
+        Some("cf-token-fixture"),
     );
     let published = server.store.0.lock().unwrap().1.records.len();
     let expected = ["ALPHA", "BETA", "DRAFT_ONLY", "GAMMA"];
@@ -1408,17 +1399,14 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
     // Deletion markers replace the published values. The unpublished app draft
     // is discarded, and the credential draft stays local.
     assert_eq!(state.records.len(), published);
-    assert!(
-        latest
-            .values()
-            .all(|record| record.address.name != "DRAFT_ONLY"
-                && record.address.name != "postgres_url")
-    );
+    assert!(latest.values().all(
+        |record| record.address.name != "DRAFT_ONLY" && record.address.name != "ssl.cloudflare"
+    ));
     let local: serde_json::Value =
         serde_json::from_slice(&fs::read(owner.join(".tako/state.local.json")).unwrap()).unwrap();
     let values = &local["values"]["production"];
     assert!(values["app"].as_object().is_none_or(|app| app.is_empty()));
-    assert!(values["credentials"].get("postgres_url").is_some());
+    assert!(values["credentials"].get("ssl.cloudflare").is_some());
 
     // Other worktrees drop the deleted values on their next sync.
     server.ok(
@@ -1558,8 +1546,8 @@ fn clear_supersedes_expired_app_secret_commands() {
     server.ok(
         &server.owner_home,
         &project,
-        &["credential", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/app"),
+        &["credential", "set", "ssl.cloudflare", "--env", "production"],
+        Some("cf-token-fixture"),
     );
 
     let cleared = server.ok(
@@ -1580,7 +1568,7 @@ fn clear_supersedes_expired_app_secret_commands() {
     assert!(
         latest
             .values()
-            .all(|record| record.address.name != "postgres_url")
+            .all(|record| record.address.name != "ssl.cloudflare")
     );
 }
 
@@ -1604,8 +1592,8 @@ fn clear_leaves_other_pending_publications_queued() {
     server.ok(
         &server.owner_home,
         &project,
-        &["credential", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/app"),
+        &["credential", "set", "ssl.cloudflare", "--env", "production"],
+        Some("cf-token-fixture"),
     );
     server.drop_publication.store(true, Ordering::Relaxed);
     assert!(
@@ -1632,7 +1620,7 @@ fn clear_leaves_other_pending_publications_queued() {
         .latest()
         .unwrap()
         .values()
-        .find(|record| record.address.name == "postgres_url")
+        .find(|record| record.address.name == "ssl.cloudflare")
         .map(|record| record.id.clone());
 
     let cleared = server.ok(
@@ -1655,7 +1643,7 @@ fn clear_leaves_other_pending_publications_queued() {
     assert_eq!(
         latest
             .values()
-            .find(|record| record.address.name == "postgres_url")
+            .find(|record| record.address.name == "ssl.cloudflare")
             .map(|record| record.id.clone()),
         credential
     );
@@ -1664,5 +1652,5 @@ fn clear_leaves_other_pending_publications_queued() {
         .as_array()
         .unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0]["mutation"]["address"]["name"], "postgres_url");
+    assert_eq!(pending[0]["mutation"]["address"]["name"], "ssl.cloudflare");
 }

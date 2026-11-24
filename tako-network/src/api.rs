@@ -43,10 +43,41 @@ pub enum RuntimeError {
     Corrosion(&'static str),
     #[error("local runtime database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("local runtime journal error: {0}")]
+    Journal(#[from] redb::Error),
     #[error("runtime I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid runtime JSON: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+macro_rules! journal_errors {
+    ($($error:ty),*) => {$(
+        impl From<$error> for RuntimeError {
+            fn from(error: $error) -> Self {
+                Self::Journal(error.into())
+            }
+        }
+    )*};
+}
+journal_errors!(
+    redb::DatabaseError,
+    redb::TransactionError,
+    redb::TableError,
+    redb::StorageError,
+    redb::CommitError,
+    redb::SetDurabilityError
+);
+
+impl RuntimeError {
+    /// The journal failed to write to disk. redb then refuses every later
+    /// write until the database is opened again.
+    pub fn journal_needs_reopen(&self) -> bool {
+        matches!(
+            self,
+            Self::Journal(redb::Error::Io(_) | redb::Error::PreviousIo)
+        )
+    }
 }
 
 /// The commitment binds an authenticated identity to one management operation.

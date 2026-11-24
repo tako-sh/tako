@@ -5,7 +5,7 @@
 //! key, under `_tako/databases/<name>/<generation>/` (see `tako-backup`). Any
 //! transaction of the last seven days can be restored. Full images (bases)
 //! are captured when capture starts, once a day while the database changes,
-//! and by `tako sqlite backup`; retention keeps some of them for four weeks.
+//! and by `tako db backup`; retention keeps some of them for four weeks.
 //! Deploys, migrations, and replacements name the transaction before them
 //! with a restore point.
 
@@ -19,11 +19,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tako_backup::{Capture, Point, Replica, Stored, Target};
 use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageBinding};
-use tako_database::DatabaseId;
+use tako_db::DatabaseId;
 
 use super::now_unix_secs;
+use super::objects::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
 use crate::ServerState;
-use crate::operations::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
 use crate::state_store::StoredDatabase;
 
 const SCHEDULER_TICK: Duration = tako_backup::SYNC_INTERVAL;
@@ -256,11 +256,11 @@ async fn check_holder(
         .map_err(Refused::Unavailable)?
     {
         Some(holder) if holder == DELETED_HOLDER => Err(Refused::Deleted(format!(
-            "database {} was deleted; this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was deleted; this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         ))),
         Some(holder) if holder != own => Err(Refused::Moved(format!(
-            "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako sqlite delete {} --server <this server>`",
+            "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
             stored.name, stored.name
         ))),
         _ => Ok(()),
@@ -632,7 +632,7 @@ async fn ensure_open(
         if unrestored {
             if newest.is_some() {
                 return Err(format!(
-                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako sqlite restore {} --latest`)",
+                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako db restore {} --latest`)",
                     stored.name, stored.name
                 ));
             }
@@ -1239,7 +1239,7 @@ pub(crate) async fn mark(
     result
 }
 
-/// Captures a full image now and uploads it, as `tako sqlite backup` does.
+/// Captures a full image now and uploads it, as `tako db backup` does.
 /// It restores on its own and is kept like the daily ones.
 pub(crate) async fn full_snapshot(
     state: &ServerState,
@@ -1668,7 +1668,7 @@ pub(crate) async fn restore(
             Ok(_) => return restored,
             Err(read) => {
                 return Err(format!(
-                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako sqlite delete {} --server <this server>`)",
+                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako db delete {} --server <this server>`)",
                     stored.name, stored.name
                 ));
             }
@@ -1734,7 +1734,7 @@ async fn restore_from(
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         let verify = restored.clone();
-        tokio::task::spawn_blocking(move || tako_database::verify_database(&verify))
+        tokio::task::spawn_blocking(move || tako_db::verify_database(&verify))
             .await
             .map_err(|e| e.to_string())??;
         Ok::<_, String>(space)
@@ -1889,9 +1889,9 @@ async fn replace_inner(
         .database_dir(&stored.name)
         .join("previous.sqlite");
     let swapped = tokio::task::spawn_blocking(move || {
-        rotate_replay_epochs(&replacement)
-            .map_err(|e| format!("prepare restored channel replay epochs: {e}"))?;
-        tako_database::replace_database(&path, &replacement, &previous)
+        prepare_runtime_state(&path, &replacement)
+            .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
+        tako_db::replace_database(&path, &replacement, &previous)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1929,26 +1929,84 @@ async fn replace_inner(
 
 /// Cursors issued before a restore cannot refer to the restored timeline.
 /// Change the staged copy only, before its main file is renamed into place.
-fn rotate_replay_epochs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Readies Tako's own tables in a database about to replace the live one.
+///
+/// Channel replay gets new epochs, so clients holding cursors into the old
+/// contents resync. Running workflow runs lose their leases: workers that
+/// claimed them before the replacement cannot save steps or finish them,
+/// and the runs are claimed again from their last step saved in the new
+/// contents.
+fn prepare_runtime_state(current: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use rusqlite::{Connection, OpenFlags, config::DbConfig};
 
+    // Workflow runtimes keep their store open across the swap and create its
+    // tables only when they open it, so a copy without them must get them.
+    // They register schedules only when they start, so the copy keeps the
+    // live database's schedules and revision counter.
+    let live = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let workflow_store = live.query_row(
+        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+           WHERE type = 'table' AND name = 'tako_workflow_meta')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
-    let replay: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-           WHERE type = 'table' AND name = 'tako_replay_apps' COLLATE NOCASE AND rootpage > 0)
-         AND (SELECT count(*) FROM pragma_table_info('tako_replay_apps')
-              WHERE name COLLATE NOCASE IN ('app', 'epoch') AND type = 'TEXT' COLLATE NOCASE) = 2",
-        [],
-        |row| row.get(0),
-    )?;
+    if workflow_store {
+        db.execute_batch(&tako_workflows::enqueue::schema_sql())?;
+        tako_workflows::enqueue::keep_live_schedules(&live, &db)?;
+    }
+    drop(live);
+    let has_columns = |table: &str, columns: &[&str]| -> rusqlite::Result<bool> {
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&table, &table];
+        params.extend(columns.iter().map(|column| column as &dyn rusqlite::ToSql));
+        db.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
+                   WHERE type = 'table' AND name = ?1 COLLATE NOCASE AND rootpage > 0)
+                 AND (SELECT count(*) FROM pragma_table_info(?2)
+                      WHERE name COLLATE NOCASE IN ({placeholders})) = {}",
+                columns.len()
+            ),
+            params.as_slice(),
+            |row| row.get(0),
+        )
+    };
+    let replay = has_columns("tako_replay_apps", &["app", "epoch"])?;
     if replay {
         db.execute(
             "UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
             [],
         )?;
-        // The swap moves only the main file; make the new epochs durable in it.
+    }
+    let workflows = has_columns(
+        "tako_workflow_runs",
+        &[
+            "status",
+            "worker_id",
+            "lease_until",
+            "attempts",
+            "max_attempts",
+        ],
+    )?;
+    if workflows {
+        // No worker from before may write a running run again. One with
+        // attempts left waits for a new claim; one without keeps an expired
+        // lease and no owner, so the next reclaim ends it as dead and wakes
+        // its waiters, as it does for a lost worker.
+        db.execute(
+            "UPDATE main.tako_workflow_runs
+             SET status = CASE WHEN attempts >= max_attempts THEN 'running' ELSE 'pending' END,
+                 lease_until = CASE WHEN attempts >= max_attempts THEN 0 ELSE NULL END,
+                 worker_id = NULL
+             WHERE status = 'running'",
+            [],
+        )?;
+    }
+    if replay || workflows || workflow_store {
+        // The swap moves only the main file; make the changes durable in it.
         let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
         if busy != 0 {
             return Err("could not checkpoint the replacement database".into());

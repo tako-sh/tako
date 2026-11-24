@@ -185,8 +185,8 @@ async fn retire_local_runtime(state: &ServerState, deadline: Instant) -> Result<
         .await
         .map_err(|_| "Local workflow socket shutdown timed out".to_string())?;
     state.drain_activity.lock().take();
-    // This process never runs an app instance again, so restores no longer
-    // refuse because of it.
+    // This process never runs an app instance again, so release cleanup no
+    // longer skips because of it.
     state.standby_lock.lock().take();
     Ok(())
 }
@@ -235,19 +235,19 @@ mod tests {
         .unwrap()
     }
 
-    /// The retired standby runs no app instance again: a restore in the
-    /// promoted child must not refuse because of it.
+    /// The retired standby runs no app instance again: release cleanup in
+    /// the promoted child must not skip because of it.
     #[tokio::test]
     async fn retirement_releases_the_standby_lock() {
         let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
         let state = runtime_state(dir.path(), true);
-        let restore = || crate::state_store::DrainLease::try_standby_in(dir.path(), true).unwrap();
-        assert!(restore().is_none(), "a standby holds the standby lock");
+        let cleanup = || crate::state_store::DrainLease::try_standby_in(dir.path(), true).unwrap();
+        assert!(cleanup().is_none(), "a standby holds the standby lock");
         retire_local_runtime(&state, Instant::now() + Duration::from_secs(5))
             .await
             .unwrap();
         assert!(
-            restore().is_some(),
+            cleanup().is_some(),
             "a retired standby must release the lock"
         );
     }

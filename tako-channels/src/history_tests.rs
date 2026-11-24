@@ -1,3 +1,4 @@
+use crate::test_db::TestDb;
 use crate::{ChannelMessage, ChannelPublishPayload, ChannelStore, ReplayCursor};
 use std::sync::{
     Barrier, Mutex,
@@ -112,45 +113,18 @@ fn concurrent_history(seed: u64, stores: Vec<ChannelStore>) {
 }
 
 #[test]
-fn sqlite_channel_histories_are_linearizable() {
-    for seed in history::seeds() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("channels.sqlite");
-        concurrent_history(
-            seed,
-            (0..3).map(|_| ChannelStore::open(&path).unwrap()).collect(),
-        );
-    }
-}
-
-#[test]
-fn postgres_channel_histories_are_linearizable() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let schema = format!("channel_history_{}", std::process::id());
+fn channel_histories_are_linearizable() {
+    let db = TestDb::start();
     for seed in history::seeds() {
         let app = format!("history-{seed}");
-        concurrent_history(
-            seed,
-            (0..3)
-                .map(|_| ChannelStore::open_postgres_with_schema(&url, &schema, &app).unwrap())
-                .collect(),
-        );
+        concurrent_history(seed, (0..3).map(|_| db.writer_for(&app)).collect());
     }
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .unwrap();
 }
 
 #[test]
-fn postgres_store_open_does_not_deadlock_with_active_publishers() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let schema = format!("channel_reopen_{}", std::process::id());
-    let writer = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+fn store_open_does_not_deadlock_with_active_publishers() {
+    let db = TestDb::start();
+    let writer = db.writer();
     let barrier = Barrier::new(2);
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -169,72 +143,11 @@ fn postgres_store_open_does_not_deadlock_with_active_publishers() {
         });
         barrier.wait();
         for _ in 0..20 {
-            let reader = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
-            reader.read_after("events", None, 100).unwrap();
+            db.reader().read_after("events", None, 100).unwrap();
+            db.writer().read_after("events", None, 100).unwrap();
         }
     });
     assert_eq!(writer.read_after("events", None, 1000).unwrap().len(), 300);
-    drop(writer);
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .unwrap();
-}
-
-#[test]
-fn postgres_store_open_migrates_unversioned_incomplete_schema() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let schema = format!("channel_migration_{}", std::process::id());
-    let store = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
-    let first = store
-        .append(
-            "events",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: 1.into(),
-            },
-        )
-        .unwrap();
-    drop(store);
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    client
-        .batch_execute(&format!(
-            "DROP TABLE {schema}.channel_schema_migrations;
-         ALTER TABLE {schema}.channel_metadata DROP COLUMN latest_message_id;
-         DROP INDEX {schema}.idx_channel_messages_app_id;"
-        ))
-        .unwrap();
-    let reopened = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
-    let second = reopened
-        .append(
-            "events",
-            &ChannelPublishPayload {
-                r#type: "event".into(),
-                data: 2.into(),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        reopened
-            .read_after("events", first.id.parse().ok(), 10)
-            .unwrap()[0]
-            .id,
-        second.id
-    );
-    let exists: bool = client
-        .query_one(
-            "SELECT to_regclass($1) IS NOT NULL",
-            &[&format!("{schema}.idx_channel_messages_app_id")],
-        )
-        .unwrap()
-        .get(0);
-    assert!(exists);
-    drop(reopened);
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .unwrap();
 }
 
 #[test]
@@ -260,9 +173,16 @@ fn checker_rejects_a_read_that_skips_a_committed_message() {
 
 #[test]
 fn replay_and_presence_expiry_histories_are_reproducible() {
-    fn run(seed: u64) -> Vec<String> {
-        let store = ChannelStore::open_in_memory_without_maintenance();
-        // Only explicit prune_at calls advance maintenance in this history.
+    // The database's clock decides expiry. Logical time moves stored messages
+    // back in whole minutes against a 90 second window, so the real time a
+    // run takes never changes what has expired. Stream activity stays real,
+    // so the stream is never idle long enough to be released.
+    const WINDOW_MS: i64 = 90_000;
+    const STEP_MS: i64 = 60_000;
+    let db = TestDb::start();
+    let run = |seed: u64, attempt: u8| -> Vec<String> {
+        let app = format!("expiry-{seed}-{attempt}");
+        let store = db.without_maintenance_for(&app);
         let base = 4_000_000_000_000_i64;
         let mut now = base;
         let mut random = Seed(seed);
@@ -271,17 +191,9 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
         let mut lease_until = None;
         let mut trace = Vec::new();
         let auth =
-            serde_json::from_value(serde_json::json!({"ok": true, "replayWindowMs": 100})).unwrap();
+            serde_json::from_value(serde_json::json!({"ok": true, "replayWindowMs": WINDOW_MS}))
+                .unwrap();
         store.sync_channel("events", &auth).unwrap();
-        // Stream activity follows the logical clock too, so the history never
-        // idles long enough for the stream's bookkeeping to be released.
-        let touch = |now: i64| {
-            store.raw_execute(
-                "UPDATE channel_metadata SET last_activity_unix_ms=?1",
-                (now,),
-            )
-        };
-        touch(now);
         let mut latest = store.replay_cursor("events", None).unwrap().unwrap();
         let member = crate::PresenceMember {
             connection_id: "connection".into(),
@@ -301,24 +213,23 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
                         )
                         .unwrap();
                     let cursor: ReplayCursor = message.id.parse().unwrap();
-                    let id = cursor.position;
-                    store.raw_execute(
-                        "UPDATE channel_messages SET created_at_unix_ms=?1 WHERE id=?2",
-                        (now, id),
-                    );
-                    touch(now);
-                    retained.push((id, now));
+                    retained.push((cursor.position, now));
                     latest = cursor;
                 }
                 1 => {
-                    now += random.choose(60_000) as i64;
-                    store.prune_at(now);
+                    let elapsed = random.choose(3) as i64 * STEP_MS;
+                    now += elapsed;
+                    db.execute(&format!(
+                        "UPDATE tako_replay_messages SET created_ms = created_ms - {elapsed}
+                         WHERE app = '{app}'"
+                    ));
+                    store.prune();
                     for &(id, created) in &retained {
-                        if created < now - 100 {
+                        if created < now - WINDOW_MS {
                             highest_deleted = highest_deleted.max(id);
                         }
                     }
-                    retained.retain(|(_, created)| *created >= now - 100);
+                    retained.retain(|(_, created)| *created >= now - WINDOW_MS);
                 }
                 2 => {
                     store.update_presence("events", &member, now).unwrap();
@@ -376,8 +287,12 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
             ));
         }
         trace
-    }
+    };
     for seed in history::seeds() {
-        assert_eq!(run(seed), run(seed), "seed={seed}: logical trace changed");
+        assert_eq!(
+            run(seed, 0),
+            run(seed, 1),
+            "seed={seed}: logical trace changed"
+        );
     }
 }

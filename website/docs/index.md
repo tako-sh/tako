@@ -37,7 +37,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 | Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
 | Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |
 
-Native networks support bounded channel replication, presence leases, and store invalidation fanout. Durable channel replay, presence, and store delivery can use SQLite across servers without Postgres; ephemeral channels use memory-only delivery. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
+Native networks support bounded channel replication, presence leases, and store invalidation fanout. Durable channel replay and workflow runs live in hosted SQLite databases that every server of an environment shares; ephemeral channels use memory-only delivery. Each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
 
 ## Deploy and operate
 
@@ -46,7 +46,7 @@ Native networks support bounded channel replication, presence leases, and store 
 - [Deployment](/deployment/): build artifacts, run migrations, and roll a release into traffic.
 - [Routing and TLS](/routing/): configure domains, path routes, certificates, and client-IP policy.
 - [Operations](/operations/): inspect status and logs, scale instances, and roll back releases.
-- [Backups](/backups/): configure private backup storage, create backups, and restore app data.
+- [Backups](/backups/): configure private backup storage for hosted databases and KV stores, and restore them.
 - [Troubleshooting](/troubleshooting/): choose diagnostics from the observed failure.
 
 ## Look something up

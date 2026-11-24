@@ -5,14 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 const PID_FILE_DIR: &str = ".tako/pids";
 
 /// Persistent app registration (survives server restarts).
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisteredApp {
     pub config_file: String,
     pub config_path: String,
@@ -219,12 +220,46 @@ pub fn kill_orphaned_process(project_dir: &str, config_path: &str) {
     remove_pid_file(project_dir, config_path);
 }
 
+/// The projects an earlier daemon registered in its `dev-server.sqlite`,
+/// whose app processes may outlive a crash. Read once so startup can clean
+/// them up, then the file is removed; on a read failure it is left alone.
+pub fn take_legacy_registrations(path: &Path) -> Vec<(String, String)> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let read = || -> rusqlite::Result<Vec<(String, String)>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        let mut statement = conn.prepare("SELECT project_dir, config_path FROM apps")?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    };
+    match read() {
+        Ok(apps) => {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
+            apps
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not read the earlier dev registrations");
+            Vec::new()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// SQLite store — persists registration across restarts
+// redb store — persists registrations across restarts
 // ---------------------------------------------------------------------------
 
+/// Config path → JSON-encoded [`RegisteredApp`].
+const APPS: TableDefinition<&str, &str> = TableDefinition::new("apps");
+
 pub struct DevStateStore {
-    conn: Connection,
+    db: Database,
 }
 
 fn unix_now() -> u64 {
@@ -240,9 +275,24 @@ impl DevStateStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create db parent: {e}"))?;
         }
-        let conn = tako_sqlite::open_local(&path).map_err(|e| format!("open db: {e}"))?;
-        ensure_schema(&conn)?;
-        Ok(Self { conn })
+        let db = Database::create(&path).map_err(|e| format!("open db: {e}"))?;
+        let store = Self { db };
+        // Create the table so reads never meet a missing one.
+        store.write(|_| Ok(()))?;
+        Ok(store)
+    }
+
+    fn write<T>(
+        &self,
+        change: impl FnOnce(&mut redb::Table<&str, &str>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let txn = self.db.begin_write().map_err(|e| format!("write: {e}"))?;
+        let value = {
+            let mut apps = txn.open_table(APPS).map_err(|e| format!("write: {e}"))?;
+            change(&mut apps)?
+        };
+        txn.commit().map_err(|e| format!("commit: {e}"))?;
+        Ok(value)
     }
 
     pub fn register(
@@ -253,74 +303,80 @@ impl DevStateStore {
         name: &str,
         variant: Option<&str>,
     ) -> Result<(), String> {
-        let now = unix_now() as i64;
-        self.conn
-            .execute(
-                "INSERT INTO apps (config_path, project_dir, name, variant, created_at, updated_at, config_file)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
-             ON CONFLICT(config_path) DO UPDATE SET
-                project_dir = excluded.project_dir,
-                name = excluded.name,
-                variant = excluded.variant,
-                config_file = excluded.config_file,
-                updated_at = excluded.updated_at;",
-                (config_path, project_dir, name, variant, now, config_file),
-            )
-            .map_err(|e| format!("register: {e}"))?;
-        Ok(())
+        let now = unix_now();
+        self.write(|apps| {
+            let existing = apps
+                .get(config_path)
+                .map_err(|e| format!("register: {e}"))?
+                .map(|row| decode(row.value()))
+                .transpose()?;
+            let app = RegisteredApp {
+                config_file: config_file.to_string(),
+                config_path: config_path.to_string(),
+                project_dir: project_dir.to_string(),
+                name: name.to_string(),
+                variant: variant.map(str::to_string),
+                is_enabled: existing.as_ref().is_none_or(|app| app.is_enabled),
+                created_at: existing.as_ref().map_or(now, |app| app.created_at),
+                updated_at: now,
+            };
+            let json = serde_json::to_string(&app).map_err(|e| format!("register: {e}"))?;
+            apps.insert(config_path, json.as_str())
+                .map_err(|e| format!("register: {e}"))?;
+            Ok(())
+        })
     }
 
     pub fn unregister(&self, config_path: &str) -> Result<bool, String> {
-        let rows = self
-            .conn
-            .execute("DELETE FROM apps WHERE config_path = ?1;", (config_path,))
-            .map_err(|e| format!("unregister: {e}"))?;
-        Ok(rows > 0)
+        self.write(|apps| {
+            Ok(apps
+                .remove(config_path)
+                .map_err(|e| format!("unregister: {e}"))?
+                .is_some())
+        })
     }
 
     #[cfg(test)]
     pub fn get(&self, config_path: &str) -> Result<Option<RegisteredApp>, String> {
-        match self.conn.query_row(
-            "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at, config_file
-                     FROM apps WHERE config_path = ?1;",
-            (config_path,),
-            |row| Ok(row_to_registered_app(row)),
-        ) {
-            Ok(app) => app.map(Some),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(format!("get: {e}")),
-        }
+        let txn = self.db.begin_read().map_err(|e| format!("get: {e}"))?;
+        let apps = txn.open_table(APPS).map_err(|e| format!("get: {e}"))?;
+        apps.get(config_path)
+            .map_err(|e| format!("get: {e}"))?
+            .map(|row| decode(row.value()))
+            .transpose()
     }
 
     pub fn list(&self) -> Result<Vec<RegisteredApp>, String> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at, config_file
-                     FROM apps ORDER BY name, config_path;",
-            )
-            .map_err(|e| format!("list: {e}"))?;
-        let rows = stmt
-            .query_map([], |row| Ok(row_to_registered_app(row)))
-            .map_err(|e| format!("list: {e}"))?;
+        let txn = self.db.begin_read().map_err(|e| format!("list: {e}"))?;
+        let apps = txn.open_table(APPS).map_err(|e| format!("list: {e}"))?;
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| format!("list: {e}"))??);
+        for row in apps.iter().map_err(|e| format!("list: {e}"))? {
+            let (_, value) = row.map_err(|e| format!("list: {e}"))?;
+            out.push(decode(value.value())?);
         }
+        out.sort_by(|a, b| (&a.name, &a.config_path).cmp(&(&b.name, &b.config_path)));
         Ok(out)
     }
 
     #[cfg(test)]
     pub fn set_enabled(&self, config_path: &str, enabled: bool) -> Result<bool, String> {
-        let now = unix_now() as i64;
-        let rows = self
-            .conn
-            .execute(
-                "UPDATE apps SET is_enabled = ?1, updated_at = ?2 WHERE config_path = ?3;",
-                (enabled as i64, now, config_path),
-            )
-            .map_err(|e| format!("set_enabled: {e}"))?;
-        Ok(rows > 0)
+        let now = unix_now();
+        self.write(|apps| {
+            let Some(mut app) = apps
+                .get(config_path)
+                .map_err(|e| format!("set_enabled: {e}"))?
+                .map(|row| decode(row.value()))
+                .transpose()?
+            else {
+                return Ok(false);
+            };
+            app.is_enabled = enabled;
+            app.updated_at = now;
+            let json = serde_json::to_string(&app).map_err(|e| format!("set_enabled: {e}"))?;
+            apps.insert(config_path, json.as_str())
+                .map_err(|e| format!("set_enabled: {e}"))?;
+            Ok(true)
+        })
     }
 
     pub fn cleanup_stale(&self) -> Result<Vec<String>, String> {
@@ -336,98 +392,8 @@ impl DevStateStore {
     }
 }
 
-fn row_to_registered_app(row: &rusqlite::Row) -> Result<RegisteredApp, String> {
-    let field = |i: usize| move |e| format!("read app column {i}: {e}");
-    Ok(RegisteredApp {
-        config_file: row.get::<_, String>(7).map_err(field(7))?,
-        config_path: row.get::<_, String>(0).map_err(field(0))?,
-        project_dir: row.get::<_, String>(1).map_err(field(1))?,
-        name: row.get::<_, String>(2).map_err(field(2))?,
-        variant: row.get::<_, Option<String>>(3).map_err(field(3))?,
-        is_enabled: row.get::<_, i64>(4).map_err(field(4))? != 0,
-        created_at: row.get::<_, i64>(5).map_err(field(5))? as u64,
-        updated_at: row.get::<_, i64>(6).map_err(field(6))? as u64,
-    })
-}
-
-fn ensure_schema(conn: &Connection) -> Result<(), String> {
-    let columns = table_columns(conn, "apps")?;
-    if columns.is_empty() {
-        return create_apps_table(conn);
-    }
-
-    // Preserve registration identities so startup can reap children left by an older daemon.
-    if !columns.iter().any(|column| column == "config_file")
-        && [
-            "config_path",
-            "project_dir",
-            "name",
-            "variant",
-            "is_enabled",
-            "created_at",
-            "updated_at",
-        ]
-        .iter()
-        .all(|column| columns.iter().any(|c| c == column))
-    {
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("migrate apps: {e}"))?;
-        tx.execute_batch(
-            "ALTER TABLE apps ADD COLUMN config_file TEXT NOT NULL DEFAULT '';
-             UPDATE apps SET config_file = config_path;",
-        )
-        .map_err(|e| format!("migrate apps config_file: {e}"))?;
-        return tx
-            .commit()
-            .map_err(|e| format!("commit apps migration: {e}"));
-    }
-
-    // v0: recreate other mismatched schemas.
-    let expected = [
-        "config_file",
-        "config_path",
-        "project_dir",
-        "name",
-        "variant",
-        "is_enabled",
-        "created_at",
-        "updated_at",
-    ];
-    if !expected.iter().all(|col| columns.iter().any(|c| c == col)) {
-        conn.execute_batch("DROP TABLE apps;")
-            .map_err(|e| format!("drop mismatched apps table: {e}"))?;
-        return create_apps_table(conn);
-    }
-
-    Ok(())
-}
-
-fn create_apps_table(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS apps (
-            config_path TEXT PRIMARY KEY,
-            config_file TEXT NOT NULL,
-            project_dir TEXT NOT NULL,
-            name TEXT NOT NULL,
-            variant TEXT,
-            is_enabled INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0
-        );",
-    )
-    .map_err(|e| format!("create apps schema: {e}"))
-}
-
-fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table});"))
-        .map_err(|e| format!("query table info: {e}"))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| format!("query table info: {e}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("collect table info: {e}"))
+fn decode(json: &str) -> Result<RegisteredApp, String> {
+    serde_json::from_str(json).map_err(|e| format!("read app registration: {e}"))
 }
 
 #[cfg(test)]

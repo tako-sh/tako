@@ -624,74 +624,17 @@ impl ServerState {
     }
 }
 
-/// The per-app deploy lock, held by a backup. A backup does not change the
-/// instance set, so while it holds the lock (the snapshot can take minutes)
-/// native recovery may still claim instance slots. Dropping this closes that
-/// window before it releases the lock: whoever takes the lock next, such as a
-/// rollout taking its old-instance snapshot, sees every slot claimed meanwhile.
-pub(crate) struct BackupDeployLock {
-    app: Option<Arc<App>>,
-    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-    /// Taken by a scheduled backup, which is recorded as the holder.
-    background: bool,
-}
-
-impl BackupDeployLock {
-    fn open(
-        app: Option<Arc<App>>,
-        guard: tokio::sync::OwnedMutexGuard<()>,
-        background: bool,
-    ) -> Self {
-        if let Some(app) = &app {
-            *app.recovery_claims_open.lock() = true;
-        }
-        Self {
-            app,
-            guard: Some(guard),
-            background,
-        }
-    }
-}
-
-impl Drop for BackupDeployLock {
-    fn drop(&mut self) {
-        let Some(app) = &self.app else {
-            self.guard.take();
-            return;
-        };
-        *app.recovery_claims_open.lock() = false;
-        if self.background {
-            release_for_background(app, &mut self.guard);
-        } else {
-            self.guard.take();
-        }
-    }
-}
-
-impl ServerState {
-    /// For operator backups: waits for the lock.
-    pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
-        let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
-        BackupDeployLock::open(self.app_manager.get_app(app_name), guard, false)
-    }
-}
-
-/// Run `claim`, which changes a native app's instance set, where recovery may
-/// do so: under the deploy lock, or inside a backup's claim window. `None`
-/// when neither is available; the next tick tries again. `claim` must not
-/// wait: it holds both locks.
+/// Run `claim`, which changes a native app's instance set, under the deploy
+/// lock. `None` while the lock is unavailable; the next tick tries again.
+/// `claim` must not wait: it holds the lock.
 fn claim_instances<T>(
     app: &App,
     lock: &tokio::sync::Mutex<()>,
     now: Instant,
     claim: impl FnOnce() -> T,
 ) -> Option<T> {
-    let mutation =
-        try_lock_deploy_for_background(app, lock, BackgroundWork::AutomaticRecovery, now);
-    let claims_open = app.recovery_claims_open.lock();
-    if mutation.is_none() && !*claims_open {
-        return None;
-    }
+    let _mutation =
+        try_lock_deploy_for_background(app, lock, BackgroundWork::AutomaticRecovery, now)?;
     Some(claim())
 }
 
@@ -710,8 +653,8 @@ fn retire_dead(app: &App, app_name: &str) -> Vec<Arc<Instance>> {
 }
 
 /// One recovery pass for one app. Every gate is only tried: if a drain, stop,
-/// restore, deploy, scale, secrets update or health replacement is in the
-/// way, this pass does nothing and the next tick looks again.
+/// deploy, scale, secrets update or health replacement is in the way, this
+/// pass does nothing and the next tick looks again.
 async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let app_name = app.name();
     // Same gates, in the same order, as `replace_instance_if_needed`.
@@ -766,8 +709,6 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     // operations do not wait that long for the deploy lock, so only claim
     // each slot under it and start outside: a rollout that arrives
     // meanwhile finds the starting instance and retires it with the old ones.
-    // The health path starts native replacements without that lock, so a
-    // backup holding it must not hold recovery back either.
     let Some(retired) = claim_instances(app, &lock, now, || retire_dead(app, &app_name)) else {
         return;
     };

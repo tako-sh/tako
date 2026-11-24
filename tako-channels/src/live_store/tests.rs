@@ -226,10 +226,9 @@ async fn next_frame(response: &mut reqwest::Response, buffered: &mut String) -> 
 
 #[tokio::test]
 async fn store_sse_ready_precedes_live_events_and_scopes_reconnects_across_instances() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("channels.sqlite");
-    let writer = Arc::new(ChannelStore::open_sqlite(&path).unwrap());
-    let reader = Arc::new(ChannelStore::open_sqlite(&path).unwrap());
+    let db = crate::test_db::TestDb::start();
+    // Two servers' handles on the app's history.
+    let (writer, reader) = (db.open().await, db.open().await);
     let first = store_scope(
         "tako.store:messages",
         &json!({"room":"one","last_message_id":42}),
@@ -567,30 +566,10 @@ async fn publish_store_invalidation(store: &Arc<ChannelStore>, params: Value) {
 }
 
 #[tokio::test]
-async fn postgres_store_sse_shares_scoped_invalidations_across_instances_when_configured() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app_id = format!(
-        "store-test/{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    // postgres::Client owns a synchronous runtime, so open it on the same
-    // blocking pool used by production Store connections.
-    let (writer, reader_a, reader_b, other_app) = tokio::task::spawn_blocking(move || {
-        let writer = Arc::new(ChannelStore::open_postgres(&url, &app_id).unwrap());
-        let reader_a = Arc::new(ChannelStore::open_postgres(&url, &app_id).unwrap());
-        let reader_b = Arc::new(ChannelStore::open_postgres(&url, &app_id).unwrap());
-        let other_app =
-            Arc::new(ChannelStore::open_postgres(&url, &format!("{app_id}-other")).unwrap());
-        (writer, reader_a, reader_b, other_app)
-    })
-    .await
-    .unwrap();
+async fn store_sse_shares_scoped_invalidations_across_instances() {
+    let db = crate::test_db::TestDb::start();
+    let (writer, reader_a, reader_b) = (db.open().await, db.open().await, db.open().await);
+    let other_app = db.open_for("other").await;
     let (url_a, server_a) = sse_server(reader_a).await;
     let (url_b, server_b) = sse_server(reader_b.clone()).await;
     let (url_other, server_other) = sse_server(other_app.clone()).await;

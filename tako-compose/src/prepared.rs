@@ -36,9 +36,9 @@ impl ComposeRuntime {
             return Err("Compose private data must be outside the source directory".into());
         }
         let private = root.parent().unwrap();
-        // Keep deployment inputs outside data/: restoring an app-data backup
-        // replaces that entire tree. These private ancestors also protect source
-        // files whose mounts must remain readable by non-root containers.
+        // Keep deployment inputs outside data/, which belongs to the app.
+        // These private ancestors also protect source files whose mounts must
+        // remain readable by non-root containers.
         create_private_directory(private)?;
         create_private_directory(&root)?;
         write_private(

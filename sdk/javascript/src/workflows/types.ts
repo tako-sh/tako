@@ -131,13 +131,6 @@ export interface WorkflowOpts<P = unknown, R = unknown> {
    * @example "&#42;/15 * * * *" — every 15 minutes
    */
   schedule?: string;
-  /**
-   * Force this workflow onto per-server local storage when deployed to more
-   * than one server. Local workflows and their cron schedules run once per
-   * server and are not globally deduplicated.
-   * @defaultValue false
-   */
-  local?: boolean;
 }
 
 /** Runtime-only workflow options stored after `handler` is removed. */

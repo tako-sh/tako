@@ -160,6 +160,7 @@ fn node_config_fullchain_unknown_fields_and_unsafe_paths() {
         "local-services-owner.json",
         "local-services-export.lock",
         "runtime.db-wal",
+        "runtime.redb",
         "agent-process-lock",
         "api-token",
     ] {
@@ -278,7 +279,7 @@ fn generated_corrosion_toml_uses_exact_local_api_and_mutual_tls() {
 }
 
 #[derive(Clone)]
-struct MemoryStore(Rc<RefCell<RegistrySnapshot>>);
+pub(super) struct MemoryStore(pub(super) Rc<RefCell<RegistrySnapshot>>);
 impl RegistryStore for MemoryStore {
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
         Ok(self.0.borrow().clone())
@@ -345,8 +346,13 @@ fn actual_method_path_and_nonce_are_checked_by_guarded_runtime() {
         boot_id: BootId::random().unwrap(),
         limits: RuntimeLimits::default(),
     };
-    let mut runtime =
-        ServerRuntime::open(guard, fixture.keys, config, &temp.path().join("runtime.db")).unwrap();
+    let mut runtime = ServerRuntime::open(
+        guard,
+        fixture.keys,
+        config,
+        &temp.path().join("runtime.redb"),
+    )
+    .unwrap();
     let signed = tako_network::api::SignedRequest::sign(
         &fixture.admin,
         fixture.config.network.id.clone(),
@@ -489,7 +495,7 @@ fn guarded_runtime_retries_exact_durable_denial_after_local_store_recovers() {
                 boot_id: BootId::random().unwrap(),
                 limits: RuntimeLimits::default(),
             },
-            &temp.path().join("runtime.db"),
+            &temp.path().join("runtime.redb"),
         )
         .unwrap()
     };
@@ -634,7 +640,7 @@ fn trusted_authority_recheck_does_not_replay_or_consume_the_original_nonce() {
             boot_id: BootId::random().unwrap(),
             limits: RuntimeLimits::default(),
         },
-        &temp.path().join("runtime.db"),
+        &temp.path().join("runtime.redb"),
     )
     .unwrap();
     let signed = SignedRequest::sign(
@@ -664,13 +670,7 @@ fn trusted_authority_recheck_does_not_replay_or_consume_the_original_nonce() {
         assert!(matches!(rechecked, RpcResponse::Authorized { .. }));
     }
     assert_eq!(*backend.borrow(), snapshot); // no registry mutation
-    let db = rusqlite::Connection::open_with_flags(
-        temp.path().join("runtime.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let nonces: i64 = db
-        .query_row("SELECT count(*) FROM consumed_nonces", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(nonces, 1); // first authentication only
+    drop(runtime);
+    let journal = tako_network::runtime::verify_journal(&temp.path().join("runtime.redb")).unwrap();
+    assert_eq!(journal.consumed_nonces, 1); // first authentication only
 }

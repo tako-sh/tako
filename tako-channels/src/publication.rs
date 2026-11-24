@@ -174,7 +174,8 @@ mod tests {
 
     #[test]
     fn publication_binds_command_params_and_returns_the_public_channel() {
-        let store = ChannelStore::open_in_memory().unwrap();
+        let db = crate::test_db::TestDb::start();
+        let store = db.writer();
         let payload = json!({"type": "msg", "data": 1, "lifecycle": {"replayWindowMs": 1000}});
         let a = TrustedPublication::parse("chat", &json!({"room": "a"}), payload.clone()).unwrap();
         let b = TrustedPublication::parse("chat", &json!({"room": "b"}), payload.clone()).unwrap();
@@ -194,10 +195,13 @@ mod tests {
         );
         assert!(store.read_after("chat", None, 10).unwrap().is_empty());
         assert_eq!(
-            store.raw_query_i64(
-                "SELECT replay_window_ms FROM channel_metadata WHERE channel = ?1",
-                [a.stream.key()]
-            ),
+            db.sql()
+                .query_row(
+                    "SELECT window_ms FROM tako_replay_streams WHERE channel = ?1",
+                    [a.stream.key()],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
             1000
         );
     }
@@ -299,5 +303,31 @@ mod tests {
             Some(ErrorCode::Unavailable)
         );
         assert_eq!(ChannelError::Storage("disk".into()).socket_code(), None);
+    }
+
+    #[test]
+    fn an_unreachable_replay_database_is_retryable() {
+        use tako_core::ErrorCode;
+        use tako_db::client::ClientError;
+
+        for error in [
+            ClientError::Unavailable("connection refused".into()),
+            ClientError::Statement {
+                code: "SQLITE_BUSY".into(),
+            },
+        ] {
+            let error = ChannelError::from(error);
+            assert!(matches!(error, ChannelError::Unavailable(_)), "{error}");
+            assert_eq!(error.socket_code(), Some(ErrorCode::Unavailable));
+            assert_eq!(crate::authorize::error_response(&error).0, 503);
+            // Opening a store keeps it retryable.
+            let opened = error.or_storage("cannot open channel storage");
+            assert!(matches!(opened, ChannelError::Unavailable(_)));
+        }
+        let failed = ChannelError::from(ClientError::Statement {
+            code: "SQLITE_CONSTRAINT".into(),
+        });
+        assert!(matches!(failed, ChannelError::Storage(_)), "{failed}");
+        assert_eq!(crate::authorize::error_response(&failed).0, 500);
     }
 }

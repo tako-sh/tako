@@ -149,8 +149,13 @@ pub enum RecordKind {
     App,
     Credential,
     Storage,
+    /// Legacy: a key that encrypted an environment's app data archives,
+    /// which Tako no longer makes. Nothing reads or writes these records
+    /// any more; the variant stays so records already stored still decode.
     BackupKey,
-    /// The ID of the environment's active backup key. Not secret.
+    /// Legacy: the ID of the environment's active [`RecordKind::BackupKey`].
+    /// Not secret. Nothing reads or writes these records any more; the
+    /// variant stays so records already stored still decode.
     BackupActive,
     /// A Tako-hosted database of the network, named by its name under
     /// [`DATABASE_SCOPE`]: its home server and generation. Not secret; every

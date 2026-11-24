@@ -7,4 +7,7 @@ file = "compose.yaml"
 servers = ["prod"]
 
 [envs.production.channels]
-database = "channel-replay"
+db = "channel-replay"
+
+[envs.production.workflows]
+db = "channel-replay"

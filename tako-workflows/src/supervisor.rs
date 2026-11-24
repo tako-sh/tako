@@ -707,13 +707,20 @@ fn collect_worker_group_names(
     }
 }
 
-fn is_workflow_source(path: &std::path::Path) -> bool {
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
-        })
+/// Whether `path` is a JS definition file the SDK discovers: a source file
+/// that is not hidden, a `_`-prefixed helper or a type declaration. The
+/// deploy client and the server share it to agree on when a release runs
+/// workflows.
+pub fn is_js_definition_source(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.')
+        || name.starts_with('_')
+        || [".d.ts", ".d.mts", ".d.cts"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+        || !path.is_file()
     {
         return false;
     }
@@ -721,6 +728,19 @@ fn is_workflow_source(path: &std::path::Path) -> bool {
         path.extension().and_then(|ext| ext.to_str()),
         Some("ts" | "tsx" | "js" | "mjs" | "mts")
     )
+}
+
+/// Whether a JS release's `workflows/` directory defines any workflow.
+pub fn has_js_workflow_sources(workflows_dir: &std::path::Path) -> bool {
+    std::fs::read_dir(workflows_dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| is_js_definition_source(&entry.path()))
+    })
+}
+
+fn is_workflow_source(path: &std::path::Path) -> bool {
+    is_js_definition_source(path)
 }
 
 fn collect_worker_names_from_source(source: &str, names: &mut std::collections::BTreeSet<String>) {

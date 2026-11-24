@@ -124,9 +124,6 @@ pub struct ServerState {
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
     pub(crate) direct_channel_stores: Arc<crate::channels::DirectChannelStores>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub(crate) manual_backup_states:
-        SyncRwLock<HashMap<String, crate::operations::ManualBackupState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,
@@ -134,7 +131,7 @@ pub struct ServerState {
     pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     /// A standby's shared lease on the standby lock, held for as long as
-    /// this process may run app instances; a restore refuses while any
+    /// this process may run app instances; release cleanup skips while any
     /// standby holds one.
     pub(crate) standby_lock: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     pub(crate) drain_observer_started: AtomicBool,
@@ -147,6 +144,21 @@ pub struct ServerState {
     /// deployment ID. Status and the app list report them until a deploy
     /// registers the app or a delete removes it.
     pub(crate) restore_failures: SyncRwLock<HashMap<String, RestoreFailure>>,
+    /// Apps whose workflow database did not answer when their release was
+    /// restored, by deployment ID. They serve without workflows until a
+    /// retry reaches the database.
+    pub(crate) workflows_waiting: parking_lot::Mutex<HashMap<String, WaitingWorkflows>>,
+}
+
+/// The restored release whose workflow runtime waits for its database.
+#[derive(Debug, Clone)]
+pub(crate) struct WaitingWorkflows {
+    pub(crate) version: String,
+    pub(crate) release_path: std::path::PathBuf,
+    pub(crate) runtime_bin_path: Option<String>,
+    /// The release replaces a failed deployment's runtime, whose schedules
+    /// may have registered, so it takes a newer schedule revision.
+    pub(crate) fresh_revision: bool,
 }
 
 /// Why a persisted app was left unregistered at restore.

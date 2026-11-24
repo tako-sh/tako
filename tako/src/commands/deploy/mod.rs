@@ -31,7 +31,6 @@ use config::{
     resolve_build_preset_ref, resolve_deploy_environment, resolve_deploy_server_names,
     resolve_deploy_server_names_with_setup, resolve_deploy_server_targets,
     resolve_effective_build_adapter, run_bun_lockfile_preflight, should_run_bun_lockfile_preflight,
-    validate_runtime_state_storage_for_deploy,
 };
 use format::{
     common_https_port_for_servers, format_build_plan_target_label, format_parallel_deploy_step,
@@ -49,12 +48,16 @@ use task_tree::{
     DeployTaskTreeController, build_artifact_target_groups, should_use_deploy_task_tree,
 };
 
-pub(crate) use config::project_needs_channel_replay;
+pub(crate) use config::{project_needs_channel_replay, project_needs_workflows};
 pub(crate) use manifest::resolve_deploy_main;
 
-/// A deploy-only client cannot create the replay database or read Postgres.
-const UNPROVISIONED_REPLAY: &str =
-    "Keep the servers' current channel storage (hosted replay needs a full-access deploy)";
+/// A deploy-only client cannot create a service's generated database.
+fn unprovisioned_service(service: databases::Service) -> String {
+    format!(
+        "Keep the servers' current {} database (creating one needs a full-access deploy)",
+        service.table()
+    )
+}
 
 /// Deployment configuration
 #[derive(Clone)]
@@ -69,10 +72,11 @@ struct DeployConfig {
     /// S3 bindings name their resource and carry no access keys.
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
-    backup: Option<tako_core::BackupBinding>,
     /// Database bindings, sent with the release command and the deploy.
     databases: HashMap<String, tako_core::DatabaseBinding>,
     channel_database: Option<tako_core::DatabaseBinding>,
+    /// The `@workflows` binding of the app's workflow database.
+    workflows_database: Option<tako_core::DatabaseBinding>,
     force: bool,
     main: String,
     use_unified_target_process: bool,
@@ -109,7 +113,6 @@ struct BuildPhaseResult {
     manifest_main: String,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
     deploy_ssl: tako_core::SslBinding,
-    deploy_backup: Option<tako_core::BackupBinding>,
     use_unified_target_process: bool,
     artifacts_by_target: HashMap<String, PathBuf>,
 }
@@ -142,8 +145,9 @@ pub(super) fn resolve_release_command(config: &TakoToml, env_name: &str) -> Opti
 }
 
 impl DeployConfig {
-    /// Scoped clients assert only the replay target. The server supplies the
-    /// existing binding's secret peer key and preserves all app SQL bindings.
+    /// Scoped clients assert only the runtime services' targets. The server
+    /// supplies the existing bindings' secret peer keys and preserves all app
+    /// SQL bindings.
     fn deploy_databases(&self, full: bool) -> Option<HashMap<String, tako_core::DatabaseBinding>> {
         let mut bindings = if full {
             self.databases.clone()
@@ -152,6 +156,9 @@ impl DeployConfig {
         };
         if let Some(replay) = &self.channel_database {
             bindings.insert(tako_core::CHANNEL_REPLAY_BINDING.to_owned(), replay.clone());
+        }
+        if let Some(workflows) = &self.workflows_database {
+            bindings.insert(tako_core::WORKFLOWS_BINDING.to_owned(), workflows.clone());
         }
         (full || !bindings.is_empty()).then_some(bindings)
     }
@@ -362,12 +369,8 @@ async fn run_async(
     let deployment_app_name = tako_core::deployment_app_id(&app_name, &env);
     let needs_replay =
         config::needs_channel_replay(&project_dir, &tako_config, preflight_runtime_adapter);
-    let postgres = |secrets: &SecretsStore| {
-        secrets
-            .get_credential(&env, crate::config::POSTGRES_CREDENTIAL_NAME)
-            .is_some()
-    };
-    let has_postgres = postgres(&secrets);
+    let needs_workflows =
+        config::needs_workflows(&project_dir, &tako_config, preflight_runtime_adapter);
     let environment = &tako_config.envs[&env];
     if (!environment.databases.is_empty() || !environment.kv.is_empty()) && is_container_release {
         return Err("Database and KV store bindings are available to native releases only; container and Compose releases cannot use them yet.".into());
@@ -378,7 +381,9 @@ async fn run_async(
         || !environment.databases.is_empty()
         || !environment.kv.is_empty()
         || environment.channels.is_some()
-        || (needs_replay && !has_postgres);
+        || environment.workflows.is_some()
+        || needs_replay
+        || needs_workflows;
     let mut database_records = if reads_directory {
         tokio::task::block_in_place(|| {
             crate::network::databases::list_from(&network, output::is_dry_run())
@@ -395,12 +400,15 @@ async fn run_async(
         &database_records,
         configure_bindings,
         needs_replay,
-        has_postgres,
+        needs_workflows,
     )?;
-    if database_plan.unprovisioned_replay && !output::is_dry_run() {
-        output::hint(&format!(
-            "No hosted channel replay is provisioned for {env}; the servers keep their current channel storage. Deploy once with full access to provision it."
-        ));
+    for service in [databases::Service::Channels, databases::Service::Workflows] {
+        if database_plan.service(service).unprovisioned && !output::is_dry_run() {
+            output::hint(&format!(
+                "No {} database is provisioned for {env}; the servers keep their current one. Deploy once with full access to provision it.",
+                service.table()
+            ));
+        }
     }
     if output::is_dry_run() {
         for (name, home) in &database_plan.create {
@@ -409,21 +417,23 @@ async fn run_async(
                 home.name
             ));
         }
-        if let Some(replay) = &database_plan.replay {
-            output::dry_run_skip(&format!(
-                "Use channel database {} on {} ({})",
-                replay.database_name,
-                replay.home.name,
-                if database_plan.implicit_replay {
-                    "automatic"
-                } else {
-                    "configured"
-                }
-            ));
-        } else if database_plan.unprovisioned_replay {
-            output::dry_run_skip(UNPROVISIONED_REPLAY);
-        } else if has_postgres && needs_replay {
-            output::dry_run_skip("Use configured Postgres for channels");
+        for service in [databases::Service::Channels, databases::Service::Workflows] {
+            let planned = database_plan.service(service);
+            if let Some(binding) = &planned.binding {
+                output::dry_run_skip(&format!(
+                    "Use {} database {} on {} ({})",
+                    service.table(),
+                    binding.database_name,
+                    binding.home.name,
+                    if planned.implicit {
+                        "automatic"
+                    } else {
+                        "configured"
+                    }
+                ));
+            } else if planned.unprovisioned {
+                output::dry_run_skip(&unprovisioned_service(service));
+            }
         }
         output::dry_run_skip("Server checks");
         output::dry_run_skip("Build");
@@ -440,9 +450,10 @@ async fn run_async(
                 "ok": true, "command": "deploy", "dry_run": true, "app": deployment_app_name,
                 "servers": server_names, "source": "cached_network",
                 "create_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name,"server":home.name})).collect::<Vec<_>>(),
-                "channel_database": database_plan.replay.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.implicit_replay})),
-                "channel_postgres": needs_replay && has_postgres && database_plan.replay.is_none(),
-                "channel_replay_unprovisioned": database_plan.unprovisioned_replay,
+                "channel_database": database_plan.replay.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.replay.implicit})),
+                "channel_replay_unprovisioned": database_plan.replay.unprovisioned,
+                "workflows_database": database_plan.workflows.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.workflows.implicit})),
+                "workflows_unprovisioned": database_plan.workflows.unprovisioned,
             }));
         }
         return Ok(());
@@ -454,24 +465,6 @@ async fn run_async(
     tracing::debug!("{}", format_servers_summary(&server_names));
 
     if configure_bindings {
-        let runtime_state_storage_result = validate_runtime_state_storage_for_deploy(
-            &project_dir,
-            &tako_config,
-            &secrets,
-            &env,
-            server_names.len(),
-        );
-        if runtime_state_storage_result.has_errors() {
-            return Err(format!(
-                "Runtime state storage errors:\n  {}",
-                runtime_state_storage_result.errors.join("\n  ")
-            )
-            .into());
-        }
-        for warning in runtime_state_storage_result.warnings {
-            output::warning(&format!("Validation: {}", warning));
-        }
-
         let storage_result =
             validate_storages_for_deployment(&tako_config, &secrets, &env, server_names.len());
         if storage_result.has_errors() {
@@ -498,14 +491,6 @@ async fn run_async(
     // the live viewport.
     if configure_bindings && !output::is_dry_run() {
         crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
-        {
-            crate::commands::storage::ensure_backup_keys_for_env(
-                &project_dir,
-                &env,
-                &tako_config,
-                &mut secrets,
-            )?;
-        }
     }
 
     // Only full clients publish secrets. A deploy client's servers apply what
@@ -514,11 +499,7 @@ async fn run_async(
         secrets = tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(&project_dir, &app_name, &env, true, false)
         })?;
-        if postgres(&secrets) != has_postgres && needs_replay {
-            return Err("Channel storage configuration changed during deploy; retry to plan against the current configuration.".into());
-        }
         let final_validation = config::validate_release_secret_snapshot(
-            &project_dir,
             &tako_config,
             &secrets,
             &env,
@@ -676,7 +657,6 @@ async fn run_async(
         manifest_main,
         deploy_storages,
         deploy_ssl,
-        deploy_backup,
         use_unified_target_process: use_unified_js_target_process,
         artifacts_by_target,
     } = build_result.expect("build result should be present");
@@ -718,10 +698,16 @@ async fn run_async(
         .await?;
         databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
         databases::apply_peer_keys(&mut database_plan.kv, &prepared.peer_keys);
-        if let Some(replay) = &mut database_plan.replay {
+        if let Some(replay) = &mut database_plan.replay.binding {
             replay.binding.peer_key = prepared
                 .replay_peer_keys
                 .get(&replay.home.device_id)
+                .cloned();
+        }
+        if let Some(workflows) = &mut database_plan.workflows.binding {
+            workflows.binding.peer_key = prepared
+                .workflows_peer_keys
+                .get(&workflows.home.device_id)
                 .cloned();
         }
         granted = Some(prepared);
@@ -750,15 +736,18 @@ async fn run_async(
         secrets_digest,
         storages: deploy_storages,
         ssl: deploy_ssl,
-        backup: deploy_backup,
         // Binding names are unique across databases and KV stores.
-        databases: crate::commands::sqlite::target::wire_bindings(&database_plan.sql)
+        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)
             .into_iter()
-            .chain(crate::commands::sqlite::target::wire_bindings(
+            .chain(crate::commands::db::target::wire_bindings(
                 &database_plan.kv,
             ))
             .collect(),
-        channel_database: database_plan.replay.map(|replay| replay.binding),
+        channel_database: database_plan.replay.binding.map(|replay| replay.binding),
+        workflows_database: database_plan
+            .workflows
+            .binding
+            .map(|workflows| workflows.binding),
         force,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

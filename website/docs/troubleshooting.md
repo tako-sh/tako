@@ -81,7 +81,7 @@ Deploy performs validation before build work starts. Check for:
 - Missing or invalid server `arch`/`libc` metadata. Check that the enrolled host uses a supported Linux architecture and glibc.
 - Expired app secrets, S3 credentials, or provider credentials.
 - Missing `ssl.cloudflare` for wildcard Let's Encrypt routes or Cloudflare SSL.
-- Missing `postgres_url` for shared multi-server workflows. Native channel, presence, and store delivery do not require it; see [workflow storage](/workflows/).
+- No workflow database on a multi-server network. Create one with `tako db create` and set `[envs.<env>.workflows].db`; see [workflow storage](/workflows/#storage-and-multiple-servers).
 - Local storage used in a multi-server deploy environment.
 
 Use:
@@ -167,11 +167,11 @@ tako workflow show <run-id> --env production
 
 `show` lists the saved steps and the stored error. The run failed after its last saved step. Fix the cause, then `tako workflow retry <run-id> --env production` resumes it with a fresh retry budget. A `pending` run with no due time is waiting for a signal; check its waits. A `running` run whose worker was lost is reclaimed 60 seconds after its last heartbeat.
 
-These commands work against deployed environments only. When servers keep separate workflow state, a server that cannot be reached is reported as a warning and its runs are missing from the list. See [Inspect and repair runs](/workflows/#inspect-and-repair-runs).
+These commands work against deployed environments only. Every server of the environment shares the same runs; a server that cannot be reached is reported as a warning and the next one is asked. See [Inspect and repair runs](/workflows/#inspect-and-repair-runs).
 
 ## Backups Fail
 
-Backups require a private S3-compatible storage resource and current storage credentials:
+Hosted database and KV store backups require a private S3-compatible storage resource and current storage credentials:
 
 ```toml
 [envs.production]
@@ -182,17 +182,16 @@ Set or rotate credentials with:
 
 ```bash
 tako storage credentials private_backups --env production
-tako backup status --env production
-tako backup now --env production
+tako deploy --env production
 ```
 
 Backup storage must not use `public_base_url`, and `local` cannot be used as a backup target.
 
-For a hosted database, check `backup.last_error` and `backup.replicated_at_unix_secs` in `tako sqlite status <name> --json`. Its backups use the storage named in `[databases.<name>].backup`, or else the environment's `backup.storage`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then capture a full snapshot with `tako sqlite backup <name>`. While storage fails, the server keeps the captures on its disk and retries at most 15 minutes apart. A restore needs free space for about three times what it downloads on the server, beyond what other restores and transfers in progress there hold.
+For a hosted database, check `backup.last_error` and `backup.replicated_at_unix_secs` in `tako db status <name> --json`. Its backups use the storage named in `[db.<name>].backup`, or else the environment's `backup.storage`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then capture a full snapshot with `tako db backup <name>`. While storage fails, the server keeps the captures on its disk and retries at most 15 minutes apart. A restore needs free space for about three times what it downloads on the server, beyond what other restores and transfers in progress there hold.
 
 ## Database Requests Fail
 
-`tako.databases.<binding>` is `undefined` (or `GetDatabase` reports false) when the environment does not bind that name: check `[envs.<env>].databases` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. A deploy that says the network has no database with a bound name needs `tako sqlite create <name>`, or a binding to one of the names `tako sqlite list` shows. See [Databases](/databases/#limits-and-security).
+`tako.db.<binding>` is `undefined` (or `GetDB` reports false) when the environment does not bind that name: check `[envs.<env>].db` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. A deploy that says the network has no database with a bound name needs `tako db create <name>`, or a binding to one of the names `tako db list` shows. See [Databases](/databases/#limits-and-security).
 
 ## KV Store Requests Fail
 

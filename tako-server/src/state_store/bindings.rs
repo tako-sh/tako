@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use super::{SqliteStateStore, StateStoreError, encryption};
-use rusqlite::TransactionBehavior;
+use super::{SqliteStateStore, StateStoreError};
 
 impl SqliteStateStore {
     pub fn get_storages(
@@ -27,41 +26,6 @@ impl SqliteStateStore {
             Some(json) => serde_json::from_slice(&json)
                 .map(Some)
                 .map_err(|e| StateStoreError::InvalidData(format!("deserialize ssl: {e}"))),
-            None => Ok(None),
-        }
-    }
-
-    pub fn set_backup(
-        &self,
-        app: &str,
-        backup: Option<&tako_core::BackupBinding>,
-    ) -> Result<(), StateStoreError> {
-        let mut conn = self.lock_conn()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        match backup {
-            Some(backup) => {
-                let json = serde_json::to_vec(backup).map_err(|e| {
-                    StateStoreError::InvalidData(format!("serialize backup config: {e}"))
-                })?;
-                let encrypted = encryption::encrypt_blob(&self.encryption_key, &json)?;
-                tx.execute("INSERT INTO app_backups (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data", (app, encrypted))?;
-            }
-            None => {
-                tx.execute("DELETE FROM app_backups WHERE app = ?1", [app])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn get_backup(
-        &self,
-        app: &str,
-    ) -> Result<Option<tako_core::BackupBinding>, StateStoreError> {
-        match self.get_encrypted_row("app_backups", app)? {
-            Some(json) => serde_json::from_slice(&json).map(Some).map_err(|e| {
-                StateStoreError::InvalidData(format!("deserialize backup config: {e}"))
-            }),
             None => Ok(None),
         }
     }

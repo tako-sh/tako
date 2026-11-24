@@ -95,7 +95,7 @@ describe("deploy --dry-run", () => {
   test("previews replay and SQL creation from offline membership without editing the config", async () => {
     await setupProject({ servers: { solo: { host: "10.0.0.1" } } });
     const configPath = join(tempDir, "tako.toml");
-    await appendFile(configPath, 'databases = { main = "orders" }\n');
+    await appendFile(configPath, 'db = { main = "orders" }\n');
     const config = await readFile(configPath, "utf8");
     await mkdir(join(tempDir, "src/channels"), { recursive: true });
     await writeFile(join(tempDir, "src/channels/chat.ts"), 'export default defineChannel("chat");');
@@ -125,15 +125,15 @@ describe("deploy --dry-run", () => {
     await setupProject({ servers: { east: { host: "10.0.0.1" }, west: { host: "10.0.0.2" } } });
     const path = join(tempDir, "tako.toml");
     const config = (await readFile(path, "utf8")).replace('["east", "west"]', '["east"]');
-    await writeFile(path, config + '[envs.production.channels]\ndatabase = "chat-replay"\n');
+    await writeFile(path, config + '[envs.production.channels]\ndb = "chat-replay"\n');
     const { term, exitCode } = await run(["--dry-run", "deploy"], {
       cwd: tempDir,
       cols: 400,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
     expect(exitCode).toBe(1);
-    expect(term.fullText()).toContain("tako sqlite create chat-replay --server west --network");
-    expect(term.fullText()).toContain("tako sqlite create chat-replay --server east --network");
+    expect(term.fullText()).toContain("tako db create chat-replay --server west --network");
+    expect(term.fullText()).toContain("tako db create chat-replay --server east --network");
   });
 
   test("shows app summary when env is auto-resolved", async () => {
@@ -277,42 +277,6 @@ describe("servers add --dry-run", () => {
     expect(screen).toContain("test-srv");
     expect(screen).toContain("dry run");
     expect(screen).toContain("fake.server.com");
-  });
-});
-
-describe("backup --dry-run", () => {
-  test("download names no file until the server reports the backup kind", async () => {
-    await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-    const { screen, exitCode } = await run(["--dry-run", "backup", "download", "d1-abc"], {
-      cwd: tempDir,
-      env: { HOME: tempDir, TAKO_HOME: takoHome },
-    });
-
-    expect(exitCode).toBe(0);
-    expect(screen).toContain("Download backup d1-abc");
-    expect(screen).not.toContain(".tar.zst.enc");
-  });
-
-  test("download keeps an explicit output path", async () => {
-    await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-    const { screen, exitCode } = await run(
-      ["--dry-run", "backup", "download", "d1-abc", "--output", "snap.enc"],
-      { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } },
-    );
-
-    expect(exitCode).toBe(0);
-    expect(screen).toContain("Download backup d1-abc to snap.enc");
-  });
-
-  test("restore skips without contacting the server", async () => {
-    await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-    const { screen, exitCode } = await run(["--dry-run", "backup", "restore", "d1-abc", "--yes"], {
-      cwd: tempDir,
-      env: { HOME: tempDir, TAKO_HOME: takoHome },
-    });
-
-    expect(exitCode).toBe(0);
-    expect(screen).toContain("Restore backup");
   });
 });
 

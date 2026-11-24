@@ -49,14 +49,12 @@ async fn native_deploy_keeps_previous_release_on_failed_commit_and_restart() {
             app_id,
             crate::secret_snapshot::test_file::TestScope {
                 app: [("secret".into(), version.into())].into(),
-                credentials: [("postgres_url".into(), version.into())].into(),
                 ..Default::default()
             },
         )),
         storages: None,
         databases: None,
         ssl: Default::default(),
-        backup: None,
         force: false,
     };
     for version in ["v1", "v2"] {
@@ -100,11 +98,11 @@ server.serve_forever()
         .unwrap();
     }
 
-    // Abort at the last binding write, after SQLite has updated the app, its
-    // routes and other encrypted bindings inside the same transaction.
-    let db = tako_sqlite::open_local(&temp.path().join("state.sqlite")).unwrap();
+    // Abort at a binding write, after SQLite has updated the app, its routes
+    // and its secrets inside the same transaction.
+    let db = rusqlite::Connection::open(temp.path().join("state.sqlite")).unwrap();
     db.execute_batch(
-        "CREATE TRIGGER reject_first BEFORE INSERT ON app_runtime_credentials
+        "CREATE TRIGGER reject_first BEFORE INSERT ON app_databases
         BEGIN SELECT RAISE(ABORT, 'first commit failed'); END;",
     )
     .unwrap();
@@ -146,7 +144,7 @@ server.serve_forever()
     std::fs::write(manifest, original).unwrap();
 
     db.execute_batch(
-        "CREATE TRIGGER reject_replacement BEFORE UPDATE ON app_runtime_credentials
+        "CREATE TRIGGER reject_replacement BEFORE UPDATE ON app_databases
         BEGIN SELECT RAISE(ABORT, 'replacement commit failed'); END;",
     )
     .unwrap();
@@ -193,7 +191,7 @@ server.serve_forever()
     );
     assert_eq!(app.version(), "v1");
     assert_eq!(
-        state.state_store.get_runtime_credentials(app_id).unwrap()["postgres_url"],
+        state.state_store.get_secrets(app_id).unwrap()["secret"],
         "v1"
     );
 
@@ -422,7 +420,6 @@ async fn native_deploy_must_stop_previous_compose_even_without_http_instances() 
             storages: None,
             databases: None,
             ssl: Default::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -461,7 +458,6 @@ async fn deploy_rejects_invalid_app_name() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -601,7 +597,6 @@ async fn failed_deploy_does_not_persist_ssl_credentials() {
                 provider: tako_core::SslProvider::Cloudflare,
                 cloudflare_api_token: None,
             },
-            backup: None,
             force: false,
         })
         .await;
@@ -643,7 +638,6 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -692,7 +686,6 @@ async fn deploy_rejects_invalid_release_version() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;
@@ -748,7 +741,6 @@ async fn deploy_rejects_protocol_mismatch_before_registering_app() {
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
-            backup: None,
             force: false,
         })
         .await;

@@ -152,13 +152,8 @@ pub(super) fn rpc_action(
         | Command::FinalizeRelease { app, .. }
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
-        | Command::BackupNow { app, .. }
         | Command::SnapshotDatabase { app: Some(app), .. }
         | Command::MigrateDatabase { app: Some(app), .. }
-        | Command::ListBackups { app }
-        | Command::BackupStatus { app }
-        | Command::BackupDownloadUrl { app, .. }
-        | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
         | Command::Stop { app, .. }
         | Command::Start { app, .. }

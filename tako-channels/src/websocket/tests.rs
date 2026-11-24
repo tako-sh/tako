@@ -1,10 +1,9 @@
 use super::*;
-use crate::{ChannelAuthResponse, ChannelStore};
+use crate::ChannelAuthResponse;
 use futures_util::{SinkExt, StreamExt};
 use pingora_core::protocols::l4::stream::Stream;
 use pingora_proxy::Session;
 use serde_json::{Value, json};
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -12,7 +11,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let db = crate::test_db::TestDb::start();
+    let store = db.open().await;
     let server = tokio::spawn(async move {
         loop {
             let (socket, _) = listener.accept().await.unwrap();
@@ -122,7 +122,8 @@ async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
 async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let db = crate::test_db::TestDb::start();
+    let store = db.open().await;
     let server_store = store.clone();
     let server = tokio::spawn(async move {
         for _ in 0..2 {
@@ -180,18 +181,22 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
         );
         client.close(None).await.unwrap();
     }
-    assert!(store.read_after("live", None, 100).unwrap().is_empty());
-    assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
-        0
+    assert!(
+        store
+            .read_after_async("live", None, 100)
+            .await
+            .unwrap()
+            .is_empty()
     );
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
     server.abort();
 }
 
 #[tokio::test]
 async fn ephemeral_duplex_websockets_preserve_identity_without_replaying_old_events() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+        let db = crate::test_db::TestDb::start();
+        let store = db.open().await;
         let old = store.publish_ephemeral("live", &crate::ChannelPublishPayload {
             r#type: "old".into(),
             data: 0.into(),
@@ -226,7 +231,7 @@ async fn ephemeral_duplex_websockets_preserve_identity_without_replaying_old_eve
             client.close(None).await.unwrap();
             server.await.unwrap();
         }
-        assert!(store.read_after("live", None, 10).unwrap().is_empty());
-        assert_eq!(store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []), 0);
+        assert!(store.read_after_async("live", None, 10).await.unwrap().is_empty());
+        assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 0);
     }).await.unwrap();
 }

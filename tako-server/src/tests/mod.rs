@@ -106,6 +106,11 @@ fn write_js_workflow_scaffold_at(release_dir: &Path, app_dir: &str) {
         release_dir.join(app_dir)
     };
     std::fs::create_dir_all(app_path.join("src").join("workflows")).unwrap();
+    std::fs::write(
+        app_path.join("src/workflows/send.ts"),
+        r#"export default defineWorkflow("send", { handler: async () => {} });"#,
+    )
+    .unwrap();
     std::fs::create_dir_all(app_path.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
     std::fs::write(
         app_path.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),

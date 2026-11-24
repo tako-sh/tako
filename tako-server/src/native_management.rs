@@ -209,11 +209,6 @@ where
                     Err(response) => return response,
                 };
                 if let Err(message) =
-                    inherit_scoped_backup(&state, &permissions, scope.as_ref(), &mut command)
-                {
-                    return error(StatusCode::INTERNAL_SERVER_ERROR, &message);
-                }
-                if let Err(message) =
                     authorize_command(&state, &permissions, scope.as_ref(), &command)
                 {
                     return error(StatusCode::FORBIDDEN, &message);
@@ -328,26 +323,6 @@ where
     })
     .await
     .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
-}
-
-/// Called under the management mutation lock after authenticating current authority.
-fn inherit_scoped_backup(
-    state: &ServerState,
-    permissions: &Permissions,
-    scope: Option<&AppEnv>,
-    command: &mut Command,
-) -> Result<(), String> {
-    if !permissions.is_full()
-        && let (Some(scope), Command::Deploy { backup, .. }) = (scope, command)
-        && backup.is_none()
-    {
-        *backup = state
-            .state_store
-            .get_backup(scope.as_str())
-            .map_err(|_| "Cannot read provisioned backup state".to_string())?
-            .map(Box::new);
-    }
-    Ok(())
 }
 
 fn authorize_command(

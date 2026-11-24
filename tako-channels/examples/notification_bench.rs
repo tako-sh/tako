@@ -1,11 +1,13 @@
-//! Local commit-to-replay measurements; no HTTP, TLS, or browser transport.
+//! Local commit-to-replay measurements against an in-process database host;
+//! no TLS or browser transport.
 //! cargo run -p tako-channels --example notification_bench
 
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tako_channels::{ChannelPublishPayload, ChannelStore};
+use tako_channels::{ChannelPublishPayload, ChannelStore, ChannelStoreConfig};
+use tako_db::testing::TestServer;
 
 fn summary(mut samples: Vec<u128>) -> serde_json::Value {
     samples.sort_unstable();
@@ -17,14 +19,24 @@ fn summary(mut samples: Vec<u128>) -> serde_json::Value {
     })
 }
 
+/// The hosted client blocks, so stores are opened off the async executor.
+async fn open(config: ChannelStoreConfig) -> Arc<ChannelStore> {
+    tokio::task::spawn_blocking(move || Arc::new(ChannelStore::open_config(config).unwrap()))
+        .await
+        .unwrap()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("channels.sqlite");
-    let store = Arc::new(ChannelStore::open(&path).unwrap());
+    let server = TestServer::start();
+    let database = server.database("bench#channels");
+    let config = ChannelStoreConfig::hosted(&server.url, &database.token, "bench/production");
+    let store = open(config.clone()).await;
+    // A local writer wakes subscribers at commit; another server's writer is
+    // seen through the store's head polling.
     for external in [false, true] {
         let writer = if external {
-            Arc::new(ChannelStore::open(&path).unwrap())
+            open(config.clone()).await
         } else {
             store.clone()
         };

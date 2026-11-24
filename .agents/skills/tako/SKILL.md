@@ -68,7 +68,7 @@ checks exercise the same configuration the application deploys with.
    new entries on the next call.
 3. For production, inspect `tako_status`, `tako_release_list`, and `tako_logs`.
    In a project, `tako_status` also lists each environment's resources
-   (secret count, credentials, storage, backup key, databases and KV stores
+   (secret count, credentials, storage, databases and KV stores
    and their servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
    expiring secrets, unrecorded databases or KV stores, and servers lacking key grants.
    Use a finite log window rather than an unbounded tail. Distinguish build,
@@ -154,8 +154,8 @@ Each worktree has separate secret drafts. Set/remove changes remain local until
 deploy or `secret sync` publishes the selected environment; an environment with
 no network yet keeps them local until its first deploy or sync picks one.
 `secret sync` without `--env` syncs the environments that have a recorded network. `secret clear --env <env>` is the exception: it deletes
-every app secret of that environment from its network at once, keeping credentials,
-storage keys, and backup keys. Use it when an environment is retired or moves to
+every app secret of that environment from its network at once, keeping credentials
+and storage keys. Use it when an environment is retired or moves to
 another network; `tako delete` never removes secrets. Moving an environment does
 not copy its secrets to the new network: set them with
 `tako secret set --env <env> --network <new>` before `tako deploy --env <env> --network <new>`.
@@ -165,8 +165,7 @@ the old network block the move until published there
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. Network state retains only each key's current encrypted
-value and a versioned deletion marker. Backup encryption keys have distinct IDs and
-remain available for retained backups. A publication request can be retried for
+value and a versioned deletion marker. A publication request can be retried for
 seven days; after expiry, review preserved drafts before explicitly publishing
 with `secret sync --retry-expired`. That action can overwrite remote changes.
 An invitation cannot recover unpublished drafts.
@@ -198,13 +197,13 @@ retains an ignored recovery copy, and removes the tracked file. Commit that
 deletion and publish through the intended network. Recover missing original keys
 with `secret key import` before migration; import validates local ciphertext
 without first materializing the shared cache. Do not replace missing keys or
-rewrite history as part of ordinary migration. App-data backups do not include
+rewrite history as part of ordinary migration. Database backups do not include
 network membership, shared secret records, or device keys; protect those separately.
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
 or an SSH agent. Deploy clients (`--deploy app/env`) only release code: they read
 no secrets or logs, and servers apply the environment's values from the network state at deploy.
-Full clients can decrypt app secrets, provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
+Full clients can decrypt app secrets, provider/storage credentials and database keys. `network export` is public configuration, not secret-key export or
 a way to enroll another device. Revoking a client affects only that client, not
 the clients it invited; `client revoke <name> --include-invited` also revokes
 every client it invited, directly or indirectly. Inspect pending enforcement rather than assuming offline
@@ -247,17 +246,16 @@ validation.
   (or the CLI's masked prompt/stdin), avoiding shell command interpolation.
 - Never suggest secret-key export as a deployment or debugging workaround.
   Only export keys when the user explicitly requests sharing or migration.
-- Storage bindings describe providers; credentials remain encrypted. Backups and
-  restores target a specific app, environment, and server. Verify the target
-  and authorization before deleting data or restoring an archive.
-- Application SQLite belongs in a hosted database (`tako sqlite create`, read as
-  `tako.databases.<binding>`), not in the data directory, which is plain files
-  and not captured. Database commands need administrator permission;
-  `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
+- Storage bindings describe providers; credentials remain encrypted. Verify the
+  target and authorization before deleting or restoring data.
+- Application SQLite belongs in a hosted database (`tako db create`, read as
+  `tako.db.<binding>`), not in the data directory, which is plain files
+  that Tako does not back up. Database commands need administrator permission;
+  `tako db restore`, `import`, and `reset` replace data, and `delete`
   removes the database with its backups, so confirm the database and the
   environments that bind it first. With backup storage, databases are backed
-  up continuously: `tako sqlite backups` lists restore points and the window
-  that `tako sqlite restore <name> --at <time>` reaches, and every restore,
+  up continuously: `tako db backups` lists restore points and the window
+  that `tako db restore <name> --at <time>` reaches, and every restore,
   import, and reset records a `before restore` point that undoes it. Schema changes go in `migrations/` SQL files, applied on deploy.
 - Values every server of the network must see (login and WebAuthn challenges,
   one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
@@ -270,7 +268,7 @@ validation.
   or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`;
   a restore takes a snapshot, not a time), and have no atomic
   counters or transactions, so keep canonical records in a database. A
-  binding name is used once per environment across `databases` and `kv`, and
+  binding name is used once per environment across `db` and `kv`, and
   store names share the network's namespace with databases. `tako kv get`,
   `put`, and `delete-key` read and change keys with full access; `tako kv
   restore`, `import`, and `delete` replace or remove every key, so confirm the
@@ -306,24 +304,29 @@ history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. In production, durable channel replay and Store
 invalidations use a Tako-hosted SQLite database (one home server; other servers
-reach it over the private network). `[envs.<env>.channels].database` names it,
-even when `postgres_url` is set; otherwise a configured `postgres_url` keeps
-shared Postgres for channels, and otherwise a channel-capable release (JS
-channel/presence/store definitions, a native app depending on a Tako SDK,
-`container_options.sdk`, or a Compose service with `x-tako.sdk: true`) gets a
-generated app/environment database. A full-access deploy creates a missing
-database only when the network has one trusted server; on several servers it
-stops with the `tako sqlite create` command to run before setting `database`.
+reach it over the private network). `[envs.<env>.channels].db` names it;
+otherwise a channel-capable release (JS channel/presence/store definitions, a
+native app depending on a Tako SDK, `container_options.sdk`, or a Compose
+service with `x-tako.sdk: true`) gets a generated `channels-<slug>-<hash>`
+database. A full-access deploy creates a missing database only when the network
+has exactly one trusted server; on several servers it stops with the
+`tako db create <name>` command to run before setting `db`.
 Deploy-only identities cannot create databases or grants, so run that first
-deploy with full access. Ephemeral channels and native presence leases stay in
-broker memory; Postgres as the channel backend rejects ephemeral delivery. Apps
-selecting one database share storage, not rooms; a restore or import resets
-replay cursors and clients resync. Replay is not permanent history or durable
-workflow migration, and credential failures must not trigger a backend fallback.
-Multi-server workflows still require Postgres unless intentionally local.
-`tako dev` keeps replay in memory. See
-https://tako.sh/docs/channels/#deploy-replay-storage. Test expired history and
-the resulting authoritative-state reload.
+deploy with full access. Ephemeral channels stay in broker memory; presence
+leases live in memory on the server that holds the connection and are exchanged
+between trusted servers. Apps selecting one database share storage, not rooms; a restore or
+import resets replay cursors and clients resync. Replay is not permanent
+history, and credential failures must not trigger a backend fallback.
+Workflow runs, steps, and schedules also live in a hosted database:
+`[envs.<env>.workflows].db` names it (it may be the channel database);
+otherwise a deploy to a one-trusted-server network creates
+`workflows-<slug>-<hash>`, and on several servers deploy refuses until
+`tako db create <name>` has run and `db` is set. `tako dev` keeps both in the
+project's `.tako/data/tako/channels.sqlite` and `.tako/data/tako/workflows.sqlite`,
+served through the same SQLite server protocol as production. See
+https://tako.sh/docs/channels/#deploy-replay-storage and
+https://tako.sh/docs/workflows/#storage-and-multiple-servers. Test expired
+history and the resulting authoritative-state reload.
 
 Channel, Presence, and Store requests enforce params validation and the app's
 authorization in both dev and production, so private access rules can be
@@ -335,9 +338,9 @@ external writers. Go/Rust registrations use the same browser/React client as JS.
 Offline persistence is opt-in on both backend policy and client user/tenant scope;
 never use credentials as cache scopes. Match cache versions, honor expiry, and
 clear caches on logout. Cached reads do not install an offline app shell or queue
-writes. Invalidations use the environment's channel replay backend (hosted
-SQLite or shared Postgres). Verify private scope isolation,
-invalidation, reconnect catch-up, and offline expiry through the real app flow.
+writes. Invalidations use the environment's hosted channel replay database.
+Verify private scope isolation, invalidation, reconnect catch-up, and offline
+expiry through the real app flow.
 
 ## Install or refresh agent support
 

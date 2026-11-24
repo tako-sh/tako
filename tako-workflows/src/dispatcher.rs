@@ -2,7 +2,7 @@
 //!
 //! Enqueue, signal, cron, and lease-reclaim paths make durable state changes
 //! first, then notify this dispatcher. The dispatcher is the small matching
-//! layer between "work exists in SQLite" and "a worker should poll now": it
+//! layer between "work exists in the store" and "a worker should poll now": it
 //! coalesces bursts of notifications and periodically scans for due pending
 //! runs so delayed retries/sleeps still wake scale-to-zero workers.
 

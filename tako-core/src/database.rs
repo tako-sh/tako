@@ -14,9 +14,34 @@ use crate::storage::StorageBinding;
 
 /// Server-owned deploy binding; deliberately not a valid application SQL alias.
 pub const CHANNEL_REPLAY_BINDING: &str = "@channels";
+/// Server-owned deploy binding of the database that holds an app's workflow
+/// runs. Like [`CHANNEL_REPLAY_BINDING`], it is not a valid SQL alias.
+pub const WORKFLOWS_BINDING: &str = "@workflows";
+
+/// Whether `binding` is one tako-server uses on the app's behalf: channel
+/// replay or workflow runs. App processes never receive these tokens.
+pub fn is_runtime_binding(binding: &str) -> bool {
+    binding == CHANNEL_REPLAY_BINDING || binding == WORKFLOWS_BINDING
+}
+
+/// The host scope of an app's runtime binding. Each runtime service has its
+/// own grant, so a peer grant for it never authorizes application SQL.
+pub fn runtime_grant_scope(binding: &str, app: &str) -> Option<String> {
+    match binding {
+        CHANNEL_REPLAY_BINDING => Some(channel_replay_grant_scope(app)),
+        WORKFLOWS_BINDING => Some(workflows_grant_scope(app)),
+        _ => None,
+    }
+}
+
 /// Peer grants for the replay service never authorize application SQL.
 pub fn channel_replay_grant_scope(app: &str) -> String {
     format!("{app}#channels")
+}
+
+/// Peer grants for the workflow store never authorize application SQL.
+pub fn workflows_grant_scope(app: &str) -> String {
+    format!("{app}#workflows")
 }
 
 /// Default loopback port of the database endpoint for apps.
@@ -179,7 +204,7 @@ impl std::fmt::Debug for DatabaseConnection {
 pub enum SnapshotReason {
     /// A full image captured on its own: daily, or when capture started.
     Scheduled,
-    /// A full image `tako sqlite backup` asked for.
+    /// A full image `tako db backup` asked for.
     Manual,
     /// Before a deploy's release command.
     Release,
@@ -362,6 +387,23 @@ mod tests {
         assert!(validate_database_name("2main").is_err());
         assert!(validate_database_name("").is_err());
         assert!(validate_database_name(CHANNEL_REPLAY_BINDING).is_err());
+        assert!(validate_database_name(WORKFLOWS_BINDING).is_err());
+    }
+
+    #[test]
+    fn runtime_bindings_have_their_own_grant_scopes() {
+        assert!(is_runtime_binding(CHANNEL_REPLAY_BINDING));
+        assert!(is_runtime_binding(WORKFLOWS_BINDING));
+        assert!(!is_runtime_binding("main"));
+        assert_eq!(
+            runtime_grant_scope(CHANNEL_REPLAY_BINDING, "shop/production").as_deref(),
+            Some("shop/production#channels")
+        );
+        assert_eq!(
+            runtime_grant_scope(WORKFLOWS_BINDING, "shop/production").as_deref(),
+            Some("shop/production#workflows")
+        );
+        assert_eq!(runtime_grant_scope("main", "shop/production"), None);
     }
 
     #[test]

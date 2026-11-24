@@ -46,29 +46,29 @@ pub struct Bootstrap {
     #[serde(default)]
     storages: HashMap<String, serde_json::Value>,
     #[serde(default)]
-    databases: HashMap<String, Database>,
+    databases: HashMap<String, Db>,
     #[serde(default)]
     kv: HashMap<String, Kv>,
 }
 
 /// A connection to a Tako-hosted database bound to the app in `tako.toml`
-/// (`[envs.<env>].databases`). Tako serves it over the libSQL HTTP protocol
-/// next to the app, so libSQL clients connect with [`Database::url`] and
-/// [`Database::auth_token`]:
+/// (`[envs.<env>].db`). Tako serves it over the libSQL HTTP protocol
+/// next to the app, so libSQL clients connect with [`Db::url`] and
+/// [`Db::auth_token`]:
 ///
 /// ```no_run
-/// let main = tako::database("main").expect("a database bound as main");
+/// let main = tako::db("main").expect("a database bound as main");
 /// // libsql::Builder::new_remote(main.url().into(), main.auth_token().into())
 /// # let _ = main;
 /// ```
 #[derive(Clone, PartialEq, Eq, Deserialize)]
-pub struct Database {
+pub struct Db {
     url: String,
     #[serde(rename = "authToken")]
     auth_token: String,
 }
 
-impl Database {
+impl Db {
     /// The database endpoint.
     pub fn url(&self) -> &str {
         &self.url
@@ -80,9 +80,9 @@ impl Database {
     }
 }
 
-impl fmt::Debug for Database {
+impl fmt::Debug for Db {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Database")
+        f.debug_struct("Db")
             .field("url", &self.url)
             .field("auth_token", &"[REDACTED]")
             .finish()
@@ -128,12 +128,12 @@ impl Bootstrap {
     }
 
     /// The database bound as `name`.
-    pub fn database(&self, name: &str) -> Option<&Database> {
+    pub fn db(&self, name: &str) -> Option<&Db> {
         self.databases.get(name)
     }
 
     /// Every database binding, by name.
-    pub fn databases(&self) -> &HashMap<String, Database> {
+    pub fn databases(&self) -> &HashMap<String, Db> {
         &self.databases
     }
 
@@ -211,10 +211,10 @@ pub fn compose_sdk_hint() -> Option<String> {
 }
 
 /// The database bound to this app as `name`.
-pub fn database(name: &str) -> Option<Database> {
+pub fn db(name: &str) -> Option<Db> {
     bootstrap()
         .ok()
-        .and_then(|bootstrap| bootstrap.database(name).cloned())
+        .and_then(|bootstrap| bootstrap.db(name).cloned())
 }
 
 /// The KV store bound to this app as `name`.
@@ -645,11 +645,11 @@ mod tests {
             r#"{"token":"tok","secrets":{},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"secret"}}}"#,
         )
         .unwrap();
-        let main = bootstrap.database("main").unwrap();
+        let main = bootstrap.db("main").unwrap();
         assert_eq!(main.url(), "http://127.0.0.1:9845");
         assert_eq!(main.auth_token(), "secret");
         assert!(!format!("{main:?}").contains("secret"));
-        assert!(bootstrap.database("other").is_none());
+        assert!(bootstrap.db("other").is_none());
 
         let err =
             parse_bootstrap_data(r#"{"token":"tok","secrets":{},"databases":[]}"#).unwrap_err();

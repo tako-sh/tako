@@ -81,7 +81,7 @@ fn proxy_for_feed(root: &std::path::Path, app_port: u16) -> Arc<TakoProxy> {
     lb.register_app(app);
     let mut routes = RouteTable::default();
     routes.set_app_routes("feed-app".into(), vec!["feed.example".into()]);
-    Arc::new(TakoProxy::new(
+    let proxy = Arc::new(TakoProxy::new(
         lb,
         Arc::new(RwLock::new(routes)),
         ProxyConfig {
@@ -90,7 +90,37 @@ fn proxy_for_feed(root: &std::path::Path, app_port: u16) -> Arc<TakoProxy> {
         },
         Arc::new(ColdStartManager::new(ColdStartConfig::default())),
         CloudflareIpRanges::default(),
-    ))
+    ));
+    // The app's deployed `@channels` binding; the resolver keeps its database.
+    let replay = Arc::new(crate::channels::test_replay::TestReplay::start(
+        "feed-app/production",
+    ));
+    proxy.set_channel_target_resolver(Arc::new(move |_| Ok(replay.target())));
+    proxy
+}
+
+/// The feed app's current replay binding, as the proxy resolves it.
+fn feed_target(proxy: &TakoProxy) -> crate::channels::ChannelTarget {
+    let resolve = proxy.channel_target.read().clone().unwrap();
+    resolve("feed-app/production").unwrap()
+}
+
+/// The writer the server's SDK publisher shares with the proxy.
+async fn feed_store(proxy: &TakoProxy) -> Arc<tako_channels::ChannelStore> {
+    let (stores, target) = (proxy.direct_channel_stores.clone(), feed_target(proxy));
+    let app = crate::native_channel_client::app_scope("feed-app").unwrap();
+    tokio::task::spawn_blocking(move || stores.open(&app, &target).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn publish_trusted(
+    store: &Arc<tako_channels::ChannelStore>,
+    publication: tako_channels::TrustedPublication,
+) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
+    store
+        .run(move |store| store.publish_trusted(&publication))
+        .await
 }
 
 async fn serve(proxy: Arc<TakoProxy>) -> std::net::SocketAddr {
@@ -178,12 +208,9 @@ fn websocket_frames(response: &[u8]) -> Vec<(u8, Vec<u8>)> {
 #[tokio::test]
 async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal() {
     let temp = TempDir::new().unwrap();
-    let addr = serve(proxy_for_feed(temp.path(), feed_app().await)).await;
-    let store = tako_channels::ChannelStore::open(&crate::channels::app_channels_db_path(
-        temp.path(),
-        "feed-app",
-    ))
-    .unwrap();
+    let proxy = proxy_for_feed(temp.path(), feed_app().await);
+    let store = feed_store(&proxy).await;
+    let addr = serve(proxy).await;
     let publish = |id: i64, data: &str| {
         let publication = tako_channels::TrustedPublication::parse(
             "feed",
@@ -191,16 +218,18 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
             json!({"type": "token", "data": data}),
         )
         .unwrap();
-        store.publish_trusted(&publication).unwrap()
+        let store = store.clone();
+        async move { publish_trusted(&store, publication).await.unwrap() }
     };
-    let first = publish(1, "hel");
-    let second = publish(1, "lo");
-    let other = publish(2, "open");
-    let marker = store
-        .publish_trusted(
-            &tako_channels::TrustedPublication::close("feed", &json!({"id": 1}), None).unwrap(),
-        )
-        .unwrap();
+    let first = publish(1, "hel").await;
+    let second = publish(1, "lo").await;
+    let other = publish(2, "open").await;
+    let marker = publish_trusted(
+        &store,
+        tako_channels::TrustedPublication::close("feed", &json!({"id": 1}), None).unwrap(),
+    )
+    .await
+    .unwrap();
     assert_eq!(marker.channel, "feed");
     let close_event = format!("id: {}\nevent: tako.close\ndata: {{}}\n\n", marker.id);
 
@@ -209,8 +238,8 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     assert_eq!(
         data(&replay),
         vec![
-            json!({"id": first.id, "eventId": first.event_id, "channel": "feed", "type": "token", "data": "hel"}),
-            json!({"id": second.id, "eventId": second.event_id, "channel": "feed", "type": "token", "data": "lo"}),
+            json!({"id": first.id, "channel": "feed", "type": "token", "data": "hel"}),
+            json!({"id": second.id, "channel": "feed", "type": "token", "data": "lo"}),
             json!({}),
         ],
         "{replay}"
@@ -272,7 +301,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     assert_eq!(data(&open).len(), 1, "{open}");
     assert_eq!(data(&open)[0]["id"], other.id.as_str());
     assert!(!open.contains("tako.close"), "{open}");
-    publish(2, "more");
+    publish(2, "more").await;
     let rejected = tako_channels::TrustedPublication::parse(
         "feed",
         &json!({"id": 1}),
@@ -280,7 +309,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     )
     .unwrap();
     assert!(matches!(
-        store.publish_trusted(&rejected),
+        publish_trusted(&store, rejected).await,
         Err(tako_channels::ChannelError::StreamClosed)
     ));
 }

@@ -7,7 +7,6 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
-use super::hosted_sql::{Client, Statement};
 use super::{HOSTED_HEAD_BATCH, IDLE_STREAM_GRACE_MS, MAX_STREAMS};
 use crate::{
     CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
@@ -16,6 +15,7 @@ use crate::{
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tako_db::client::{Client, Statement};
 
 const NOW: &str = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 // Appends delete their own stream's expired rows; maintenance only catches up
@@ -74,7 +74,7 @@ fn cursor(
     head: i64,
     requested: Option<ReplayCursor>,
 ) -> Result<ReplayCursor, ChannelError> {
-    let head_cursor = ReplayCursor::sqlite(epoch, channel, head);
+    let head_cursor = ReplayCursor::scoped(epoch, channel, head);
     if let Some(c) = requested {
         if c.scope != head_cursor.scope || !(floor..=head).contains(&c.position) {
             return Err(ChannelError::StaleCursor);
@@ -93,7 +93,7 @@ fn message(
     data_json: &str,
 ) -> Result<ChannelMessage, ChannelError> {
     Ok(ChannelMessage {
-        id: ReplayCursor::sqlite(epoch, channel, id).to_string(),
+        id: ReplayCursor::scoped(epoch, channel, id).to_string(),
         event_id: None,
         channel: channel.into(),
         r#type,
@@ -134,7 +134,8 @@ impl HostedChannelStore {
              ON CONFLICT(app) DO NOTHING",
             vec![self.app.as_str().into()],
         ));
-        self.client.batch(&init).map(drop)
+        self.client.batch(&init)?;
+        Ok(())
     }
 
     /// A reset, or a restore or import from before this app used the database,
@@ -219,7 +220,7 @@ impl HostedChannelStore {
             i64::from(publishing).into(),
             i64::from(crate::stream::counts_toward_stream_limit(channel)).into(),
         ]);
-        Statement::new(&format!(
+        Statement::new(format!(
             "INSERT INTO tako_replay_streams(app, channel, head, floor, activity_ms,
                     window_ms, inactivity_ms, lifetime_ms)
              SELECT a.app, ?2, a.seq, a.seq, {NOW}, ?3, ?4, ?5
@@ -263,7 +264,7 @@ impl HostedChannelStore {
             // changes() is the preceding conditional upsert's count. Triggers
             // advance the sequence and delete this stream's expired history
             // inside this transaction.
-            Statement::new(&format!(
+            Statement::new(format!(
                 "INSERT INTO tako_replay_messages(app, channel, id, type, data_json, bytes, created_ms)
                  SELECT app, ?2, seq + 1, ?3, ?4, ?5,
                      MAX({NOW}, COALESCE((SELECT MAX(created_ms) FROM tako_replay_messages
@@ -282,7 +283,7 @@ impl HostedChannelStore {
             let (id,): (i64,) = one(inserted)?;
             return Ok((
                 ChannelMessage {
-                    id: ReplayCursor::sqlite(epoch, channel, id).to_string(),
+                    id: ReplayCursor::scoped(epoch, channel, id).to_string(),
                     channel: channel.into(),
                     event_id: None,
                     r#type: payload.r#type.clone(),
@@ -345,7 +346,7 @@ impl HostedChannelStore {
     ) -> Result<Option<ChannelMessage>, ChannelError> {
         let (hex, id, data): (String, Option<i64>, Option<String>) =
             one(self.query(Statement::new(
-                &format!(
+                format!(
                     "WITH b AS ({BOUNDS}) SELECT epoch, m.id, m.data_json FROM b
              LEFT JOIN tako_replay_messages m ON m.app = ?1 AND m.id = b.marker AND m.id > b.floor"
                 ),
@@ -386,7 +387,7 @@ impl HostedChannelStore {
                 end.into(),
                 take.into(),
             ]);
-            let rows = self.query(Statement::new(&sql, args))?;
+            let rows = self.query(Statement::new(sql.as_str(), args))?;
             if rows.is_empty() {
                 return Err(invalid_result());
             }
@@ -414,7 +415,7 @@ impl HostedChannelStore {
                     kind.ok_or_else(invalid_result)?,
                     &data.ok_or_else(invalid_result)?,
                 )?);
-                last = Some(ReplayCursor::sqlite(epoch, channel, id));
+                last = Some(ReplayCursor::scoped(epoch, channel, id));
             }
             if count < take
                 || messages.len() == limit as usize
@@ -455,12 +456,14 @@ impl HostedChannelStore {
         Ok((heads, self.epoch_replaced(current)))
     }
 
-    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
+    /// Deletes expired history and releases idle streams. Only database time
+    /// counts, so servers with skewed clocks agree on what has expired.
+    pub(super) fn prune(&self) -> Result<(), ChannelError> {
         self.writable()?;
-        self.recovering(|| self.prune_once(now))
+        self.recovering(|| self.prune_once())
     }
 
-    fn prune_once(&self, _now: i64) -> Result<(), ChannelError> {
+    fn prune_once(&self) -> Result<(), ChannelError> {
         let mut range = self.prune_range.lock();
         let (after, through) = *range;
         let idle = format!(
@@ -472,7 +475,7 @@ impl HostedChannelStore {
             "m.id <= (SELECT floor FROM tako_replay_bounds WHERE app = ?1 AND channel = m.channel)";
         let args = vec![self.app.as_str().into(), after.into(), through.into()];
         let (hex, seq, end, has_expired, has_idle): (String, i64, Option<i64>, i64, i64) =
-            one(self.query(Statement::new(&format!(
+            one(self.query(Statement::new(format!(
                 "WITH chunk AS MATERIALIZED (
                     SELECT id, channel FROM tako_replay_messages WHERE app = ?1 AND id > ?2 AND id <= ?3
                     ORDER BY id LIMIT {MAINTENANCE_ROWS})
@@ -486,7 +489,7 @@ impl HostedChannelStore {
             let mut writes = Vec::new();
             if has_expired != 0 {
                 writes.push(Statement::new(
-                    &format!(
+                    format!(
                     "DELETE FROM tako_replay_messages AS m WHERE app = ?1 AND id > ?2 AND id <= ?3
                      AND (SELECT epoch FROM tako_replay_apps WHERE app = ?1) = ?4 AND {expired}"
                 ),
@@ -498,7 +501,7 @@ impl HostedChannelStore {
                     ],
                 ));
             }
-            writes.push(Statement::new(&format!(
+            writes.push(Statement::new(format!(
                 "DELETE FROM tako_replay_streams WHERE app = ?1
                  AND (SELECT epoch FROM tako_replay_apps WHERE app = ?1) = ?2 AND channel IN ({idle})"
             ), vec![self.app.as_str().into(), hex.into()]));

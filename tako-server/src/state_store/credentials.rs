@@ -23,18 +23,6 @@ impl SqliteStateStore {
         }
     }
 
-    #[cfg(test)]
-    pub fn set_runtime_credentials(
-        &self,
-        app: &str,
-        credentials: &HashMap<String, String>,
-    ) -> Result<(), StateStoreError> {
-        let json = serde_json::to_vec(credentials).map_err(|e| {
-            StateStoreError::InvalidData(format!("serialize runtime credentials: {e}"))
-        })?;
-        self.set_encrypted_row("app_runtime_credentials", app, &json)
-    }
-
     /// The Compose group's SDK token, created by its first deploy with an
     /// `sdk: true` service and committed with that deployment.
     pub fn get_compose_token(&self, app: &str) -> Result<Option<String>, StateStoreError> {
@@ -44,17 +32,5 @@ impl SqliteStateStore {
                     .map_err(|e| StateStoreError::InvalidData(format!("decode Compose token: {e}")))
             })
             .transpose()
-    }
-
-    pub fn get_runtime_credentials(
-        &self,
-        app: &str,
-    ) -> Result<HashMap<String, String>, StateStoreError> {
-        match self.get_encrypted_row("app_runtime_credentials", app)? {
-            Some(json) => serde_json::from_slice(&json).map_err(|e| {
-                StateStoreError::InvalidData(format!("deserialize runtime credentials: {e}"))
-            }),
-            None => Ok(HashMap::new()),
-        }
     }
 }

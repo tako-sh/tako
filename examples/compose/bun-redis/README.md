@@ -27,4 +27,4 @@ tako deploy --env production
 tako status --json
 ```
 
-Tako replaces the local port mapping with private ingress behind HTTPS. A Bun-only update starts a healthy replacement, switches traffic, and drains the old container while unchanged Redis keeps running. Changing Redis itself uses stop-first replacement and can cause downtime. Request your domain before and after an update to verify the counter persists. Tako app-data backups do not include Docker named volumes; back up Redis separately when using this pattern for real data.
+Tako replaces the local port mapping with private ingress behind HTTPS. A Bun-only update starts a healthy replacement, switches traffic, and drains the old container while unchanged Redis keeps running. Changing Redis itself uses stop-first replacement and can cause downtime. Request your domain before and after an update to verify the counter persists. Tako does not back up Docker named volumes; back up Redis separately when using this pattern for real data.

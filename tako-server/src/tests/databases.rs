@@ -243,10 +243,157 @@ async fn restoring_one_snapshot_twice_creates_two_new_replay_timelines() {
 }
 
 #[tokio::test]
+async fn resetting_a_workflow_database_keeps_its_workflow_tables() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    // A workflow runtime created the tables when it opened the store, and
+    // the running release registered its schedules.
+    for sql in tako_workflows::enqueue::schema_sql().split(";\n") {
+        query(&state, ID, sql.trim_end_matches(';')).await;
+    }
+    query(
+        &state,
+        ID,
+        "UPDATE tako_workflow_meta SET value = 7 WHERE name = 'schedule_revision'",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_schedule_releases VALUES ('shop', 'b7', 7)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_schedules VALUES ('shop', 'nightly', '0 3 * * *', 1, NULL)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_runs VALUES
+             ('shop', 'r1', 'charge', '{}', 'pending', 0, 3, 0, NULL, NULL, NULL, 0, NULL, NULL)",
+    )
+    .await;
+    ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    // Runtimes keep their store open, so the reset copy has the tables
+    // already, and its schema version.
+    let version = query(
+        &state,
+        ID,
+        "SELECT value FROM tako_workflow_meta WHERE name = 'schema_version'",
+    )
+    .await;
+    assert_eq!(version["rows"].as_array().unwrap().len(), 1, "{version}");
+    let runs = query(&state, ID, "SELECT count(*) FROM tako_workflow_runs").await;
+    assert_eq!(runs["rows"][0][0], 0, "{runs}");
+    // The running release registers its schedules only when it starts, so
+    // they and the revision counter carry over.
+    let schedules = query(
+        &state,
+        ID,
+        "SELECT s.name, r.build, m.value FROM tako_workflow_schedules s
+         JOIN tako_workflow_schedule_releases r USING (app)
+         JOIN tako_workflow_meta m ON m.name = 'schedule_revision'",
+    )
+    .await;
+    assert_eq!(
+        schedules["rows"],
+        serde_json::json!([["nightly", "b7", 7]]),
+        "{schedules}"
+    );
+
+    // A database that never held workflows stays empty.
+    let plain = "plain-reset";
+    create(&state, plain, None).await;
+    ok(
+        &state,
+        Command::ResetDatabase {
+            name: plain.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
+    let tables = query(&state, plain, "SELECT count(*) FROM sqlite_schema").await;
+    assert_eq!(tables["rows"][0][0], 0, "{tables}");
+}
+
+#[tokio::test]
+async fn restoring_releases_running_workflows_within_their_attempt_limits() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("workflow-leases")).await;
+    query(
+        &state,
+        ID,
+        "CREATE TABLE tako_workflow_runs(id TEXT PRIMARY KEY, status TEXT NOT NULL,
+             worker_id TEXT, lease_until INTEGER, attempts INTEGER NOT NULL,
+             max_attempts INTEGER NOT NULL)",
+    )
+    .await;
+    query(
+        &state,
+        ID,
+        "INSERT INTO tako_workflow_runs VALUES
+             ('retry', 'running', 'old-claim', 9999999999999, 1, 3),
+             ('spent', 'running', 'old-claim', 9999999999999, 3, 3),
+             ('done', 'succeeded', NULL, NULL, 1, 3)",
+    )
+    .await;
+    let snapshot = ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: Some(snapshot["snapshot"]["id"].as_str().unwrap().into()),
+            at_unix_ms: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    let rows = query(
+        &state,
+        ID,
+        "SELECT id, status, worker_id, lease_until FROM tako_workflow_runs ORDER BY id",
+    )
+    .await["rows"]
+        .clone();
+    // A run with attempts left is claimable again; one without keeps an
+    // expired, ownerless lease for the reclaim to end; no old claim survives.
+    assert_eq!(
+        rows,
+        json!([
+            ["done", "succeeded", null, null],
+            ["retry", "pending", null, null],
+            ["spent", "running", null, 0],
+        ])
+    );
+}
+
+#[tokio::test]
 async fn committed_replay_bindings_survive_restart_without_authorizing_application_sql() {
     use hyper::StatusCode;
     use tako_core::{CHANNEL_REPLAY_BINDING, DatabaseBinding, channel_replay_grant_scope};
-    use tako_database::http::{self, Access};
+    use tako_db::http::{self, Access};
 
     const APP: &str = "web/production";
     let temp = TempDir::new().unwrap();
@@ -294,7 +441,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         .unwrap();
     original
         .state_store
-        .commit_deployment(&config, &[], &HashMap::new(), None, None, None)
+        .commit_deployment(&config, &[], None, None)
         .unwrap();
     let connection = original.channel_replay_database(APP).unwrap().unwrap();
     assert!(
@@ -638,7 +785,7 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
     )
     .await;
     assert!(failed.contains("unreachable"));
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     assert!(
         state.databases.host.has_changes(&id),
         "the scheduler captures the changes later"
@@ -857,7 +1004,7 @@ async fn import_and_export_round_trip_a_file() {
 
     // Export. It copies the database like a snapshot does, but is not one, so
     // the database stays due for its next scheduled snapshot.
-    let db_id = tako_database::DatabaseId::parse(ID).unwrap();
+    let db_id = tako_db::DatabaseId::parse(ID).unwrap();
     // Start from a database the scheduler considers backed up.
     state
         .databases
@@ -1864,8 +2011,8 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     // Something else already holds the name in the database host, so the
     // new file cannot be registered.
     let other = temp.path().join("other.sqlite");
-    tako_database::DatabaseHost::create_file(&other).unwrap();
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    tako_db::DatabaseHost::create_file(&other).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     state.databases.host.register(id.clone(), other).unwrap();
     let failed = error(
         &state,
@@ -2145,7 +2292,7 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
         state
             .databases
             .host
-            .is_registered(&tako_database::DatabaseId::parse(ID).unwrap())
+            .is_registered(&tako_db::DatabaseId::parse(ID).unwrap())
     );
     drop(pins);
     ok(&state, delete()).await;
@@ -2175,7 +2322,7 @@ async fn deleting_a_database_ends_its_transfers() {
     let size = state
         .databases
         .host
-        .size_bytes(&tako_database::DatabaseId::parse(ID).unwrap())
+        .size_bytes(&tako_db::DatabaseId::parse(ID).unwrap())
         .unwrap();
     assert_eq!(
         state.databases.snapshot_space.reserved_bytes(),
@@ -2331,7 +2478,7 @@ async fn databases_that_failed_to_open_are_retried() {
     let state = state(&temp);
     state.open_databases(None).await.unwrap();
     create(&state, ID, None).await;
-    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    let id = tako_db::DatabaseId::parse(ID).unwrap();
     // As if opening it had failed at startup.
     state.databases.host.unregister(&id).await.unwrap();
     assert!(!state.databases.host.is_registered(&id));

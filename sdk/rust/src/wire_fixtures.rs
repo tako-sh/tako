@@ -343,7 +343,7 @@ fn bootstrap_fixture_parses() {
     assert_eq!(bootstrap.secrets().len(), 2);
     let storages: Value = serde_json::to_value(bootstrap.storages()).unwrap();
     assert_eq!(storages, fixture("bootstrap.json")["storages"]);
-    let main = bootstrap.database("main").unwrap();
+    let main = bootstrap.db("main").unwrap();
     let expected = &fixture("bootstrap.json")["databases"]["main"];
     assert_eq!(main.url(), expected["url"]);
     assert_eq!(main.auth_token(), expected["authToken"]);

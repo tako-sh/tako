@@ -1,3 +1,4 @@
+use crate::test_db::TestDb;
 use crate::*;
 
 fn payload(value: &str) -> ChannelPublishPayload {
@@ -12,104 +13,10 @@ fn cursor(message: &ChannelMessage) -> ReplayCursor {
 }
 
 #[test]
-fn remote_gap_invalidates_replay_for_later_connections_and_other_open_handles() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("channels.sqlite");
-    let first = ChannelStore::open(&path).unwrap();
-    let second = ChannelStore::open(&path).unwrap();
-    let own_before = first.append("local", &payload("before")).unwrap();
-    let unseen_stream = first.replay_cursor("unseen", None).unwrap();
-    let mut event = ChannelEvent {
-        id: ChannelEventId {
-            origin: "remote-node".into(),
-            sequence: 1,
-        },
-        channel: "events".into(),
-        payload: payload("one"),
-        ephemeral: false,
-        lifecycle: None,
-        created_at_unix_ms: None,
-    };
-    first.ingest_remote(&event).unwrap();
-    let before_gap = first.replay_cursor("events", None).unwrap();
-    event.id.sequence = 3;
-    event.payload = payload("three");
-    first.ingest_remote(&event).unwrap();
-    for store in [&first, &second] {
-        assert!(matches!(
-            store.read_after("events", before_gap, 10),
-            Err(ChannelError::StaleCursor)
-        ));
-        assert!(matches!(
-            store.replay_cursor("unseen", unseen_stream),
-            Err(ChannelError::StaleCursor)
-        ));
-    }
-    let own_after = second.append("local", &payload("after")).unwrap();
-    let before = own_before.event_id.unwrap();
-    let after = own_after.event_id.unwrap();
-    assert_eq!(before.origin, after.origin);
-    assert_eq!(after.sequence, before.sequence + 1);
-    drop(first);
-    drop(second);
-    let reopened = ChannelStore::open(&path).unwrap();
-    assert!(matches!(
-        reopened.read_after("events", before_gap, 10),
-        Err(ChannelError::StaleCursor)
-    ));
-    let current = reopened.replay_cursor("events", None).unwrap();
-    assert!(
-        reopened
-            .read_after("events", current, 10)
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn transport_loss_persists_invalidation_without_any_connected_subscriber() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("channels.sqlite");
-    let store = ChannelStore::open(&path).unwrap();
-    let message = store.append("events", &payload("one")).unwrap();
-    store.invalidate_replay().unwrap();
-    drop(store);
-    let reopened = ChannelStore::open(&path).unwrap();
-    assert!(matches!(
-        reopened.read_after("events", Some(cursor(&message)), 10),
-        Err(ChannelError::StaleCursor)
-    ));
-    assert_eq!(
-        reopened.read_after("events", None, 10).unwrap()[0].event_id,
-        message.event_id
-    );
-}
-
-fn limits() -> SqliteReplayLimits {
-    SqliteReplayLimits {
-        max_messages_per_stream: 2,
-        max_bytes_per_stream: 1024,
-        max_messages: 3,
-        max_bytes: 4096,
-        max_age_ms: 0,
-    }
-}
-
-fn unaged(store: &ChannelStore, channel: &str) {
-    store
-        .sync_channel(
-            channel,
-            &serde_json::from_value(serde_json::json!({"ok":true,"replayWindowMs":0})).unwrap(),
-        )
-        .unwrap();
-}
-
-#[test]
-fn replay_cursor_fences_database_stream_epoch_and_future() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let a = ChannelStore::open(&path).unwrap();
-    let b = ChannelStore::open(&temp.path().join("b.sqlite")).unwrap();
+fn replay_cursor_fences_app_stream_epoch_and_future() {
+    let db = TestDb::start();
+    let a = db.writer_for("a");
+    let b = db.writer_for("b");
     let start = a.replay_cursor("events", None).unwrap();
     let message = a.append("events", &payload("one")).unwrap();
     b.append("events", &payload("two")).unwrap();
@@ -121,7 +28,6 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
         (&b, "events", cursor(&message)),
         (&a, "other", cursor(&message)),
         (&a, "events", ReplayCursor::unscoped(1)),
-        (&a, "events", ReplayCursor::postgres("events", 1)),
         (
             &a,
             "events",
@@ -133,7 +39,7 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
         (
             &a,
             "events",
-            ReplayCursor::sqlite([0; 16], "events", cursor(&message).position),
+            ReplayCursor::scoped([0; 16], "events", cursor(&message).position),
         ),
     ] {
         assert!(matches!(
@@ -150,7 +56,7 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
         message.id
     );
     drop(a);
-    let reopened = ChannelStore::open(&path).unwrap();
+    let reopened = db.writer_for("a");
     assert_eq!(
         reopened
             .replay_cursor("events", Some(cursor(&message)))
@@ -161,10 +67,8 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
 
 #[test]
 fn pruning_between_pages_detects_a_gap_and_keeps_exact_stream_floor() {
-    let temp = tempfile::tempdir().unwrap();
-    let store =
-        ChannelStore::open_sqlite_with_limits(&temp.path().join("a.sqlite"), limits()).unwrap();
-    unaged(&store, "a");
+    let db = TestDb::start();
+    let store = db.without_maintenance();
     let start = store.replay_cursor("a", None).unwrap();
     let first = store.append("a", &payload("one")).unwrap();
     store.append("b", &payload("interleaved")).unwrap();
@@ -173,13 +77,20 @@ fn pruning_between_pages_detects_a_gap_and_keeps_exact_stream_floor() {
         store.read_after("a", start, 1).unwrap(),
         vec![first.clone()]
     );
-    store.append("a", &payload("three")).unwrap();
+    let third = store.append("a", &payload("three")).unwrap();
     // Deleting the already-consumed row does not lose an unseen event.
+    db.execute(&format!(
+        "DELETE FROM tako_replay_messages WHERE id = {}",
+        cursor(&first).position
+    ));
     assert_eq!(
         store.read_after("a", Some(cursor(&first)), 1).unwrap(),
-        vec![second]
+        vec![second.clone()]
     );
-    store.append("a", &payload("four")).unwrap();
+    db.execute(&format!(
+        "DELETE FROM tako_replay_messages WHERE id = {}",
+        cursor(&second).position
+    ));
     assert!(matches!(
         store.read_after("a", Some(cursor(&first)), 1),
         Err(ChannelError::StaleCursor)
@@ -188,71 +99,23 @@ fn pruning_between_pages_detects_a_gap_and_keeps_exact_stream_floor() {
         store.replay_cursor("a", start),
         Err(ChannelError::StaleCursor)
     ));
-    assert_eq!(store.read_after("a", None, 100).unwrap().len(), 2);
-    assert!(store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []) <= 3);
+    assert_eq!(store.read_after("a", None, 100).unwrap(), vec![third]);
+    assert_eq!(store.read_after("b", None, 100).unwrap().len(), 1);
 }
 
 #[test]
-fn byte_limits_are_utf8_hard_bounds_shared_by_reopened_handles() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let one_size = "a".len()
-        + "event".len()
-        + serde_json::to_string(&serde_json::json!("🦀"))
-            .unwrap()
-            .len();
-    let limits = SqliteReplayLimits {
-        max_bytes_per_stream: (one_size * 2) as u64,
-        max_bytes: (one_size * 3) as u64,
-        max_messages_per_stream: 100,
-        max_messages: 100,
-        max_age_ms: 0,
-    };
-    let writer = ChannelStore::open_sqlite_with_limits(&path, limits).unwrap();
-    let other = ChannelStore::open(&path).unwrap();
-    for stream in ["a", "b"] {
-        unaged(&writer, stream);
-    }
-    for _ in 0..4 {
-        other.append("a", &payload("🦀")).unwrap();
-    }
-    for _ in 0..2 {
-        other.append("b", &payload("🦀")).unwrap();
-    }
-    assert_eq!(writer.read_after("a", None, 100).unwrap().len(), 1);
-    assert_eq!(writer.raw_query_i64("SELECT SUM(length(CAST(channel AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(data_json AS BLOB))) FROM channel_messages", []), (3 * one_size) as i64);
-    let head = writer.replay_cursor("a", None).unwrap();
-    assert!(matches!(
-        other.append("a", &payload(&"x".repeat(100))),
-        Err(ChannelError::BadRequest(_))
-    ));
-    assert_eq!(writer.replay_cursor("a", None).unwrap(), head);
-    let invalid = SqliteReplayLimits {
-        max_messages: 0,
-        ..limits
-    };
-    assert!(ChannelStore::open_sqlite_with_limits(&path, invalid).is_err());
-}
-
-#[test]
-fn age_and_inactivity_pruning_preserve_metadata_and_presence() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = ChannelStore::open_sqlite_with_limits(
-        &temp.path().join("a.sqlite"),
-        SqliteReplayLimits {
-            max_age_ms: 100,
-            ..limits()
-        },
-    )
-    .unwrap();
-    unaged(&store, "a");
+fn window_expiry_hides_history_but_keeps_the_stream_head() {
+    let db = TestDb::start();
+    let store = db.without_maintenance();
+    store
+        .sync_channel(
+            "a",
+            &serde_json::from_value(serde_json::json!({"ok":true,"replayWindowMs":100})).unwrap(),
+        )
+        .unwrap();
     let start = store.replay_cursor("a", None).unwrap();
     let message = store.append("a", &payload("old")).unwrap();
-    store.raw_execute("UPDATE channel_messages SET created_at_unix_ms = 0", []);
-    store.raw_execute(
-        "INSERT INTO presence VALUES ('a','connection','{}',9223372036854775807)",
-        [],
-    );
+    db.age(1_000);
     assert!(matches!(
         store.read_after("a", start, 10),
         Err(ChannelError::StaleCursor)
@@ -262,16 +125,19 @@ fn age_and_inactivity_pruning_preserve_metadata_and_presence() {
         store.replay_cursor("a", None).unwrap(),
         Some(cursor(&message))
     );
+    store.prune();
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_messages"), 0);
+    assert_eq!(db.query_i64("SELECT COUNT(*) FROM tako_replay_streams"), 1);
     assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
-        1
+        store.replay_cursor("a", Some(cursor(&message))).unwrap(),
+        Some(cursor(&message))
     );
-    assert_eq!(store.raw_query_i64("SELECT COUNT(*) FROM presence", []), 1);
 }
 
 #[test]
-fn sqlite_replay_parser_rejects_malformed_inputs_without_losing_the_cursor() {
-    let store = ChannelStore::open_in_memory().unwrap();
+fn replay_parser_rejects_malformed_inputs_without_losing_the_cursor() {
+    let db = TestDb::start();
+    let store = db.writer();
     let message = store.append("a", &payload("one")).unwrap();
     let cursor = cursor(&message);
     assert_eq!(
@@ -298,16 +164,17 @@ fn sqlite_replay_parser_rejects_malformed_inputs_without_losing_the_cursor() {
 
 #[test]
 fn floor_tracks_deleted_stream_positions_despite_gaps_in_global_row_ids() {
-    let store = ChannelStore::open_in_memory().unwrap();
+    let db = TestDb::start();
+    let store = db.writer();
     let first = store.append("a", &payload("one")).unwrap();
     for _ in 0..3 {
         store.append("b", &payload("interleaved")).unwrap();
     }
     let next = store.append("a", &payload("two")).unwrap();
-    store.raw_execute(
-        "DELETE FROM channel_messages WHERE channel = 'a' AND id = ?1",
-        [cursor(&first).position],
-    );
+    db.execute(&format!(
+        "DELETE FROM tako_replay_messages WHERE channel = 'a' AND id = {}",
+        cursor(&first).position
+    ));
     assert_eq!(
         store.read_after("a", Some(cursor(&first)), 10).unwrap(),
         vec![next]
@@ -315,138 +182,68 @@ fn floor_tracks_deleted_stream_positions_despite_gaps_in_global_row_ids() {
 }
 
 #[test]
-fn postgres_replay_bounds_keep_numeric_ids_and_reject_future_or_expired_positions() {
-    assert_eq!(
-        crate::store::resolve_replay_cursor(None, 4, Some(10)).unwrap(),
-        Some(10)
-    );
-    assert_eq!(
-        crate::store::resolve_replay_cursor(Some(4), 4, Some(10)).unwrap(),
-        Some(4)
-    );
-    assert_eq!(
-        crate::store::resolve_replay_cursor(Some(10), 10, Some(10)).unwrap(),
-        Some(10)
-    );
-    for requested in [3, 11] {
-        assert!(matches!(
-            crate::store::resolve_replay_cursor(Some(requested), 4, Some(10)),
-            Err(ChannelError::StaleCursor)
-        ));
-    }
-    // a:1 was consumed and deleted; b:2,3,4 never belonged to this stream.
-    assert_eq!(
-        crate::store::resolve_replay_cursor(Some(1), 1, Some(5)).unwrap(),
-        Some(1)
-    );
-    assert!(matches!(
-        crate::store::resolve_replay_cursor(Some(1), 5, Some(6)),
-        Err(ChannelError::StaleCursor)
-    ));
-    assert_eq!("42".parse::<ReplayCursor>().unwrap().to_string(), "42");
-}
-
-#[test]
-fn tightening_limits_prunes_before_open_returns_and_preserves_cursor_epoch() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let first = ChannelStore::open(&path).unwrap();
-    let start = first.replay_cursor("a", None).unwrap();
-    for _ in 0..4 {
-        first.append("a", &payload("one")).unwrap();
-    }
-    let head = first.replay_cursor("a", None).unwrap();
-    let configured = ChannelStore::open_sqlite_with_limits(&path, limits()).unwrap();
-    assert_eq!(
-        first.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
-        2
-    );
-    assert_eq!(configured.replay_cursor("a", head).unwrap(), head);
-    assert!(matches!(
-        first.read_after("a", start, 10),
-        Err(ChannelError::StaleCursor)
-    ));
-    first.append("a", &payload("two")).unwrap();
-    assert_eq!(
-        configured.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
-        2
-    );
-}
-
-#[test]
 fn budget_counters_match_retained_rows_across_pruning_and_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("a.sqlite");
-    let store = ChannelStore::open_sqlite_with_limits(&path, limits()).unwrap();
+    let db = TestDb::start();
+    let store = db.without_maintenance();
     let size = "SUM(length(CAST(channel AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(data_json AS BLOB)))";
-    let counted = |store: &ChannelStore| {
-        let (store_count, store_bytes) = (
-            store.raw_query_i64("SELECT message_count FROM channel_store_state", []),
-            store.raw_query_i64("SELECT message_bytes FROM channel_store_state", []),
+    let counted = || {
+        let app = |column: &str| db.query_i64(&format!("SELECT {column} FROM tako_replay_apps"));
+        let count = app("message_count");
+        assert_eq!(
+            count,
+            db.query_i64("SELECT COUNT(*) FROM tako_replay_messages")
         );
         assert_eq!(
-            store_count,
-            store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", [])
-        );
-        assert_eq!(
-            store_bytes,
-            store.raw_query_i64(
-                &format!("SELECT COALESCE({size}, 0) FROM channel_messages"),
-                []
-            )
+            app("message_bytes"),
+            db.query_i64(&format!(
+                "SELECT COALESCE({size}, 0) FROM tako_replay_messages"
+            ))
         );
         for channel in ["a", "b"] {
+            let stream = |column: &str| {
+                db.query_i64(&format!(
+                    "SELECT {column} FROM tako_replay_streams WHERE channel = '{channel}'"
+                ))
+            };
             assert_eq!(
-                store.raw_query_i64(
-                    "SELECT message_count FROM channel_metadata WHERE channel = ?1",
-                    [channel]
-                ),
-                store.raw_query_i64(
-                    "SELECT COUNT(*) FROM channel_messages WHERE channel = ?1",
-                    [channel]
-                )
+                stream("message_count"),
+                db.query_i64(&format!(
+                    "SELECT COUNT(*) FROM tako_replay_messages WHERE channel = '{channel}'"
+                ))
             );
             assert_eq!(
-                store.raw_query_i64(
-                    "SELECT message_bytes FROM channel_metadata WHERE channel = ?1",
-                    [channel]
-                ),
-                store.raw_query_i64(
-                    &format!("SELECT COALESCE({size}, 0) FROM channel_messages WHERE channel = ?1"),
-                    [channel]
-                )
+                stream("message_bytes"),
+                db.query_i64(&format!(
+                    "SELECT COALESCE({size}, 0) FROM tako_replay_messages WHERE channel = '{channel}'"
+                ))
             );
         }
-        store_count
+        count
     };
-    for stream in ["a", "b"] {
-        unaged(&store, stream);
-    }
-    for n in 0..5 {
-        store.append("a", &payload(&n.to_string())).unwrap();
-        store.append("b", &payload(&"x".repeat(n))).unwrap();
-        // Both streams stay within two rows and the store within three.
-        assert!(counted(&store) <= 3);
-    }
-    assert_eq!(store.read_after("a", None, 10).unwrap().len(), 1);
-    assert_eq!(store.read_after("b", None, 10).unwrap().len(), 2);
-    let other = ChannelStore::open(&path).unwrap();
-    other.append("a", &payload("other")).unwrap();
-    counted(&store);
-    counted(&other);
-    drop((store, other));
-    let reopened = ChannelStore::open(&path).unwrap();
-    reopened
+    store
         .sync_channel(
             "b",
-            &serde_json::from_value(serde_json::json!({"ok":true,"replayWindowMs":100})).unwrap(),
+            &serde_json::from_value(serde_json::json!({"ok":true,"replayWindowMs":60_000}))
+                .unwrap(),
         )
         .unwrap();
-    reopened.raw_execute(
-        "UPDATE channel_messages SET created_at_unix_ms = 0 WHERE channel = 'b'",
-        [],
-    );
-    reopened.prune_at(crate::store::now_unix_ms());
+    for n in 0..5 {
+        store.append("a", &payload(&n.to_string())).unwrap();
+        store.append("b", &payload(&"🦀".repeat(n))).unwrap();
+        counted();
+    }
+    let other = db.writer();
+    other.append("a", &payload("other")).unwrap();
+    assert_eq!(counted(), 11);
+    drop((store, other));
+    let reopened = db.without_maintenance();
+    db.execute("UPDATE tako_replay_messages SET created_ms = 0 WHERE channel = 'b'");
     assert!(reopened.read_after("b", None, 10).unwrap().is_empty());
-    counted(&reopened);
+    reopened.prune();
+    assert_eq!(counted(), 6);
+    // A later append deletes its own stream's expired rows in its transaction.
+    reopened.append("b", &payload("fresh")).unwrap();
+    db.execute("UPDATE tako_replay_messages SET created_ms = 0 WHERE channel = 'b'");
+    reopened.append("b", &payload("fresher")).unwrap();
+    assert_eq!(counted(), 7);
 }

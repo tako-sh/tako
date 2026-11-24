@@ -101,10 +101,9 @@ fn invitation_claim_is_single_use_and_restart_retry_keeps_original_identity() {
     ));
     // Token is redacted and only its digest is persisted.
     assert!(!format!("{claim:?}").contains(&serde_json::to_string(&token).unwrap()));
-    let payload: String = runtime
-        .db
-        .query_row("SELECT payload FROM invitations", [], |r| r.get(0))
-        .unwrap();
+    let [payload] = &payloads(&runtime, INVITATIONS)[..] else {
+        panic!("one invitation expected");
+    };
     assert!(!payload.contains(serde_json::to_string(&token).unwrap().trim_matches('"')));
 }
 

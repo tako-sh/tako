@@ -1,12 +1,65 @@
 use super::*;
-use rusqlite::types::Value;
+use serde_json::{Value, json};
 
 mod child_waits;
+mod concurrency;
 mod histories;
+mod identity;
 mod inbox;
+mod legacy;
 mod operator;
 mod reclaim;
 mod schedules;
+
+/// One app's store (`"app"`) in its own hosted database, served while this
+/// lives. Dereferences to the app's handle.
+pub(super) struct Store {
+    pub(super) db: RunsDb,
+    fixture: HostedFixture,
+}
+
+impl Store {
+    pub(super) fn new() -> Self {
+        let fixture = HostedFixture::start();
+        Self {
+            db: fixture.open("app"),
+            fixture,
+        }
+    }
+
+    /// Another app's view of the same database, or a second server's handle
+    /// when `app_id` is this store's own app (`"app"`).
+    pub(super) fn other_app(&self, app_id: &str) -> RunsDb {
+        self.fixture.open(app_id)
+    }
+
+    /// Raw SQL against every app in the database; see
+    /// [`RunsDb::test_execute`].
+    pub(super) fn execute(&self, sql: &str, args: &[Value]) {
+        self.db.test_execute(sql, args.to_vec());
+    }
+
+    /// One row of a raw query; see [`RunsDb::test_query_row`].
+    pub(super) fn query_row(&self, sql: &str, args: &[Value]) -> Vec<Value> {
+        self.db.test_query_row(sql, args.to_vec())
+    }
+
+    /// Expiry is injected into persisted state; no wall-clock sleeps.
+    pub(super) fn expire_lease(&self, id: &str) {
+        self.execute(
+            "UPDATE {runs} SET lease_until = 0 WHERE id = ?1",
+            &[id.into()],
+        );
+    }
+}
+
+impl std::ops::Deref for Store {
+    type Target = RunsDb;
+
+    fn deref(&self) -> &RunsDb {
+        &self.db
+    }
+}
 
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()
@@ -14,9 +67,9 @@ fn opts() -> EnqueueOpts {
 
 #[test]
 fn enqueue_inserts_a_pending_row() {
-    let db = RunsDb::open_in_memory().unwrap();
+    let db = Store::new();
     let result = db
-        .enqueue("send-email", &serde_json::json!({"to":"a@b.c"}), &opts())
+        .enqueue("send-email", &json!({"to":"a@b.c"}), &opts())
         .unwrap();
     assert!(!result.deduplicated);
     assert!(!result.id.is_empty());
@@ -25,12 +78,9 @@ fn enqueue_inserts_a_pending_row() {
 
 #[test]
 fn workflow_results_survive_restart_and_are_scoped_and_fenced() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runs.sqlite");
-    let db = RunsDb::open(&path).unwrap();
-    let run = db
-        .enqueue("report", &serde_json::Value::Null, &opts())
-        .unwrap();
+    let store = Store::new();
+    let db = &store.db;
+    let run = db.enqueue("report", &Value::Null, &opts()).unwrap();
     assert_eq!(
         db.result("report", &run.id).unwrap().unwrap().status,
         "pending"
@@ -39,7 +89,7 @@ fn workflow_results_survive_restart_and_are_scoped_and_fenced() {
     db.claim("owner", &["report".into()], 30_000)
         .unwrap()
         .unwrap();
-    let value = serde_json::json!({"url":"report.pdf","count":42});
+    let value = json!({"url":"report.pdf","count":42});
     assert!(matches!(
         db.complete(&run.id, "stale", &value),
         Err(RunsDbError::StaleWorker)
@@ -50,24 +100,36 @@ fn workflow_results_survive_restart_and_are_scoped_and_fenced() {
     );
     db.complete(&run.id, "owner", &value).unwrap();
     assert!(matches!(
-        db.complete(&run.id, "owner", &serde_json::Value::Null),
+        db.complete(&run.id, "owner", &Value::Null),
         Err(RunsDbError::StaleWorker)
     ));
-    drop(db);
-    let db = RunsDb::open(&path).unwrap();
+    // A restarted server opens the store again.
+    let db = store.other_app("app");
     let result = db.result("report", &run.id).unwrap().unwrap();
     assert_eq!(result.status, "succeeded");
     assert_eq!(result.result, value);
     assert_eq!(result.error, None);
-    db.raw_execute("UPDATE runs SET finished_at=0 WHERE id=?1", [&run.id]);
+    store.execute(
+        "UPDATE {runs} SET finished_at = 0 WHERE id = ?1",
+        &[run.id.as_str().into()],
+    );
     db.prune_finished_before(1, 100).unwrap();
     assert!(db.result("report", &run.id).unwrap().is_none());
 }
 
+fn count(store: &Store, table: &str, column: &str, id: &str) -> Value {
+    store
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {{{table}}} WHERE {column} = ?1"),
+            &[id.into()],
+        )
+        .remove(0)
+}
+
 #[test]
 fn pruning_removes_only_expired_finished_runs_and_their_steps() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let old = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let old = db.enqueue("work", &json!({}), &opts()).unwrap();
     assert_eq!(
         db.claim("worker", &["work".into()], 30_000)
             .unwrap()
@@ -75,16 +137,10 @@ fn pruning_removes_only_expired_finished_runs_and_their_steps() {
             .id,
         old.id
     );
-    db.save_step(
-        &old.id,
-        "worker",
-        "step",
-        &serde_json::json!({"large": true}),
-    )
-    .unwrap();
-    db.complete(&old.id, "worker", &serde_json::Value::Null)
+    db.save_step(&old.id, "worker", "step", &json!({"large": true}))
         .unwrap();
-    let recent = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    db.complete(&old.id, "worker", &Value::Null).unwrap();
+    let recent = db.enqueue("work", &json!({}), &opts()).unwrap();
     assert_eq!(
         db.claim("worker", &["work".into()], 30_000)
             .unwrap()
@@ -92,20 +148,17 @@ fn pruning_removes_only_expired_finished_runs_and_their_steps() {
             .id,
         recent.id
     );
-    db.save_step(
-        &recent.id,
-        "worker",
-        "step",
-        &serde_json::json!({"large": true}),
-    )
-    .unwrap();
-    db.complete(&recent.id, "worker", &serde_json::Value::Null)
+    db.save_step(&recent.id, "worker", "step", &json!({"large": true}))
         .unwrap();
-    let pending = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    db.complete(&recent.id, "worker", &Value::Null).unwrap();
+    let pending = db.enqueue("work", &json!({}), &opts()).unwrap();
     let now = now_ms();
-    db.raw_execute(
-        "UPDATE runs SET finished_at = ?1 WHERE id = ?2",
-        (now - 8 * 24 * 60 * 60 * 1000, old.id.as_str()),
+    db.execute(
+        "UPDATE {runs} SET finished_at = ?1 WHERE id = ?2",
+        &[
+            (now - 8 * 24 * 60 * 60 * 1000).into(),
+            old.id.as_str().into(),
+        ],
     );
 
     assert_eq!(
@@ -118,63 +171,36 @@ fn pruning_removes_only_expired_finished_runs_and_their_steps() {
             .unwrap(),
         0
     );
-    assert_eq!(
-        db.raw_query_values(
-            "SELECT COUNT(*) FROM runs WHERE id = ?1",
-            (old.id.as_str(),)
-        ),
-        vec![Value::Integer(0)]
-    );
-    assert_eq!(
-        db.raw_query_values(
-            "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
-            (old.id.as_str(),)
-        ),
-        vec![Value::Integer(0)]
-    );
+    assert_eq!(count(&db, "runs", "id", &old.id), 0);
+    assert_eq!(count(&db, "steps", "run_id", &old.id), 0);
     for id in [&recent.id, &pending.id] {
-        assert_eq!(
-            db.raw_query_values("SELECT COUNT(*) FROM runs WHERE id = ?1", (id.as_str(),)),
-            vec![Value::Integer(1)]
-        );
+        assert_eq!(count(&db, "runs", "id", id), 1);
     }
 }
 
 #[test]
 fn pruning_never_removes_old_pending_or_running_runs() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let running = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
-    let pending = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let running = db.enqueue("work", &json!({}), &opts()).unwrap();
+    let pending = db.enqueue("work", &json!({}), &opts()).unwrap();
     db.claim("worker", &["work".into()], 30_000).unwrap();
-    db.raw_execute("UPDATE runs SET created_at = 1, finished_at = 1", ());
+    db.execute("UPDATE {runs} SET created_at = 1, finished_at = 1", &[]);
 
     assert_eq!(db.prune_finished_before(now_ms(), 100).unwrap(), 0);
     assert_eq!(db.pending_count().unwrap(), 1);
-    assert_eq!(
-        db.raw_query_values(
-            "SELECT COUNT(*) FROM runs WHERE id = ?1",
-            (running.id.as_str(),)
-        ),
-        vec![Value::Integer(1)]
-    );
-    assert_eq!(
-        db.raw_query_values(
-            "SELECT COUNT(*) FROM runs WHERE id = ?1",
-            (pending.id.as_str(),)
-        ),
-        vec![Value::Integer(1)]
-    );
+    assert_eq!(count(&db, "runs", "id", &running.id), 1);
+    assert_eq!(count(&db, "runs", "id", &pending.id), 1);
 }
 
 #[test]
 fn cancelled_and_dead_runs_get_a_completion_time() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let cancelled = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let cancelled = db.enqueue("work", &json!({}), &opts()).unwrap();
     db.claim("worker", &["work".into()], 30_000).unwrap();
     db.cancel(&cancelled.id, "worker", Some("no longer needed"))
         .unwrap();
 
-    let dead = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let dead = db.enqueue("work", &json!({}), &opts()).unwrap();
     db.claim("worker", &["work".into()], 30_000).unwrap();
     db.fail(&dead.id, "worker", "permanent error", None, true)
         .unwrap();
@@ -183,150 +209,13 @@ fn cancelled_and_dead_runs_get_a_completion_time() {
 }
 
 #[test]
-fn workflow_store_config_names_postgres_schema() {
-    assert_eq!(POSTGRES_WORKFLOWS_SCHEMA, "tako_workflows");
-    assert_eq!(
-        WorkflowStoreConfig::postgres("postgres://example", "workflow-app/production").clone(),
-        WorkflowStoreConfig::Postgres {
-            url: "postgres://example".to_string(),
-            schema: "tako_workflows".to_string(),
-            app_id: "workflow-app/production".to_string(),
-        },
-    );
-}
-
-#[test]
-fn postgres_workflow_store_round_trips_when_url_is_set() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let app_id = format!(
-        "workflow-test/{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let db = RunsDb::open_postgres(&url, &app_id).unwrap();
-    let result = db
-        .enqueue(
-            "send-email",
-            &serde_json::json!({"to":"a@b.c"}),
-            &EnqueueOpts {
-                id: Some("email-1".to_string()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let duplicate = db
-        .enqueue(
-            "send-email",
-            &serde_json::json!({"to":"a@b.c"}),
-            &EnqueueOpts {
-                id: Some("email-1".to_string()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(duplicate.id, result.id);
-    assert!(duplicate.deduplicated);
-
-    let run = db
-        .claim("worker-1", &["send-email".to_string()], 30_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.id, result.id);
-    db.save_step(
-        &run.id,
-        "worker-1",
-        "step-1",
-        &serde_json::json!({"ok": true}),
-    )
-    .unwrap();
-    db.complete(&run.id, "worker-1", &serde_json::json!({"sent":true}))
-        .unwrap();
-    assert_eq!(
-        db.result("send-email", &run.id).unwrap().unwrap().result,
-        serde_json::json!({"sent":true})
-    );
-    assert!(db.result("other", &run.id).unwrap().is_none());
-    assert_eq!(db.pending_count().unwrap(), 0);
-    let other_app_id = format!("{app_id}-other");
-    let other = RunsDb::open_postgres(&url, &other_app_id).unwrap();
-    assert!(other.result("send-email", &run.id).unwrap().is_none());
-    let other_run = other
-        .enqueue("send-email", &serde_json::json!({}), &opts())
-        .unwrap();
-    other
-        .claim("worker-2", &["send-email".into()], 30_000)
-        .unwrap();
-    other
-        .complete(&other_run.id, "worker-2", &serde_json::Value::Null)
-        .unwrap();
-
-    assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let remaining: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM tako_workflows.steps WHERE app_id=$1 AND run_id=$2",
-            &[&app_id, &result.id],
-        )
-        .unwrap()
-        .get(0);
-    assert_eq!(remaining, 0);
-    let other_remaining: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM tako_workflows.runs WHERE app_id=$1 AND id=$2",
-            &[&other_app_id, &other_run.id],
-        )
-        .unwrap()
-        .get(0);
-    assert_eq!(other_remaining, 1);
-    assert_eq!(
-        other.prune_finished_before(now_ms() + 1_000, 100).unwrap(),
-        1
-    );
-}
-
-#[test]
-fn opening_old_sqlite_store_gives_finished_runs_a_grace_period() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("workflows.sqlite");
-    {
-        let conn = tako_sqlite::open_local(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE runs (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
-                status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
-                run_at INTEGER NOT NULL, lease_until INTEGER, worker_id TEXT, last_error TEXT,
-                created_at INTEGER NOT NULL
-             );
-             INSERT INTO runs (id, name, payload, status, attempts, max_attempts, run_at, created_at)
-             VALUES ('old', 'work', '{}', 'succeeded', 1, 3, 1, 1);",
-        )
-        .unwrap();
-    }
-    let db = RunsDb::open(&path).unwrap();
-    assert_eq!(
-        db.prune_finished_before(now_ms() - DEFAULT_RETENTION_MS, 100)
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        db.raw_query_values("SELECT COUNT(*) FROM runs WHERE id='old'", ()),
-        vec![Value::Integer(1)]
-    );
-}
-
-#[test]
 fn enqueue_deduplicates_on_id() {
-    let db = RunsDb::open_in_memory().unwrap();
+    let db = Store::new();
     let key = Some("cron:5m:0".into());
     let first = db
         .enqueue(
             "w",
-            &serde_json::json!({}),
+            &json!({}),
             &EnqueueOpts {
                 id: key.clone(),
                 ..opts()
@@ -334,11 +223,7 @@ fn enqueue_deduplicates_on_id() {
         )
         .unwrap();
     let second = db
-        .enqueue(
-            "w",
-            &serde_json::json!({}),
-            &EnqueueOpts { id: key, ..opts() },
-        )
+        .enqueue("w", &json!({}), &EnqueueOpts { id: key, ..opts() })
         .unwrap();
 
     assert_eq!(first.id, second.id);
@@ -349,44 +234,37 @@ fn enqueue_deduplicates_on_id() {
 
 #[test]
 fn enqueue_different_ids_do_not_collide() {
-    let db = RunsDb::open_in_memory().unwrap();
-    db.enqueue(
-        "w",
-        &serde_json::json!({}),
-        &EnqueueOpts {
-            id: Some("k1".into()),
-            ..opts()
-        },
-    )
-    .unwrap();
-    db.enqueue(
-        "w",
-        &serde_json::json!({}),
-        &EnqueueOpts {
-            id: Some("k2".into()),
-            ..opts()
-        },
-    )
-    .unwrap();
+    let db = Store::new();
+    for id in ["k1", "k2"] {
+        db.enqueue(
+            "w",
+            &json!({}),
+            &EnqueueOpts {
+                id: Some(id.into()),
+                ..opts()
+            },
+        )
+        .unwrap();
+    }
     assert_eq!(db.pending_count().unwrap(), 2);
 }
 
 #[test]
 fn enqueue_without_id_always_inserts() {
-    let db = RunsDb::open_in_memory().unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    db.enqueue("w", &json!({}), &opts()).unwrap();
+    db.enqueue("w", &json!({}), &opts()).unwrap();
     assert_eq!(db.pending_count().unwrap(), 2);
 }
 
 #[test]
 fn enqueue_honors_custom_max_attempts_and_run_at() {
-    let db = RunsDb::open_in_memory().unwrap();
+    let db = Store::new();
     let future = now_ms() + 60_000;
     let r = db
         .enqueue(
             "w",
-            &serde_json::json!({}),
+            &json!({}),
             &EnqueueOpts {
                 run_at_ms: Some(future),
                 max_attempts: Some(7),
@@ -395,16 +273,16 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
         )
         .unwrap();
 
-    let row = db.raw_query_values(
-        "SELECT run_at, max_attempts FROM runs WHERE id = ?1",
-        (r.id.as_str(),),
+    let row = db.query_row(
+        "SELECT run_at, max_attempts FROM {runs} WHERE id = ?1",
+        &[r.id.as_str().into()],
     );
-    assert_eq!(row, vec![Value::Integer(future), Value::Integer(7)]);
+    assert_eq!(row, vec![json!(future), json!(7)]);
 }
 
 #[test]
 fn has_runnable_work_detects_due_pending_runs_only() {
-    let db = RunsDb::open_in_memory().unwrap();
+    let db = Store::new();
     let due = now_ms() - 1;
     let future = now_ms() + 60_000;
 
@@ -413,7 +291,7 @@ fn has_runnable_work_detects_due_pending_runs_only() {
     let future_run = db
         .enqueue(
             "w",
-            &serde_json::json!({}),
+            &json!({}),
             &EnqueueOpts {
                 run_at_ms: Some(future),
                 ..opts()
@@ -424,7 +302,7 @@ fn has_runnable_work_detects_due_pending_runs_only() {
 
     db.enqueue(
         "w",
-        &serde_json::json!({}),
+        &json!({}),
         &EnqueueOpts {
             run_at_ms: Some(due),
             ..opts()
@@ -436,188 +314,141 @@ fn has_runnable_work_detects_due_pending_runs_only() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     assert!(!db.has_runnable_work().unwrap());
 
-    db.raw_execute(
-        "UPDATE runs SET run_at = ?1 WHERE id = ?2",
-        (due, future_run.id.as_str()),
+    db.execute(
+        "UPDATE {runs} SET run_at = ?1 WHERE id = ?2",
+        &[due.into(), future_run.id.as_str().into()],
     );
     assert!(db.has_runnable_work().unwrap());
 }
 
 #[test]
-fn open_creates_parent_directory() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp
-        .path()
-        .join("nested")
-        .join("dir")
-        .join("workflows.sqlite");
-    let db = RunsDb::open(&path).unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
-    assert!(path.exists());
-}
-
-#[test]
 fn deduplication_reuses_a_completed_run() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r1 = db
-        .enqueue(
-            "w",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                id: Some("k".into()),
-                ..opts()
-            },
-        )
-        .unwrap();
+    let db = Store::new();
+    let options = EnqueueOpts {
+        id: Some("k".into()),
+        ..opts()
+    };
+    let r1 = db.enqueue("w", &json!({}), &options).unwrap();
 
-    db.raw_execute(
-        "UPDATE runs SET status='succeeded' WHERE id = ?1",
-        (r1.id.as_str(),),
+    db.execute(
+        "UPDATE {runs} SET status = 'succeeded' WHERE id = ?1",
+        &[r1.id.as_str().into()],
     );
 
-    let r2 = db
-        .enqueue(
-            "w",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                id: Some("k".into()),
-                ..opts()
-            },
-        )
-        .unwrap();
+    let r2 = db.enqueue("w", &json!({}), &options).unwrap();
     assert_eq!(r1.id, r2.id);
     assert!(r2.deduplicated);
 }
 
 #[test]
 fn save_step_persists_to_steps_table_and_claim_hydrates_state() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     let claimed = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
     assert_eq!(claimed.id, r.id);
-    assert_eq!(claimed.step_state, serde_json::json!({}));
+    assert_eq!(claimed.step_state, json!({}));
 
-    db.save_step(&r.id, "w1", "fetch-user", &serde_json::json!({"id":"u1"}))
+    db.save_step(&r.id, "w1", "fetch-user", &json!({"id":"u1"}))
         .unwrap();
-    db.save_step(&r.id, "w1", "send", &serde_json::json!(true))
-        .unwrap();
+    db.save_step(&r.id, "w1", "send", &json!(true)).unwrap();
     // Bounce the run back to pending so we can claim it again.
     db.fail(&r.id, "w1", "boom", Some(now_ms()), false).unwrap();
 
     let claimed2 = db.claim("w2", &["w".into()], 30_000).unwrap().unwrap();
     assert_eq!(claimed2.id, r.id);
     let state = claimed2.step_state.as_object().unwrap();
-    assert_eq!(
-        state.get("fetch-user"),
-        Some(&serde_json::json!({"id":"u1"}))
-    );
-    assert_eq!(state.get("send"), Some(&serde_json::json!(true)));
+    assert_eq!(state.get("fetch-user"), Some(&json!({"id":"u1"})));
+    assert_eq!(state.get("send"), Some(&json!(true)));
 }
 
 #[test]
 fn save_step_is_idempotent_first_wins() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.save_step(&r.id, "w1", "fetch", &serde_json::json!("first"))
-        .unwrap();
-    // Same step name written again — INSERT OR IGNORE keeps the first.
-    db.save_step(&r.id, "w1", "fetch", &serde_json::json!("second"))
+    db.save_step(&r.id, "w1", "fetch", &json!("first")).unwrap();
+    // Same step name written again: the first value is kept.
+    db.save_step(&r.id, "w1", "fetch", &json!("second"))
         .unwrap();
 
     db.fail(&r.id, "w1", "x", Some(now_ms()), false).unwrap();
     let claimed = db.claim("w2", &["w".into()], 30_000).unwrap().unwrap();
     assert_eq!(
         claimed.step_state.as_object().unwrap().get("fetch"),
-        Some(&serde_json::json!("first"))
+        Some(&json!("first"))
     );
 }
 
 #[test]
 fn complete_marks_succeeded_and_keeps_steps() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.save_step(&r.id, "w1", "s", &serde_json::json!("v"))
-        .unwrap();
-    db.complete(&r.id, "w1", &serde_json::Value::Null).unwrap();
+    db.save_step(&r.id, "w1", "s", &json!("v")).unwrap();
+    db.complete(&r.id, "w1", &Value::Null).unwrap();
 
-    let status = db.raw_query_values("SELECT status FROM runs WHERE id = ?1", (r.id.as_str(),));
-    assert_eq!(status, vec![Value::Text("succeeded".into())]);
-    let count = db.raw_query_values(
-        "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
-        (r.id.as_str(),),
+    let status = db.query_row(
+        "SELECT status FROM {runs} WHERE id = ?1",
+        &[r.id.as_str().into()],
     );
-    assert_eq!(count, vec![Value::Integer(1)]);
+    assert_eq!(status, vec![json!("succeeded")]);
+    assert_eq!(count(&db, "steps", "run_id", &r.id), 1);
 }
 
 #[test]
 fn cancel_marks_cancelled_with_reason() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.cancel(&r.id, "w1", Some("user cancelled")).unwrap();
 
-    let row = db.raw_query_values(
-        "SELECT status, last_error FROM runs WHERE id = ?1",
-        (r.id.as_str(),),
+    let row = db.query_row(
+        "SELECT status, last_error FROM {runs} WHERE id = ?1",
+        &[r.id.as_str().into()],
     );
-    assert_eq!(
-        row,
-        vec![
-            Value::Text("cancelled".into()),
-            Value::Text("user cancelled".into())
-        ]
-    );
+    assert_eq!(row, vec![json!("cancelled"), json!("user cancelled")]);
 }
 
 #[test]
 fn defer_sets_run_at_and_decrements_attempts() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     let claimed = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
     assert_eq!(claimed.attempts, 1);
 
     let wake = now_ms() + 60_000;
     db.defer(&r.id, "w1", Some(wake)).unwrap();
 
-    let row = db.raw_query_values(
-        "SELECT status, run_at, attempts FROM runs WHERE id = ?1",
-        (r.id.as_str(),),
+    let row = db.query_row(
+        "SELECT status, run_at, attempts FROM {runs} WHERE id = ?1",
+        &[r.id.as_str().into()],
     );
     // defer rolls attempts back so it doesn't consume retry budget
-    assert_eq!(
-        row,
-        vec![
-            Value::Text("pending".into()),
-            Value::Integer(wake),
-            Value::Integer(0)
-        ]
-    );
+    assert_eq!(row, vec![json!("pending"), json!(wake), json!(0)]);
 }
 
 #[test]
 fn defer_with_none_parks_indefinitely() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.defer(&r.id, "w1", None).unwrap();
 
-    let row = db.raw_query_values("SELECT run_at FROM runs WHERE id = ?1", (r.id.as_str(),));
-    assert_eq!(row, vec![Value::Integer(i64::MAX)]);
+    let row = db.query_row(
+        "SELECT run_at FROM {runs} WHERE id = ?1",
+        &[r.id.as_str().into()],
+    );
+    assert_eq!(row, vec![json!(i64::MAX)]);
 }
 
 #[test]
 fn reclaim_expired_moves_past_due_leases_back_to_pending() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     // Claim then rewrite lease_until into the past to simulate a worker
     // that died mid-run and never completed / heartbeated.
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.raw_execute(
-        "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
-        (now_ms() - 1_000, r.id.as_str()),
-    );
+    db.expire_lease(&r.id);
 
     let reclaimed = db.reclaim_expired().unwrap();
     assert_eq!(reclaimed, 1);
@@ -629,8 +460,8 @@ fn reclaim_expired_moves_past_due_leases_back_to_pending() {
 
 #[test]
 fn reclaim_expired_leaves_runs_with_valid_lease_alone() {
-    let db = RunsDb::open_in_memory().unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    db.enqueue("w", &json!({}), &opts()).unwrap();
     // Claim with a long lease; it must not be reclaimed.
     db.claim("w1", &["w".into()], 60_000).unwrap();
 
@@ -641,192 +472,40 @@ fn reclaim_expired_leaves_runs_with_valid_lease_alone() {
 
 #[test]
 fn wait_for_event_timeout_materializes_null_step() {
-    let db = RunsDb::open_in_memory().unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    db.enqueue("w", &json!({}), &opts()).unwrap();
     let run = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
     let past = now_ms() - 1;
     db.wait_for_event(&run.id, "w1", "approval", "approval", Some(past))
         .unwrap();
 
     let claimed = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
-    assert_eq!(claimed.step_state["approval"], serde_json::Value::Null);
-    assert_eq!(
-        db.signal("approval", &serde_json::json!({"ok": true}))
-            .unwrap(),
-        0
-    );
+    assert_eq!(claimed.step_state["approval"], Value::Null);
+    assert_eq!(db.signal("approval", &json!({"ok": true})).unwrap(), 0);
 }
 
 #[test]
 fn wait_for_event_signal_writes_payload_before_timeout() {
-    let db = RunsDb::open_in_memory().unwrap();
-    db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    let db = Store::new();
+    db.enqueue("w", &json!({}), &opts()).unwrap();
     let run = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
     let future = now_ms() + 60_000;
     db.wait_for_event(&run.id, "w1", "approval", "approval", Some(future))
         .unwrap();
-    assert_eq!(
-        db.signal("approval", &serde_json::json!({"ok": true}))
-            .unwrap(),
-        1
-    );
+    assert_eq!(db.signal("approval", &json!({"ok": true})).unwrap(), 1);
 
     let claimed = db.claim("w1", &["w".into()], 30_000).unwrap().unwrap();
-    assert_eq!(
-        claimed.step_state["approval"],
-        serde_json::json!({"ok": true})
-    );
+    assert_eq!(claimed.step_state["approval"], json!({"ok": true}));
 }
 
 #[test]
 fn reclaim_expired_ignores_terminal_runs() {
-    // A succeeded / dead / cancelled row has lease_until=NULL, but we
-    // still want to be explicit: only status='running' is reclaimed.
-    let db = RunsDb::open_in_memory().unwrap();
-    let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
+    // A succeeded / dead / cancelled row has no lease, but be explicit:
+    // only running runs are reclaimed.
+    let db = Store::new();
+    let r = db.enqueue("w", &json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.complete(&r.id, "w1", &serde_json::Value::Null).unwrap();
+    db.complete(&r.id, "w1", &Value::Null).unwrap();
 
     assert_eq!(db.reclaim_expired().unwrap(), 0);
-}
-
-mod identity;
-
-#[test]
-fn postgres_lease_index_migration_preserves_renewal_and_recovery() {
-    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let schema = format!(
-        "lease_migration_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let open = |app_id: &str| {
-        RunsDb::open_config(WorkflowStoreConfig::Postgres {
-            url: url.clone(),
-            schema: schema.clone(),
-            app_id: app_id.into(),
-        })
-        .unwrap()
-    };
-    let db = open("a");
-    let other = open("b");
-    let options = EnqueueOpts {
-        id: Some("shared-id".into()),
-        ..opts()
-    };
-    db.enqueue("work", &serde_json::json!({}), &options)
-        .unwrap();
-    other
-        .enqueue("work", &serde_json::json!({}), &options)
-        .unwrap();
-    db.claim("first", &["work".into()], 1).unwrap().unwrap();
-
-    // Recreate the previous schema's index, with both running and pending rows.
-    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    client
-        .batch_execute(&format!(
-            "DROP INDEX IF EXISTS {schema}.idx_runs_app_running_lease;
-         CREATE INDEX IF NOT EXISTS idx_runs_app_lease ON {schema}.runs(app_id, lease_until);"
-        ))
-        .unwrap();
-    let migrated = open("a");
-    let indexes = client
-        .query_one(
-            "SELECT to_regclass($1) IS NULL, to_regclass($2) IS NOT NULL",
-            &[
-                &format!("{schema}.idx_runs_app_lease"),
-                &format!("{schema}.idx_runs_app_running_lease"),
-            ],
-        )
-        .unwrap();
-    assert!(indexes.get::<_, bool>(0), "legacy index should be removed");
-    assert!(
-        indexes.get::<_, bool>(1),
-        "running lease index should exist"
-    );
-
-    migrated.heartbeat("shared-id", "first", 60_000).unwrap();
-    assert_eq!(migrated.reclaim_expired().unwrap(), 0);
-    assert!(matches!(
-        migrated.heartbeat("shared-id", "wrong-worker", 60_000),
-        Err(RunsDbError::StaleWorker)
-    ));
-    assert!(matches!(
-        other.heartbeat("shared-id", "first", 60_000),
-        Err(RunsDbError::StaleWorker)
-    ));
-    // Force expiry without wall-clock sleeps, then recover through the public API.
-    client
-        .execute(
-            &format!("UPDATE {schema}.runs SET lease_until=0 WHERE app_id='a' AND id='shared-id'"),
-            &[],
-        )
-        .unwrap();
-    assert_eq!(
-        migrated.reclaim_expired_with_workers().unwrap(),
-        vec!["first"]
-    );
-    let recovered = migrated
-        .claim("second", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(recovered.id, "shared-id");
-    assert_eq!(recovered.attempts, 2);
-    assert!(matches!(
-        migrated.heartbeat("shared-id", "first", 60_000),
-        Err(RunsDbError::StaleWorker)
-    ));
-    migrated.heartbeat("shared-id", "second", 60_000).unwrap();
-    migrated
-        .complete("shared-id", "second", &serde_json::Value::Null)
-        .unwrap();
-    assert_eq!(migrated.reclaim_expired().unwrap(), 0);
-    assert!(matches!(
-        migrated.heartbeat("shared-id", "second", 60_000),
-        Err(RunsDbError::StaleWorker)
-    ));
-    assert_eq!(other.pending_count().unwrap(), 1);
-    assert_eq!(
-        migrated
-            .prune_finished_before(now_ms() + 1000, 100)
-            .unwrap(),
-        1
-    );
-    assert_eq!(other.pending_count().unwrap(), 1);
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .unwrap();
-}
-
-#[test]
-fn failed_timeout_materialization_rolls_back_entire_claim() {
-    let db = RunsDb::open_in_memory().unwrap();
-    let id = db
-        .enqueue("work", &serde_json::json!({}), &opts())
-        .unwrap()
-        .id;
-    db.claim("first", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    db.wait_for_event(&id, "first", "approval", "event", Some(0))
-        .unwrap();
-    db.raw_execute("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON steps BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END", ());
-    assert!(db.claim("failed", &["work".into()], 60_000).is_err());
-    assert_eq!(db.pending_count().unwrap(), 1);
-    assert_eq!(
-        db.raw_query_values("SELECT attempts, worker_id FROM runs WHERE id=?1", [&id]),
-        vec![Value::Integer(0), Value::Null]
-    );
-    db.raw_execute("DROP TRIGGER reject_checkpoint", ());
-    let run = db.claim("next", &["work".into()], 60_000).unwrap().unwrap();
-    assert_eq!(run.attempts, 1);
-    assert_eq!(run.step_state["approval"], serde_json::Value::Null);
-    assert_eq!(
-        db.raw_query_values("SELECT COUNT(*) FROM event_waiters WHERE run_id=?1", [&id]),
-        vec![Value::Integer(0)]
-    );
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{EncryptedBackupKey, EncryptedSecretValue, EncryptedStorageCredentials};
+use crate::config::{EncryptedSecretValue, EncryptedStorageCredentials};
 
 const NETWORK: &str = "0123456789abcdef0123456789abcdef";
 
@@ -16,7 +16,7 @@ region = "auto"
 [envs.production]
 route = "*.shop.example.com"
 storages = { uploads = "media", cache = "local" }
-databases = { main = "orders" }
+db = { main = "orders" }
 "#,
     )
     .unwrap()
@@ -32,7 +32,7 @@ fn secrets() -> SecretsStore {
     let env = secrets.environments.get_mut("production").unwrap();
     env.app.insert("API_KEY".into(), value(None));
     env.app.insert("DATABASE_URL".into(), value(None));
-    env.credentials.insert("postgres_url".into(), value(None));
+    env.credentials.insert("ssl.cloudflare".into(), value(None));
     env.storages.insert(
         "media".into(),
         EncryptedStorageCredentials {
@@ -40,8 +40,6 @@ fn secrets() -> SecretsStore {
             secret_access_key: value(None),
         },
     );
-    env.backup_keys
-        .push(EncryptedBackupKey::new("k1".into(), "ciphertext".into()));
     secrets
 }
 
@@ -53,6 +51,7 @@ fn record(name: &str, server: &str) -> DatabaseRecord {
         created_at_unix_secs: 0,
         engine: tako_core::DatabaseEngine::Sqlite,
         channel_owner: None,
+        workflows_owner: None,
     }
 }
 
@@ -63,6 +62,7 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
         &config(),
         &secrets(),
         true,
+        false,
         Access::Full,
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
@@ -71,8 +71,7 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
         &ServerInventory::default(),
     );
     assert_eq!(env.secrets, Some(2));
-    assert_eq!(env.credentials, Some(vec!["postgres_url".to_string()]));
-    assert_eq!(env.backup_key, Some(true));
+    assert_eq!(env.credentials, Some(vec!["ssl.cloudflare".to_string()]));
     assert_eq!(env.servers, vec!["edge-a".to_string()]);
     assert_eq!(
         env.storages,
@@ -111,6 +110,7 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
         &config(),
         &SecretsStore::default(),
         true,
+        false,
         Access::Deploy,
         Ok(vec!["edge-a".into()]),
         Some("main".into()),
@@ -120,7 +120,6 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
     );
     assert_eq!(env.secrets, None);
     assert_eq!(env.credentials, None);
-    assert_eq!(env.backup_key, None);
     assert!(
         env.storages
             .iter()
@@ -139,7 +138,7 @@ fn channel_replay_status_names_the_database_without_an_app_binding() {
 name = "shop"
 [envs.production]
 route = "shop.example.com"
-channels.database = "events"
+channels.db = "events"
 [envs.staging]
 route = "staging.example.com"
 "#,
@@ -147,6 +146,7 @@ route = "staging.example.com"
     .unwrap();
     let owned = DatabaseRecord {
         channel_owner: Some("shop/staging".into()),
+        workflows_owner: None,
         ..record("generated", "edge-b")
     };
     let records = [record("events", "edge-a"), owned];
@@ -159,6 +159,7 @@ route = "staging.example.com"
             &config,
             &SecretsStore::default(),
             true,
+            false,
             Access::Deploy,
             Ok(vec![]),
             Some("main".into()),
@@ -171,44 +172,35 @@ route = "staging.example.com"
             serde_json::json!([{"database":database, "server":server, "usage":"channel_replay"}]),
         );
     }
-    let none = SecretsStore::default();
     assert_eq!(
-        replay_database(&config, "production", &[], &none, true),
+        replay_database(&config, "production", &[], true),
         Some("events")
     );
-    assert_eq!(replay_database(&config, "staging", &[], &none, true), None);
-    // Postgres replaces a generated database, but never an explicit one.
-    let mut postgres = SecretsStore::default();
-    for env in ["production", "staging"] {
-        postgres.ensure_env_key_id(env).unwrap();
-        postgres
-            .set_credential(
-                env,
-                crate::config::POSTGRES_CREDENTIAL_NAME,
-                crate::config::EncryptedSecretValue::new("encrypted".into(), None),
-            )
-            .unwrap();
-    }
+    assert_eq!(replay_database(&config, "staging", &[], true), None);
     assert_eq!(
-        replay_database(&config, "staging", &records, &none, true),
+        replay_database(&config, "staging", &records, true),
         Some("generated")
     );
     // Code without channels leaves only an explicit selection in use.
+    assert_eq!(replay_database(&config, "staging", &records, false), None);
     assert_eq!(
-        replay_database(&config, "staging", &records, &none, false),
-        None
-    );
-    assert_eq!(
-        replay_database(&config, "production", &records, &none, false),
+        replay_database(&config, "production", &records, false),
         Some("events")
     );
+    // Workflow databases are found the same way, by their own owner field.
+    let runs = DatabaseRecord {
+        channel_owner: None,
+        workflows_owner: Some("shop/staging".into()),
+        ..records[0].clone()
+    };
     assert_eq!(
-        replay_database(&config, "staging", &records, &postgres, true),
-        None
+        workflows_database(&config, "staging", std::slice::from_ref(&runs), true),
+        Some(runs.name.as_str())
     );
     assert_eq!(
-        replay_database(&config, "production", &records, &postgres, true),
-        Some("events")
+        workflows_database(&config, "staging", &records, true),
+        None,
+        "a channel-owned database is not a workflow database"
     );
 }
 
@@ -216,13 +208,14 @@ route = "staging.example.com"
 fn databases_on_a_server_name_the_environments_that_bind_them() {
     let mut config = config();
     config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
-        database: "orders".into(),
+        db: "orders".into(),
     });
     let env = env_resources(
         "production",
         &config,
         &secrets(),
         true,
+        false,
         Access::Full,
         Ok(vec![]),
         None,
@@ -275,14 +268,14 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
 fn a_wildcard_route_needs_the_cloudflare_credential() {
     let config = config();
     let mut secrets = secrets();
-    assert!(missing_cloudflare_token(&config, &secrets, "production"));
+    assert!(!missing_cloudflare_token(&config, &secrets, "production"));
     secrets
         .environments
         .get_mut("production")
         .unwrap()
         .credentials
-        .insert(SSL_CLOUDFLARE_CREDENTIAL_NAME.into(), value(None));
-    assert!(!missing_cloudflare_token(&config, &secrets, "production"));
+        .remove(SSL_CLOUDFLARE_CREDENTIAL_NAME);
+    assert!(missing_cloudflare_token(&config, &secrets, "production"));
 }
 
 #[test]

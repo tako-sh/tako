@@ -215,8 +215,8 @@ pub(super) fn resolve_deploy_server_targets(
 }
 
 mod runtime_state;
-pub(crate) use runtime_state::project_needs_channel_replay;
-pub(super) use runtime_state::{needs_channel_replay, validate_runtime_state_storage_for_deploy};
+pub(super) use runtime_state::{needs_channel_replay, needs_workflows};
+pub(crate) use runtime_state::{project_needs_channel_replay, project_needs_workflows};
 
 pub(super) fn resolve_build_adapter(
     project_dir: &Path,
@@ -305,7 +305,6 @@ pub(super) fn run_bun_lockfile_preflight(workspace_root: &Path) -> Result<bool, 
 /// Recheck the fixed release snapshot after publication has merged concurrent
 /// changes. Early preflight validation may have observed different values.
 pub(super) fn validate_release_secret_snapshot(
-    project: &Path,
     config: &TakoToml,
     secrets: &SecretsStore,
     env: &str,
@@ -319,13 +318,6 @@ pub(super) fn validate_release_secret_snapshot(
             config.get_ssl_provider(env),
             secrets,
             env,
-        ));
-        result.merge(validate_runtime_state_storage_for_deploy(
-            project,
-            config,
-            secrets,
-            env,
-            server_count,
         ));
         result.merge(crate::validation::validate_storages_for_deployment(
             config,

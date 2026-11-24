@@ -282,21 +282,40 @@ impl TakoToml {
             shared.sort();
             if let Some(name) = shared.first() {
                 return Err(ConfigError::Validation(format!(
-                    "Environment '{env_name}' binds '{name}' in both databases and kv; give the KV store binding another name"
+                    "Environment '{env_name}' binds '{name}' in both db and kv; give the KV store binding another name"
                 )));
             }
             if let Some(channels) = &env_config.channels {
-                tako_core::validate_database_name(&channels.database).map_err(|error| {
-                    ConfigError::Validation(format!("[envs.{env_name}.channels].database: {error}"))
+                tako_core::validate_database_name(&channels.db).map_err(|error| {
+                    ConfigError::Validation(format!("[envs.{env_name}.channels].db: {error}"))
                 })?;
-                if env_config
-                    .kv
-                    .values()
-                    .any(|store| *store == channels.database)
+                if env_config.kv.values().any(|store| *store == channels.db) {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.channels].db names '{}', which this environment binds as a KV store; channel replay needs a SQLite database",
+                        channels.db
+                    )));
+                }
+            }
+            if let Some(workflows) = &env_config.workflows {
+                tako_core::validate_database_name(&workflows.db).map_err(|error| {
+                    ConfigError::Validation(format!("[envs.{env_name}.workflows].db: {error}"))
+                })?;
+                if env_config.kv.values().any(|store| *store == workflows.db) {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}.workflows].db names '{}', which this environment binds as a KV store; workflow runs need a SQLite database",
+                        workflows.db
+                    )));
+                }
+                // App SQL could change the runs, its migrations would run in
+                // the store, and a reset would wipe them.
+                if let Some((binding, _)) = env_config
+                    .databases
+                    .iter()
+                    .find(|(_, name)| **name == workflows.db)
                 {
                     return Err(ConfigError::Validation(format!(
-                        "[envs.{env_name}.channels].database names '{}', which this environment binds as a KV store; channel replay needs a SQLite database",
-                        channels.database
+                        "[envs.{env_name}.workflows].db names '{}', which this environment also binds as app SQL ('{binding}'); keep workflow runs in their own database",
+                        workflows.db
                     )));
                 }
             }
@@ -311,13 +330,13 @@ impl TakoToml {
         }
 
         for (name, database) in &self.databases {
-            validate_database_resource(self, "databases", name, database)?;
+            validate_database_resource(self, "db", name, database)?;
         }
         for (name, store) in &self.kv {
             validate_database_resource(self, "kv", name, store)?;
             if self.databases.contains_key(name) {
                 return Err(ConfigError::Validation(format!(
-                    "'{name}' has both [databases.{name}] and [kv.{name}]; a name is one database or one KV store"
+                    "'{name}' has both [db.{name}] and [kv.{name}]; a name is one database or one KV store"
                 )));
             }
         }
@@ -462,7 +481,7 @@ pub(super) const TOP_LEVEL_KEYS: &[&str] = &[
     "vars",
     "envs",
     "storages",
-    "databases",
+    "db",
     "kv",
     "servers",
 ];

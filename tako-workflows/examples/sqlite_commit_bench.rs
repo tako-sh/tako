@@ -1,13 +1,21 @@
-//! Local enqueue/claim/checkpoint/complete latency, including database commits.
+//! Enqueue/claim/checkpoint/complete latency through the workflow store,
+//! including the hosted database's commits and its local HTTP round trips,
+//! against an in-process database host.
 //! cargo run -p tako-workflows --example sqlite_commit_bench
 
 use std::time::Instant;
 use tako_core::EnqueueOpts;
-use tako_workflows::RunsDb;
+use tako_workflows::{RunsDb, WorkflowStoreConfig};
 
 fn main() {
-    let temp = tempfile::tempdir().unwrap();
-    let db = RunsDb::open(&temp.path().join("workflows.sqlite")).unwrap();
+    let server = tako_db::testing::TestServer::start();
+    let database = server.database("bench/production#workflows");
+    let db = RunsDb::open(WorkflowStoreConfig::hosted(
+        server.url.clone(),
+        database.token,
+        "bench/production",
+    ))
+    .unwrap();
     let mut samples = Vec::new();
     for index in 0..256 {
         let start = Instant::now();

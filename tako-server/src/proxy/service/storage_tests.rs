@@ -9,7 +9,7 @@ use tako_core::{StorageBinding, StorageProvider};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn storage_uses_the_routed_app_binding_and_waits_for_restore_without_starting_a_worker() {
+async fn storage_uses_the_routed_app_binding_without_starting_a_worker() {
     let dir = tempfile::tempdir().unwrap();
     let manager = Arc::new(AppManager::new(dir.path().into()));
     let binding = StorageBinding {
@@ -63,15 +63,7 @@ async fn storage_uses_the_routed_app_binding_and_waits_for_restore_without_start
         let mut session = Session::new_h1(Box::new(stream));
         session.read_request().await.unwrap();
         let mut ctx = proxy.new_ctx();
-        let app = manager.get_app(host.split('.').next().unwrap()).unwrap();
-        let restoring = app.lifecycle_gate.write().await;
-        let mut filtered = Box::pin(proxy.request_filter(&mut session, &mut ctx));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), &mut filtered)
-                .await
-                .is_err()
-        );
-        drop(restoring);
+        let filtered = proxy.request_filter(&mut session, &mut ctx);
         assert!(
             tokio::time::timeout(Duration::from_secs(3), filtered)
                 .await

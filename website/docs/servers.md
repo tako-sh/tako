@@ -92,7 +92,7 @@ route = "app.example.com"
 servers = ["edge"]
 ```
 
-The network itself is set in `[envs.<env>].network` in `tako.toml`, explicitly or by the environment's first deploy. See [Deployment](/deployment/#configure-an-environment). Before deploying workflows to multiple servers, set `postgres_url` or mark every workflow `local: true`; channels, presence, and stores need no extra setup.
+The network itself is set in `[envs.<env>].network` in `tako.toml`, explicitly or by the environment's first deploy. See [Deployment](/deployment/#configure-an-environment). On a network with one trusted server, deploy creates the databases that channels and workflows need. On a larger network, create them with `tako db create <name> --server <server>` and name them in `[envs.<env>.channels].db` and `[envs.<env>.workflows].db`; see [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## Verify access
 

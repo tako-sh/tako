@@ -1,8 +1,6 @@
 use super::*;
-use crate::config::{EncryptedSecretValue, EnvConfig, POSTGRES_CREDENTIAL_NAME};
+use crate::config::EnvConfig;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[test]
@@ -29,8 +27,8 @@ fn release_command_payload_pins_the_secret_snapshot() {
             peer_key: None,
             engine: tako_core::DatabaseEngine::Sqlite,
         }),
+        workflows_database: None,
         ssl: tako_core::SslBinding::default(),
-        backup: None,
         force: true,
         main: "index.ts".to_string(),
         use_unified_target_process: false,
@@ -127,483 +125,52 @@ fn acquire_project_deploy_lock_allows_reacquire_after_drop() {
 }
 
 #[test]
-fn runtime_declarations_do_not_require_storage_on_multiple_servers() {
+fn releases_need_a_workflow_database_only_when_they_run_workflows() {
     let temp = TempDir::new().unwrap();
+    let config = multi_server_js_config();
+    let needs = |dir: &std::path::Path, config: &TakoToml, adapter| {
+        config::needs_workflows(dir, config, adapter)
+    };
+    assert!(!needs(temp.path(), &config, BuildAdapter::Bun));
+    // Type declarations are not workflow sources.
     for suffix in ["ts", "mts", "cts"] {
         write_workflow(
             &temp,
             &format!("network.d.{suffix}"),
             "export type Remote = unknown;",
         );
-        for kind in ["channels", "presence", "stores"] {
-            let dir = temp.path().join("src").join(kind);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(
-                dir.join(format!("types.d.{suffix}")),
-                "export type Remote = unknown;",
-            )
-            .unwrap();
-        }
     }
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &multi_server_js_config(),
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-    assert!(!result.has_errors(), "{:?}", result.errors);
-}
-
-#[test]
-fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
-    let temp = TempDir::new().unwrap();
+    assert!(!needs(temp.path(), &config, BuildAdapter::Bun));
     write_workflow(
         &temp,
-        "daily.ts",
-        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
+        "send-email.ts",
+        "export default defineWorkflow('send-email', { handler: async () => {} });",
     );
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
+    assert!(needs(temp.path(), &config, BuildAdapter::Bun));
 
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
+    // A Go project runs workflows from its `cmd/worker`.
+    let go = TempDir::new().unwrap();
+    let go_config = TakoToml::parse("name = 'api'\nruntime = 'go'\n").unwrap();
+    assert!(!needs(go.path(), &go_config, BuildAdapter::Go));
+    fs::create_dir_all(go.path().join("cmd/worker")).unwrap();
+    fs::write(go.path().join("cmd/worker/main.go"), "package main\n").unwrap();
+    assert!(needs(go.path(), &go_config, BuildAdapter::Go));
 
-    assert!(result.has_errors());
-    assert!(
-        result.errors[0].contains("postgres_url"),
-        "{:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_allows_multi_server_with_postgres_url() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
-    );
-    let config = multi_server_js_config();
-    let mut secrets = SecretsStore::default();
-    secrets.ensure_env_key_id("production").unwrap();
-    secrets
-        .set_credential(
-            "production",
-            POSTGRES_CREDENTIAL_NAME,
-            EncryptedSecretValue::new("encrypted".to_string(), None),
-        )
-        .unwrap();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(
-        !result.has_errors(),
-        "unexpected errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_ignores_multi_server_without_workflows_dir() {
-    let temp = TempDir::new().unwrap();
-    let mut config = TakoToml::default();
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(
-        !result.has_errors(),
-        "unexpected errors: {:?}",
-        result.errors
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn workflow_storage_validation_rejects_unreadable_workflows_dir() {
-    let temp = TempDir::new().unwrap();
-    let workflows_dir = temp.path().join("src/workflows");
-    fs::create_dir_all(&workflows_dir).unwrap();
-    fs::set_permissions(&workflows_dir, fs::Permissions::from_mode(0o000)).unwrap();
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    fs::set_permissions(&workflows_dir, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(result.has_errors());
-    assert!(
-        result.errors[0].contains("local: true"),
-        "{:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_allows_define_workflow_local_true_multi_server_workflows() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
-    );
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(
-        !result.has_errors(),
-        "unexpected errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_rejects_mixed_local_and_remote_multi_server_workflows() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "local.ts",
-        r#"export default defineWorkflow("local", { local: true, handler: async () => {} });"#,
-    );
-    write_workflow(
-        &temp,
-        "remote.ts",
-        r#"export default defineWorkflow("remote", { handler: async () => {} });"#,
-    );
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(result.has_errors());
-    assert!(
-        result.errors[0].contains("local: true"),
-        "{:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_rejects_unrelated_local_true_outside_define_workflow() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"
-const opts = { local: true };
-export default defineWorkflow("daily", { handler: async () => opts });
-"#,
-    );
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(result.has_errors());
-    assert!(
-        result.errors[0].contains("local: true"),
-        "{:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_handles_non_ascii_source_when_scanning_local_true() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"
-// café
-export default defineWorkflow("daily", { local: true, handler: async () => {} });
-"#,
-    );
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(
-        !result.has_errors(),
-        "unexpected errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn runtime_state_storage_validation_allows_multi_server_channels_with_postgres_url() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let config = multi_server_js_config();
-    let mut secrets = SecretsStore::default();
-    secrets.ensure_env_key_id("production").unwrap();
-    secrets
-        .set_credential(
-            "production",
-            POSTGRES_CREDENTIAL_NAME,
-            EncryptedSecretValue::new("encrypted".to_string(), None),
-        )
-        .unwrap();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(
-        !result.has_errors(),
-        "unexpected errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn workflow_storage_validation_rejects_multi_server_go_worker_without_postgres_url() {
-    let temp = TempDir::new().unwrap();
-    fs::create_dir_all(temp.path().join("cmd/worker")).unwrap();
-    fs::write(temp.path().join("cmd/worker/main.go"), "package main").unwrap();
-    let config = TakoToml {
-        runtime: Some("go".to_string()),
-        ..Default::default()
-    };
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|error| error.contains("Workflows")),
-        "{:?}",
-        result.errors
-    );
-}
-
-fn native_multi_server_js_config() -> TakoToml {
-    let mut config = multi_server_js_config();
-    let production = config.envs.get_mut("production").unwrap();
-    production.servers.clear();
-    config
-}
-
-#[test]
-fn runtime_state_storage_validation_native_channels_presence_and_stores_allow_sqlite() {
-    for directory in ["channels", "presence", "stores"] {
-        let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join("src").join(directory)).unwrap();
-        fs::write(
-            temp.path().join("src").join(directory).join("live.ts"),
-            "export default {};",
-        )
-        .unwrap();
-        for server_count in [1, 2] {
-            let result = config::validate_runtime_state_storage_for_deploy(
-                temp.path(),
-                &native_multi_server_js_config(),
-                &SecretsStore::default(),
-                "production",
-                server_count,
-            );
-            assert!(!result.has_errors(), "{directory}: {:?}", result.errors);
-        }
-    }
-}
-
-#[test]
-fn runtime_state_storage_validation_native_channels_do_not_replace_workflow_storage() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
-    write_workflow(
-        &temp,
-        "daily.ts",
-        "export default defineWorkflow(\"daily\", { handler: async () => {} });",
-    );
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &native_multi_server_js_config(),
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("Workflows"));
-    assert!(result.errors[0].contains("postgres_url"));
-    assert!(!result.errors[0].contains("Channels"));
-}
-
-#[test]
-fn runtime_state_storage_validation_native_channels_allow_intentionally_local_workflows() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
-    write_workflow(
-        &temp,
-        "daily.ts",
-        "export default defineWorkflow(\"daily\", { local: true, handler: async () => {} });",
-    );
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &native_multi_server_js_config(),
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-    assert!(!result.has_errors(), "{:?}", result.errors);
-}
-
-#[test]
-fn runtime_state_storage_validation_native_channels_validate_configured_postgres() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
-    for (expiry, expected_errors) in [
-        (None, false),
-        (Some("2000-01-01"), true),
-        (Some("invalid"), true),
-    ] {
-        let mut secrets = SecretsStore::default();
-        secrets.ensure_env_key_id("production").unwrap();
-        secrets
-            .set_credential(
-                "production",
-                POSTGRES_CREDENTIAL_NAME,
-                EncryptedSecretValue::new("encrypted".into(), None),
-            )
-            .unwrap();
-        secrets
-            .environments
-            .get_mut("production")
-            .unwrap()
-            .credentials
-            .get_mut(POSTGRES_CREDENTIAL_NAME)
-            .unwrap()
-            .expires_on = expiry.map(str::to_string);
-        let result = config::validate_runtime_state_storage_for_deploy(
-            temp.path(),
-            &native_multi_server_js_config(),
-            &secrets,
-            "production",
-            2,
-        );
-        assert_eq!(result.has_errors(), expected_errors, "{:?}", result.errors);
-        assert!(
-            secrets
-                .get_credential("production", POSTGRES_CREDENTIAL_NAME)
-                .is_some()
-        );
-    }
-}
-
-#[test]
-fn hosted_channel_replay_ignores_an_expired_postgres_url_unless_workflows_use_it() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
-    let mut config = native_multi_server_js_config();
-    config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
-        database: "events".into(),
-    });
-    let mut secrets = SecretsStore::default();
-    secrets.ensure_env_key_id("production").unwrap();
-    secrets
-        .set_credential(
-            "production",
-            POSTGRES_CREDENTIAL_NAME,
-            EncryptedSecretValue::new("encrypted".into(), Some("2000-01-01".into())),
-        )
-        .unwrap();
-    let validate = || {
-        config::validate_runtime_state_storage_for_deploy(
-            temp.path(),
-            &config,
-            &secrets,
-            "production",
-            2,
-        )
-    };
-    assert!(!validate().has_errors(), "{:?}", validate().errors);
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
-    );
-    assert!(validate().errors[0].contains("expired"));
+    // A container runs workflows when it configures a workflow command.
+    let container = TempDir::new().unwrap();
+    let image = TakoToml::parse("name = 'api'\nimage = 'ghcr.io/acme/api:1'\n").unwrap();
+    assert!(!needs(container.path(), &image, BuildAdapter::Unknown));
+    let worker = TakoToml::parse(
+        "name = 'api'\nimage = 'ghcr.io/acme/api:1'\n[workflows.jobs]\nrun = ['worker']\n",
+    )
+    .unwrap();
+    assert!(needs(container.path(), &worker, BuildAdapter::Unknown));
 }
 
 fn write_workflow(temp: &TempDir, name: &str, source: &str) {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();
     fs::write(workflows_dir.join(name), source).unwrap();
-}
-
-fn write_channel(temp: &TempDir, name: &str, source: &str) {
-    let channels_dir = temp.path().join("src/channels");
-    fs::create_dir_all(&channels_dir).unwrap();
-    fs::write(channels_dir.join(name), source).unwrap();
 }
 
 fn multi_server_js_config() -> TakoToml {

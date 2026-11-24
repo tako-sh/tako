@@ -16,10 +16,11 @@ async fn shared_websocket_is_routed_and_authorized_by_the_dev_proxy() {
     routes.set_routes("app".into(), vec!["app.test".into()], app_port, true);
     routes.set_store_auth("app", "app.tako".into(), test_app::TOKEN.into());
     let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (channels, _database) = test_app::registered().await;
     let proxy = crate::proxy::DevProxy {
         routes,
         events,
-        channels: DevChannelStore::new(),
+        channels,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = listener.local_addr().unwrap();
@@ -119,7 +120,7 @@ fn authorize(input: &Value) -> (u16, Value) {
 #[tokio::test]
 async fn sse_subscribe_is_authorized_and_denied_by_the_app() {
     let (app_port, calls) = fake_app(definitions(), authorize).await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, _) = dev_proxy(app_port, &dev_store).await;
     let client = reqwest::Client::new();
     let subscribe = |channel: &str, header: Option<(&str, &str)>| {
@@ -179,7 +180,8 @@ async fn sse_subscribe_is_authorized_and_denied_by_the_app() {
 #[tokio::test]
 async fn transport_paths_reject_mismatches_before_authorization() {
     let (app_port, calls) = fake_app(definitions(), authorize).await;
-    let (endpoint, _) = dev_proxy(app_port, &DevChannelStore::new()).await;
+    let (dev_store, _database) = test_app::registered().await;
+    let (endpoint, _) = dev_proxy(app_port, &dev_store).await;
     for path in ["/_tako/channels/ws", "/_tako/channels/ws/room"] {
         assert_eq!(
             reqwest::get(format!("http://{endpoint}{path}"))
@@ -225,9 +227,8 @@ async fn stored(dev_store: &DevChannelStore, app_id: &str, count: usize) -> Vec<
     let key = ChannelStream::new("room", &json!({"room": 1}))
         .key()
         .to_owned();
-    let store = dev_store.store_for_app(app_id);
     for _ in 0..100 {
-        let messages = store.read_after(&key, None, 100).unwrap_or_default();
+        let messages = test_app::read(dev_store, app_id, &key).await;
         if messages.len() >= count {
             return messages.into_iter().map(|message| message.data).collect();
         }
@@ -239,7 +240,7 @@ async fn stored(dev_store: &DevChannelStore, app_id: &str, count: usize) -> Vec<
 #[tokio::test]
 async fn websocket_connect_uses_the_grant_and_first_frame_auth() {
     let (app_port, calls) = fake_app(definitions(), authorize).await;
-    let dev_store = DevChannelStore::new();
+    let (dev_store, _database) = test_app::registered().await;
     let (endpoint, app_id) = dev_proxy(app_port, &dev_store).await;
     let publish = |data: i64| Message::text(json!({"type": "msg", "data": data}).to_string());
 
@@ -367,7 +368,7 @@ async fn unreachable_app_fails_with_a_clear_error_instead_of_allowing() {
     };
     let (failing_port, _) = fake_app(definitions(), |_| (500, json!({}))).await;
     for app_port in [closed_port, failing_port] {
-        let dev_store = DevChannelStore::new();
+        let (dev_store, _database) = test_app::registered().await;
         let (endpoint, _) = dev_proxy(app_port, &dev_store).await;
         let response = reqwest::Client::new()
             .get(format!("http://{endpoint}/_tako/channels/sse/chat?room=1"))

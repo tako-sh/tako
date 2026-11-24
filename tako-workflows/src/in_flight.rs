@@ -99,16 +99,19 @@ impl InFlightLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enqueue::HostedFixture;
     use std::sync::{Arc, Barrier};
     use tako_core::EnqueueOpts;
 
-    fn queue() -> RunsDb {
-        let db = RunsDb::open_in_memory().unwrap();
+    /// Six due runs in their own store, served while the fixture lives.
+    fn queue() -> (RunsDb, HostedFixture) {
+        let store = HostedFixture::start();
+        let db = store.open("app");
         for _ in 0..6 {
             db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
                 .unwrap();
         }
-        db
+        (db, store)
     }
 
     fn claim(limiter: &InFlightLimiter, db: &RunsDb, worker: &str) -> Option<RunPayload> {
@@ -117,7 +120,7 @@ mod tests {
 
     #[test]
     fn claims_enforce_cap_and_release_exact_owner() {
-        let db = queue();
+        let (db, _store) = queue();
         let limiter = InFlightLimiter::new(2);
         let first = claim(&limiter, &db, "worker").unwrap();
         claim(&limiter, &db, "worker").unwrap();
@@ -134,7 +137,7 @@ mod tests {
 
     #[test]
     fn different_workers_have_independent_budgets() {
-        let db = queue();
+        let (db, _store) = queue();
         let limiter = InFlightLimiter::new(1);
         claim(&limiter, &db, "a").unwrap();
         claim(&limiter, &db, "b").unwrap();
@@ -144,7 +147,7 @@ mod tests {
 
     #[test]
     fn zero_cap_clamps_to_one() {
-        let db = queue();
+        let (db, _store) = queue();
         let limiter = InFlightLimiter::new(0);
         assert_eq!(limiter.max_per_worker(), 1);
         claim(&limiter, &db, "worker").unwrap();
@@ -153,7 +156,7 @@ mod tests {
 
     #[test]
     fn claim_owners_share_process_slots_after_rehydration() {
-        let db = queue();
+        let (db, _store) = queue();
         let original = InFlightLimiter::new(2);
         let first = claim(&original, &db, "host:worker").unwrap();
         let second = claim(&original, &db, "host:worker").unwrap();
@@ -174,7 +177,8 @@ mod tests {
 
     #[test]
     fn concurrent_claims_cannot_overbook_during_refresh() {
-        let db = Arc::new(queue());
+        let (db, _store) = queue();
+        let db = Arc::new(db);
         let limiter = Arc::new(InFlightLimiter::new(2));
         let barrier = Arc::new(Barrier::new(6));
         let threads: Vec<_> = (0..6)
@@ -197,16 +201,20 @@ mod tests {
 
     #[test]
     fn failed_claim_does_not_reserve_a_slot() {
-        let db = queue();
+        let (db, _store) = queue();
         let limiter = InFlightLimiter::new(1);
-        db.raw_execute("CREATE TRIGGER reject_claim BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END", ());
+        db.test_execute(
+            "CREATE TRIGGER reject_claim BEFORE UPDATE ON {runs}
+             BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END",
+            vec![],
+        );
         assert!(
             limiter
                 .claim(&db, "worker", &["work".into()], 60_000)
                 .is_err()
         );
         assert_eq!(limiter.count("worker"), 0);
-        db.raw_execute("DROP TRIGGER reject_claim", ());
+        db.test_execute("DROP TRIGGER reject_claim", vec![]);
         claim(&limiter, &db, "worker").unwrap();
     }
 }

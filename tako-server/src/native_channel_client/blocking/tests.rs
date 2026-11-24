@@ -2,12 +2,15 @@ use super::*;
 use crate::native_channel_client::tests::FakeBroker;
 use std::sync::atomic::Ordering;
 
+fn target(token: &str) -> crate::channels::ChannelTarget {
+    crate::channels::ChannelTarget::Hosted {
+        token: zeroize::Zeroizing::new(token.into()),
+    }
+}
+
 fn publisher(link: Arc<FakeBroker>) -> BlockingPublisher {
-    BlockingPublisher::with_link(
-        link,
-        Arc::new(|_| Ok(crate::channels::ChannelTarget::Local)),
-    )
-    .unwrap()
+    let token = tako_db::generate_token();
+    BlockingPublisher::with_link(link, Arc::new(move |_| Ok(target(&token)))).unwrap()
 }
 
 fn publication(
@@ -108,14 +111,11 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
 fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
     let link = Arc::new(FakeBroker::default());
     link.reject.store(true, Ordering::SeqCst);
-    let publisher = BlockingPublisher::with_link(
-        link.clone(),
-        Arc::new(|_| {
-            Ok(crate::channels::ChannelTarget::Postgres {
-                url: zeroize::Zeroizing::new("postgres://secret".into()),
-            })
-        }),
-    )
+    let secret = tako_db::generate_token();
+    let publisher = BlockingPublisher::with_link(link.clone(), {
+        let secret = secret.clone();
+        Arc::new(move |_| Ok(target(&secret)))
+    })
     .unwrap();
     let error = publisher
         .publish(
@@ -128,7 +128,7 @@ fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
         )
         .unwrap_err();
     assert!(error.message.contains("registration"));
-    assert!(!error.message.contains("secret"));
+    assert!(!error.message.contains(&secret));
     assert_eq!(*link.calls.lock(), vec!["register"]);
     assert_eq!(link.publishes.load(Ordering::SeqCst), 0);
 }
@@ -147,6 +147,34 @@ fn oversized_payloads_are_refused_before_queueing() {
                 ),
             )
             .is_err()
+    );
+    assert!(link.calls.lock().is_empty());
+}
+#[test]
+fn apps_without_channels_are_told_to_deploy_a_release_that_uses_them() {
+    let link = Arc::new(FakeBroker::default());
+    let publisher = BlockingPublisher::with_link(
+        link.clone(),
+        Arc::new(|_| Err(tako_channels::ChannelError::NotProvisioned)),
+    )
+    .unwrap();
+    let error = publisher
+        .publish(
+            "chat",
+            &publication(
+                "events",
+                serde_json::Value::Null,
+                serde_json::json!({"type":"update", "data":null}),
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, Some(tako_core::ErrorCode::Unavailable));
+    assert!(
+        error
+            .message
+            .contains("deploy a release that uses channels"),
+        "{}",
+        error.message
     );
     assert!(link.calls.lock().is_empty());
 }

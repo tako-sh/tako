@@ -485,10 +485,26 @@ fn release_directories(root: &Path) -> impl Iterator<Item = PathBuf> {
         })
 }
 
-pub(crate) fn sweep_release_staging_dirs(data_dir: &Path, mode: super::RecoveryMode) {
+/// How the starting server relates to other server processes on the same
+/// data directory, which decides what startup cleanup may remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryMode {
+    /// A normal start while no other server process serves this data
+    /// directory (startup checks the drain activity lease every serving
+    /// process holds; otherwise it starts as a successor).
+    Primary,
+    /// An upgrade reload, a native promotion child, or a normal start beside
+    /// another serving process: each takes over from or runs beside a server
+    /// that may still be running.
+    Successor,
+    /// A standby beside a running primary.
+    Standby,
+}
+
+pub(crate) fn sweep_release_staging_dirs(data_dir: &Path, mode: RecoveryMode) {
     // Only cold-start recovery holds an exclusive data-dir lease. A successor
     // or standby may share this directory with an upload that is still running.
-    if mode != super::RecoveryMode::Primary {
+    if mode != RecoveryMode::Primary {
         return;
     }
     // Interrupted first deployments may have no durable app record yet.

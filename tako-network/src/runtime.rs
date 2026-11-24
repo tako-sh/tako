@@ -1,19 +1,20 @@
 //! Serialized native authorization and enrollment state. The parent owns TLS,
 //! the clock, local-operator bootstrap, privileged reconciliation, and readiness.
-use std::{
-    collections::BTreeMap,
-    fs::{File, OpenOptions},
-    net::Ipv6Addr,
-    path::Path,
-    time::Duration,
-};
+use std::{collections::BTreeMap, fs::File, net::Ipv6Addr, path::Path};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use redb::{Database, ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 mod invitation;
+mod journal;
 mod shared;
+
+use journal::{
+    CONSUMED_NONCES, IDENTITY, INVITATIONS, OBSERVED_RECORDS, PENDING_ENTITLEMENTS,
+    REGISTRY_FAILURE, REVOCATION_NONCES, SHARED_OBSERVED, SHARED_PUBLICATIONS, write,
+};
+pub use journal::{JournalSummary, verify_journal};
 
 use crate::{
     Ack, Approval, BootId, DeviceId, DeviceKind, LocalDeviceKeys, Member, MemberKind,
@@ -106,7 +107,7 @@ pub struct ServerRuntime<S: RegistryStore> {
     store: S,
     keys: LocalDeviceKeys,
     config: RuntimeConfig,
-    db: Connection,
+    db: Database,
     challenges: BTreeMap<RequestId, ChallengeState>,
     _lock: File,
 }
@@ -138,6 +139,12 @@ pub struct SshAuthorization {
 impl<S: RegistryStore> ServerRuntime<S> {
     /// `state_path` must be inside a protected, owner-only server state directory.
     /// Keep this runtime on a blocking worker; its process lock lasts until drop.
+    ///
+    /// `state_path` names the journal by its stem: the runtime keeps a redb
+    /// journal at `<stem>.redb`, locks `<stem>.runtime-lock`, and imports a
+    /// legacy SQLite `<stem>.db` once when no `<stem>.redb` exists yet,
+    /// keeping it as `<stem>.db.migrated`. With both present, `<stem>.redb`
+    /// is used and the old file is left alone.
     pub fn open(
         store: S,
         keys: LocalDeviceKeys,
@@ -148,63 +155,20 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if keys.device_id(&config.network.id, DeviceKind::Server)? != config.server_id {
             return Err(RuntimeError::Invalid("server keys do not match config"));
         }
-        let lock_path = state_path.with_extension("runtime-lock");
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options
-                .mode(0o600)
-                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-        }
-        let lock = options.open(lock_path)?;
+        let lock = journal::private_options()
+            .create(true)
+            .truncate(false)
+            .open(state_path.with_extension("runtime-lock"))?;
         lock.try_lock()
             .map_err(|_| RuntimeError::Invalid("runtime database already in use"))?;
-        let database_file = options.open(state_path)?;
-        if !database_file.metadata()?.is_file() {
-            return Err(RuntimeError::Invalid(
-                "runtime database is not a regular file",
-            ));
-        }
-        let db = Connection::open(state_path)?;
-        db.busy_timeout(Duration::from_secs(3))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS runtime_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), network TEXT NOT NULL, server TEXT NOT NULL, last_time INTEGER NOT NULL, auth_window INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS consumed_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
-            CREATE INDEX IF NOT EXISTS nonce_expiry ON consumed_nonces(expires);
-            CREATE TABLE IF NOT EXISTS observed_records (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
-            CREATE TABLE IF NOT EXISTS registry_failure (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
-            CREATE TABLE IF NOT EXISTS revocation_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
-            CREATE INDEX IF NOT EXISTS revocation_nonce_expiry ON revocation_nonces(expires);
-            CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS shared_observed (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
-            CREATE TABLE IF NOT EXISTS shared_publications (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS shared_publication_expiry ON shared_publications(expires);")?;
-        let network = serde_json::to_string(&config.network)?;
-        db.execute(
-            "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0, ?3)",
-            params![
-                network,
-                config.server_id.to_string(),
-                sql_time(config.limits.auth_window_seconds)?
-            ],
+        let db = journal::open(
+            state_path,
+            &journal::Identity {
+                network: serde_json::to_string(&config.network)?,
+                server: config.server_id.to_string(),
+                auth_window: journal_time(config.limits.auth_window_seconds)?,
+            },
         )?;
-        let identity: (String, String, i64) = db.query_row(
-            "SELECT network, server, auth_window FROM runtime_identity WHERE singleton=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
-        if identity
-            != (
-                network,
-                config.server_id.to_string(),
-                sql_time(config.limits.auth_window_seconds)?,
-            )
-        {
-            return Err(RuntimeError::Conflict("local runtime identity"));
-        }
         let mut runtime = Self {
             store,
             keys,
@@ -229,11 +193,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
         operation: RegistryOperation,
         action: impl FnOnce(&mut Self) -> RuntimeResult<T>,
     ) -> RuntimeResult<T> {
-        let failed: bool =
-            self.db
-                .query_row("SELECT EXISTS(SELECT 1 FROM registry_failure)", [], |r| {
-                    r.get(0)
-                })?;
+        let failed = self
+            .db
+            .begin_read()?
+            .open_table(REGISTRY_FAILURE)?
+            .get(())?
+            .is_some();
         if failed {
             return Err(RuntimeError::Capacity("registry requires local recovery"));
         }
@@ -242,8 +207,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
             if matches!(operation, RegistryOperation::Snapshot)
                 || (reason != "registry admissions" && reason != "registry record"))
         {
-            self.db
-                .execute("INSERT OR IGNORE INTO registry_failure VALUES (1)", [])?;
+            let txn = write(&self.db)?;
+            txn.open_table(REGISTRY_FAILURE)?.insert((), ())?;
+            txn.commit()?;
         }
         result
     }
@@ -251,74 +217,94 @@ impl<S: RegistryStore> ServerRuntime<S> {
     fn observe(&mut self, mut snapshot: RegistrySnapshot) -> RuntimeResult<RegistrySnapshot> {
         bound_projection(&mut snapshot)?;
         validate_snapshot(&snapshot, &self.config.network)?;
-        let tx = self.db.transaction()?;
-        for record in snapshot
-            .members
-            .iter()
-            .map(|m| -> RuntimeResult<_> {
-                Ok(("member", m.device_id.to_string(), serde_json::to_string(m)?))
-            })
-            .chain(
-                snapshot
-                    .revocations
-                    .iter()
-                    .map(|r| Ok(("revocation", r.id.to_string(), serde_json::to_string(r)?))),
-            )
+        // One write transaction: a conflict or capacity error records nothing.
+        let txn = write(&self.db)?;
+        let mut changed = false;
         {
-            let (kind, id, payload) = record?;
-            let previous: Option<String> = tx
-                .query_row(
-                    "SELECT payload FROM observed_records WHERE kind=?1 AND id=?2",
-                    params![kind, id],
-                    |r| r.get(0),
+            let mut observed = txn.open_table(OBSERVED_RECORDS)?;
+            for record in snapshot
+                .members
+                .iter()
+                .map(|m| -> RuntimeResult<_> {
+                    Ok(("member", m.device_id.to_string(), serde_json::to_string(m)?))
+                })
+                .chain(
+                    snapshot
+                        .revocations
+                        .iter()
+                        .map(|r| Ok(("revocation", r.id.to_string(), serde_json::to_string(r)?))),
                 )
-                .optional()?;
-            if previous.as_ref().is_some_and(|old| old != &payload) {
-                return Err(RuntimeError::Conflict("observed registry record"));
+            {
+                let (kind, id, payload) = record?;
+                let same = observed
+                    .get((kind, id.as_str()))?
+                    .map(|previous| previous.value() == payload);
+                match same {
+                    Some(true) => {}
+                    Some(false) => return Err(RuntimeError::Conflict("observed registry record")),
+                    None => {
+                        observed.insert((kind, id.as_str()), payload.as_str())?;
+                        changed = true;
+                    }
+                }
             }
-            tx.execute(
-                "INSERT OR IGNORE INTO observed_records VALUES (?1, ?2, ?3)",
-                params![kind, id, payload],
-            )?;
-        }
-        snapshot.members.clear();
-        snapshot.revocations.clear();
-        {
-            let mut statement =
-                tx.prepare("SELECT kind, payload FROM observed_records ORDER BY kind, id")?;
-            let mut rows = statement.query([])?;
+            snapshot.members.clear();
+            snapshot.revocations.clear();
             let mut bytes = 0usize;
             let mut count = 0usize;
-            while let Some(row) = rows.next()? {
-                let kind: String = row.get(0)?;
-                let payload: String = row.get(1)?;
+            for row in observed.iter()? {
+                let (key, payload) = row?;
+                let (kind, _) = key.value();
+                let payload = payload.value();
                 bytes += payload.len();
                 count += 1;
                 if bytes > MAX_REGISTRY_BYTES || count > MAX_REGISTRY_ROWS {
                     return Err(RuntimeError::Capacity("observed registry"));
                 }
-                match kind.as_str() {
-                    "member" => snapshot.members.push(serde_json::from_str(&payload)?),
-                    "revocation" => snapshot.revocations.push(serde_json::from_str(&payload)?),
+                match kind {
+                    "member" => snapshot.members.push(serde_json::from_str(payload)?),
+                    "revocation" => snapshot.revocations.push(serde_json::from_str(payload)?),
                     _ => return Err(RuntimeError::Invalid("observed registry kind")),
                 }
             }
         }
         bound_projection(&mut snapshot)?;
         validate_snapshot(&snapshot, &self.config.network)?;
-        tx.commit()?;
+        // An unchanged journal needs no durable commit.
+        if changed {
+            txn.commit()?;
+        }
         Ok(snapshot)
     }
 
+    /// Durably records `now` as the latest time seen, refusing a clock that
+    /// moved backwards past it.
     fn advance_clock(&self, now: u64) -> RuntimeResult<()> {
-        let now = sql_time(now)?;
-        let updated = self.db.execute(
-            "UPDATE runtime_identity SET last_time=?1 WHERE singleton=1 AND last_time>=0 AND last_time<=?1",
-            [now],
-        )?;
-        if updated != 1 {
-            return Err(RuntimeError::Invalid("server clock moved backwards"));
+        let now = journal_time(now)?;
+        let txn = write(&self.db)?;
+        {
+            let mut identity = txn.open_table(IDENTITY)?;
+            let stored = identity.get(())?.map(|row| {
+                let (network, server, last_time, auth_window) = row.value();
+                (
+                    network.to_owned(),
+                    server.to_owned(),
+                    last_time,
+                    auth_window,
+                )
+            });
+            let Some((network, server, last_time, auth_window)) = stored else {
+                return Err(RuntimeError::Invalid("server clock moved backwards"));
+            };
+            if last_time > now {
+                return Err(RuntimeError::Invalid("server clock moved backwards"));
+            }
+            if last_time == now {
+                return Ok(());
+            }
+            identity.insert((), (network.as_str(), server.as_str(), now, auth_window))?;
         }
+        txn.commit()?;
         Ok(())
     }
 
@@ -472,67 +458,43 @@ impl<S: RegistryStore> ServerRuntime<S> {
         Ok(())
     }
 
+    /// One write transaction: expired nonces are collected, then this nonce
+    /// is checked against both pools and recorded, or nothing changes.
     fn consume_nonce(&mut self, signed: &SignedRequest, now: u64) -> RuntimeResult<()> {
-        let tx = self
-            .db
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM consumed_nonces WHERE expires < ?1",
-            [sql_time(now)?],
-        )?;
-        tx.execute(
-            "DELETE FROM revocation_nonces WHERE expires < ?1",
-            [sql_time(now)?],
-        )?;
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM consumed_nonces WHERE signer=?1 AND nonce=?2 UNION ALL SELECT 1 FROM revocation_nonces WHERE signer=?1 AND nonce=?2)",
-            params![signed.signer.to_string(), signed.nonce.to_string()],
-            |r| r.get(0),
-        )?;
-        if exists {
+        let now = journal_time(now)?;
+        let expires = journal_time(signed.timestamp + self.config.limits.auth_window_seconds)?;
+        let signer = signed.signer.to_string();
+        let nonce = signed.nonce.to_string();
+        let txn = write(&self.db)?;
+        CONSUMED_NONCES.purge_before(&txn, now)?;
+        REVOCATION_NONCES.purge_before(&txn, now)?;
+        if CONSUMED_NONCES.contains(&txn, &signer, &nonce)?
+            || REVOCATION_NONCES.contains(&txn, &signer, &nonce)?
+        {
             return Err(RuntimeError::Replay);
         }
-        let emergency = matches!(signed.request, RpcRequest::Revoke { .. });
-        let table = if emergency {
-            "revocation_nonces"
+        let pool = if matches!(signed.request, RpcRequest::Revoke { .. }) {
+            REVOCATION_NONCES
         } else {
-            "consumed_nonces"
+            CONSUMED_NONCES
         };
-        let (count, principal): (i64, i64) = tx.query_row(
-            &format!("SELECT count(*), coalesce(sum(signer=?1), 0) FROM {table}"),
-            [signed.signer.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let (count, principal) = pool.counts(&txn, &signer)?;
         let principal_limit = self.config.limits.max_replays.div_ceil(16);
-        if count >= self.config.limits.max_replays as i64 || principal >= principal_limit as i64 {
+        if count >= self.config.limits.max_replays as u64 || principal >= principal_limit as u64 {
             return Err(RuntimeError::Capacity("replays"));
         }
-        tx.execute(
-            &format!("INSERT INTO {table} VALUES (?1, ?2, ?3)"),
-            params![
-                signed.signer.to_string(),
-                signed.nonce.to_string(),
-                sql_time(signed.timestamp + self.config.limits.auth_window_seconds)?
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM pending_entitlements WHERE expires <= ?1",
-            [sql_time(now)?],
-        )?;
-        tx.commit()?;
+        pool.insert(&txn, &signer, &nonce, expires)?;
+        PENDING_ENTITLEMENTS.purge_through(&txn, now)?;
+        txn.commit()?;
         Ok(())
     }
 
     fn pending(&self, id: &RequestId, now: u64) -> RuntimeResult<Entitlement> {
-        let payload: Option<String> = self
-            .db
-            .query_row(
-                "SELECT payload FROM pending_entitlements WHERE id=?1 AND expires>?2",
-                params![id.to_string(), sql_time(now)?],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let payload = payload.ok_or(RuntimeError::PendingUnavailable)?;
+        let now = journal_time(now)?;
+        let payload = PENDING_ENTITLEMENTS
+            .get(&self.db, &id.to_string())?
+            .and_then(|(expires, payload)| (expires > now).then_some(payload))
+            .ok_or(RuntimeError::PendingUnavailable)?;
         if payload.len() > MAX_RECORD_BYTES * 2 {
             return Err(RuntimeError::Capacity("pending record"));
         }
@@ -578,15 +540,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 "issuer requires a public HTTPS certificate",
             ));
         }
-        let existing = self
-            .db
-            .query_row(
-                "SELECT payload FROM pending_entitlements WHERE id=?1",
-                [entitlement.grant.pending_id.to_string()],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        if let Some(existing) = existing {
+        let existing =
+            PENDING_ENTITLEMENTS.get(&self.db, &entitlement.grant.pending_id.to_string())?;
+        if let Some((_, existing)) = existing {
             let previous: Entitlement = serde_json::from_str(&existing)?;
             if previous.grant != entitlement.grant
                 || previous.approver != entitlement.approver
@@ -595,15 +551,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 return Err(RuntimeError::Conflict("pending ID"));
             }
         } else {
-            let count: i64 =
-                self.db
-                    .query_row("SELECT count(*) FROM pending_entitlements", [], |r| {
-                        r.get(0)
-                    })?;
-            if count >= self.config.limits.max_pending as i64 {
-                return Err(RuntimeError::Capacity("pending entitlements"));
-            }
-            self.save_pending(&entitlement)?;
+            self.save_pending(&entitlement, Some(self.config.limits.max_pending))?;
         }
         Ok(RpcResponse::Pending(PendingApprovalProfile {
             request: entitlement.grant.request,
@@ -615,12 +563,30 @@ impl<S: RegistryStore> ServerRuntime<S> {
         }))
     }
 
-    fn save_pending(&self, entitlement: &Entitlement) -> RuntimeResult<()> {
+    /// Saves the entitlement; an existing row keeps its original expiry. A new
+    /// row is refused once `capacity` rows exist.
+    fn save_pending(
+        &self,
+        entitlement: &Entitlement,
+        capacity: Option<usize>,
+    ) -> RuntimeResult<()> {
         let payload = serde_json::to_string(entitlement)?;
         if payload.len() > MAX_RECORD_BYTES * 2 {
             return Err(RuntimeError::Capacity("pending record"));
         }
-        self.db.execute("INSERT INTO pending_entitlements VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![entitlement.grant.pending_id.to_string(), sql_time(entitlement.grant.expires_at)?, payload])?;
+        let txn = write(&self.db)?;
+        if let Some(max) = capacity
+            && PENDING_ENTITLEMENTS.count(&txn)? >= max as u64
+        {
+            return Err(RuntimeError::Capacity("pending entitlements"));
+        }
+        PENDING_ENTITLEMENTS.put(
+            &txn,
+            &entitlement.grant.pending_id.to_string(),
+            journal_time(entitlement.grant.expires_at)?,
+            &payload,
+        )?;
+        txn.commit()?;
         Ok(())
     }
 
@@ -815,10 +781,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Conflict("activation journal"));
         }
-        // FULL synchronous SQLite commit precedes the remote write. An uncertain
+        // The durable journal commit precedes the remote write. An uncertain
         // HTTP outcome can therefore only retry this exact immutable admission.
         entitlement.candidate = Some(candidate.clone());
-        self.save_pending(&entitlement)?;
+        self.save_pending(&entitlement, None)?;
         self.with_registry(RegistryOperation::Mutation, |runtime| {
             runtime.store.append_member(&candidate)
         })?;
@@ -840,15 +806,13 @@ impl<S: RegistryStore> ServerRuntime<S> {
     /// same ID after storage recovery. Unknown IDs cannot create revocations.
     pub fn republish_revocation(&mut self, id: &RevocationId) -> RuntimeResult<Revocation> {
         self.with_registry(RegistryOperation::Mutation, |runtime| {
-            let payload: Option<String> = runtime
+            let payload = runtime
                 .db
-                .query_row(
-                    "SELECT payload FROM observed_records WHERE kind='revocation' AND id=?1",
-                    [id.to_string()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let payload = payload.ok_or(RuntimeError::Invalid("revocation is not recorded"))?;
+                .begin_read()?
+                .open_table(OBSERVED_RECORDS)?
+                .get(("revocation", id.to_string().as_str()))?
+                .map(|row| row.value().to_owned())
+                .ok_or(RuntimeError::Invalid("revocation is not recorded"))?;
             if payload.len() > MAX_REGISTRY_BYTES {
                 return Err(RuntimeError::Capacity("observed registry"));
             }
@@ -928,8 +892,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
     }
 }
 
-fn sql_time(time: u64) -> RuntimeResult<i64> {
-    i64::try_from(time).map_err(|_| RuntimeError::Invalid("timestamp exceeds SQLite integer range"))
+/// Journal times stay within the signed 64-bit range the SQLite journal had.
+fn journal_time(time: u64) -> RuntimeResult<u64> {
+    if time > i64::MAX as u64 {
+        return Err(RuntimeError::Invalid("timestamp exceeds journal range"));
+    }
+    Ok(time)
 }
 
 fn validate_snapshot(
@@ -971,6 +939,38 @@ mod tests {
 
     include!("runtime/shared_tests.rs");
     include!("runtime/invitation_tests.rs");
+    include!("runtime/journal_tests.rs");
+
+    fn rows<K: redb::Key + 'static, V: redb::Value + 'static>(
+        runtime: &ServerRuntime<MemoryStore>,
+        table: redb::TableDefinition<K, V>,
+    ) -> u64 {
+        use redb::ReadableTableMetadata;
+        runtime
+            .db
+            .begin_read()
+            .unwrap()
+            .open_table(table)
+            .unwrap()
+            .len()
+            .unwrap()
+    }
+
+    /// Every payload of an expiring table, checking each row has its expiry
+    /// index entry.
+    fn payloads(runtime: &ServerRuntime<MemoryStore>, table: journal::Expiring) -> Vec<String> {
+        let txn = runtime.db.begin_read().unwrap();
+        let expiry = txn.open_table(table.1).unwrap();
+        let mut payloads = Vec::new();
+        for row in txn.open_table(table.0).unwrap().iter().unwrap() {
+            let (id, value) = row.unwrap();
+            let (expires, payload) = value.value();
+            assert!(expiry.get((expires, id.value())).unwrap().is_some());
+            payloads.push(payload.to_owned());
+        }
+        assert_eq!(rows(runtime, table.1), payloads.len() as u64);
+        payloads
+    }
 
     #[derive(Clone)]
     struct MemoryStore(Rc<RefCell<MemoryState>>);
@@ -1221,9 +1221,12 @@ mod tests {
                 self.store.clone(),
                 LocalDeviceKeys::load(&self.dir.path().join("keys")).unwrap(),
                 self.config.clone(),
-                &self.dir.path().join("runtime.db"),
+                &self.journal(),
             )
             .unwrap()
+        }
+        fn journal(&self) -> std::path::PathBuf {
+            self.dir.path().join("runtime.redb")
         }
         fn signed(&self, keys: &LocalDeviceKeys, request: RpcRequest, now: u64) -> SignedRequest {
             SignedRequest::sign(
@@ -1769,15 +1772,36 @@ mod tests {
                 fixture.store.clone(),
                 LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
                 config,
-                &fixture.dir.path().join("runtime.db"),
+                &fixture.journal(),
             )
         };
-        assert!(open(fixture.config.clone()).is_err());
+        assert!(matches!(
+            open(fixture.config.clone()),
+            Err(RuntimeError::Invalid("runtime database already in use"))
+        ));
+        // redb's own file lock also refuses a writer that skips the runtime lock.
+        assert!(matches!(
+            Database::create(fixture.journal()),
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+        ));
         drop(runtime);
+        assert_eq!(
+            verify_journal(&fixture.journal()).unwrap(),
+            JournalSummary {
+                consumed_nonces: 0,
+                revocation_nonces: 0
+            }
+        );
         let mut wrong = fixture.config.clone();
         wrong.network.initial_admin = fixture.config.server_id.clone();
         fixture.store.0.borrow_mut().snapshot.network = wrong.network.clone();
-        assert!(open(wrong).is_err());
+        assert!(matches!(
+            open(wrong),
+            Err(RuntimeError::Conflict("local runtime identity"))
+        ));
+        // The refused open changed nothing: the original identity still opens.
+        fixture.store.0.borrow_mut().snapshot.network = fixture.config.network.clone();
+        open(fixture.config.clone()).unwrap();
     }
 
     #[test]
@@ -1862,11 +1886,9 @@ mod tests {
         fixture
             .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 251)
             .unwrap();
-        let count: i64 = runtime
-            .db
-            .query_row("SELECT count(*) FROM consumed_nonces", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
+        // The expired nonce left both the pool and its expiry index.
+        assert_eq!(rows(&runtime, CONSUMED_NONCES.0), 1);
+        assert_eq!(rows(&runtime, CONSUMED_NONCES.1), 1);
     }
 
     #[test]
@@ -1978,7 +2000,7 @@ mod tests {
             fixture.store.clone(),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db"),
+            &fixture.journal(),
         );
         assert!(matches!(
             result,

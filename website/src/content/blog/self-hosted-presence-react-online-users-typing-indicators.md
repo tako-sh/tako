@@ -5,7 +5,7 @@ description: "Build private chat presence in React with Tako: trusted identities
 image: 29a5b0563541
 ---
 
-> **Updated November 15, 2026:** Presence now shares a WS connection with other topics in the same tab, while each hook owns its membership. Local auth checks and native multi-server SQLite support below are current; the earlier permissive-dev and Postgres-only guidance no longer applies. See the [Presence reference](/docs/presence/).
+> **Updated November 15, 2026:** Presence now shares a WS connection with other topics in the same tab, while each hook owns its membership. Local auth checks and native multi-server SQLite support below are current; the earlier permissive-dev and single-server guidance no longer applies. See the [Presence reference](/docs/presence/).
 
 A green dot looks simple until someone opens three tabs, switches rooms, and closes their laptop halfway through typing. Now “online” needs an identity, a room boundary, and a way to disappear without receiving a polite goodbye.
 
@@ -163,6 +163,6 @@ Use [`tako dev`](/docs/development/) to test private-room rejection and trusted 
 
 In that environment, open two tabs with the same account and confirm the count stays at one. Join with a second authorized account, type, then stop. Try a different chat and an account without access. Finally, disconnect a tab and observe cleanup or lease expiry from another connected client. These checks exercise the boundaries the interface depends on.
 
-Single-server production uses Tako-managed SQLite by default. On a native network, servers exchange expiring presence leases, so [multiple servers](/docs/deployment/) can share membership without Postgres. An explicitly configured `postgres_url` backend remains supported. Presence is scoped to the deployed app and environment. Go and Rust backends can register spaces too; the same React hook manages browser membership.
+Single-server production uses Tako-managed SQLite by default. On a native network, servers exchange expiring presence leases, so [multiple servers](/docs/deployment/) can share membership. Presence is scoped to the deployed app and environment. Go and Rust backends can register spaces too; the same React hook manages browser membership.
 
 Presence records expire and aren't replayed as durable channel events. Keep lasting messages in your database, use [Stores](/docs/stores/) for live data reads, and use Presence for who's connected now. The [full reference](/docs/presence/) and [source](https://github.com/tako-sh/tako) cover the remaining options. The green dot now has a lifecycle behind it.

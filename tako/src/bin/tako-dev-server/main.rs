@@ -3,6 +3,7 @@ mod compose;
 mod control;
 mod databases;
 mod dev_channels;
+mod dev_workflows;
 mod identity;
 mod image;
 mod kv;
@@ -77,10 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Also triggers wake-on-request for idle registered apps.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<DevEvent>();
 
-    // Shared channel store — used both by the proxy (SSE subscribe + HTTP
+    // Shared channel stores — used both by the proxy (SSE subscribe + HTTP
     // publish from the outside) and by the internal socket's
     // `Command::ChannelPublish` handler (server-side publish from app/workflow
-    // code). Same store so both paths see the same messages.
+    // code). Same stores so both paths see the same messages. Registrations
+    // hand each app its replay database.
     let channels = dev_channels::DevChannelStore::new();
     // Start the Pingora proxy in a dedicated thread.
     // We exit the whole process when the control-plane tells us to shut down.
@@ -174,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so app registrations can call DevWorkflows::ensure() immediately.
     let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(&data_dir));
+    workflows.set_store_resolver(dev_workflows::resolver());
 
     // Server-side channel `.publish()` and `.close()` — go through the internal
     // socket straight to the channel store, no HTTPS/auth roundtrip.
@@ -205,12 +208,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.dns_ip,
     );
     st.workflows = Some(workflows.clone());
+    st.channels = Some(channels.clone());
 
-    // Open the SQLite state store (persistent registrations only; runtime state is in-memory).
-    let db_path = paths::tako_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("dev-server.sqlite");
-    match state::DevStateStore::open(db_path) {
+    // Open the state store (persistent registrations only; runtime state is in-memory).
+    let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Earlier releases kept registrations in SQLite; their orphans still count.
+    for (project_dir, config_path) in
+        state::take_legacy_registrations(&data_dir.join("dev-server.sqlite"))
+    {
+        state::kill_orphaned_process(&project_dir, &config_path);
+    }
+    match state::DevStateStore::open(data_dir.join("dev-server.redb")) {
         Ok(db) => {
             // Kill any orphaned app processes from a previous (crashed) server run.
             if let Ok(apps) = db.list() {

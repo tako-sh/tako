@@ -39,7 +39,9 @@ fn test_workflows() -> Arc<tako_workflows::WorkflowManager> {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp).ok();
-    Arc::new(tako_workflows::WorkflowManager::new(&tmp))
+    let workflows = tako_workflows::WorkflowManager::new(&tmp);
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
+    Arc::new(workflows)
 }
 
 async fn query_control_clients(state: Arc<Mutex<State>>) -> u32 {
@@ -63,7 +65,7 @@ async fn query_control_clients(state: Arc<Mutex<State>>) -> u32 {
 
 fn test_state() -> (Arc<Mutex<State>>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("dev-server.sqlite");
+    let db_path = tmp.path().join("dev-server.redb");
     let db = state::DevStateStore::open(db_path).unwrap();
 
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
@@ -80,6 +82,30 @@ fn test_state() -> (Arc<Mutex<State>>, tempfile::TempDir) {
     let _ = test_workflows();
     st.db = Some(db);
     (Arc::new(Mutex::new(st)), tmp)
+}
+
+#[test]
+fn legacy_sqlite_registrations_are_read_once_for_orphan_cleanup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("dev-server.sqlite");
+    assert!(state::take_legacy_registrations(&path).is_empty());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         CREATE TABLE apps (config_path TEXT PRIMARY KEY, project_dir TEXT NOT NULL,
+             name TEXT NOT NULL, variant TEXT, is_enabled INTEGER NOT NULL DEFAULT 1,
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, config_file TEXT);
+         INSERT INTO apps (config_path, project_dir, name, created_at, updated_at)
+             VALUES ('/p/tako.toml', '/p', 'app', 0, 0);",
+    )
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        state::take_legacy_registrations(&path),
+        [("/p".to_string(), "/p/tako.toml".to_string())]
+    );
+    assert!(!path.exists());
+    assert!(state::take_legacy_registrations(&path).is_empty());
 }
 
 fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
@@ -237,6 +263,7 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
         }
     });
     let workflows = tako_workflows::WorkflowManager::new(tmp.path());
+    workflows.set_store_resolver(crate::dev_workflows::resolver());
     crate::network::install(&state, &workflows);
     workflows.start_socket().unwrap();
     for (caller, address) in [

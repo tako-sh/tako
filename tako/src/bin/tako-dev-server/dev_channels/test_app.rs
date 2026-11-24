@@ -115,3 +115,54 @@ pub(super) async fn dev_proxy(app_port: u16, dev_store: &DevChannelStore) -> (So
     });
     (endpoint, app_id)
 }
+
+/// A dev channel store with app `app` registered, its replay database served
+/// by the test's own host.
+pub(super) async fn registered() -> (DevChannelStore, tako_db::testing::TestServer) {
+    registered_as("app").await
+}
+
+pub(super) async fn registered_as(app_id: &str) -> (DevChannelStore, tako_db::testing::TestServer) {
+    let server = tako_db::testing::TestServer::start();
+    let scope = replay_scope("/project/tako.toml");
+    let database = server.database(&scope);
+    let store = DevChannelStore::new();
+    store.provision(&scope, app_id, connection(&server, database.token));
+    (store, server)
+}
+
+pub(super) fn connection(
+    server: &tako_db::testing::TestServer,
+    token: String,
+) -> tako_core::DatabaseConnection {
+    tako_core::DatabaseConnection {
+        url: server.url.clone(),
+        auth_token: token,
+    }
+}
+
+/// Publish as the internal socket does, off the async executor.
+pub(super) async fn publish(
+    dev_store: &DevChannelStore,
+    app_id: &str,
+    publication: TrustedPublication,
+) -> std::result::Result<tako_channels::ChannelMessage, ChannelError> {
+    let (dev_store, app_id) = (dev_store.clone(), app_id.to_owned());
+    tokio::task::spawn_blocking(move || dev_store.publish(&app_id, &publication))
+        .await
+        .unwrap()
+}
+
+/// The stream's retained messages.
+pub(super) async fn read(
+    dev_store: &DevChannelStore,
+    app_id: &str,
+    stream: &str,
+) -> Vec<tako_channels::ChannelMessage> {
+    store_for(dev_store, app_id)
+        .await
+        .unwrap()
+        .read_after_async(stream, None, 100)
+        .await
+        .unwrap()
+}

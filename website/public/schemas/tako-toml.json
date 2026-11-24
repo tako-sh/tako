@@ -5,7 +5,7 @@
       "additionalProperties": false,
       "properties": {
         "storage": {
-          "description": "Private S3-compatible storage resource used for app data backups.",
+          "description": "Private S3-compatible storage resource that receives the backups of\nthe hosted databases and KV stores this environment binds, unless\n`[db.<name>]` or `[kv.<name>]` names another.",
           "type": "string"
         }
       },
@@ -82,13 +82,13 @@
     "ChannelsConfig": {
       "additionalProperties": false,
       "properties": {
-        "database": {
+        "db": {
           "description": "Hosted database name for channel replay, separate from app database bindings.",
           "pattern": "^[a-z][a-z0-9_-]{0,62}$",
           "type": "string"
         }
       },
-      "required": ["database"],
+      "required": ["db"],
       "type": "object"
     },
     "ComposeConfig": {
@@ -179,7 +179,7 @@
     },
     "DatabaseResourceConfig": {
       "additionalProperties": false,
-      "description": "Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV\nstore, from `[kv.<name>]`. The database itself, its server and access,\nlive in the network's records; this table is needed only to override the\nenvironment's backup storage.",
+      "description": "Settings for a Tako-hosted database, from `[db.<name>]`, or a KV\nstore, from `[kv.<name>]`. The database itself, its server and access,\nlive in the network's records; this table is needed only to override the\nenvironment's backup storage.",
       "properties": {
         "backup": {
           "description": "Private S3-compatible storage resource that receives snapshots.\nDefaults to the deploying environment's `backup.storage`.",
@@ -197,18 +197,18 @@
       "properties": {
         "backup": {
           "$ref": "#/$defs/BackupConfig",
-          "description": "Private storage for manual app-directory archives (`tako backup now`)."
+          "description": "Default backup storage of the hosted databases and KV stores this\nenvironment binds."
         },
         "channels": {
           "$ref": "#/$defs/ChannelsConfig",
           "description": "Channel replay settings for this environment."
         },
-        "databases": {
+        "db": {
           "additionalProperties": {
             "type": "string"
           },
           "default": {},
-          "description": "Database bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.databases.<key>`.\nValue = database name from `[databases.<value>]`.",
+          "description": "Database bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.db.<key>`.\nValue = name of a database created with `tako db create`.",
           "type": "object"
         },
         "idle_timeout": {
@@ -223,7 +223,7 @@
             "type": "string"
           },
           "default": {},
-          "description": "KV store bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.kv.<key>`.\nValue = name of a KV store created with `tako kv create`. Binding\nnames are shared with `databases`: each is used once per environment.",
+          "description": "KV store bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.kv.<key>`.\nValue = name of a KV store created with `tako kv create`. Binding\nnames are shared with `db`: each is used once per environment.",
           "type": "object"
         },
         "network": {
@@ -269,6 +269,10 @@
           "default": {},
           "description": "Storage bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.storages.<key>`.\nValue = backing storage resource name from `[storages.<value>]`, or\nthe built-in `local` resource.",
           "type": "object"
+        },
+        "workflows": {
+          "$ref": "#/$defs/WorkflowsEnvConfig",
+          "description": "Workflow storage settings for this environment."
         }
       },
       "type": "object"
@@ -458,6 +462,18 @@
         "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
       },
       "type": "object"
+    },
+    "WorkflowsEnvConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "db": {
+          "description": "Hosted database name for workflow runs, separate from app database bindings.",
+          "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+          "type": "string"
+        }
+      },
+      "required": ["db"],
+      "type": "object"
     }
   },
   "$id": "https://tako.sh/schemas/tako-toml.json",
@@ -522,11 +538,11 @@
       "$ref": "#/$defs/ContainerOptions",
       "description": "Container release options. Require `container` or `image`."
     },
-    "databases": {
+    "db": {
       "additionalProperties": {
         "$ref": "#/$defs/DatabaseResourceConfig"
       },
-      "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
+      "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].db`. Create databases with `tako db create`.",
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_-]{0,62}$"
       },

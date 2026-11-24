@@ -26,16 +26,12 @@ pub struct App {
     routing_suppressed_instances: RwLock<HashSet<String>>,
     /// Current app state
     state: RwLock<AppState>,
-    /// Serializes stop/restore against cold starts and health replacements.
+    /// Serializes stop against cold starts and health replacements.
     pub(crate) lifecycle_gate: Arc<tokio::sync::RwLock<()>>,
 
     /// Serializes health replacement and the periodic reconcile for this app.
     /// Only ever tried, never awaited, and taken after every other gate.
     pub(crate) recovery_gate: tokio::sync::Mutex<()>,
-    /// True while a backup holds the deploy lock. A backup leaves the
-    /// instance set alone, so recovery may claim instance slots meanwhile,
-    /// holding this lock for the claim; see `BackupDeployLock`.
-    pub(crate) recovery_claims_open: parking_lot::Mutex<bool>,
     /// Which background work holds the deploy lock, and whether an operator
     /// operation has priority over it; see `BackgroundDeployLock`.
     pub(crate) deploy_lock_access: parking_lot::Mutex<crate::runtime_events::DeployLockAccess>,
@@ -79,7 +75,6 @@ impl App {
             state: RwLock::new(AppState::Stopped),
             lifecycle_gate: Arc::new(tokio::sync::RwLock::new(())),
             recovery_gate: tokio::sync::Mutex::new(()),
-            recovery_claims_open: parking_lot::Mutex::new(false),
             deploy_lock_access: parking_lot::Mutex::default(),
             recovery: parking_lot::Mutex::new(Recovery::default()),
             last_error: RwLock::new(None),

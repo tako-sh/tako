@@ -114,44 +114,6 @@ fn init_rejects_newer_unknown_schema() {
 }
 
 #[test]
-fn runtime_credentials_round_trip_separately_from_app_secrets() {
-    let (_temp, store) = temp_store();
-    store.init().unwrap();
-
-    let app = "my-app/production";
-    store
-        .set_secrets(
-            app,
-            &HashMap::from([("API_KEY".to_string(), "app-secret".to_string())]),
-        )
-        .unwrap();
-    store
-        .set_runtime_credentials(
-            app,
-            &HashMap::from([("postgres_url".to_string(), "postgres://db".to_string())]),
-        )
-        .unwrap();
-
-    assert_eq!(
-        store
-            .get_secrets(app)
-            .unwrap()
-            .get("API_KEY")
-            .map(String::as_str),
-        Some("app-secret")
-    );
-    assert_eq!(
-        store
-            .get_runtime_credentials(app)
-            .unwrap()
-            .get("postgres_url")
-            .map(String::as_str),
-        Some("postgres://db")
-    );
-    assert!(!store.get_secrets(app).unwrap().contains_key("postgres_url"));
-}
-
-#[test]
 fn upsert_and_load_round_trip() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
@@ -314,67 +276,29 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
-fn set_and_get_backup_round_trip() {
+fn migration_leaves_retired_tables_for_an_earlier_process() {
+    // During a reload the earlier process still reads these tables, so the
+    // migration leaves them in place and a later schema version drops them.
     let (_temp, store) = temp_store();
     store.init().unwrap();
-
-    let backup = tako_core::BackupBinding {
-        storage: tako_core::StorageBinding {
-            provider: tako_core::StorageProvider::S3,
-            resource: None,
-            bucket: Some("demo-backups".to_string()),
-            endpoint: Some("https://s3.example.com".to_string()),
-            region: Some("us-east-1".to_string()),
-            access_key_id: Some("key".to_string()),
-            secret_access_key: Some("secret".to_string()),
-            force_path_style: false,
-            public_base_url: None,
-            path: None,
-            signing_key: None,
-        },
-        backup_keys: vec![tako_core::BackupKeyBinding {
-            id: "backup-key-0123456789abcdef".to_string(),
-            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-        }],
-        retention_days: 30,
-    };
-
-    store.set_backup("my-app", Some(&backup)).unwrap();
-
-    let loaded = store.get_backup("my-app").unwrap().unwrap();
-    assert_eq!(loaded, backup);
-}
-
-#[test]
-fn set_backup_none_clears_existing_backup() {
-    let (_temp, store) = temp_store();
+    store
+        .lock_conn()
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE app_backups (app TEXT NOT NULL PRIMARY KEY, encrypted_data BLOB NOT NULL);
+             INSERT INTO app_backups VALUES ('my-app/production', x'00');
+             PRAGMA user_version = 16;",
+        )
+        .unwrap();
     store.init().unwrap();
-
-    let backup = tako_core::BackupBinding {
-        storage: tako_core::StorageBinding {
-            provider: tako_core::StorageProvider::S3,
-            resource: None,
-            bucket: Some("demo-backups".to_string()),
-            endpoint: Some("https://s3.example.com".to_string()),
-            region: Some("us-east-1".to_string()),
-            access_key_id: Some("key".to_string()),
-            secret_access_key: Some("secret".to_string()),
-            force_path_style: false,
-            public_base_url: None,
-            path: None,
-            signing_key: None,
-        },
-        backup_keys: vec![tako_core::BackupKeyBinding {
-            id: "backup-key-0123456789abcdef".to_string(),
-            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-        }],
-        retention_days: 30,
-    };
-
-    store.set_backup("my-app", Some(&backup)).unwrap();
-    store.set_backup("my-app", None).unwrap();
-
-    assert!(store.get_backup("my-app").unwrap().is_none());
+    assert_eq!(
+        store.raw_query_i64("SELECT COUNT(*) FROM app_backups;", ()),
+        1
+    );
+    assert_eq!(
+        store.raw_query_i64("PRAGMA user_version;", ()) as i32,
+        STATE_SCHEMA_VERSION
+    );
 }
 
 #[test]

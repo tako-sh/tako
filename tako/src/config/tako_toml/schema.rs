@@ -88,9 +88,9 @@ pub struct TakoToml {
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
-    /// [databases.*] sections - per-database settings for the Tako-hosted
-    /// SQLite databases this project binds in `[envs.<env>].databases`.
-    #[serde(default)]
+    /// [db.*] sections - per-database settings for the Tako-hosted SQLite
+    /// databases this project binds in `[envs.<env>].db`.
+    #[serde(default, rename = "db")]
     pub databases: HashMap<String, DatabaseResourceConfig>,
 
     /// [kv.*] sections - per-store settings for the Tako-hosted KV stores
@@ -199,23 +199,28 @@ pub struct EnvConfig {
 
     /// Database bindings assigned to this environment.
     ///
-    /// Key = app binding name exposed as `tako.databases.<key>`.
-    /// Value = database name from `[databases.<value>]`.
-    #[serde(default)]
+    /// Key = app binding name exposed as `tako.db.<key>`.
+    /// Value = name of a database created with `tako db create`.
+    #[serde(default, rename = "db")]
     pub databases: HashMap<String, String>,
 
     /// KV store bindings assigned to this environment.
     ///
     /// Key = app binding name exposed as `tako.kv.<key>`.
     /// Value = name of a KV store created with `tako kv create`. Binding
-    /// names are shared with `databases`: each is used once per environment.
+    /// names are shared with `db`: each is used once per environment.
     #[serde(default)]
     pub kv: HashMap<String, String>,
     /// Channel replay settings for this environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channels: Option<ChannelsConfig>,
 
-    /// Private storage for manual app-directory archives (`tako backup now`).
+    /// Workflow storage settings for this environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<WorkflowsEnvConfig>,
+
+    /// Default backup storage of the hosted databases and KV stores this
+    /// environment binds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupConfig>,
 
@@ -243,18 +248,29 @@ pub struct EnvConfig {
 pub struct ChannelsConfig {
     /// Hosted database name for channel replay, separate from app database bindings.
     #[cfg_attr(test, schemars(regex(pattern = super::json_schema::DATABASE_NAME_PATTERN)))]
-    pub database: String,
+    pub db: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowsEnvConfig {
+    /// Hosted database name for workflow runs, separate from app database bindings.
+    #[cfg_attr(test, schemars(regex(pattern = super::json_schema::DATABASE_NAME_PATTERN)))]
+    pub db: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BackupConfig {
-    /// Private S3-compatible storage resource used for app data backups.
+    /// Private S3-compatible storage resource that receives the backups of
+    /// the hosted databases and KV stores this environment binds, unless
+    /// `[db.<name>]` or `[kv.<name>]` names another.
     pub storage: String,
 }
 
-/// Settings for a Tako-hosted database, from `[databases.<name>]`, or a KV
+/// Settings for a Tako-hosted database, from `[db.<name>]`, or a KV
 /// store, from `[kv.<name>]`. The database itself, its server and access,
 /// live in the network's records; this table is needed only to override the
 /// environment's backup storage.

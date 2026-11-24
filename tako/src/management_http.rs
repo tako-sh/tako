@@ -390,8 +390,6 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::Deploy { .. }
         | Command::Scale { .. }
         | Command::Start { .. }
-        | Command::BackupNow { .. }
-        | Command::RestoreBackup { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
         | Command::Rollback { .. }
@@ -424,9 +422,6 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::InjectChallengeToken { .. }
         | Command::CheckDeploySpace { .. }
         | Command::DatabaseStatus { .. }
-        | Command::ListBackups { .. }
-        | Command::BackupStatus { .. }
-        | Command::BackupDownloadUrl { .. }
         | Command::Status { .. }
         | Command::ListReleases { .. }
         | Command::GetSecretsHash { .. }
@@ -670,7 +665,6 @@ mod tests {
                 storages: None,
                 databases: None,
                 ssl: tako_core::SslBinding::default(),
-                backup: None,
                 force: false,
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT

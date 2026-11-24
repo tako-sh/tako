@@ -200,17 +200,6 @@ impl ServerState {
                 route_table.set_config_routes(&config, routes);
             }
 
-            // Neither the app nor its workflows start on data a restore left
-            // partly restored.
-            if let Some(reason) = self.unresolved_restore_block(&app_name) {
-                tracing::error!(app = %app_name, "{reason}");
-                // Also stops Compose containers that outlived the server.
-                if let Err(error) = self.app_manager.stop_app(&app_name).await {
-                    tracing::error!(app = %app_name, "Could not stop the app: {error}");
-                }
-                app.set_last_error(reason);
-                continue;
-            }
             if config.stopped && config.compose.is_none() {
                 app.set_state(AppState::Stopped);
                 self.cold_start.mark_failed(&app_name, "app_stopped");
@@ -227,7 +216,23 @@ impl ServerState {
                     .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
                     .await
             {
-                errors.push(format!("{app_name}: {error}"));
+                if let StateStoreError::WorkflowStoreUnavailable(_) = error {
+                    // The database's server can be unreachable for a while,
+                    // as when this one has just restarted. The app serves
+                    // meanwhile; a background task starts its workflows.
+                    tracing::warn!(app = %app_name, %error, "Workflow database unavailable; retrying in the background");
+                    self.workflows_waiting.lock().insert(
+                        app_name.clone(),
+                        crate::server_state::WaitingWorkflows {
+                            version: config.version.clone(),
+                            release_path: release_path.clone(),
+                            runtime_bin_path: runtime_bin_path.clone(),
+                            fresh_revision: false,
+                        },
+                    );
+                } else {
+                    errors.push(format!("{app_name}: {error}"));
+                }
             }
             if strict && !errors.is_empty() {
                 break;

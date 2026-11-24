@@ -80,28 +80,15 @@ fn migrate_schema_on(
         )?;
     }
 
-    if from_version < 7 {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS app_backups (
-                app TEXT NOT NULL PRIMARY KEY,
-                encrypted_data BLOB NOT NULL
-            );",
-        )?;
-    }
-
-    if from_version < 8 {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS app_runtime_credentials (
-                app TEXT NOT NULL PRIMARY KEY,
-                encrypted_data BLOB NOT NULL
-            );",
-        )?;
-    }
-
     if from_version < 15 {
         // Continuous WAL capture was replaced by hosted database snapshots.
         tx.execute_batch("DROP TABLE IF EXISTS database_replicas;")?;
     }
+
+    // `app_backups` (app data archives) and `app_runtime_credentials` (the
+    // Postgres URL of workflow and channel stores) are no longer used. An
+    // earlier server process still reads them while a reload hands over,
+    // so a later schema version drops them.
 
     ensure_schema_objects(tx)?;
     let has_deadline: bool = tx.query_row(
@@ -169,11 +156,6 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             encrypted_data BLOB NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS app_runtime_credentials (
-            app TEXT NOT NULL PRIMARY KEY,
-            encrypted_data BLOB NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS app_compose_tokens (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
@@ -233,11 +215,6 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
         );
 
         CREATE TABLE IF NOT EXISTS database_grants (
-            app TEXT NOT NULL PRIMARY KEY,
-            encrypted_data BLOB NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS app_backups (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
         );",

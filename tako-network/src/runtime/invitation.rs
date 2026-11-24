@@ -92,18 +92,15 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 "invitation issuer requires HTTPS pin",
             ));
         }
-        self.db.execute(
-            "DELETE FROM invitations WHERE expires<=?1",
-            [sql_time(now)?],
-        )?;
-        let previous: Option<String> = self
-            .db
-            .query_row(
-                "SELECT payload FROM invitations WHERE id=?1",
-                [grant.id.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
+        // One write transaction: expired invitations are collected, then this
+        // one is matched or added; an error leaves the journal unchanged.
+        let id = grant.id.to_string();
+        let txn = write(&self.db)?;
+        INVITATIONS.purge_through(&txn, journal_time(now)?)?;
+        let previous = txn
+            .open_table(INVITATIONS.0)?
+            .get(id.as_str())?
+            .map(|row| row.value().1.to_owned());
         if let Some(previous) = previous {
             let previous: StoredInvitation = serde_json::from_str(&previous)?;
             if previous.grant != grant
@@ -113,26 +110,22 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 return Err(RuntimeError::Conflict("invitation ID"));
             }
         } else {
-            let count: i64 = self
-                .db
-                .query_row("SELECT count(*) FROM invitations", [], |r| r.get(0))?;
-            if count >= self.config.limits.max_pending as i64 {
+            if INVITATIONS.count(&txn)? >= self.config.limits.max_pending as u64 {
                 return Err(RuntimeError::Capacity("invitations"));
             }
-            self.db.execute(
-                "INSERT INTO invitations VALUES (?1, ?2, ?3)",
-                params![
-                    grant.id.to_string(),
-                    sql_time(grant.expires_at)?,
-                    serde_json::to_string(&StoredInvitation {
-                        grant: grant.clone(),
-                        approver,
-                        independent_root,
-                        claim: None
-                    })?
-                ],
+            INVITATIONS.put(
+                &txn,
+                &id,
+                journal_time(grant.expires_at)?,
+                &serde_json::to_string(&StoredInvitation {
+                    grant: grant.clone(),
+                    approver,
+                    independent_root,
+                    claim: None,
+                })?,
             )?;
         }
+        txn.commit()?;
         Ok(RpcResponse::InvitationCreated { id: grant.id })
     }
 
@@ -148,16 +141,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Denied);
         }
-        let payload: Option<String> = self
-            .db
-            .query_row(
-                "SELECT payload FROM invitations WHERE id=?1 AND expires>?2",
-                params![claim.id.to_string(), sql_time(now)?],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let mut invitation: StoredInvitation =
-            serde_json::from_str(&payload.ok_or(RuntimeError::PendingUnavailable)?)?;
+        let live = journal_time(now)?;
+        let payload = INVITATIONS
+            .get(&self.db, &claim.id.to_string())?
+            .and_then(|(expires, payload)| (expires > live).then_some(payload))
+            .ok_or(RuntimeError::PendingUnavailable)?;
+        let mut invitation: StoredInvitation = serde_json::from_str(&payload)?;
         if !bool::from(
             claim
                 .token
@@ -196,10 +185,13 @@ impl<S: RegistryStore> ServerRuntime<S> {
         // Bind before any next step. A failed response can only resume this same
         // signed enrollment; the token cannot admit a second device.
         invitation.claim = Some(claim.request);
-        self.db.execute(
-            "UPDATE invitations SET payload=?1 WHERE id=?2",
-            params![serde_json::to_string(&invitation)?, claim.id.to_string()],
+        let txn = write(&self.db)?;
+        INVITATIONS.update(
+            &txn,
+            &claim.id.to_string(),
+            &serde_json::to_string(&invitation)?,
         )?;
+        txn.commit()?;
         self.approve_pending_with_authority(
             grant,
             invitation.approver,

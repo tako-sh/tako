@@ -1,6 +1,22 @@
 use super::*;
 use crate::isolation::fixture::TestDataDir as TempDir;
 
+/// Serves one workflow database for every app of `state`; apps keep their
+/// own runs in it. The server must outlive the test's workflow runtimes.
+pub(super) fn serve_workflows(state: &ServerState) -> tako_db::testing::TestServer {
+    let server = tako_db::testing::TestServer::start();
+    let database = server.database("tests#workflows");
+    let (url, token) = (server.url.clone(), database.token);
+    state.workflows.set_store_resolver(Arc::new(move |app| {
+        Some(tako_workflows::WorkflowStoreConfig::hosted(
+            url.clone(),
+            token.clone(),
+            app,
+        ))
+    }));
+    server
+}
+
 #[tokio::test]
 async fn sync_app_workflows_restarts_existing_entry_and_stops_removed_workflows() {
     let temp = TempDir::new().unwrap();
@@ -16,6 +32,7 @@ async fn sync_app_workflows_restarts_existing_entry_and_stops_removed_workflows(
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = serve_workflows(&state);
 
     let release_v1 = temp
         .path()
@@ -108,6 +125,7 @@ async fn sync_app_workflows_uses_manifest_app_root() {
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = serve_workflows(&state);
 
     for (index, (app_root, workflows_dir)) in [(".", "workflows"), ("app", "app/workflows")]
         .into_iter()
@@ -122,6 +140,11 @@ async fn sync_app_workflows_uses_manifest_app_root() {
             .join("releases")
             .join("v1");
         std::fs::create_dir_all(release.join(workflows_dir)).unwrap();
+        std::fs::write(
+            release.join(workflows_dir).join("send.ts"),
+            r#"export default defineWorkflow("send", { handler: async () => {} });"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(release.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
         std::fs::write(
             release.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),
@@ -166,6 +189,7 @@ async fn sync_app_workflows_respects_manifest_app_dir_for_workspace_layouts() {
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = serve_workflows(&state);
 
     let release = temp
         .path()
@@ -209,6 +233,7 @@ async fn sync_app_workflows_injects_release_env_and_app_data_dir_into_worker() {
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = serve_workflows(&state);
 
     let release = temp
         .path()
@@ -297,6 +322,7 @@ async fn sync_app_workflows_registers_go_worker_binary_from_manifest() {
         empty_challenge_tokens(),
     )
     .unwrap();
+    let _workflow_db = serve_workflows(&state);
 
     let release = temp
         .path()
@@ -334,6 +360,217 @@ async fn sync_app_workflows_registers_go_worker_binary_from_manifest() {
 }
 
 #[tokio::test]
+async fn deploys_of_workflow_releases_refuse_an_environment_without_a_workflow_database() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "go-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = temp.path().join("apps/go-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("worker"), "sleep 600\n").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "protocol_version": tako_core::PROTOCOL_VERSION,
+            "runtime": "go",
+            "main": "app",
+            "workflow_worker_main": "worker",
+            "idle_timeout": 300,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let prepare = |require_store| {
+        state.prepare_app_workflows(
+            app_id,
+            &release,
+            Some("/bin/sh"),
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: None,
+                require_store,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+    };
+    // Only a full client can provision the database, so a deploy must not
+    // look successful without it; recovery keeps the app up without workflows.
+    let Err(error) = prepare(true).await else {
+        panic!("a deploy without a workflow database succeeded");
+    };
+    assert!(
+        error.to_string().contains("no workflow database"),
+        "{error}"
+    );
+    assert!(prepare(false).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_release_outranks_the_failed_candidates_schedules() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "go-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let _workflow_db = serve_workflows(&state);
+    let release = temp.path().join("apps/go-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("worker"), "cat <&3 >/dev/null\nsleep 600\n").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "protocol_version": tako_core::PROTOCOL_VERSION,
+            "runtime": "go",
+            "main": "app",
+            "workflow_worker_main": "worker",
+            "idle_timeout": 300,
+            "env_vars": {"TAKO_BUILD": "v1"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    // A candidate deployment took a revision, and its workers may have
+    // registered their schedules under it before the deployment failed.
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let candidate = state
+        .prepare_app_workflows(
+            app_id,
+            &release,
+            Some("/bin/sh"),
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: state.workflows.workflow_store_config(app_id),
+                require_store: true,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let candidate_revision = candidate.schedule_revision().unwrap();
+    state.install_app_workflows(app_id, Some(candidate));
+
+    state
+        .restore_app_workflows(app_id, "v1", &release, Some("/bin/sh"))
+        .await;
+    let restored = state
+        .state_store
+        .workflow_schedule_revision(app_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        restored > candidate_revision,
+        "{restored} <= {candidate_revision}"
+    );
+    assert!(state.workflows.has(app_id));
+    assert!(state.workflows_waiting.lock().is_empty());
+
+    // A database that does not answer stops the candidate's runtime and
+    // leaves the release to the retry, under a newer revision again.
+    let token = tako_db::testing::TestServer::start()
+        .database("tests#workflows")
+        .token;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    state.workflows.set_store_resolver(Arc::new(move |app| {
+        Some(tako_workflows::WorkflowStoreConfig::hosted(
+            url.clone(),
+            token.clone(),
+            app,
+        ))
+    }));
+    state
+        .restore_app_workflows(app_id, "v1", &release, Some("/bin/sh"))
+        .await;
+    assert!(!state.workflows.is_running(app_id));
+    let waiting = state.workflows_waiting.lock()[app_id].clone();
+    assert_eq!(waiting.version, "v1");
+    assert!(waiting.fresh_revision);
+}
+
+#[tokio::test]
+async fn a_workflows_directory_without_definitions_runs_no_workflows() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "js-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = temp.path().join("apps/js-app/production/releases/v1");
+    write_js_workflow_scaffold(&release);
+    write_release_manifest(&release, "bun", "index.js", &["bun", "{main}"], None, 300);
+    // The deploy client provisions no workflow database for these files.
+    std::fs::remove_file(release.join("src/workflows/send.ts")).unwrap();
+    std::fs::write(release.join("src/workflows/README.md"), "notes").unwrap();
+    std::fs::write(release.join("src/workflows/_shared.ts"), "export {};").unwrap();
+    let (secrets, storages, databases, kv) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let prepared = state
+        .prepare_app_workflows(
+            app_id,
+            &release,
+            None,
+            crate::server_state::WorkflowBindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: &databases,
+                kv: &kv,
+                store: None,
+                require_store: true,
+            },
+            tako_workflows::manager::ScheduleActivation::Deploy,
+        )
+        .await;
+    assert!(matches!(prepared, Ok(None)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
     let temp = TempDir::new().unwrap();
     let app_id = "wf-ops/production";
@@ -403,27 +640,47 @@ async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
         "App not found: ghost/production"
     );
 
-    // No workflow store on this server yet: empty, and nothing is created.
+    // Without a workflow database the app has no runs to inspect.
+    assert!(
+        error(call(list(None)).await).contains("has no workflow database"),
+        "listing needs the environment's workflow database"
+    );
+
+    // The hosted client blocks, so the test drives it off the runtime.
+    let server = tako_db::testing::TestServer::start();
+    let database = server.database(&tako_core::workflows_grant_scope(app_id));
+    let store = tako_workflows::WorkflowStoreConfig::hosted(
+        server.url.clone(),
+        database.token.clone(),
+        app_id,
+    );
+    {
+        let store = store.clone();
+        state
+            .workflows
+            .set_store_resolver(Arc::new(move |app| (app == app_id).then(|| store.clone())));
+    }
     let empty = data(call(list(None)).await);
-    assert_eq!(empty["store"], "sqlite");
     assert_eq!(empty["runs"], serde_json::json!([]));
     assert!(data(call(get("r1")).await)["run"].is_null());
     assert_eq!(error(call(retry("r1")).await), "Workflow run not found: r1");
-    assert!(!state.workflows.workflows_db_path(app_id).exists());
 
-    let db = tako_workflows::RunsDb::open(&state.workflows.workflows_db_path(app_id)).unwrap();
-    for id in ["r1", "r2"] {
-        let options = tako_core::EnqueueOpts {
-            id: Some(id.into()),
-            ..Default::default()
-        };
-        db.enqueue("work", &serde_json::json!({"n": id}), &options)
+    let (db, owner) = tokio::task::block_in_place(|| {
+        let db = tako_workflows::RunsDb::open(store).unwrap();
+        for id in ["r1", "r2"] {
+            let options = tako_core::EnqueueOpts {
+                id: Some(id.into()),
+                ..Default::default()
+            };
+            db.enqueue("work", &serde_json::json!({"n": id}), &options)
+                .unwrap();
+        }
+        let owner = db
+            .claim("worker", &["work".into()], 60_000)
+            .unwrap()
             .unwrap();
-    }
-    let owner = db
-        .claim("worker", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
+        (db, owner)
+    });
     assert_eq!(owner.id, "r1");
 
     let listed: tako_core::ListWorkflowRunsResponse =
@@ -451,8 +708,9 @@ async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
         )
     );
     assert!(
-        db.complete("r1", &owner.worker_id, &serde_json::Value::Null)
-            .is_err(),
+        tokio::task::block_in_place(|| db
+            .complete("r1", &owner.worker_id, &serde_json::Value::Null)
+            .is_err()),
         "the cancelled attempt is fenced"
     );
     assert_eq!(
@@ -486,9 +744,10 @@ async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
     let retried: tako_core::WorkflowRunTransition =
         serde_json::from_value(data(call(retry("r1")).await)).unwrap();
     assert_eq!(retried.status, tako_core::WorkflowRunStatus::Pending);
-    let again = db
-        .claim("worker", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
+    let again = tokio::task::block_in_place(|| {
+        db.claim("worker", &["work".into()], 60_000)
+            .unwrap()
+            .unwrap()
+    });
     assert_eq!((again.id.as_str(), again.attempts), ("r1", 1));
 }

@@ -75,7 +75,16 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
                 }
             }
         }
-        return Ok(serde_json::from_value(value)?);
+        let mut workspace: Workspace = serde_json::from_value(value)?;
+        // App data archive keys are no longer local rows, so their last
+        // published copies and queued commands are not unpublished changes.
+        for entry in workspace.environments.values_mut() {
+            entry.base.retain(|row| !retired(row.key.kind));
+            entry
+                .pending
+                .retain(|pending| !retired(pending.mutation.address.kind));
+        }
+        return Ok(workspace);
     }
     let legacy = project.join(".tako/secrets.json");
     let values = if legacy.try_exists()? {
@@ -88,6 +97,12 @@ fn read_workspace(project: &Path) -> Result<Workspace> {
         ..Default::default()
     })
 }
+/// Kinds of the removed app data archive keys, which older releases kept
+/// with an environment's secrets.
+fn retired(kind: RecordKind) -> bool {
+    matches!(kind, RecordKind::BackupKey | RecordKind::BackupActive)
+}
+
 fn write_workspace(project: &Path, state: &Workspace) -> Result<()> {
     state.values.validate()?;
     super::write_json(&SecretsStore::default_path(project), state, true)
@@ -367,7 +382,10 @@ fn merge_remote(
             &record.address.scope == scope
                 && !matches!(
                     record.address.kind,
-                    RecordKind::Database | RecordKind::DatabaseKey
+                    RecordKind::Database
+                        | RecordKind::DatabaseKey
+                        | RecordKind::BackupKey
+                        | RecordKind::BackupActive
                 )
                 && record.address.readable(permissions)
         })
@@ -495,7 +513,7 @@ pub(crate) fn preview_clear(project: &Path, app: &str, env: &str) -> Result<Vec<
 /// Delete every app secret of one environment from its network and from this
 /// worktree's drafts, publishing the deletions immediately. Unpublished drafts
 /// of other kinds, such as provider credentials, stay local. Storage
-/// credentials and backup keys are never touched: retained backups need them.
+/// credentials are never touched: hosted database backups need them.
 pub(crate) fn clear_environment(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
     let (alias, scope) = environment_target(app, env)?;
     let _lock = lock(project)?;
@@ -648,7 +666,7 @@ fn publish_changes(
     let observed_cache =
         read_cache(alias)?.unwrap_or_else(|| SharedSnapshot::empty(network.clone()));
     let observed = observed_cache.latest()?;
-    for row_key in local::publication_order(dirty, &current) {
+    for row_key in dirty {
         let id = RequestId::random()?;
         let address = RecordAddress {
             scope: scope.clone(),

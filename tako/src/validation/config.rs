@@ -134,7 +134,7 @@ fn databases_without_backups(config: &TakoToml) -> Vec<String> {
         for database in databases {
             if crate::commands::storage::database_backup_setting(config, env, database).is_none() {
                 warnings.push(format!(
-                    "Database '{database}' gets no snapshots in '{env}': set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [databases.{database}], to a private S3 storage."
+                    "Database '{database}' gets no snapshots in '{env}': set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [db.{database}], to a private S3 storage."
                 ));
             }
         }
@@ -157,7 +157,7 @@ fn databases_without_backups(config: &TakoToml) -> Vec<String> {
 /// fails only once the app runs there. Development counts only when it lists
 /// its own bindings; otherwise it binds every name the others use.
 fn database_binding_gaps(config: &TakoToml) -> Vec<String> {
-    binding_gaps(config, |env| &env.databases, "database", "databases")
+    binding_gaps(config, |env| &env.databases, "database", "db")
 }
 
 /// [`database_binding_gaps`] for KV stores: app code reads `tako.kv.<name>`
@@ -281,9 +281,9 @@ mod tests {
         assert_eq!(
             binding_warnings(&config),
             [
-                "Environment 'preview' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'preview'. Bind one with `analytics = \"<database>\"` in [envs.preview].databases",
-                "Environment 'preview' does not bind database 'main', which 'production', 'staging' bind; the app has no 'main' database in 'preview'. Bind one with `main = \"<database>\"` in [envs.preview].databases",
-                "Environment 'staging' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'staging'. Bind one with `analytics = \"<database>\"` in [envs.staging].databases",
+                "Environment 'preview' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'preview'. Bind one with `analytics = \"<database>\"` in [envs.preview].db",
+                "Environment 'preview' does not bind database 'main', which 'production', 'staging' bind; the app has no 'main' database in 'preview'. Bind one with `main = \"<database>\"` in [envs.preview].db",
+                "Environment 'staging' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'staging'. Bind one with `analytics = \"<database>\"` in [envs.staging].db",
             ]
         );
     }
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(
             backup_warnings(&config),
             [
-                "Database 'shop' gets no snapshots in 'production': set [envs.production].backup.storage, or `backup = \"<storage>\"` in [databases.shop], to a private S3 storage."
+                "Database 'shop' gets no snapshots in 'production': set [envs.production].backup.storage, or `backup = \"<storage>\"` in [db.shop], to a private S3 storage."
             ]
         );
         config.envs.get_mut("production").unwrap().backup = Some(crate::config::BackupConfig {

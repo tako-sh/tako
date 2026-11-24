@@ -993,5 +993,4 @@ ssl="cloudflare"
     assert_eq!(bindings.ssl.provider, config.get_ssl_provider("production"));
     assert!(bindings.ssl.cloudflare_api_token.is_none());
     assert!(bindings.storages.is_empty());
-    assert!(bindings.backup.is_none());
 }

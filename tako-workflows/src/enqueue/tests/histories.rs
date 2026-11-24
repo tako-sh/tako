@@ -3,10 +3,11 @@ use super::*;
 #[path = "../../../../test-support/history.rs"]
 mod history;
 
+/// A history reopens the store after every transition, as a restarted
+/// server would.
 fn lifecycle_history(seed: u64) -> Vec<String> {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("workflows.sqlite");
-    let mut db = RunsDb::open(&path).unwrap();
+    let store = HostedFixture::start();
+    let mut db = store.open("app");
     let mut random = history::Seed(seed);
     let mut trace = Vec::new();
     for turn in 0..12 {
@@ -43,18 +44,17 @@ fn lifecycle_history(seed: u64) -> Vec<String> {
         match transition {
             0 => {
                 // Expiry is injected into persisted state; no wall-clock sleeps.
-                db.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [&id]);
+                db.test_execute(
+                    "UPDATE {runs} SET lease_until=0 WHERE id=?1",
+                    vec![id.as_str().into()],
+                );
                 assert_eq!(db.reclaim_expired().unwrap(), 1);
             }
             1 => db.fail(&id, "old", "retry", Some(0), false).unwrap(),
             _ => db.defer(&id, "old", Some(0)).unwrap(),
         }
         drop(db);
-        db = RunsDb::open(&path).unwrap();
-        assert_eq!(
-            db.raw_query_values("PRAGMA synchronous", ()),
-            vec![Value::Integer(2)]
-        );
+        db = store.open("app");
         let run = db.claim("new", &["work".into()], 60_000).unwrap().unwrap();
         assert_eq!(run.id, id);
         assert_eq!(run.step_state["saved"], payload);
@@ -130,63 +130,4 @@ fn workflow_lifecycle_histories_are_reproducible() {
             "seed={seed}: logical trace changed"
         );
     }
-}
-
-#[test]
-fn workflow_crash_recovery() {
-    const CHILD_PATH: &str = "TAKO_TEST_WORKFLOW_CRASH_PATH";
-    if let Some(path) = std::env::var_os(CHILD_PATH) {
-        let db = RunsDb::open(std::path::Path::new(&path)).unwrap();
-        db.enqueue(
-            "work",
-            &serde_json::json!({}),
-            &EnqueueOpts {
-                id: Some("acknowledged".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        db.claim("exited", &["work".into()], 60_000)
-            .unwrap()
-            .unwrap();
-        db.save_step(
-            "acknowledged",
-            "exited",
-            "checkpoint",
-            &serde_json::json!(42),
-        )
-        .unwrap();
-        // Exit without Rust destructors or a SQLite close/checkpoint. This
-        // verifies process-crash recovery, not physical power-loss behavior.
-        std::process::exit(23);
-    }
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("workflows.sqlite");
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "enqueue::tests::histories::workflow_crash_recovery",
-            "--nocapture",
-        ])
-        .env(CHILD_PATH, &path)
-        .status()
-        .unwrap();
-    assert_eq!(status.code(), Some(23));
-    let db = RunsDb::open(&path).unwrap();
-    assert_eq!(
-        db.raw_query_values("PRAGMA synchronous", ()),
-        vec![Value::Integer(2)]
-    );
-    db.raw_execute("UPDATE runs SET lease_until=0", ());
-    assert_eq!(db.reclaim_expired().unwrap(), 1);
-    let run = db
-        .claim("replacement", &["work".into()], 60_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.id, "acknowledged");
-    assert_eq!(run.step_state["checkpoint"], 42);
-    assert!(matches!(
-        db.complete(&run.id, "exited", &serde_json::Value::Null),
-        Err(RunsDbError::StaleWorker)
-    ));
 }

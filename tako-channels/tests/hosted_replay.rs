@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tako_channels::{
     ChannelError, ChannelPublishPayload, ChannelStore, ChannelStoreConfig, ReplayCursor,
 };
-use tako_database::{
+use tako_db::{
     Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
     http::{self, Access},
 };

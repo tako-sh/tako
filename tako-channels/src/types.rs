@@ -324,11 +324,41 @@ pub enum ChannelError {
         crate::store::MAX_STREAMS
     )]
     StreamLimit,
+    /// The app has no replay database binding: no deployed release of it
+    /// uses channels.
+    #[error(
+        "channels are not provisioned for this app: deploy a release that uses channels, \
+         stores or presence"
+    )]
+    NotProvisioned,
+    /// The replay database did not answer, or is busy. Worth retrying.
+    #[error("channel storage unavailable: {0}")]
+    Unavailable(String),
     #[error("storage error: {0}")]
     Storage(String),
 }
 
+impl From<tako_db::client::ClientError> for ChannelError {
+    fn from(error: tako_db::client::ClientError) -> Self {
+        if error.is_unavailable() {
+            Self::Unavailable(format!("hosted channel replay: {error}"))
+        } else {
+            Self::Storage(format!("hosted channel replay: {error}"))
+        }
+    }
+}
+
 impl ChannelError {
+    /// This error if a retry could succeed (the store or its broker is
+    /// unavailable, or the app has no channels yet), else a storage error
+    /// with `message`.
+    pub fn or_storage(self, message: &str) -> Self {
+        match self {
+            Self::Unavailable(_) | Self::AuthUnavailable | Self::NotProvisioned => self,
+            _ => Self::Storage(message.into()),
+        }
+    }
+
     /// The internal-socket code a publish or close failing with this error
     /// replies with. Failures an SDK has no reason to branch on have none.
     pub fn socket_code(&self) -> Option<tako_core::ErrorCode> {
@@ -338,7 +368,10 @@ impl ChannelError {
             Self::NotDefined | Self::Undeclared { .. } => Some(ErrorCode::ChannelUnknown),
             Self::ParamsInvalid(_) => Some(ErrorCode::ChannelParamsInvalid),
             Self::BadRequest(_) => Some(ErrorCode::InvalidRequest),
-            Self::StreamLimit | Self::AuthUnavailable => Some(ErrorCode::Unavailable),
+            Self::StreamLimit
+            | Self::AuthUnavailable
+            | Self::NotProvisioned
+            | Self::Unavailable(_) => Some(ErrorCode::Unavailable),
             Self::InvalidPath
             | Self::Unsupported
             | Self::Unauthorized
@@ -355,11 +388,5 @@ impl From<ChannelError> for tako_core::SocketError {
             code: error.socket_code(),
             message: error.to_string(),
         }
-    }
-}
-
-impl From<rusqlite::Error> for ChannelError {
-    fn from(e: rusqlite::Error) -> Self {
-        ChannelError::Storage(e.to_string())
     }
 }

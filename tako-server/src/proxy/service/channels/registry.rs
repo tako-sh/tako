@@ -2,13 +2,13 @@ use super::*;
 use crate::channels::ChannelTarget;
 
 impl TakoProxy {
-    /// The app's channel backend from runtime credentials, resolved once per
-    /// credential generation rather than on every channel request.
+    /// The app's channel replay binding, resolved once per credential
+    /// generation rather than on every channel request. An app without one
+    /// has no channels: [`ChannelError::NotProvisioned`].
     async fn channel_target_for(
         &self,
         app_name: &str,
-        native_configured: bool,
-    ) -> Result<ChannelTarget> {
+    ) -> std::result::Result<ChannelTarget, ChannelError> {
         let generation = self
             .channel_credentials_generation
             .load(std::sync::atomic::Ordering::Acquire);
@@ -21,19 +21,12 @@ impl TakoProxy {
         let app_id = app_name.to_owned();
         let target = tokio::task::spawn_blocking(move || match resolver {
             Some(resolve) => resolve(&app_id),
-            None if native_configured => {
-                Err("native channel credentials resolver missing".to_string())
-            }
-            None => Ok(ChannelTarget::Local),
+            None => Err(ChannelError::Storage(
+                "channel credentials resolver missing".into(),
+            )),
         })
         .await
-        .map_err(|_| {
-            Error::explain(
-                ErrorType::InternalError,
-                "channel credential resolver failed",
-            )
-        })?
-        .map_err(|_| Error::explain(ErrorType::InternalError, "channel credentials unavailable"))?;
+        .map_err(|_| ChannelError::Storage("channel credential resolver failed".into()))??;
         // Tagged with the generation read before resolving, so a deployment that
         // lands in between forces one more resolution instead of going stale.
         self.channel_credentials
@@ -48,14 +41,12 @@ impl TakoProxy {
     pub(super) async fn channel_store_for_app(
         &self,
         app_name: &str,
-    ) -> Result<Arc<ProxyChannelStore>> {
+    ) -> std::result::Result<Arc<ProxyChannelStore>, ChannelError> {
         let native = self.native_channels.read().clone();
         let native_configured = native.is_some();
         let app = app_scope(app_name)
-            .map_err(|_| Error::explain(ErrorType::InternalError, "invalid channel app scope"))?;
-        let target = self
-            .channel_target_for(app.as_str(), native_configured)
-            .await?;
+            .map_err(|_| ChannelError::Storage("invalid channel app scope".into()))?;
+        let target = self.channel_target_for(app.as_str()).await?;
         for reopened in [false, true] {
             let cell = self
                 .channel_stores
@@ -65,12 +56,7 @@ impl TakoProxy {
                 .clone();
             let store = cell
                 .get_or_try_init(|| async {
-                    let path = crate::channels::app_channels_db_path(
-                        self.lb.app_manager().data_dir(),
-                        app.as_str(),
-                    );
                     ProxyChannelStore::open(
-                        path,
                         app.clone(),
                         target.clone(),
                         native.clone(),
@@ -78,11 +64,8 @@ impl TakoProxy {
                     )
                     .await
                     .map(Arc::new)
-                    .map_err(|_| {
-                        Error::explain(
-                            ErrorType::InternalError,
-                            "channel reader or native broker unavailable",
-                        )
+                    .map_err(|error| {
+                        error.or_storage("open store: channel reader or native broker unavailable")
                     })
                 })
                 .await?;
@@ -101,18 +84,15 @@ impl TakoProxy {
                 // letting its reconnects re-register the old backend.
                 store.detach();
                 if reopened {
-                    return Err(Error::explain(
-                        ErrorType::InternalError,
-                        "channel backend configuration changed; reopen app channel reader",
+                    return Err(ChannelError::Storage(
+                        "open store: channel backend configuration changed; reopen app channel reader"
+                            .into(),
                     ));
                 }
                 continue;
             }
             store.ensure_ready().await.map_err(|_| {
-                Error::explain(
-                    ErrorType::InternalError,
-                    "native channel broker unavailable",
-                )
+                ChannelError::Storage("open store: native channel broker unavailable".into())
             })?;
             return Ok(store.clone());
         }
@@ -128,10 +108,7 @@ impl TakoProxy {
         self.channel_registry
             .get_or_load(app_name, instance.build_version(), channel, || async {
                 let defs = fetch_channel_registry(app_name, instance).await?;
-                let store = self
-                    .channel_store_for_app(app_name)
-                    .await
-                    .map_err(|error| ChannelError::Storage(error.to_string()))?;
+                let store = self.channel_store_for_app(app_name).await?;
                 for definition in &defs {
                     store
                         .sync_channel_async(&definition.channel, &definition.lifecycle_auth())

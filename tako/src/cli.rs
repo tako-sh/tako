@@ -3,8 +3,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, kv, releases, scale, secret, sqlite, storage, upgrade,
-    workflows,
+    self, credentials, db, delete, kv, releases, scale, secret, storage, upgrade, workflows,
 };
 use clap::CommandFactory;
 
@@ -187,13 +186,8 @@ pub enum Commands {
     #[command(subcommand)]
     Storage(storage::StorageCommands),
 
-    /// App data backup commands
-    #[command(subcommand)]
-    Backup(backups::BackupCommands),
-
     /// Tako-hosted SQLite databases
-    #[command(visible_alias = "db")]
-    Sqlite(sqlite::SqliteArgs),
+    Db(db::DbArgs),
 
     /// Tako-hosted KV stores of JSON values with optional expiry
     Kv(kv::KvArgs),
@@ -397,8 +391,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Ssh { .. } => "ssh",
         Commands::Secret(_) => "secret",
         Commands::Storage(_) => "storage",
-        Commands::Backup(_) => "backup",
-        Commands::Sqlite(_) => "sqlite",
+        Commands::Db(_) => "db",
         Commands::Kv(_) => "kv",
         Commands::Credential { .. } => "credential",
         Commands::Release(_) => "release",
@@ -440,10 +433,9 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             ]
             | ["network", "client", "add" | "revoke" | "list"]
             | ["secret", "migrate" | "sync" | "clear"]
-            | ["backup", "now" | "download" | "restore"]
             | [
-                "sqlite",
-                "create" | "link" | "backup" | "restore" | "import" | "export" | "delete"
+                "db",
+                "create" | "backup" | "restore" | "import" | "export" | "delete"
             ]
             | ["kv", "create" | "delete"]
             | ["workflow", "retry" | "cancel"]
@@ -459,8 +451,8 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
                 "list"
             ]
             | ["workflow", "show"]
-            | ["backup" | "network", "list" | "status"]
-            | ["sqlite", "list" | "status" | "backups"]
+            | ["network", "list" | "status"]
+            | ["db", "list" | "status" | "backups"]
             | ["kv", "list" | "status"]
             | ["network", "client" | "server", "list"]
     )
@@ -599,23 +591,9 @@ impl Cli {
                 storage::run(cmd, self.config.as_deref())?;
                 json_success(json, "storage")
             }
-            Commands::Backup(cmd) => {
-                let emit_generic = json
-                    && !matches!(
-                        cmd,
-                        backups::BackupCommands::List { .. }
-                            | backups::BackupCommands::Status { .. }
-                    );
-                backups::run(cmd, self.config.as_deref())?;
-                if emit_generic {
-                    json_success(true, "backup")
-                } else {
-                    Ok(())
-                }
-            }
-            Commands::Sqlite(cmd) => {
+            Commands::Db(cmd) => {
                 // Each subcommand prints its own JSON result.
-                sqlite::run(cmd, self.config.as_deref())
+                db::run(cmd, self.config.as_deref())
             }
             Commands::Kv(cmd) => {
                 // Each subcommand prints its own JSON result.

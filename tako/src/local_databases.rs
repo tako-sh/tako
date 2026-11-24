@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tako_core::{DatabaseConnection, DatabaseEngine, KvConnection};
-use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
 use crate::config::TakoToml;
 
 /// Binding name → database name for `tako dev` and `tako run`. Uses
-/// `[envs.development].databases` when set, and otherwise every binding of
+/// `[envs.development].db` when set, and otherwise every binding of
 /// every environment, so a project works locally without extra config.
 pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String> {
     development_bindings_of(config, DatabaseEngine::Sqlite)
@@ -29,7 +29,7 @@ pub(crate) fn development_kv_bindings(config: &TakoToml) -> BTreeMap<String, Str
 }
 
 fn development_bindings_of(config: &TakoToml, engine: DatabaseEngine) -> BTreeMap<String, String> {
-    use crate::commands::sqlite::env_bindings;
+    use crate::commands::db::env_bindings;
     if let Some(env_config) = config.envs.get("development")
         && !env_bindings(env_config, engine).is_empty()
     {
@@ -71,7 +71,7 @@ fn environment_bindings_of(
         .envs
         .get(environment)
         .map(|env| {
-            crate::commands::sqlite::env_bindings(env, engine)
+            crate::commands::db::env_bindings(env, engine)
                 .clone()
                 .into_iter()
                 .collect()
@@ -210,7 +210,7 @@ fn environment_migrations(
     for (database, selected) in selected {
         let (binding, migrations) = (selected.binding, selected.migrations);
         let path = environment_database_path(&project_dir, &database, environment);
-        let report = tako_database::migrate::migrate_file(&path, owner, &migrations, dry_run)
+        let report = tako_db::migrate::migrate_file(&path, owner, &migrations, dry_run)
             .map_err(|error| format!("Database `{binding}`: {error}"))?;
         result.warnings.extend(
             report
@@ -393,9 +393,9 @@ impl LocalDatabases {
                     id
                 }
             };
-            let token = tako_database::generate_token();
+            let token = tako_db::generate_token();
             host_bindings.push(Binding {
-                token_hash: tako_database::hash_token(&token),
+                token_hash: tako_db::hash_token(&token),
                 database: id,
                 home: Home::Local,
             });
@@ -412,12 +412,7 @@ impl LocalDatabases {
         runtime.spawn(async move {
             match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => {
-                    tako_database::http::serve(
-                        serve_host,
-                        listener,
-                        tako_database::http::Access::Apps,
-                    )
-                    .await;
+                    tako_db::http::serve(serve_host, listener, tako_db::http::Access::Apps).await;
                 }
                 Err(error) => tracing::warn!("Local database listener failed: {error}"),
             }
@@ -508,11 +503,11 @@ name = "shop"
 
 [envs.production]
 route = "shop.example.com"
-databases = { main = "shop-db" }
+db = { main = "shop-db" }
 
 [envs.staging]
 route = "staging.shop.example.com"
-databases = { main = "shop-staging", events = "events" }
+db = { main = "shop-staging", events = "events" }
 "#;
 
     #[test]
@@ -523,8 +518,7 @@ databases = { main = "shop-staging", events = "events" }
             "the first environment by name wins"
         );
         assert_eq!(bindings["events"], "events");
-        let explicit =
-            format!("{PROJECT}\n[envs.development]\ndatabases = {{ main = \"local\" }}\n");
+        let explicit = format!("{PROJECT}\n[envs.development]\ndb = {{ main = \"local\" }}\n");
         assert_eq!(
             development_bindings(&config(&explicit)),
             BTreeMap::from([("main".to_string(), "local".to_string())])
@@ -539,10 +533,10 @@ databases = { main = "shop-staging", events = "events" }
             r#"
 name = "shop"
 [envs.development]
-databases = { main = "shared-name", dev_only = "dev-only" }
+db = { main = "shared-name", dev_only = "dev-only" }
 [envs.test-e2e]
 route = "shop-test-e2e.test"
-databases = { main = "shared-name" }
+db = { main = "shared-name" }
 [envs.empty]
 route = "empty.test"
 "#,
@@ -555,14 +549,14 @@ route = "empty.test"
         .unwrap();
         migrate_environment(&project, &cfg, "development").unwrap();
         let dev_file = &dev_files(&project, &cfg, "development")["main"];
-        let dev = tako_sqlite::open_local(dev_file).unwrap();
+        let dev = rusqlite::Connection::open(dev_file).unwrap();
         dev.execute("INSERT INTO items VALUES ('keep')", [])
             .unwrap();
         migrate_environment(&project, &cfg, "test-e2e").unwrap();
         let test_files = dev_files(&project, &cfg, "test-e2e");
         assert_eq!(test_files.len(), 1);
         assert_ne!(&test_files["main"], dev_file);
-        let test = tako_sqlite::open_local(&test_files["main"]).unwrap();
+        let test = rusqlite::Connection::open(&test_files["main"]).unwrap();
         assert_eq!(
             test.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, i64>(0))
                 .unwrap(),

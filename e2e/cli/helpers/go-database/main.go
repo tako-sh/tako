@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	main, ok := tako.GetDatabase("main")
+	main, ok := tako.GetDB("main")
 	if !ok {
 		log.Fatal("no database is bound as main")
 	}
