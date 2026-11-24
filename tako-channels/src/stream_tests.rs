@@ -4,7 +4,7 @@ use crate::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 fn payload(data: Value) -> ChannelPublishPayload {
     ChannelPublishPayload {
@@ -277,11 +277,11 @@ async fn mesh_wakes_and_ephemeral_fanout_stay_within_one_binding() {
     assert_eq!(delivered.event_id, own.event_id);
 }
 
-async fn sse_body(
+async fn connect_sse(
     store: &Arc<ChannelStore>,
     stream: &ChannelStream,
     after: Option<ReplayCursor>,
-) -> String {
+) -> (BufReader<DuplexStream>, tokio::task::JoinHandle<()>) {
     let (mut client, io) = tokio::io::duplex(1 << 16);
     client
         .write_all(b"GET / HTTP/1.1\r\nHost: local\r\n\r\n")
@@ -297,7 +297,7 @@ async fn sse_body(
         .write_response_header(Box::new(header), false)
         .await
         .unwrap();
-    let lifecycle = auth(json!({"ok": true, "maxConnectionLifetimeMs": 150}));
+    let lifecycle = auth(json!({"ok": true}));
     let resets = store.resets(stream.key());
     let (store, stream) = (store.clone(), stream.clone());
     let server = tokio::spawn(async move {
@@ -305,10 +305,20 @@ async fn sse_body(
             .await
             .unwrap();
     });
-    let mut response = String::new();
-    client.read_to_string(&mut response).await.unwrap();
-    server.await.unwrap();
-    response
+    (BufReader::new(client), server)
+}
+
+async fn read_through_sse_message(client: &mut BufReader<DuplexStream>, body: &mut String) {
+    loop {
+        let start = body.len();
+        assert!(
+            client.read_line(body).await.unwrap() > 0,
+            "SSE ended before the message: {body}"
+        );
+        if body[start..].starts_with("data: ") {
+            return;
+        }
+    }
 }
 
 fn sse_messages(body: &str) -> Vec<Value> {
@@ -333,22 +343,19 @@ async fn sse_replays_and_follows_one_binding_under_the_public_channel_name() {
             .append_async(b.key(), &payload(json!("b1")))
             .await
             .unwrap();
-        let live = {
-            let (store, a, b) = (store.clone(), a.clone(), b.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(40)).await;
-                store
-                    .append_async(b.key(), &payload(json!("b2")))
-                    .await
-                    .unwrap();
-                store
-                    .append_async(a.key(), &payload(json!("a2")))
-                    .await
-                    .unwrap()
-            })
-        };
-        let body = sse_body(&store, &a, start).await;
-        let second = live.await.unwrap();
+        let (mut client, server) = connect_sse(&store, &a, start).await;
+        let mut body = String::new();
+        // Publish only after the client has received the replay.
+        read_through_sse_message(&mut client, &mut body).await;
+        store
+            .append_async(b.key(), &payload(json!("b2")))
+            .await
+            .unwrap();
+        let second = store
+            .append_async(a.key(), &payload(json!("a2")))
+            .await
+            .unwrap();
+        read_through_sse_message(&mut client, &mut body).await;
         assert_eq!(
             sse_messages(&body),
             vec![
@@ -360,9 +367,14 @@ async fn sse_replays_and_follows_one_binding_under_the_public_channel_name() {
         assert!(!body.contains("tako.stream"), "{body}");
         assert!(!body.contains(&a.key()[STREAM_CHANNEL_PREFIX.len()..]));
         assert!(body.contains(&format!("id: {}\n", first.id)));
+        store.signal_gap(Some(a.key()));
+        server.await.unwrap();
 
         // The other binding's cursor is reset, not resumed.
-        let foreign = sse_body(&store, &b, Some(cursor(&first))).await;
+        let (mut client, server) = connect_sse(&store, &b, Some(cursor(&first))).await;
+        let mut foreign = String::new();
+        client.read_to_string(&mut foreign).await.unwrap();
+        server.await.unwrap();
         assert!(foreign.contains("event: tako.reset"), "{foreign}");
         assert_eq!(sse_messages(&foreign), vec![json!({})], "only the reset");
     })
