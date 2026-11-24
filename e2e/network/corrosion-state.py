@@ -91,19 +91,41 @@ def wait_ready(i):
             time.sleep(0.1)
 
 
-def restart(i, crash):
-    if crash:
-        processes[i].kill()
-    else:
-        processes[i].terminate()
-    processes[i].wait(timeout=20)
+def start(i):
     with (root / str(i) / "agent.log").open("a") as log:
-        processes[i] = subprocess.Popen(
+        return subprocess.Popen(
             [binary, "-c", str(root / str(i) / "config.toml"), "agent"],
             stdout=log,
             stderr=log,
         )
-    wait_ready(i)
+
+
+def publish(i, record_id, value):
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    result = post(i, "/v1/transactions", [[
+        "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
+        ["secret", record_id, digest, value],
+    ]])
+    assert "error" not in result, result
+
+
+def wait_for_payload(i, value, deadline):
+    while time.monotonic() < deadline:
+        response = post(i, "/v1/queries", [
+            "SELECT payload FROM tako_shared_records WHERE payload = ?", [value],
+        ])
+        rows = []
+        for line in response.splitlines():
+            event = json.loads(line)
+            assert "error" not in event, event
+            if "row" in event:
+                rows.append(event["row"][1])
+        if [value] in rows and time.monotonic() <= deadline:
+            return
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"Server {i} did not receive {value} within {CRASH_CATCH_UP_SECONDS} s of the crash"
+    )
 
 
 try:
@@ -128,14 +150,7 @@ max_sync_backoff = {max_sync_backoff}
 [admin]
 path = "{d}/admin.sock"
 ''')
-        with open(d / "agent.log", "w") as log:
-            processes.append(
-                subprocess.Popen(
-                    [binary, "-c", str(d / "config.toml"), "agent"],
-                    stdout=log,
-                    stderr=log,
-                )
-            )
+        processes.append(start(i))
     for i in range(2):
         wait_ready(i)
     expected = []
@@ -145,18 +160,7 @@ path = "{d}/admin.sock"
         for operation in (f"independent-{i}", "conflicting-operation"):
             value = f"ciphertext-{operation}-{i}"
             expected.append(value)
-            digest = hashlib.sha256(value.encode()).hexdigest()
-            result = post(
-                i,
-                "/v1/transactions",
-                [
-                    [
-                        "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
-                        ["secret", operation, digest, value],
-                    ]
-                ],
-            )
-            assert "error" not in result, result
+            publish(i, operation, value)
     for _ in range(100):
         result = [
             post(
@@ -175,37 +179,26 @@ path = "{d}/admin.sock"
     else:
         raise RuntimeError(result)
 
-    # A crashed server never closes its connections. A peer still holding the
-    # one it opened to the first server it joined keeps writing into it until
-    # the idle timeout, so the restarted server gets nothing from that peer
-    # until then. It must still catch up before a deploy that published
-    # through the peer stops waiting.
-    crashed = time.monotonic()
-    restart(0, crash=True)
-    # The restarted server pulls from its known peers once at startup. Write
-    # after that, as a deploy publishes after its checks of the restarted
-    # server, so only live gossip from the peer can deliver the change.
-    time.sleep(6)
-    after_crash = "after-crash-ciphertext"
-    result = post(
-        1,
-        "/v1/transactions",
-        [[
-            "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
-            ["secret", "after-crash", hashlib.sha256(after_crash.encode()).hexdigest(), after_crash],
-        ]],
-    )
-    assert "error" not in result, result
-    while after_crash not in post(0, "/v1/queries", ["SELECT payload FROM tako_shared_records", []]):
-        if time.monotonic() - crashed > CRASH_CATCH_UP_SECONDS:
-            raise RuntimeError(
-                f"A server restarted after a crash did not receive its peer's write within {CRASH_CATCH_UP_SECONDS} s"
-            )
-        time.sleep(0.2)
+    # A crashed server leaves its peer holding a stale gossip connection.
+    # Both writes must reach the restarted server within the same budget.
+    deadline = time.monotonic() + CRASH_CATCH_UP_SECONDS
+    processes[0].kill()
+    processes[0].wait(timeout=20)
+    publish(1, "while-down", "missed-ciphertext")
+    processes[0] = start(0)
+    wait_ready(0)
+    # Observe catch-up before publishing again. A startup pull can deliver the
+    # missed write, but cannot already contain the second one.
+    wait_for_payload(0, "missed-ciphertext", deadline)
+    publish(1, "after-catch-up", "fresh-ciphertext")
+    wait_for_payload(0, "fresh-ciphertext", deadline)
 
     # Membership/CA changes restart Corrosion. A spawned process is not yet an
     # HTTP-ready store; wait for reads and verify its durable records survive.
-    restart(0, crash=False)
+    processes[0].terminate()
+    processes[0].wait(timeout=20)
+    processes[0] = start(0)
+    wait_ready(0)
     restored = post(
         0,
         "/v1/queries",
