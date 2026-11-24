@@ -58,8 +58,10 @@ def setting(name):
 idle_timeout = setting("GOSSIP_IDLE_TIMEOUT_SECS")
 max_sync_backoff = setting("MAX_SYNC_BACKOFF_SECS")
 # A deploy waits 30 s for a server to hold the secrets it published
-# (tako-server/src/secret_snapshot.rs). A crashed server must catch up sooner.
-CRASH_CATCH_UP_SECONDS = 28
+# (tako-server/src/secret_snapshot.rs). With these settings a crashed server
+# catches up 13-19 s after the crash. Leave room for slower hosts, but stay
+# below the 25-29 s a peer's 15 s sync backoff takes without the cap.
+CRASH_CATCH_UP_SECONDS = 24
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
