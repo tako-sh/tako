@@ -18,5 +18,7 @@ routes = ["demo.test", "*.demo.test"]
 db = { mission = "mission" }
 
 [envs.production]
+network = "34858a01084778630de60d0a0be4ac52"
+db = { mission = "demo" }
 routes = ["demo.tako.sh", "*.demo.tako.sh"]
 source_ip = "direct"
