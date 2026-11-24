@@ -42,7 +42,7 @@ pub async fn setup_local_ca() -> Result<LocalCA, Box<dyn std::error::Error>> {
 
     if install_trust && !output::is_interactive() && !output::is_root() {
         return Err(
-            "local CA is not trusted; run `tako dev` interactively once to install it".into(),
+            "local CA is not trusted; run `tako dev` interactively once to install it, or use `tako dev --tunnel` for a public preview without sudo".into(),
         );
     }
 

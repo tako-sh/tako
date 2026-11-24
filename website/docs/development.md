@@ -324,5 +324,13 @@ without keeping a terminal attached. The dev daemon owns the app process.
 the selected configuration. Re-run `tako dev --restart --background --json` after
 changing configuration, or use an attached `tako dev` session for config watching.
 
+While editing, use your framework's hot reload. Before handing someone a preview
+of your changes, restart the same app and environment once, then exercise the
+changed behavior at the URL you plan to share. For a public preview, use
+`tako dev --tunnel --restart --background --json` and open the returned `url`.
+The tunnel forwards to a loopback listener using Tako's private CA. It works in
+a fresh cloud shell without sudo, system trust changes, or local DNS setup.
+Recover the public URL later from the app's `tunnel` field in `tako dev list --json`.
+
 The [Tako MCP server](/agents/) uses this finite startup mode automatically.
 Its `tako_dev_logs` tool reads recent local app logs without a continuous stream.

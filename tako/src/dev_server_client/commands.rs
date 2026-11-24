@@ -32,6 +32,12 @@ pub async fn toggle_lan(
     }
 }
 
+pub async fn enable_tunnel(config_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let (enabled, url, _) = toggle_tunnel(config_path, true).await?;
+    url.filter(|url| enabled && !url.is_empty())
+        .ok_or_else(|| "dev server did not return a public tunnel URL".into())
+}
+
 pub async fn toggle_tunnel(
     config_path: &str,
     enabled: bool,

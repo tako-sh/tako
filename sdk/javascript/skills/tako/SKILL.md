@@ -43,15 +43,21 @@ checks exercise the same configuration the application deploys with.
 - Inspect running apps with `tako_dev_list` / `tako dev list --json` first.
 - Start local development through `tako_dev` / `tako dev --background --json`. The MCP tool
   returns after readiness and leaves the app running under the dev daemon.
+- For a requested public preview in a cloud agent, use `tako_dev` with
+  `tunnel: true` or `tako dev --tunnel --background --json`. This works without sudo.
 - For isolated local tests, configure an environment such as `test-e2e` in the main
   config and pass `env` / `--env` to dev start, restart, stop, and list.
   Pass the same `env` to `tako_dev_logs` for local logs.
   It selects that environment's variables, secrets, routes, and bindings, with
   separate local data and daemon registration. Read `development` for details.
-- Open the returned Tako URL (usually `https://<app>.test`). Use the configured
-  route for browser checks. Raw framework ports bypass Tako's routing and TLS.
-- Verify the behavior the user changed: exercise the browser or HTTP request,
-  follow it through the API and data, and check logs or responses.
+- Use the framework's hot reload while editing. Before sharing a preview of changed
+  code or configuration, restart the app once with `tako_dev` (`restart: true`)
+  or `tako dev --restart --background --json`. Keep the same config and environment.
+- Open the preview URL after the restart and exercise the change the user will see.
+  For a local preview, use the returned Tako URL. For a requested public preview,
+  keep `tunnel: true` / `--tunnel` on the restart and open the public `url` in
+  the ready record. Follow the browser action or
+  HTTP request through the affected API and data. Share the URL after the check passes.
 - After changing secrets, storages, database or KV store bindings, service/channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing

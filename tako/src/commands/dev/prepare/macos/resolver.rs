@@ -54,7 +54,7 @@ fn local_dns_resolver_configured(port: u16) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn short_dns_resolver_configured(port: u16) -> bool {
+pub(crate) fn short_dns_resolver_configured(port: u16) -> bool {
     resolver_file_matches(SHORT_RESOLVER_FILE, port)
 }
 
@@ -69,9 +69,12 @@ pub(crate) fn ensure_local_dns_resolver_configured(
         return Ok(true);
     }
 
-    if !tako_ok && !crate::output::is_interactive() && !crate::output::is_root() {
+    if !crate::output::is_interactive() && !crate::output::is_root() {
+        if tako_ok {
+            return Ok(short_ok);
+        }
         return Err(format!(
-            "local DNS resolver is not configured at {TAKO_RESOLVER_FILE}; run `tako dev` interactively once to install it"
+            "local DNS resolver is not configured at {TAKO_RESOLVER_FILE}; run `tako dev` interactively once to install it, or use `tako dev --tunnel` for a public preview without sudo"
         )
         .into());
     }

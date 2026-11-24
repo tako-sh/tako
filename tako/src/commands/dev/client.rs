@@ -19,7 +19,6 @@ pub(super) struct ConnectedDevClient {
     pub(super) project_dir: PathBuf,
     pub(super) url: String,
     pub(super) pid: Option<u32>,
-    pub(super) tunnel_enabled: bool,
     pub(super) tunnel_url: Option<String>,
 }
 
@@ -57,7 +56,6 @@ pub(super) fn host_and_port_from_url(url: &str) -> Option<(String, u16)> {
 pub(super) async fn run_connected_dev_client(
     app_name: &str,
     interactive: bool,
-    tunnel: bool,
     session: ConnectedDevClient,
     display_hosts: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -65,7 +63,7 @@ pub(super) async fn run_connected_dev_client(
         .map(|(_, p)| p)
         .unwrap_or(443);
     let mut lan_enabled = false;
-    let mut tunnel_enabled = session.tunnel_enabled;
+    let mut tunnel_enabled = session.tunnel_url.is_some();
 
     if let Ok(info) = crate::dev_server_client::info().await {
         public_port = info
@@ -362,10 +360,6 @@ pub(super) async fn run_connected_dev_client(
                 }
             }
         });
-    }
-
-    if tunnel && !tunnel_enabled {
-        let _ = control_tx.send(output::ControlCmd::ToggleTunnel).await;
     }
 
     if interactive {

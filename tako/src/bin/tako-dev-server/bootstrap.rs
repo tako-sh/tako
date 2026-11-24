@@ -15,12 +15,12 @@ pub(super) const HTTP_REDIRECT_LISTEN_ADDR: &str = "127.0.0.1:47830";
 #[derive(Debug, Clone)]
 pub(super) struct Args {
     pub(super) listen_addr: String,
-    pub(super) dns_ip: String,
+    pub(super) dns_ip: Option<String>,
 }
 
 pub(super) fn parse_args() -> Args {
     let mut listen_addr = "127.0.0.1:47831".to_string();
-    let mut dns_ip = DEV_LOOPBACK_ADDR.to_string();
+    let mut dns_ip = Some(DEV_LOOPBACK_ADDR.to_string());
 
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -36,9 +36,10 @@ pub(super) fn parse_args() -> Args {
                 if let Some(v) = it.next()
                     && !v.trim().is_empty()
                 {
-                    dns_ip = v;
+                    dns_ip = Some(v);
                 }
             }
+            "--tunnel-only" => dns_ip = None,
             _ => {}
         }
     }

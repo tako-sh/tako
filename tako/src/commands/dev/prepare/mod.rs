@@ -34,6 +34,7 @@ pub(super) struct DevSession {
     /// runtime doesn't support workflows.
     pub worker_command: Option<Vec<String>>,
     pub dev_hosts: Vec<String>,
+    pub display_hosts: Vec<String>,
     pub env: HashMap<String, String>,
     pub secrets: HashMap<String, String>,
     pub interactive: bool,
@@ -134,14 +135,22 @@ pub(super) async fn prepare(
     let existing_apps = try_list_registered_app_names().await;
     let app_name = disambiguate_app_name(&app_name, &config_key, &existing_apps);
 
-    #[cfg(target_os = "macos")]
-    macos::explain_pending_sudo_setup(LOCAL_DNS_PORT)?;
-    #[cfg(target_os = "linux")]
-    linux::explain_pending_sudo_setup()?;
-
-    let local_ca = setup_local_ca().await?;
-    let ca_changed = record_dev_ca_fingerprint(&local_ca)?;
-    let short_domain_active = ensure_local_dns_resolver_configured(LOCAL_DNS_PORT)?;
+    let existing_info = crate::dev_server_client::info().await.ok();
+    // Preserve a running daemon's local routes when adding a tunnel to an app.
+    let local_routes = !tunnel
+        || existing_info
+            .as_ref()
+            .and_then(|info| info["info"]["local_dns_enabled"].as_bool())
+            .unwrap_or_else(local_routing_configured);
+    let (ca_changed, short_domain_active) = if tunnel {
+        #[cfg(target_os = "macos")]
+        let short = !local_routes || macos::short_dns_resolver_configured(LOCAL_DNS_PORT);
+        #[cfg(not(target_os = "macos"))]
+        let short = true;
+        (false, short)
+    } else {
+        prepare_local_routes().await?
+    };
 
     let domain = if short_domain_active {
         LocalCA::app_short_domain(&app_name)
@@ -158,25 +167,19 @@ pub(super) async fn prepare(
         None
     };
 
-    #[cfg(target_os = "macos")]
-    macos::ensure_installed()?;
-    #[cfg(target_os = "linux")]
-    linux::ensure_installed()?;
-
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let public_url_port: u16 = 443;
+    let public_url_port = if local_routes { 443 } else { public_port };
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let mut public_url_port: u16 = public_port;
+    let public_url_port = public_port;
 
-    let daemon_dns_ip = if public_url_port == 443 {
+    let daemon_dns_ip = local_routes.then_some(if public_url_port == 443 {
         DEV_LOOPBACK_ADDR
     } else {
         "127.0.0.1"
-    };
+    });
     let listen_addr = format!("127.0.0.1:{}", public_port);
 
     // Check if a dev server is already running and needs a restart.
-    let existing_info = crate::dev_server_client::info().await.ok();
     let protocol_mismatch = existing_info
         .as_ref()
         .is_some_and(|info| !crate::dev_server_client::current_protocol(info));
@@ -199,7 +202,7 @@ pub(super) async fn prepare(
         restart_required_for_requested_listen(existing_listen.as_deref(), &listen_addr);
     let restart_for_dns = existing_advertised_ip
         .as_deref()
-        .map(|ip| ip != daemon_dns_ip)
+        .map(|ip| ip != daemon_dns_ip.unwrap_or("127.0.0.1"))
         .unwrap_or(false);
     let restart_for_ca = ca_changed && existing_info.is_some();
 
@@ -259,7 +262,7 @@ pub(super) async fn prepare(
     }
 
     // Probe the HTTPS endpoint; auto-repair the dev proxy on failure.
-    if public_url_port == 443 {
+    if !tunnel && public_url_port == 443 {
         let Ok(loopback_ip) = DEV_LOOPBACK_ADDR.parse::<std::net::Ipv4Addr>() else {
             return Err(format!("Invalid loopback address: {DEV_LOOPBACK_ADDR}").into());
         };
@@ -277,7 +280,7 @@ pub(super) async fn prepare(
         if probe_result.is_err() {
             probe_result = repair_https_probe(
                 &listen_addr,
-                daemon_dns_ip,
+                DEV_LOOPBACK_ADDR,
                 probe_host,
                 loopback_ip,
                 &config_key,
@@ -289,33 +292,14 @@ pub(super) async fn prepare(
             crate::output::error(&format!(
                 "Local HTTPS endpoint unreachable at https://{probe_host}/ ({loopback_error})"
             ));
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            {
-                crate::output::muted("Continuing with explicit dev port URL.");
-                public_url_port = public_port;
-            }
         }
     }
 
-    // Reconcile DNS IP if the HTTPS probe downgraded public_url_port.
-    let final_dns_ip = if public_url_port == 443 {
-        DEV_LOOPBACK_ADDR
+    let display_hosts = if local_routes {
+        compute_display_routes(&cfg, &domain, base_domain.as_deref(), environment)
     } else {
-        "127.0.0.1"
+        Vec::new()
     };
-    if final_dns_ip != daemon_dns_ip {
-        warn_restart_stops_apps(&config_key).await;
-        crate::dev_server_client::stop_server().await?;
-        for _ in 0..40 {
-            if crate::dev_server_client::info().await.is_err() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        crate::dev_server_client::ensure_running(&listen_addr, final_dns_ip)
-            .await
-            .map_err(|e| format!("dev server failed to start: {}", e))?;
-    }
 
     // If the app is already running under this config, connect as a client
     // unless --restart asked for a hard process restart.
@@ -329,22 +313,20 @@ pub(super) async fn prepare(
         && let Some(existing) = apps.iter().find(|a| a.config_path == config_key)
         && existing.status.as_str() == "running"
     {
-        let url = if let Some(host) = existing.hosts.first() {
-            let port = if public_url_port == 443 {
-                String::new()
-            } else {
-                format!(":{}", public_url_port)
-            };
-            format!("https://{}{}/", host, port)
+        let (url, tunnel_url) = if tunnel {
+            let url = crate::dev_server_client::enable_tunnel(&config_key).await?;
+            (url.clone(), Some(url))
         } else {
-            dev_url(&primary_host, public_url_port)
+            (
+                dev_url(
+                    existing.hosts.first().unwrap_or(&primary_host),
+                    public_url_port,
+                ),
+                existing.tunnel_url.clone(),
+            )
         };
         if background {
-            if tunnel && existing.tunnel_url.is_none() {
-                crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
-            }
-            let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), environment);
-            super::runner::emit_background_ready(&app_name, &url, &hosts);
+            super::runner::emit_background_ready(&app_name, &url, &display_hosts);
             return Ok(PrepareOutcome::AlreadyConnected);
         }
         let session = ConnectedDevClient {
@@ -353,12 +335,9 @@ pub(super) async fn prepare(
             project_dir: project_dir.clone(),
             url,
             pid: existing.pid,
-            tunnel_enabled: existing.tunnel_url.is_some(),
-            tunnel_url: existing.tunnel_url.clone(),
+            tunnel_url,
         };
-        let display_hosts =
-            compute_display_routes(&cfg, &domain, base_domain.as_deref(), environment);
-        run_connected_dev_client(&app_name, interactive, tunnel, session, display_hosts).await?;
+        run_connected_dev_client(&app_name, interactive, session, display_hosts).await?;
         return Ok(PrepareOutcome::AlreadyConnected);
     }
 
@@ -380,10 +359,40 @@ pub(super) async fn prepare(
         readiness_failure_hint,
         worker_command,
         dev_hosts,
+        display_hosts,
         env,
         secrets,
         interactive,
     })))
+}
+
+/// Check for existing host routing without installing or repairing anything.
+fn local_routing_configured() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let status = linux::status();
+        status.loopback_alias && status.dns_configured
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::local_dns_resolver_values().is_some() && macos::status().https_ready
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    false
+}
+
+async fn prepare_local_routes() -> Result<(bool, bool), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    macos::explain_pending_sudo_setup(LOCAL_DNS_PORT)?;
+    #[cfg(target_os = "linux")]
+    linux::explain_pending_sudo_setup()?;
+    let ca = setup_local_ca().await?;
+    let short = ensure_local_dns_resolver_configured(LOCAL_DNS_PORT)?;
+    #[cfg(target_os = "macos")]
+    macos::ensure_installed()?;
+    #[cfg(target_os = "linux")]
+    linux::ensure_installed()?;
+    Ok((record_dev_ca_fingerprint(&ca)?, short))
 }
 
 /// The daemon keeps app commands and env in memory only, so a restart stops
@@ -479,7 +488,7 @@ async fn repair_https_probe(
     warn_restart_stops_apps(config_key).await;
     let _ = crate::dev_server_client::stop_server().await;
     wait_for_dev_server_stopped(listen_addr).await;
-    let _ = crate::dev_server_client::ensure_running(listen_addr, dns_ip).await;
+    let _ = crate::dev_server_client::ensure_running(listen_addr, Some(dns_ip)).await;
 
     // Retry
     wait_for_https_host_reachable_via_ip(
