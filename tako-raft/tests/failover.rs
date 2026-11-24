@@ -286,7 +286,7 @@ async fn measure_hosted_mutations() {
         election_timeout_max: 3000,
         ..Default::default()
     };
-    let any = "127.0.0.1:0".parse().unwrap();
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let first = server_with_config(1, &root.path().join("a"), any, config.clone()).await;
     let second = server_with_config(2, &root.path().join("b"), any, config.clone()).await;
     let third = server_with_config(3, &root.path().join("c"), any, config).await;
@@ -298,32 +298,67 @@ async fn measure_hosted_mutations() {
             .await
             .unwrap();
     }
-    let path = first.dir.join("orders.sqlite");
-    tako_db::DatabaseHost::create_file(&path).unwrap();
-    let mut seed = writer(&first.db, &first.dir).await;
-    let image = std::fs::read(&path).unwrap();
-    tokio::task::spawn_blocking(move || {
-        seed.publish(
-            4096,
-            image.len() as u64,
-            image
-                .chunks_exact(4096)
-                .enumerate()
-                .map(|(i, p)| (i as u64, p.to_vec()))
-                .collect(),
-        )
+    hosted_trial(&first, false, false, "current single-server host").await;
+    hosted_trial(&first, true, false, "one voter").await;
+    let mut targets = members.clone();
+    targets.insert(
+        2,
+        delayed_peer(second.addr, Duration::from_millis(110)).await,
+    );
+    targets.insert(
+        3,
+        delayed_peer(third.addr, Duration::from_millis(160)).await,
+    );
+    for node in [&first.db.0, &first.kv.0] {
+        tako_raft::reconcile(node, &targets).await.unwrap();
+    }
+    hosted_trial(&first, true, false, "110/160 ms followers").await;
+    hosted_trial(&first, true, true, "150 ms app hop + 110/160 ms followers").await;
+    first.stop().await;
+    second.stop().await;
+    third.stop().await;
+}
+
+async fn hosted_trial(first: &Server, replicated: bool, remote_app: bool, mode: &str) {
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let path = first.dir.join(if replicated {
+        "orders.sqlite"
+    } else {
+        "baseline.sqlite"
+    });
+    if !path.exists() {
+        tako_db::DatabaseHost::create_file(&path).unwrap();
+    }
+    if replicated && first.db.1.revision().await.unwrap() == 0 {
+        let mut seed = writer(&first.db, &first.dir).await;
+        let image = std::fs::read(&path).unwrap();
+        tokio::task::spawn_blocking(move || {
+            seed.publish(
+                4096,
+                image.len() as u64,
+                image
+                    .chunks_exact(4096)
+                    .enumerate()
+                    .map(|(i, p)| (i as u64, p.to_vec()))
+                    .collect(),
+            )
+            .unwrap();
+        })
+        .await
         .unwrap();
-    })
-    .await
-    .unwrap();
+    }
     let sql = tako_db::DatabaseHost::new(Default::default());
     let db_id = tako_db::DatabaseId::parse("orders").unwrap();
-    sql.register_replicated(
-        db_id.clone(),
-        path,
-        tako_raft::Resource::new(first.db.0.clone(), first.db.1.clone(), &first.dir),
-    )
-    .unwrap();
+    if replicated {
+        sql.register_replicated(
+            db_id.clone(),
+            path,
+            tako_raft::Resource::new(first.db.0.clone(), first.db.1.clone(), &first.dir),
+        )
+        .unwrap();
+    } else {
+        sql.register(db_id.clone(), path).unwrap();
+    }
     sql.set_bindings(
         "bench/production",
         vec![tako_db::Binding {
@@ -333,7 +368,13 @@ async fn measure_hosted_mutations() {
         }],
     );
     let listener = TcpListener::bind(any).await.unwrap();
-    let url = format!("http://{}/v2/pipeline", listener.local_addr().unwrap());
+    let addr = listener.local_addr().unwrap();
+    let addr = if remote_app {
+        delayed_peer(addr, Duration::from_millis(150)).await
+    } else {
+        addr
+    };
+    let url = format!("http://{addr}/v2/pipeline");
     tokio::spawn(tako_db::http::serve(
         sql,
         listener,
@@ -357,12 +398,16 @@ async fn measure_hosted_mutations() {
     };
     let kv = tako_kv::KvHost::new(Default::default());
     let kv_id = tako_kv::StoreId::parse("sessions").unwrap();
-    kv.register_replicated(
-        kv_id,
-        first.dir.join("sessions.redb"),
-        tako_raft::Resource::new(first.kv.0.clone(), first.kv.1.clone(), &first.dir),
-    )
-    .unwrap();
+    if replicated {
+        kv.register_replicated(
+            kv_id,
+            first.dir.join("sessions.redb"),
+            tako_raft::Resource::new(first.kv.0.clone(), first.kv.1.clone(), &first.dir),
+        )
+        .unwrap();
+    } else {
+        kv.register(kv_id, first.dir.join("baseline.redb")).unwrap();
+    }
     kv.set_bindings(
         "bench/production",
         vec![tako_kv::Binding {
@@ -371,7 +416,7 @@ async fn measure_hosted_mutations() {
             home: tako_kv::Home::Local,
         }],
     );
-    execute("CREATE TABLE t(n INTEGER)").await;
+    execute("CREATE TABLE IF NOT EXISTS t(n INTEGER)").await;
     let put = |i| {
         let kv = kv.clone();
         tokio::task::spawn_blocking(move || {
@@ -387,44 +432,33 @@ async fn measure_hosted_mutations() {
             .unwrap()
         })
     };
-    for mode in ["single", "110/160 ms followers"] {
-        if mode != "single" {
-            let mut targets = members.clone();
-            targets.insert(
-                2,
-                delayed_peer(second.addr, Duration::from_millis(110)).await,
-            );
-            targets.insert(
-                3,
-                delayed_peer(third.addr, Duration::from_millis(160)).await,
-            );
-            for node in [&first.db.0, &first.kv.0] {
-                tako_raft::reconcile(node, &targets).await.unwrap();
-            }
-        }
-        execute("INSERT INTO t VALUES(0)").await;
+    execute("INSERT INTO t VALUES(0)").await;
+    if !remote_app {
         put(0).await.unwrap();
-        let mut db_ms = Vec::new();
-        let mut kv_ms = Vec::new();
-        for i in 1..=24 {
-            let start = std::time::Instant::now();
-            execute("INSERT INTO t VALUES(1)").await;
-            db_ms.push(start.elapsed().as_secs_f64() * 1000.0);
-            let start = std::time::Instant::now();
-            put(i).await.unwrap();
-            kv_ms.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-        for (engine, mut ms) in [("SQLite", db_ms), ("KV", kv_ms)] {
-            ms.sort_by(f64::total_cmp);
-            eprintln!(
-                "{mode}: {engine} median {:.2} ms, p95 {:.2} ms (24 warm writes)",
-                ms[11], ms[22]
-            );
-        }
     }
-    first.stop().await;
-    second.stop().await;
-    third.stop().await;
+    let mut db_ms = Vec::new();
+    let mut kv_ms = Vec::new();
+    for i in 1..=24 {
+        let start = std::time::Instant::now();
+        execute("INSERT INTO t VALUES(1)").await;
+        db_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        if remote_app {
+            continue;
+        }
+        let start = std::time::Instant::now();
+        put(i).await.unwrap();
+        kv_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    for (engine, mut ms) in [("SQLite", db_ms), ("KV", kv_ms)] {
+        if ms.is_empty() {
+            continue;
+        }
+        ms.sort_by(f64::total_cmp);
+        eprintln!(
+            "{mode}: {engine} median {:.2} ms, p95 {:.2} ms (24 warm writes)",
+            ms[11], ms[22]
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
@@ -455,6 +489,9 @@ async fn concurrent_first_deploys_reuse_the_winning_bootstrap() {
         name: "orders".into(),
         engine: tako_core::DatabaseEngine::Sqlite,
         generation: digit.repeat(32),
+        created_at_unix_secs: 42,
+        channel_owner: None,
+        workflows_owner: None,
         founders: [digit.repeat(64)].into_iter().collect(),
     };
     let (a, b) = tokio::join!(

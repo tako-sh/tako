@@ -15,12 +15,17 @@ use crate::network::databases::DatabaseRecord;
 use crate::output;
 
 mod plan;
+mod replication;
 pub(super) use plan::{Plan, Service, plan};
 
 /// Verify each physical database before changing any of them. A stale
 /// directory entry must not grant access to a replacement with the same name.
 pub(super) async fn provision(
-    plan: &Plan,
+    plan: &mut Plan,
+    inventory: &ServerInventory,
+    env: &str,
+    target_names: &[String],
+    tree: Option<&super::DeployTaskTreeController>,
     network: &crate::config::LocalNetwork,
     app: &str,
     records: &mut Vec<DatabaseRecord>,
@@ -40,6 +45,13 @@ pub(super) async fn provision(
         .chain(plan.service_bindings().map(|(_, planned)| planned))
     {
         if !checked.insert(&entry.database_name) {
+            continue;
+        }
+        if plan.create.contains_key(&entry.database_name)
+            || records
+                .iter()
+                .any(|r| r.name == entry.database_name && !r.founders.is_empty())
+        {
             continue;
         }
         if !hosted.contains_key(&entry.home.device_id) {
@@ -70,43 +82,17 @@ pub(super) async fn provision(
         }
     }
     *records = current;
-    for (name, creation) in &plan.create {
-        let home = &creation.home;
-        let engine = creation.binding.engine;
-        // Membership may have changed while building the release.
-        tokio::task::block_in_place(|| -> crate::network::Result<()> {
-            let profile = crate::network::client::refresh(network)?;
-            let members = crate::network::server_members(&profile)?;
-            if members.len() != 1 || !members.contains_key(&home.device_id.parse()?) {
-                return Err("Network placement changed while building. Retry the deploy to plan database creation.".into());
-            }
-            Ok(())
-        })?;
-        // A generated database records the app it was created for.
-        let generated = |service: &plan::ServicePlan| {
-            service.implicit
-                && service
-                    .binding
-                    .as_ref()
-                    .is_some_and(|planned| planned.database_name == *name)
-        };
-        use crate::network::databases::ServiceOwner;
-        let owner = if generated(&plan.replay) {
-            Some((ServiceOwner::Channels, app))
-        } else if generated(&plan.workflows) {
-            Some((ServiceOwner::Workflows, app))
-        } else {
-            None
-        };
-        records
-            .push(crate::commands::db::create_database(network, home, name, owner, engine).await?);
-        output::success(&format!(
-            "Created {} {name} on {}",
-            engine.noun(),
-            home.name
-        ));
-    }
-    Ok(())
+    replication::prepare_replicas(
+        plan,
+        network,
+        inventory,
+        env,
+        app,
+        target_names,
+        records,
+        tree,
+    )
+    .await
 }
 
 pub(super) struct Preparation<'a> {
@@ -188,6 +174,9 @@ pub(super) fn apply_peer_keys(
     keys: &HashMap<String, String>,
 ) {
     for planned in plan.values_mut() {
+        if planned.binding.generation.is_some() {
+            continue;
+        }
         planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
     }
 }
@@ -349,6 +338,9 @@ async fn grant<'a>(
             .or_insert_with(|| (home, BTreeSet::new()));
     }
     for planned in bound {
+        if planned.binding.generation.is_some() {
+            continue;
+        }
         let remote = prep
             .targets
             .iter()

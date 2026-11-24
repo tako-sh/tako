@@ -1,5 +1,7 @@
 //! Durable, per-resource Raft storage. Both engines replicate the bytes they
 //! committed so followers never re-execute application SQL or recalculate TTLs.
+pub use openraft::{Config, Raft};
+pub type Node = Raft<Types, Replica>;
 mod catalog;
 pub use catalog::Claim;
 mod disk;
@@ -42,12 +44,17 @@ pub enum Applied {
 pub enum Proposal {
     Pages(Commit),
     Claim(Claim),
+    Grant {
+        scope: String,
+        key_hash: Option<[u8; 32]>,
+    },
 }
 
 impl std::fmt::Display for Proposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pages(commit) => std::fmt::Display::fmt(commit, f),
+            Self::Grant { scope, .. } => write!(f, "grant {scope}"),
             Self::Claim(claim) => write!(f, "claim {}", claim.name),
         }
     }
@@ -124,4 +131,35 @@ impl std::fmt::Debug for Commit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
     }
+}
+
+/// Update routes on elections. Ordinary log application does not rebuild
+/// an application's token table.
+pub async fn watch_leader(node: &Node, mut update: impl FnMut()) {
+    let mut receiver = node.metrics();
+    let mut previous = receiver.borrow_watched().current_leader;
+    update();
+    while receiver.changed().await.is_ok() {
+        let leader = receiver.borrow_watched().current_leader;
+        if previous != leader {
+            previous = leader;
+            update();
+        }
+    }
+}
+
+/// Add deployment targets while retaining replicas used by other applications
+/// and their rollback releases. The caller serializes changes on this leader.
+pub async fn add_members(
+    raft: &Node,
+    mut targets: BTreeMap<u128, std::net::SocketAddr>,
+) -> std::io::Result<()> {
+    raft.ensure_linearizable(openraft::ReadPolicy::ReadIndex)
+        .await
+        .map_err(disk::error)?;
+    let config = raft.metrics().borrow_watched().membership_config.clone();
+    for (&id, &addr) in config.membership().nodes() {
+        targets.entry(id).or_insert(addr);
+    }
+    reconcile(raft, &targets).await
 }

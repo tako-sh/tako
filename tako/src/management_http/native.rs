@@ -184,6 +184,7 @@ pub(super) fn rpc_action(
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
+        | Command::CoordinateStorage { .. }
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }

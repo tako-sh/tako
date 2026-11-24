@@ -17,14 +17,27 @@ use std::{
 
 /// Raft's votes, log and truncation markers, independent of state machine snapshots.
 #[derive(Clone)]
-pub struct LogStore(Disk);
+pub struct LogStore {
+    disk: Disk,
+    _ownership: std::sync::Arc<std::fs::File>,
+}
 
 impl LogStore {
     pub fn open(path: &Path) -> io::Result<Self> {
-        Ok(Self(Disk::open(
-            path,
-            "CREATE TABLE IF NOT EXISTS entries(idx BLOB PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;",
-        )?))
+        let ownership = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.with_extension("lock"))?;
+        ownership.try_lock().map_err(error)?;
+        Ok(Self {
+            disk: Disk::open(
+                path,
+                "CREATE TABLE IF NOT EXISTS entries(idx BLOB PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;",
+            )?,
+            _ownership: std::sync::Arc::new(ownership),
+        })
     }
 }
 
@@ -49,7 +62,7 @@ impl RaftLogReader<Types> for LogStore {
             },
             Bound::Unbounded => u64::MAX,
         };
-        self.0
+        self.disk
             .run(move |db| {
                 let mut stmt = db
                     .prepare("SELECT data FROM entries WHERE idx BETWEEN ?1 AND ?2 ORDER BY idx")
@@ -69,7 +82,7 @@ impl RaftLogReader<Types> for LogStore {
     }
 
     async fn read_vote(&mut self) -> io::Result<Option<VoteOf<Types>>> {
-        self.0.run(|db| get(db, "vote")).await
+        self.disk.run(|db| get(db, "vote")).await
     }
 }
 
@@ -80,7 +93,7 @@ impl RaftLogStorage<Types> for LogStore {
     }
 
     async fn get_log_state(&mut self) -> io::Result<LogState<Types>> {
-        self.0
+        self.disk
             .run(|db| {
                 let purged: Option<LogIdOf<Types>> = get(db, "purged")?;
                 let last: Option<Vec<u8>> = db
@@ -104,13 +117,17 @@ impl RaftLogStorage<Types> for LogStore {
 
     async fn save_vote(&mut self, vote: &VoteOf<Types>) -> io::Result<()> {
         let vote = *vote;
-        self.0.run(move |db| set(db, "vote", &vote)).await
+        self.disk.run(move |db| set(db, "vote", &vote)).await
     }
     async fn read_committed(&mut self) -> io::Result<Option<LogIdOf<Types>>> {
-        self.0.run(|db| Ok(get(db, "committed")?.flatten())).await
+        self.disk
+            .run(|db| Ok(get(db, "committed")?.flatten()))
+            .await
     }
     async fn save_committed(&mut self, committed: Option<LogIdOf<Types>>) -> io::Result<()> {
-        self.0.run(move |db| set(db, "committed", &committed)).await
+        self.disk
+            .run(move |db| set(db, "committed", &committed))
+            .await
     }
     async fn append<I>(&mut self, entries: I, callback: IOFlushed<Types>) -> io::Result<()>
     where
@@ -119,7 +136,7 @@ impl RaftLogStorage<Types> for LogStore {
     {
         let entries: Vec<_> = entries.into_iter().collect();
         let result = self
-            .0
+            .disk
             .run(move |db| {
                 let tx = db.transaction().map_err(error)?;
                 {
@@ -139,7 +156,7 @@ impl RaftLogStorage<Types> for LogStore {
         result
     }
     async fn truncate_after(&mut self, last: Option<LogIdOf<Types>>) -> io::Result<()> {
-        self.0
+        self.disk
             .run(move |db| {
                 if let Some(last) = last {
                     db.execute(
@@ -155,7 +172,7 @@ impl RaftLogStorage<Types> for LogStore {
             .await
     }
     async fn purge(&mut self, log: LogIdOf<Types>) -> io::Result<()> {
-        self.0
+        self.disk
             .run(move |db| {
                 let tx = db.transaction().map_err(error)?;
                 set(&tx, "purged", &log)?;

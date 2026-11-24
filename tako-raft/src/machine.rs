@@ -24,6 +24,7 @@ type AppliedState = (Option<LogIdOf<Types>>, StoredMembershipOf<Types>);
 #[derive(Clone)]
 pub struct Replica {
     disk: Disk,
+    grants: Arc<parking_lot::RwLock<std::collections::BTreeMap<String, [u8; 32]>>>,
     dir: Arc<PathBuf>,
     snapshot: Arc<Mutex<Option<(Meta, SnapshotFile)>>>,
 }
@@ -35,20 +36,40 @@ fn applied(db: &Connection) -> io::Result<AppliedState> {
     ))
 }
 
+fn read_grants(db: &Connection) -> io::Result<std::collections::BTreeMap<String, [u8; 32]>> {
+    let mut rows = db
+        .prepare("SELECT scope,key_hash FROM resource_grants")
+        .map_err(error)?;
+    rows.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(error)
+}
+
 impl Replica {
     pub fn open(directory: &Path) -> io::Result<Self> {
         let disk = Disk::open(
             &directory.join("replica.sqlite"),
             &format!(
-                "CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); {}",
+                "CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
                 crate::catalog::SCHEMA
             ),
         )?;
+        let grants = Arc::new(parking_lot::RwLock::new(disk.read(read_grants)?));
         Ok(Self {
+            grants,
             disk,
             dir: Arc::new(directory.to_owned()),
             snapshot: Default::default(),
         })
+    }
+
+    pub(crate) fn grant_matches(&self, scope: &str, hash: &[u8; 32]) -> bool {
+        use subtle::ConstantTimeEq;
+        self.grants
+            .read()
+            .get(scope)
+            .is_some_and(|expected| bool::from(expected.ct_eq(hash)))
     }
 
     pub async fn revision(&self) -> io::Result<u64> {
@@ -134,11 +155,13 @@ impl RaftStateMachine<Types> for Replica {
         S: Stream<Item = io::Result<EntryResponder<Types>>> + Unpin + OptionalSend,
     {
         while let Some((entry, responder)) = entries.try_next().await? {
+            let grants = self.grants.clone();
             let result = self
                 .disk
                 .run(move |db| {
                     let tx = db.transaction().map_err(error)?;
                     let id = entry.log_id;
+                    let mut grant_change = None;
                     let reply = match entry.payload {
                         EntryPayload::Blank => Applied::NoChange,
                         EntryPayload::Membership(membership) => {
@@ -152,12 +175,33 @@ impl RaftStateMachine<Types> for Replica {
                         EntryPayload::Normal(crate::Proposal::Pages(change)) => {
                             apply_commit(&tx, change, id.index())?
                         }
+                        EntryPayload::Normal(crate::Proposal::Grant { scope, key_hash }) => {
+                            if let Some(hash) = &key_hash {
+                                tx.execute(
+                                    "INSERT OR REPLACE INTO resource_grants VALUES(?1,?2)",
+                                    (&scope, hash),
+                                )
+                                .map_err(error)?;
+                            } else {
+                                tx.execute("DELETE FROM resource_grants WHERE scope=?1", [&scope])
+                                    .map_err(error)?;
+                            }
+                            grant_change = Some((scope, key_hash));
+                            Applied::NoChange
+                        }
                         EntryPayload::Normal(crate::Proposal::Claim(candidate)) => {
                             crate::catalog::claim(&tx, candidate)?
                         }
                     };
                     set(&tx, "applied", &id)?;
                     tx.commit().map_err(error)?;
+                    if let Some((scope, hash)) = grant_change {
+                        let mut current = grants.write();
+                        match hash {
+                            Some(value) => current.insert(scope, value),
+                            None => current.remove(&scope),
+                        };
+                    }
                     Ok(reply)
                 })
                 .await?;
@@ -186,6 +230,7 @@ impl RaftStateMachine<Types> for Replica {
     async fn install_snapshot(&mut self, meta: &Meta, file: SnapshotFile) -> io::Result<()> {
         let expected = meta.clone();
         let source = file.clone();
+        let grants = self.grants.clone();
         self.disk
             .run(move |db| {
                 let conn =
@@ -198,10 +243,12 @@ impl RaftStateMachine<Types> for Replica {
                         "snapshot position does not match Raft metadata",
                     ));
                 }
+                let restored_grants = read_grants(&conn)?;
                 let backup = Backup::new(&conn, db).map_err(error)?;
                 backup
                     .run_to_completion(128, std::time::Duration::ZERO, None)
                     .map_err(error)?;
+                *grants.write() = restored_grants;
                 Ok(())
             })
             .await?;

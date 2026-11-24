@@ -25,6 +25,7 @@ pub(crate) struct NativeProxy {
     /// Server addresses that database routes were last resolved against.
     database_peers: parking_lot::Mutex<Option<Vec<(String, IpAddr)>>>,
     pub(crate) address: Ipv6Addr,
+    pub(crate) catalog_founder: Option<String>,
     pub(crate) gateway: Ipv4Addr,
 }
 
@@ -56,6 +57,17 @@ impl NativeProxy {
             invocations: Default::default(),
             database_peers: Default::default(),
             address: config.network.id.address(&member.request.wg_public_key),
+            catalog_founder: {
+                let mut roots = config
+                    .bootstrap
+                    .members
+                    .iter()
+                    .filter(|m| m.independent_root && matches!(m.kind, MemberKind::Server(_)));
+                let first = roots.next();
+                first
+                    .filter(|_| roots.next().is_none())
+                    .map(|m| m.device_id.to_string())
+            },
             gateway: gateway.address(),
         });
         let directory = Directory::open(&service.path, true)?;
@@ -346,6 +358,7 @@ mod tests {
             .device_id(&network, tako_network::DeviceKind::Server)
             .unwrap();
         NativeProxy {
+            catalog_founder: None,
             directory: RwLock::new(ServiceDirectory::new(network, server, None)),
             path: path.to_path_buf(),
             export_owner: export_owner.map(str::to_string),

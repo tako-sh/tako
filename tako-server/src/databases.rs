@@ -30,6 +30,7 @@ use crate::state_store::{AppDatabase, DatabaseSecrets, StoredDatabase};
 pub(crate) mod backups;
 mod encryption;
 mod objects;
+pub(crate) mod replication;
 pub(crate) mod snapshots;
 mod transfer;
 
@@ -43,6 +44,7 @@ pub(crate) struct Databases {
     root: PathBuf,
     app_port: u16,
     peer_port: u16,
+    raft: replication::Storage,
     kv_peer_port: u16,
     /// This server's device ID on a native network.
     server_id: RwLock<Option<String>>,
@@ -129,6 +131,7 @@ impl Databases {
             kv: tako_kv::KvHost::new(tako_kv::HostConfig::default()),
             root: data_dir.join("databases"),
             app_port: app_port(),
+            raft: Default::default(),
             peer_port: env_port("TAKO_DATABASE_PEER_PORT", tako_core::DATABASE_PEER_PORT),
             kv_peer_port: env_port("TAKO_KV_PEER_PORT", tako_core::KV_PEER_PORT),
             server_id: RwLock::new(None),
@@ -273,7 +276,11 @@ impl Databases {
     /// binding to the same name on another server (where a move took the
     /// database) does not: that copy is someone else's.
     pub(crate) fn binds_here(&self, binding: &DatabaseBinding, name: &str) -> bool {
-        binding.name == name && self.server_id().is_none_or(|own| own == binding.server)
+        binding.name == name
+            && match &binding.generation {
+                Some(id) => self.raft.hosts(id, name),
+                None => self.server_id().is_none_or(|own| own == binding.server),
+            }
     }
 
     /// The connections app processes receive for their bindings.
@@ -290,6 +297,34 @@ impl Databases {
             DatabaseEngine::Sqlite => self.peer_port,
             DatabaseEngine::Kv => self.kv_peer_port,
         };
+        if let Some(id) = &binding.generation {
+            let unavailable = || Home::Unavailable {
+                reason: format!("waiting for the leader of {}", binding.name),
+            };
+            if !self.raft.hosts(id, &binding.name) {
+                return unavailable();
+            }
+            let Some(leader) = self.raft.leader(id) else {
+                return unavailable();
+            };
+            let proxy = self.proxy.read();
+            let Some(proxy) = proxy.as_ref() else {
+                return unavailable();
+            };
+            if proxy.address == leader {
+                return Home::Local;
+            }
+            let address = IpAddr::V6(leader);
+            if proxy.is_server_address(address)
+                && let Some(key) = &binding.peer_key
+            {
+                return Home::Remote {
+                    upstream: SocketAddr::new(address, peer_port),
+                    key: key.clone(),
+                };
+            }
+            return unavailable();
+        }
         match server_id {
             Some(own) if own == binding.server => Home::Local,
             Some(_) => match (
@@ -347,6 +382,7 @@ impl Databases {
 
     fn resolve_bindings(&self, scope: &str, sets: &[HashMap<String, AppDatabase>]) {
         let mut seen = BTreeSet::new();
+        let mut local_replicas = BTreeSet::new();
         let mut bindings = Vec::new();
         let mut replay = Vec::new();
         let mut workflows = Vec::new();
@@ -357,6 +393,15 @@ impl Databases {
                     continue;
                 }
                 let home = self.home(&binding.binding);
+                if binding
+                    .binding
+                    .generation
+                    .as_ref()
+                    .is_some_and(|id| self.raft.hosts(id, &binding.binding.name))
+                {
+                    local_replicas
+                        .insert(tako_core::BindingTokenHashes::new(&binding.token).replica);
+                }
                 match binding.binding.engine {
                     DatabaseEngine::Sqlite => {
                         let Ok(database) = DatabaseId::parse(&binding.binding.name) else {
@@ -394,13 +439,21 @@ impl Databases {
                 }
             }
         }
-        self.host.set_bindings(scope, bindings);
-        self.kv.set_bindings(scope, kv);
+        self.host
+            .set_bindings_with_replicas(scope, bindings, &local_replicas);
+        self.kv
+            .set_bindings_with_replicas(scope, kv, &local_replicas);
         if !scope.ends_with(RELEASE_SCOPE_SUFFIX) {
-            self.host
-                .set_bindings(&channel_replay_grant_scope(scope), replay);
-            self.host
-                .set_bindings(&tako_core::workflows_grant_scope(scope), workflows);
+            self.host.set_bindings_with_replicas(
+                &channel_replay_grant_scope(scope),
+                replay,
+                &local_replicas,
+            );
+            self.host.set_bindings_with_replicas(
+                &tako_core::workflows_grant_scope(scope),
+                workflows,
+                &local_replicas,
+            );
         }
     }
 
@@ -458,10 +511,20 @@ impl Databases {
                 }
             }
             tako_core::validate_database_name(&binding.name)?;
-            let local = match &own {
-                Some(own) => own == &binding.server,
-                None => true,
-            };
+            if let Some(id) = &binding.generation {
+                tako_core::validate_database_generation(id)?;
+                if !self.raft.hosts(id, &binding.name) {
+                    return Err(format!(
+                        "Replica of {} is not ready on this server.",
+                        binding.name
+                    ));
+                }
+            }
+            let local = binding.generation.is_some()
+                || match &own {
+                    Some(own) => own == &binding.server,
+                    None => true,
+                };
             if local && !self.is_registered(&binding.name, binding.engine) {
                 return Err(format!(
                     "Database binding `{name}` names {} {} that is not hosted on this server.",
@@ -650,7 +713,14 @@ impl ServerState {
                 return Err(error);
             }
         };
+        let groups = self
+            .state_store
+            .replication_groups()
+            .map_err(|e| e.to_string())?;
         for database in stored {
+            if groups.contains_key(&database.generation) {
+                continue;
+            }
             let state = self.clone();
             let registered = tokio::task::spawn_blocking(move || {
                 state
@@ -682,6 +752,14 @@ impl ServerState {
         let Ok(Some(stored)) = self.state_store.get_database(name) else {
             return;
         };
+        // A replica must never fall back to its original bootstrap file.
+        if self
+            .state_store
+            .replication_groups()
+            .map_or(true, |groups| groups.contains_key(&stored.generation))
+        {
+            return;
+        }
         if databases.is_registered(name, stored.engine) {
             return;
         }
@@ -728,6 +806,7 @@ impl ServerState {
         if let Some((_, proxy)) = native {
             *databases.proxy.write() = Some(proxy);
         }
+        self.start_storage_replication().await?;
         self.refresh_database_routes();
         match self.state_store.all_database_grants() {
             Ok(grants) => {
@@ -760,6 +839,7 @@ impl ServerState {
         self.databases.host.close_all().await;
         let kv = self.databases.kv.clone();
         let _ = tokio::task::spawn_blocking(move || kv.close_all()).await;
+        self.databases.raft.shutdown().await;
     }
 
     /// Re-resolves where each applied binding's database lives, since other
@@ -873,6 +953,7 @@ impl ServerState {
             ));
         }
         let result = match command {
+            Command::CoordinateStorage { request } => self.coordinate_storage(request).await,
             Command::CreateDatabase {
                 name,
                 engine,
@@ -1773,6 +1854,7 @@ mod tests {
     fn binding(server: &str, key: Option<&str>) -> DatabaseBinding {
         DatabaseBinding {
             name: "shop".into(),
+            generation: None,
             server: server.into(),
             peer_key: key.map(str::to_owned),
             engine: tako_core::DatabaseEngine::Sqlite,

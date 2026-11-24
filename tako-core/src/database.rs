@@ -51,6 +51,8 @@ pub const DATABASE_PEER_PORT: u16 = 9847;
 /// Default private-network port where a KV store's server accepts
 /// requests forwarded for apps on other servers.
 pub const KV_PEER_PORT: u16 = 9848;
+/// Private Raft traffic among enrolled servers.
+pub const STORAGE_PEER_PORT: u16 = 9849;
 /// Bytes of a database file moved per import or export request.
 pub const DATABASE_TRANSFER_CHUNK_BYTES: u64 = 512 * 1024;
 /// Rows returned by `QueryDatabase` before the result is truncated.
@@ -126,6 +128,9 @@ pub struct DatabaseBinding {
     pub name: String,
     /// Device ID of the database's server.
     pub server: String,
+    /// An immutable resource generation when this binding uses Raft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
     /// Key the database's server issued with its grant to this app
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,7 +143,10 @@ impl DatabaseBinding {
     /// Whether two bindings name the same database the same way, ignoring
     /// the peer key a server fills in.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.name == other.name && self.server == other.server && self.engine == other.engine
+        self.name == other.name
+            && self.engine == other.engine
+            && self.generation == other.generation
+            && (self.generation.is_some() || self.server == other.server)
     }
 }
 
@@ -147,6 +155,7 @@ impl std::fmt::Debug for DatabaseBinding {
         f.debug_struct("DatabaseBinding")
             .field("name", &self.name)
             .field("server", &self.server)
+            .field("generation", &self.generation)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
             .field("engine", &self.engine)
             .finish()
@@ -401,6 +410,7 @@ mod tests {
     fn sqlite_bindings_serialize_without_an_engine() {
         let binding = DatabaseBinding {
             name: "main".into(),
+            generation: None,
             server: "s".into(),
             peer_key: None,
             engine: DatabaseEngine::Sqlite,
@@ -471,5 +481,83 @@ mod tests {
             value,
             serde_json::json!({"url": "http://127.0.0.1:9845", "authToken": "t"})
         );
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageClaim {
+    pub name: String,
+    pub engine: DatabaseEngine,
+    pub generation: String,
+    pub created_at_unix_secs: u64,
+    pub channel_owner: Option<String>,
+    pub workflows_owner: Option<String>,
+    /// Immutable device IDs in the initial voting membership. A deployment
+    /// joining later goes through membership change on this resource.
+    pub founders: std::collections::BTreeSet<String>,
+}
+
+/// Full-client storage coordination on the network management channel.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum StorageOperation {
+    /// The first enrolled server can mint the catalog credential. Other
+    /// participants receive the same credential through their management channel.
+    SetGrant {
+        generation: String,
+        scope: String,
+        enabled: bool,
+    },
+    OpenCatalog {
+        key: Option<String>,
+    },
+    Claim {
+        candidate: StorageClaim,
+    },
+    OpenReplica {
+        claim: StorageClaim,
+        backup_key: String,
+    },
+    SeedReplica {
+        name: String,
+        generation: String,
+    },
+    Readiness {
+        group: String,
+        target: String,
+        barrier: Option<u64>,
+    },
+    AddMembers {
+        group: String,
+        targets: Vec<String>,
+    },
+    Progress {
+        group: String,
+    },
+}
+
+// The operation can contain a catalog credential.
+impl std::fmt::Debug for StorageOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetGrant { scope, .. } => f.debug_tuple("SetGrant").field(scope).finish(),
+            Self::OpenCatalog { .. } => f.write_str("OpenCatalog"),
+            Self::Claim { candidate } => f.debug_tuple("Claim").field(&candidate.name).finish(),
+            Self::SeedReplica { name, .. } => f.debug_tuple("SeedReplica").field(name).finish(),
+            Self::Readiness { group, target, .. } => f
+                .debug_tuple("Readiness")
+                .field(group)
+                .field(target)
+                .finish(),
+            Self::OpenReplica { claim, .. } => {
+                f.debug_tuple("OpenReplica").field(&claim.name).finish()
+            }
+            Self::AddMembers { group, targets } => f
+                .debug_tuple("AddMembers")
+                .field(group)
+                .field(targets)
+                .finish(),
+            Self::Progress { group } => f.debug_tuple("Progress").field(group).finish(),
+        }
     }
 }

@@ -78,6 +78,7 @@ impl PlannedBinding {
             database_name: name.to_owned(),
             binding: tako_core::DatabaseBinding {
                 name: name.to_owned(),
+                generation: None,
                 server: home.device_id.clone(),
                 peer_key: None,
                 engine,

@@ -261,6 +261,46 @@ impl DeployTaskTreeController {
         );
     }
 
+    pub(super) fn storage_step(
+        &self,
+        server: &str,
+        alias: &str,
+        bytes: Option<(u64, u64)>,
+        done: bool,
+    ) {
+        let parent = deploy_task_step_id(server, "preparing");
+        let id = deploy_task_step_id(server, &format!("storage/{alias}"));
+        let mut state = self.state.lock().unwrap();
+        let preparing =
+            find_task_mut(&mut state.deploys, &parent).expect("configured deployment target");
+        if preparing.find(&id).is_none() {
+            preparing.append_child(boxed_task(id.clone(), alias));
+        }
+        let item = find_task_mut_in_state(&mut state, &id).unwrap();
+        if matches!(item.state, TaskState::Pending) {
+            item.state = TaskState::Running {
+                started_at: Instant::now(),
+            };
+        }
+        if let Some((copied, total)) = bytes {
+            item.detail = Some(format!(
+                "{} / {}",
+                super::format::format_size(copied),
+                super::format::format_size(total)
+            ));
+            item.progress = (total > 0).then(|| copied as f64 / total as f64);
+        }
+        if done {
+            let elapsed = match item.state {
+                TaskState::Running { started_at } => Some(started_at.elapsed()),
+                _ => None,
+            };
+            item.state = TaskState::Succeeded { elapsed };
+            item.progress = None;
+        }
+        self.refresh_locked(&state);
+    }
+
     /// Add a release-command sub-step under a server's `Preparing` task.
     /// `is_leader = true` shows the active "Running release command" row;
     /// `is_leader = false` shows the muted "Waiting for release command" row.

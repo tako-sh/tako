@@ -309,7 +309,7 @@ impl crate::ServerState {
                 }
                 self.stop_app(&app, service.as_deref()).await
             }
-            command @ (Command::CreateDatabase { .. }
+            command @ (Command::CoordinateStorage { .. } | Command::CreateDatabase { .. }
             | Command::DeleteDatabase { .. }
             | Command::DatabaseStatus { .. }
             | Command::ConfigureDatabaseBackup { .. }

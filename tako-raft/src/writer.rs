@@ -77,6 +77,29 @@ impl Writer {
         })
     }
 
+    /// Publish the initial, closed engine file. A concurrent successful
+    /// creator wins the base-revision check and can be reused on retry.
+    pub fn seed(&mut self, path: &Path) -> io::Result<()> {
+        use std::io::Read;
+        if self.revision != Some(0) {
+            return Ok(());
+        }
+        let mut file = std::fs::File::open(path)?;
+        let size = file.metadata()?.len();
+        if size == 0 || !size.is_multiple_of(4096) {
+            return Err(error("invalid initial engine file size"));
+        }
+        let mut pages = BTreeMap::new();
+        for i in 0..size / 4096 {
+            let mut page = vec![0; 4096];
+            file.read_exact(&mut page)?;
+            if page.iter().any(|&b| b != 0) {
+                pages.insert(i, page);
+            }
+        }
+        self.publish(4096, size, pages)
+    }
+
     pub fn fence(&mut self) {
         self.revision = None;
     }
@@ -136,6 +159,14 @@ impl Resource {
             cache: Default::default(),
         }
     }
+    pub fn grant_matches(&self, scope: &str, hash: &[u8; 32]) -> bool {
+        self.replica.grant_matches(scope, hash)
+    }
+
+    pub fn current_leader(&self) -> Option<u128> {
+        self.raft.metrics().borrow_watched().current_leader
+    }
+
     pub fn leader_barrier(&self) -> io::Result<()> {
         self.runtime.block_on(async {
             timeout(

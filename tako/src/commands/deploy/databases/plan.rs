@@ -138,7 +138,12 @@ pub(in crate::commands::deploy) fn plan(
 ) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let environment = &config.envs[env];
-    let members = crate::commands::helpers::resolve_network_servers(servers, network, &[], env)?;
+    let members = crate::commands::helpers::resolve_network_servers(
+        servers,
+        network,
+        &environment.servers,
+        env,
+    )?;
     let sql_names_database = |name: &str| environment.databases.values().any(|db| db == name);
 
     // Where a database named in this plan lives: its record's server, or a
@@ -193,7 +198,7 @@ pub(in crate::commands::deploy) fn plan(
                 ));
             }
             home
-        } else if let [key] = members.as_slice()
+        } else if let Some(key) = members.first()
             && administrator
         {
             let home = inventory_home(servers, key)?;
@@ -228,7 +233,15 @@ pub(in crate::commands::deploy) fn plan(
                 commands.join(" or ")
             ));
         };
-        Ok(PlannedBinding::new(name, home, engine))
+        let mut planned = PlannedBinding::new(name, home, engine);
+        if let Some(record) = records
+            .iter()
+            .find(|r| r.name == name && !r.founders.is_empty())
+        {
+            planned.binding.generation = Some(record.generation.clone());
+            planned.binding.server = record.server.clone();
+        }
+        Ok(planned)
     };
 
     // The services' choices are checked before anything is resolved, so a
@@ -347,6 +360,7 @@ mod tests {
     fn record(name: &str, owner: Option<&str>) -> DatabaseRecord {
         DatabaseRecord {
             name: name.into(),
+            founders: Default::default(),
             server: "a".repeat(64),
             generation: "c".repeat(32),
             created_at_unix_secs: 1,
@@ -420,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn one_deploy_target_in_a_larger_network_does_not_choose_placement() {
+    fn only_selected_targets_host_new_resources() {
         let project = project("");
         let missing = plan(
             &project,
@@ -433,15 +447,9 @@ mod tests {
             true,
             false,
         )
-        .err()
         .unwrap();
         let name = implicit_name(Service::Channels, APP);
-        for server in ["east", "west"] {
-            assert!(missing.contains(&format!(
-                "tako db create {name} --server {server} --network {NETWORK}"
-            )));
-        }
-        assert!(missing.contains("[envs.production.channels]"));
+        assert_eq!(missing.create[&name].home.name, "west");
         let mut admin_created = record(&name, None);
         admin_created.server = "b".repeat(64);
         let configured = super::tests::project(&format!("[envs.production.channels]\ndb='{name}'"));
@@ -613,9 +621,10 @@ mod tests {
             .contains("created for workflow runs")
         );
         // Several servers: the user creates the database and names it.
-        let missing = place("", 2, &[], true).err().unwrap();
-        assert!(missing.contains(&format!("tako db create {name} --server")));
-        assert!(missing.contains("[envs.production.workflows]"));
+        assert_eq!(
+            place("", 2, &[], true).unwrap().create[&name].home.name,
+            "west"
+        );
         let mut runs = record("runs", None);
         runs.server = "b".repeat(64);
         let named = place(

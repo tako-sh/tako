@@ -46,6 +46,7 @@ fn secrets() -> SecretsStore {
 fn record(name: &str, server: &str) -> DatabaseRecord {
     DatabaseRecord {
         name: name.into(),
+        founders: Default::default(),
         server: server.into(),
         generation: "g1".into(),
         created_at_unix_secs: 0,

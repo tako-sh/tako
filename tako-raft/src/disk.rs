@@ -30,6 +30,10 @@ impl Disk {
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
+    pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> io::Result<T>) -> io::Result<T> {
+        f(&self.0.lock())
+    }
+
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Connection) -> io::Result<T> + Send + 'static,

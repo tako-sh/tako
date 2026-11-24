@@ -36,6 +36,8 @@ pub(crate) struct DatabaseRecord {
     pub name: String,
     /// Device ID of the server that hosts the database.
     pub server: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub founders: std::collections::BTreeSet<String>,
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
@@ -130,6 +132,12 @@ pub(crate) fn backup_key(
             )
             .into()
         })
+}
+
+pub(crate) fn publish_key(alias: &LocalNetwork, record: &DatabaseRecord, key: &str) -> Result<()> {
+    tako_core::validate_database_name(&record.name)?;
+    tako_core::validate_database_generation(&record.generation)?;
+    mutate(alias, RecordKind::DatabaseKey, &key_name(record), Some(key))
 }
 
 /// Publishes a database's records: the directory record and, when given,
@@ -236,6 +244,7 @@ mod tests {
     fn records_round_trip_and_reject_unknown_fields() {
         let record = DatabaseRecord {
             name: "main".into(),
+            founders: Default::default(),
             server: "a".repeat(64),
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
@@ -269,6 +278,7 @@ mod tests {
         // The longest name and its generation still make a valid address.
         let longest = DatabaseRecord {
             name: "a".repeat(63),
+            founders: Default::default(),
             ..record
         };
         RecordAddress {

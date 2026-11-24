@@ -101,14 +101,9 @@ impl Peer {
         );
         Ok((raft, replica))
     }
-    /// A persisted log entry alone cannot serve a local query. Wait for the
-    /// target's state machine to apply a leader-confirmed position.
-    pub async fn wait_ready(
-        &self,
-        generation: &str,
-        target: SocketAddr,
-        mut report: impl FnMut(Progress),
-    ) -> io::Result<()> {
+    /// Fix one committed position on the leader. An actively written database
+    /// can then finish preparing as soon as the target has applied that position.
+    pub async fn read_barrier(&self, generation: &str) -> io::Result<u64> {
         let group = self
             .groups
             .read()
@@ -125,20 +120,39 @@ impl Peer {
         .map_err(error)?
         .map_err(error)?
         .index();
+        Ok(barrier)
+    }
+
+    pub async fn progress(&self, generation: &str, target: SocketAddr) -> io::Result<Progress> {
+        let group = self
+            .groups
+            .read()
+            .get(generation)
+            .cloned()
+            .ok_or_else(|| error("unknown resource group"))?;
         let client = Client {
             group: generation.to_owned(),
             target,
             secret: group.secret,
             connections: self.connections.clone(),
         };
+        timeout(Duration::from_secs(10), async {
+            let mut stream = client.send(&Request::Progress).await?;
+            read_frame::<Progress>(&mut stream, 1024).await
+        })
+        .await
+        .map_err(error)?
+    }
+
+    pub async fn wait_ready(
+        &self,
+        generation: &str,
+        target: SocketAddr,
+        mut report: impl FnMut(Progress),
+    ) -> io::Result<()> {
+        let barrier = self.read_barrier(generation).await?;
         loop {
-            let check = async {
-                let mut stream = client.send(&Request::Progress).await?;
-                read_frame::<Progress>(&mut stream, 1024).await
-            };
-            let progress = timeout(Duration::from_secs(10), check)
-                .await
-                .map_err(error)??;
+            let progress = self.progress(generation, target).await?;
             let ready = progress.applied.is_some_and(|index| index >= barrier);
             report(progress);
             if ready {

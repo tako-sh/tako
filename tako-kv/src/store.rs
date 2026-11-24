@@ -380,6 +380,11 @@ impl Store {
         self.get_local(key)
     }
 
+    pub(crate) fn replica_grant(&self, scope: &str, hash: &[u8; 32]) -> Option<bool> {
+        self.replicated
+            .as_ref()
+            .map(|r| r.resource.grant_matches(scope, hash))
+    }
     pub fn is_replicated(&self) -> bool {
         self.replicated.is_some()
     }

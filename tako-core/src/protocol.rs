@@ -169,7 +169,9 @@ pub fn deployment_app_id_filename(app_id: &str) -> String {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
     /// Query protocol version and supported capabilities.
-    Hello { protocol_version: u32 },
+    Hello {
+        protocol_version: u32,
+    },
 
     /// Download runtime and install production dependencies for a release.
     /// Called before `Deploy` so that the deploy step only does app registration
@@ -189,7 +191,10 @@ pub enum Command {
 
     /// Plan a release artifact upload. Returns the server-side release path and
     /// whether the artifact still needs to be uploaded.
-    PrepareReleaseUpload { app: String, version: String },
+    PrepareReleaseUpload {
+        app: String,
+        version: String,
+    },
 
     /// Validate and stage deploy metadata that the server must use before the
     /// final deploy command. This keeps provider credentials on the server side
@@ -212,17 +217,28 @@ pub enum Command {
     },
 
     /// Clear staged deploy metadata without deleting the release artifact.
-    CleanupPreparedDeploy { app: String, version: String },
+    CleanupPreparedDeploy {
+        app: String,
+        version: String,
+    },
 
     /// Remove a partially uploaded/extracted release.
-    CleanupRelease { app: String, version: String },
+    CleanupRelease {
+        app: String,
+        version: String,
+    },
 
     /// Point the app's current symlink at a successfully deployed release and
     /// prune old releases.
-    FinalizeRelease { app: String, version: String },
+    FinalizeRelease {
+        app: String,
+        version: String,
+    },
 
     /// Check that the server has enough free space for deploy work.
-    CheckDeploySpace { min_free_bytes: u64 },
+    CheckDeploySpace {
+        min_free_bytes: u64,
+    },
 
     /// Run a one-shot release command on this server for the given
     /// release. Used during deploy to run migrations / cache invalidation
@@ -287,6 +303,10 @@ pub enum Command {
         ssl: SslBinding,
         #[serde(default)]
         force: bool,
+    },
+
+    CoordinateStorage {
+        request: crate::StorageOperation,
     },
 
     /// Create a database hosted on this server.
@@ -354,7 +374,9 @@ pub enum Command {
     },
 
     /// List a database's restore points and its windows of restorable time.
-    ListDatabaseSnapshots { name: String },
+    ListDatabaseSnapshots {
+        name: String,
+    },
 
     /// Replace a database with its backed-up state: at the restore point
     /// `snapshot` (a transaction), at the newest transaction captured at or
@@ -371,12 +393,18 @@ pub enum Command {
     },
 
     /// Run one SQL statement as an administrator, for `tako db shell`.
-    QueryDatabase { name: String, sql: String },
+    QueryDatabase {
+        name: String,
+        sql: String,
+    },
 
     /// Read or write one key of a KV store this server hosts, as an
     /// administrator, for `tako kv get|put|delete`. Replies as the internal
     /// socket's `Kv` does: the value's JSON text or null.
-    QueryKv { name: String, request: KvRequest },
+    QueryKv {
+        name: String,
+        request: KvRequest,
+    },
 
     /// Apply an app's SQL migrations: each pending file in order, once,
     /// after a snapshot when any are pending. Replies with a
@@ -425,10 +453,15 @@ pub enum Command {
     },
 
     /// Verify a completed upload and replace the database with it.
-    FinishDatabaseImport { name: String, upload_id: String },
+    FinishDatabaseImport {
+        name: String,
+        upload_id: String,
+    },
 
     /// Write a consistent copy of a database for download.
-    BeginDatabaseExport { name: String },
+    BeginDatabaseExport {
+        name: String,
+    },
 
     /// Read one chunk of an export.
     DatabaseExportChunk {
@@ -438,7 +471,10 @@ pub enum Command {
     },
 
     /// Remove an export's copy.
-    FinishDatabaseExport { name: String, export_id: String },
+    FinishDatabaseExport {
+        name: String,
+        export_id: String,
+    },
 
     /// Update the desired minimum number of instances for an app.
     Scale {
@@ -465,19 +501,28 @@ pub enum Command {
     },
 
     /// Delete an app from runtime state
-    Delete { app: String },
+    Delete {
+        app: String,
+    },
 
     /// Get status of an app
-    Status { app: String },
+    Status {
+        app: String,
+    },
 
     /// List all apps
     List,
 
     /// List release/build history for an app
-    ListReleases { app: String },
+    ListReleases {
+        app: String,
+    },
 
     /// Roll back an app to a previously deployed release/build
-    Rollback { app: String, version: String },
+    Rollback {
+        app: String,
+        version: String,
+    },
 
     /// List all configured routes (all apps)
     Routes,
@@ -493,22 +538,30 @@ pub enum Command {
     },
 
     /// Get the SHA-256 hash of an app's current secrets
-    GetSecretsHash { app: String },
+    GetSecretsHash {
+        app: String,
+    },
 
     /// Get server runtime information (ports, data dir, upgrade mode).
     ServerInfo,
 
     /// Persist drain intent, reject new app traffic, and stop local work within a deadline.
-    DrainServer { timeout_seconds: u64 },
+    DrainServer {
+        timeout_seconds: u64,
+    },
 
     /// Restore persisted apps and workflows before accepting application traffic again.
     ResumeServer,
 
     /// Enter upgrading mode with a durable lock owner.
-    EnterUpgrading { owner: String },
+    EnterUpgrading {
+        owner: String,
+    },
 
     /// Exit upgrading mode for the lock owner.
-    ExitUpgrading { owner: String },
+    ExitUpgrading {
+        owner: String,
+    },
 
     /// Inject an ACME challenge token (for testing HTTP-01 challenge serving).
     InjectChallengeToken {
@@ -744,16 +797,25 @@ pub enum Command {
     },
 
     /// Operator: read one run with its saved steps. Large values are capped.
-    GetWorkflowRun { app: String, id: String },
+    GetWorkflowRun {
+        app: String,
+        id: String,
+    },
 
     /// Operator: return a `dead` or `cancelled` run to `pending`, due now,
     /// with a fresh retry budget. Saved steps are kept.
-    RetryWorkflowRun { app: String, id: String },
+    RetryWorkflowRun {
+        app: String,
+        id: String,
+    },
 
     /// Operator: cancel a `pending` or `running` run. Unlike the worker's
     /// `CancelRun`, it carries no claim owner: a running attempt is fenced
     /// and its later writes are rejected as stale.
-    CancelWorkflowRun { app: String, id: String },
+    CancelWorkflowRun {
+        app: String,
+        id: String,
+    },
 }
 
 /// A single cron schedule for a workflow.

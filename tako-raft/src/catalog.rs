@@ -5,23 +5,13 @@ use crate::{
     disk::{decode, encode, error},
 };
 use rusqlite::{Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io};
+use std::io;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Claim {
-    pub name: String,
-    pub engine: tako_core::DatabaseEngine,
-    pub generation: String,
-    /// Immutable device IDs in the initial voting membership. A deployment
-    /// joining later goes through membership change on this resource.
-    pub founders: BTreeSet<String>,
-}
+pub use tako_core::StorageClaim as Claim;
 
 pub(crate) fn claim(db: &Connection, candidate: Claim) -> io::Result<Applied> {
     if tako_core::validate_database_name(&candidate.name).is_err()
-        || candidate.generation.len() != 32
-        || !candidate.generation.bytes().all(|b| b.is_ascii_hexdigit())
+        || tako_core::validate_database_generation(&candidate.generation).is_err()
         || candidate.founders.is_empty()
         || candidate.founders.len() > 3
         || candidate

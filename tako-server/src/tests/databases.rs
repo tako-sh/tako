@@ -430,6 +430,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         CHANNEL_REPLAY_BINDING.into(),
         DatabaseBinding {
             name: ID.into(),
+            generation: None,
             server: "edge".into(),
             peer_key: Some(key.clone()),
             engine: tako_core::DatabaseEngine::Sqlite,
@@ -2056,6 +2057,7 @@ async fn only_bindings_to_this_server_count_for_its_copy() {
     create(&state, ID, None).await;
     let binding = |server: &str| tako_core::DatabaseBinding {
         name: ID.into(),
+        generation: None,
         server: server.into(),
         peer_key: None,
         engine: tako_core::DatabaseEngine::Sqlite,
@@ -2074,6 +2076,7 @@ async fn bindings_keep_their_token_only_for_the_same_home() {
     create(&state, ID, None).await;
     let binding = |server: &str| tako_core::DatabaseBinding {
         name: ID.into(),
+        generation: None,
         server: server.into(),
         peer_key: None,
         engine: tako_core::DatabaseEngine::Sqlite,
@@ -2436,6 +2439,7 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
         crate::state_store::AppDatabase {
             binding: tako_core::DatabaseBinding {
                 name: ID.into(),
+                generation: None,
                 server: String::new(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Sqlite,

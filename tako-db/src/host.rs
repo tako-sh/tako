@@ -628,6 +628,15 @@ impl DatabaseHost {
 
     /// Replaces the bindings of one app environment on this server.
     pub fn set_bindings(&self, scope: &str, bindings: Vec<Binding>) {
+        self.set_bindings_with_replicas(scope, bindings, &BTreeSet::new());
+    }
+
+    pub fn set_bindings_with_replicas(
+        &self,
+        scope: &str,
+        bindings: Vec<Binding>,
+        replicas: &BTreeSet<TokenHash>,
+    ) {
         let mut all = self.inner.bindings.write();
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
@@ -639,11 +648,15 @@ impl DatabaseHost {
         if !bindings.is_empty() {
             for binding in &bindings {
                 for hash in [binding.tokens.primary, binding.tokens.replica] {
+                    let mut route = binding.clone();
+                    if replicas.contains(&hash) {
+                        route.home = Home::Local;
+                    }
                     by_token.insert(
                         hash,
                         ScopedBinding {
                             scope: scope.to_owned(),
-                            binding: binding.clone(),
+                            binding: route,
                         },
                     );
                 }
@@ -699,12 +712,23 @@ impl DatabaseHost {
         let database = self.database(id)?;
         let was_changed = database.changed.swap(false, Ordering::Relaxed);
         let path = database.path.clone();
+        let resource = database.resource.clone();
         let dest = dest.to_path_buf();
         let busy = self.inner.config.engine.busy_timeout;
-        let result =
-            tokio::task::spawn_blocking(move || engine::snapshot_database(&path, &dest, busy))
-                .await
-                .map_err(|e| HostError::Engine(e.to_string()))?;
+        let result = tokio::task::spawn_blocking(move || {
+            let image = resource
+                .as_ref()
+                .map(|r| {
+                    r.leader_barrier()?;
+                    r.local_file()
+                })
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            let source = image.as_ref().map_or(path.as_path(), |image| image.path());
+            engine::snapshot_database(source, &dest, busy)
+        })
+        .await
+        .map_err(|e| HostError::Engine(e.to_string()))?;
         if result.is_err() && was_changed {
             database.mark_changed();
         }
@@ -1077,14 +1101,22 @@ impl DatabaseHost {
         key: &str,
     ) -> Option<Resolved> {
         let presented = hash_token(key);
-        let allowed = self
-            .inner
-            .remote_grants
-            .read()
-            .get(scope)
-            .is_some_and(|grant| {
-                constant_time_eq(&grant.key_hash, &presented) && grant.databases.contains(database)
-            });
+        let resource = self
+            .database(database)
+            .ok()
+            .and_then(|db| db.resource.clone());
+        let allowed = if let Some(resource) = resource {
+            resource.grant_matches(scope, &presented)
+        } else {
+            self.inner
+                .remote_grants
+                .read()
+                .get(scope)
+                .is_some_and(|grant| {
+                    constant_time_eq(&grant.key_hash, &presented)
+                        && grant.databases.contains(database)
+                })
+        };
         if !allowed {
             return None;
         }

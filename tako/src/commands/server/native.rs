@@ -154,6 +154,19 @@ pub(super) async fn add(
                 return Err("Unexpected server key proof response".into());
             };
             let verified = pending.verify(&proof, network::now()?)?;
+            // Initial enrollments run on the network creator. Reserve the
+            // founder before sending an install so a crash or simultaneous
+            // enrollment cannot initialize a second storage catalog.
+            let founder_path = directory.join("founder.json");
+            if let Err(error) = network::write_json(&founder_path, &device, false) {
+                if !founder_path.try_exists()? {
+                    return Err(error);
+                }
+                let founder: DeviceId = network::read_json(&founder_path)?;
+                if founder != device {
+                    return Err("Another first server enrollment is in progress. Finish it before joining more servers.".into());
+                }
+            }
             let mut snapshot = profile.snapshot().clone();
             let member = snapshot.approve_independent_root(
                 verified,

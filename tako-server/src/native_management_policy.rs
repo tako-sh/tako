@@ -32,6 +32,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
+        | Command::CoordinateStorage { .. }
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }
@@ -369,6 +370,7 @@ pub(crate) fn authorize_command(
         | Command::ChannelClose { .. }
         | Command::Cache { .. }
         | Command::Kv { .. }
+        | Command::CoordinateStorage { .. }
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }
@@ -704,6 +706,7 @@ mod tests {
         let mut f = Fixture::new();
         let binding = |name: &str| DatabaseBinding {
             name: name.into(),
+            generation: None,
             server: "edge".into(),
             peer_key: None,
             engine: tako_core::DatabaseEngine::Sqlite,
@@ -744,6 +747,7 @@ mod tests {
             "main".into(),
             DatabaseBinding {
                 name: "shop".into(),
+                generation: None,
                 server: "edge".into(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Sqlite,
@@ -777,6 +781,7 @@ mod tests {
             "main".into(),
             DatabaseBinding {
                 name: "shop".into(),
+                generation: None,
                 server: "edge".into(),
                 peer_key: Some("issued-by-edge".into()),
                 engine: tako_core::DatabaseEngine::Sqlite,

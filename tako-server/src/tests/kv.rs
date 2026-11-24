@@ -87,6 +87,7 @@ async fn put(state: &ServerState, name: &str, key: &str, json: &str, ttl_ms: Opt
 fn binding(name: &str, engine: DatabaseEngine) -> DatabaseBinding {
     DatabaseBinding {
         name: name.into(),
+        generation: None,
         server: String::new(),
         peer_key: None,
         engine,

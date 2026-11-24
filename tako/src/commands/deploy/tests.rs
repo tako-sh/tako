@@ -16,6 +16,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
             "main".into(),
             tako_core::DatabaseBinding {
                 name: "orders".into(),
+                generation: None,
                 server: "s1".into(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Sqlite,
@@ -23,6 +24,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
         )]),
         channel_database: Some(tako_core::DatabaseBinding {
             name: "replay".into(),
+            generation: None,
             server: "s2".into(),
             peer_key: None,
             engine: tako_core::DatabaseEngine::Sqlite,

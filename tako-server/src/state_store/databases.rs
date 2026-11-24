@@ -74,6 +74,38 @@ fn parse_engine(name: &str) -> Result<tako_core::DatabaseEngine, StateStoreError
 }
 
 impl SqliteStateStore {
+    pub(crate) fn replication_groups(
+        &self,
+    ) -> Result<BTreeMap<String, crate::databases::replication::GroupConfig>, StateStoreError> {
+        self.all_database_rows("SELECT app,encrypted_data FROM replication_groups")
+    }
+    pub(crate) fn storage_initialized(&self, id: &str) -> Result<bool, StateStoreError> {
+        Ok(self.lock_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM storage_bootstraps WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?)
+    }
+    pub(crate) fn claim_storage_bootstrap(&self, id: &str) -> Result<bool, StateStoreError> {
+        Ok(self
+            .lock_conn()?
+            .execute("INSERT OR IGNORE INTO storage_bootstraps VALUES (?1)", [id])?
+            == 1)
+    }
+
+    pub(crate) fn insert_replication_group(
+        &self,
+        id: &str,
+        config: &crate::databases::replication::GroupConfig,
+    ) -> Result<(), StateStoreError> {
+        let encrypted = self.encrypt_json(config)?;
+        self.lock_conn()?.execute(
+            "INSERT INTO replication_groups VALUES (?1,?2)",
+            (id, encrypted),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn release_databases(
         &self,
         app: &str,

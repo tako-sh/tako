@@ -680,7 +680,11 @@ async fn run_async(
     let release_command = resolve_release_command(&tako_config, &env);
     if configure_bindings {
         databases::provision(
-            &database_plan,
+            &mut database_plan,
+            &servers,
+            &env,
+            &server_names,
+            deploy_task_tree.as_ref(),
             &network,
             &deployment_app_name,
             &mut database_records,
@@ -708,13 +712,17 @@ async fn run_async(
         .await?;
         databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
         databases::apply_peer_keys(&mut database_plan.kv, &prepared.peer_keys);
-        if let Some(replay) = &mut database_plan.replay.binding {
+        if let Some(replay) = &mut database_plan.replay.binding
+            && replay.binding.generation.is_none()
+        {
             replay.binding.peer_key = prepared
                 .replay_peer_keys
                 .get(&replay.home.device_id)
                 .cloned();
         }
-        if let Some(workflows) = &mut database_plan.workflows.binding {
+        if let Some(workflows) = &mut database_plan.workflows.binding
+            && workflows.binding.generation.is_none()
+        {
             workflows.binding.peer_key = prepared
                 .workflows_peer_keys
                 .get(&workflows.home.device_id)

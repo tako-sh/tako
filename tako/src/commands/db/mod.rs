@@ -954,6 +954,7 @@ pub(crate) async fn create_database(
     getrandom::fill(&mut generation)?;
     let record = DatabaseRecord {
         name: name.to_owned(),
+        founders: Default::default(),
         server: home.device_id.clone(),
         generation: hex::encode(generation),
         created_at_unix_secs: unix_now(),
@@ -2638,6 +2639,7 @@ channels.db = "local"
         let network = config.envs["production"].network.as_deref().unwrap();
         let record = |name: &str, owner: Option<&str>| DatabaseRecord {
             name: name.into(),
+            founders: Default::default(),
             server: "edge".into(),
             generation: "g".into(),
             created_at_unix_secs: 0,

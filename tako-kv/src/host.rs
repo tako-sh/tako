@@ -362,6 +362,15 @@ impl KvHost {
 
     /// Replaces the bindings of one app environment on this server.
     pub fn set_bindings(&self, scope: &str, bindings: Vec<Binding>) {
+        self.set_bindings_with_replicas(scope, bindings, &BTreeSet::new());
+    }
+
+    pub fn set_bindings_with_replicas(
+        &self,
+        scope: &str,
+        bindings: Vec<Binding>,
+        replicas: &BTreeSet<TokenHash>,
+    ) {
         let mut all = self.inner.bindings.write();
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
@@ -373,7 +382,11 @@ impl KvHost {
         if !bindings.is_empty() {
             for binding in &bindings {
                 for hash in [binding.tokens.primary, binding.tokens.replica] {
-                    by_token.insert(hash, (scope.to_owned(), binding.clone()));
+                    let mut route = binding.clone();
+                    if replicas.contains(&hash) {
+                        route.home = Home::Local;
+                    }
+                    by_token.insert(hash, (scope.to_owned(), route));
                 }
             }
             all.insert(scope.to_owned(), bindings);
@@ -403,6 +416,12 @@ impl KvHost {
     /// address, but only that server knows the key.
     pub(crate) fn granted(&self, scope: &str, store: &StoreId, key: &str) -> bool {
         let presented = hash_token(key);
+        if let Some(allowed) = self
+            .store(store)
+            .and_then(|s| s.replica_grant(scope, &presented))
+        {
+            return allowed;
+        }
         self.inner
             .remote_grants
             .read()
@@ -439,6 +458,7 @@ impl KvHost {
             return Err(KvError::invalid("the local replica is read-only"));
         }
         if replica
+            && binding.home == Home::Local
             && let KvRequest::Get { key } = &request
             && let Some(store) = self.store(&binding.store)
             && store.is_replicated()
