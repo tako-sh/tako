@@ -70,15 +70,14 @@ deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
 the release command; the endpoint is loopback-only on the server. Container
 releases cannot bind databases yet.
 
-Use `db.read_replica()` and `store.read_replica()` for read-only access on the resource’s home or in local development. Each returns an `Option`. A request on a server without a local copy returns unavailable.
+Use `db.read_replica()` and `store.read_replica()` for read-only access to the latest locally applied state on a deployment target or in local development. Each returns an `Option`. A request on a server without a local copy returns unavailable.
 
 ## KV stores
 
 Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on
 one server of the network, reachable from apps on every server. Use them for
 values any server may need next: login and WebAuthn challenges, one-time
-tokens, sessions, and feature flags. A full-access deploy creates a missing store on a single-server network.
-With multiple servers, place it first with `tako kv create <name> --server <server>`.
+tokens, sessions, and feature flags. A full-access deploy creates the store and prepares a replica on each selected target.
 Bind it in `[envs.<env>].kv`, such as
 `kv = { sessions = "<name>" }`; an environment can bind several stores, and
 several apps can bind one. `tako::kv("sessions")` returns
@@ -243,9 +242,7 @@ read responses at 1 MiB. Invalidations use the environment's channel replay
 database (a Tako-hosted SQLite database), so they reach every server of the
 network. Because `Cargo.toml` depends on the `tako` crate, a deploy without
 `[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
-created automatically on a network with exactly one trusted server; on a larger
-network, create one with `tako db create <name>` and set
-`[envs.<env>.channels].db` first (see
+created automatically on the selected targets by a full-access deploy (see
 https://tako.sh/docs/channels/#deploy-replay-storage). See
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.

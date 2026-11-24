@@ -24,6 +24,7 @@ type AppliedState = (Option<LogIdOf<Types>>, StoredMembershipOf<Types>);
 #[derive(Clone)]
 pub struct Replica {
     disk: Disk,
+    settings: Arc<parking_lot::RwLock<Option<Vec<u8>>>>,
     grants: Arc<parking_lot::RwLock<std::collections::BTreeMap<String, [u8; 32]>>>,
     dir: Arc<PathBuf>,
     snapshot: Arc<Mutex<Option<(Meta, SnapshotFile)>>>,
@@ -59,13 +60,17 @@ impl Replica {
         let disk = Disk::open(
             &directory.join("replica.sqlite"),
             &format!(
-                "CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS backup_changes(txid INTEGER PRIMARY KEY,captured INTEGER NOT NULL,change BLOB NOT NULL); CREATE INDEX IF NOT EXISTS backup_expiry ON backup_changes(captured); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
+                "CREATE TABLE IF NOT EXISTS staged_parts(part INTEGER PRIMARY KEY, nonce BLOB NOT NULL, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS backup_changes(txid INTEGER PRIMARY KEY,captured INTEGER NOT NULL,change BLOB NOT NULL); CREATE INDEX IF NOT EXISTS backup_expiry ON backup_changes(captured); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
                 crate::catalog::SCHEMA
             ),
         )?;
+        let settings = Arc::new(parking_lot::RwLock::new(
+            disk.read(|db| get(db, "backup_settings"))?,
+        ));
         let grants = Arc::new(parking_lot::RwLock::new(disk.read(read_grants)?));
         Ok(Self {
             grants,
+            settings,
             disk,
             dir: Arc::new(directory.to_owned()),
             snapshot: Default::default(),
@@ -78,6 +83,19 @@ impl Replica {
             .read()
             .get(scope)
             .is_some_and(|expected| bool::from(expected.ct_eq(hash)))
+    }
+
+    pub async fn retirement(
+        &self,
+        generation: String,
+    ) -> io::Result<Option<std::collections::BTreeSet<String>>> {
+        self.disk
+            .run(move |db| crate::catalog::retirement(db, &generation))
+            .await
+    }
+
+    pub async fn placement(&self) -> io::Result<tako_core::ResourcePlacement> {
+        self.disk.run(|db| crate::placement::load(db)).await
     }
 
     pub async fn revision(&self) -> io::Result<u64> {
@@ -95,10 +113,8 @@ impl Replica {
     pub(crate) async fn transaction_id(&self) -> io::Result<u64> {
         self.disk.run(|db| Ok(get(db, "txid")?.unwrap_or(0))).await
     }
-    pub(crate) async fn tracking(&self) -> io::Result<bool> {
-        self.disk
-            .run(|db| Ok(get(db, "track_backups")?.unwrap_or(false)))
-            .await
+    pub(crate) fn backup_settings(&self) -> Option<Vec<u8>> {
+        self.settings.read().clone()
     }
 
     pub(crate) async fn backup_delta(&self, txid: u64) -> io::Result<Option<Commit>> {
@@ -123,36 +139,100 @@ impl Replica {
         dir: &Path,
     ) -> io::Result<(NamedTempFile, BackupPosition)> {
         let mut file = NamedTempFile::new_in(dir)?;
-        self.disk
-            .run(move |db| {
-                let tx = db.transaction().map_err(error)?;
-                let revision = get(&tx, "revision")?.unwrap_or(0);
-                let size = get(&tx, "file_size")?.unwrap_or(0);
-                let page_size: u32 = get(&tx, "page_size")?.unwrap_or(0);
-                file.as_file().set_len(size)?;
-                let mut stmt = tx
-                    .prepare("SELECT page,bytes FROM pages ORDER BY page")
+        let path = self.dir.join("replica.sqlite");
+        // A read transaction on a separate WAL connection pins this revision
+        // while the Raft apply connection continues to accept new writes.
+        tokio::task::spawn_blocking(move || {
+            let mut reader =
+                Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                     .map_err(error)?;
-                let mut rows = stmt.query([]).map_err(error)?;
-                while let Some(row) = rows.next().map_err(error)? {
-                    let page =
-                        u64::try_from(row.get::<_, i64>(0).map_err(error)?).map_err(error)?;
-                    file.seek(SeekFrom::Start(page * u64::from(page_size)))?;
-                    file.write_all(row.get_ref(1).map_err(error)?.as_blob().map_err(error)?)?;
-                }
-                file.rewind()?;
-                Ok((
-                    file,
-                    BackupPosition {
-                        revision,
-                        page_size,
-                        txid: get(&tx, "txid")?.unwrap_or(0),
-                        captured_at_ms: get(&tx, "captured_at_ms")?.unwrap_or(0),
-                    },
-                ))
-            })
-            .await
+            let tx = reader.transaction().map_err(error)?;
+            let revision = get(&tx, "revision")?.unwrap_or(0);
+            let size = get(&tx, "file_size")?.unwrap_or(0);
+            let page_size: u32 = get(&tx, "page_size")?.unwrap_or(0);
+            file.as_file().set_len(size)?;
+            let mut stmt = tx
+                .prepare("SELECT page,bytes FROM pages ORDER BY page")
+                .map_err(error)?;
+            let mut rows = stmt.query([]).map_err(error)?;
+            while let Some(row) = rows.next().map_err(error)? {
+                let page = u64::try_from(row.get::<_, i64>(0).map_err(error)?).map_err(error)?;
+                file.seek(SeekFrom::Start(page * u64::from(page_size)))?;
+                file.write_all(row.get_ref(1).map_err(error)?.as_blob().map_err(error)?)?;
+            }
+            file.rewind()?;
+            Ok((
+                file,
+                BackupPosition {
+                    revision,
+                    page_size,
+                    txid: get(&tx, "txid")?.unwrap_or(0),
+                    captured_at_ms: get(&tx, "captured_at_ms")?.unwrap_or(0),
+                },
+            ))
+        })
+        .await
+        .map_err(error)?
     }
+}
+
+// Only the final log entry publishes a transaction. A new writer can supersede an
+// interrupted upload at the same revision. A displaced writer cannot finish it.
+fn apply_part(
+    db: &Connection,
+    base: u64,
+    nonce: &[u8; 16],
+    index: u64,
+    last: bool,
+    bytes: Vec<u8>,
+    revision: u64,
+) -> io::Result<Applied> {
+    let current_revision = get(db, "revision")?.unwrap_or(0);
+    if current_revision != base {
+        return Ok(Applied::Stale { current_revision });
+    }
+    let Ok(index) = i64::try_from(index) else {
+        return Ok(Applied::Invalid);
+    };
+    if index == 0 {
+        db.execute("DELETE FROM staged_parts", []).map_err(error)?;
+    } else {
+        let next: Option<i64> = db
+            .query_row(
+                "SELECT max(part)+1 FROM staged_parts WHERE nonce=?1",
+                [nonce],
+                |row| row.get(0),
+            )
+            .map_err(error)?;
+        if next != Some(index) {
+            return Ok(Applied::Invalid);
+        }
+    }
+    db.execute(
+        "INSERT INTO staged_parts VALUES(?1,?2,?3)",
+        (index, nonce, bytes),
+    )
+    .map_err(error)?;
+    if !last {
+        return Ok(Applied::NoChange);
+    }
+    let mut encoded = Vec::new();
+    {
+        let mut stmt = db
+            .prepare("SELECT bytes FROM staged_parts ORDER BY part")
+            .map_err(error)?;
+        let mut rows = stmt.query([]).map_err(error)?;
+        while let Some(row) = rows.next().map_err(error)? {
+            encoded.extend_from_slice(row.get_ref(0).map_err(error)?.as_blob().map_err(error)?);
+        }
+    }
+    let Ok(commit) = postcard::from_bytes::<Commit>(&encoded) else {
+        return Ok(Applied::Invalid);
+    };
+    if commit.base_revision != base {
+        return Ok(Applied::Invalid);
+    }
+    apply_commit(db, commit, revision)
 }
 
 fn apply_commit(db: &Connection, mut commit: Commit, revision: u64) -> io::Result<Applied> {
@@ -178,6 +258,7 @@ fn apply_commit(db: &Connection, mut commit: Commit, revision: u64) -> io::Resul
     {
         return Ok(Applied::Invalid);
     }
+    db.execute("DELETE FROM staged_parts", []).map_err(error)?;
     // Raft log indices also include elections and configuration changes.
     // The backup format needs a consecutive transaction number for page commits.
     let txid = get::<u64>(db, "txid")?
@@ -235,12 +316,15 @@ impl RaftStateMachine<Types> for Replica {
     {
         while let Some((entry, responder)) = entries.try_next().await? {
             let grants = self.grants.clone();
+            let settings = self.settings.clone();
             let result = self
                 .disk
                 .run(move |db| {
                     let tx = db.transaction().map_err(error)?;
                     let id = entry.log_id;
                     let mut grant_change = None;
+                    let mut revoked = Vec::new();
+                    let mut new_settings = None;
                     let reply = match entry.payload {
                         EntryPayload::Blank => Applied::NoChange,
                         EntryPayload::Membership(membership) => {
@@ -251,10 +335,66 @@ impl RaftStateMachine<Types> for Replica {
                             )?;
                             Applied::NoChange
                         }
+                        EntryPayload::Normal(crate::Proposal::Placement(change)) => {
+                            let released_app = match &change {
+                                tako_core::PlacementChange::Release { app, .. } => {
+                                    Some(app.clone())
+                                }
+                                _ => None,
+                            };
+                            let result = crate::placement::apply(&tx, change, id.index())?;
+                            if let Applied::Placement(placement) = &result
+                                && let Some(ref app) = released_app
+                                && !placement.uses.values().any(|apps| apps.contains_key(app))
+                            {
+                                for scope in [
+                                    app.to_owned(),
+                                    tako_core::channel_replay_grant_scope(app),
+                                    tako_core::workflows_grant_scope(app),
+                                ] {
+                                    tx.execute(
+                                        "DELETE FROM resource_grants WHERE scope=?1",
+                                        [&scope],
+                                    )
+                                    .map_err(error)?;
+                                    revoked.push(scope);
+                                }
+                            }
+                            if let Applied::Placement(placement) = &result
+                                && placement.retired
+                            {
+                                set(&tx, "retired", &true)?;
+                            }
+                            result
+                        }
+                        EntryPayload::Normal(crate::Proposal::Retirement {
+                            generation,
+                            targets,
+                        }) => crate::catalog::begin_retirement(&tx, &generation, targets)?,
+                        EntryPayload::Normal(crate::Proposal::RetireName { name, generation }) => {
+                            crate::catalog::retire(&tx, &name, &generation)?
+                        }
+                        EntryPayload::Normal(_)
+                            if get::<bool>(&tx, "retired")?.unwrap_or(false) =>
+                        {
+                            Applied::Invalid
+                        }
+                        EntryPayload::Normal(crate::Proposal::CommitPart {
+                            base,
+                            nonce,
+                            index,
+                            last,
+                            bytes,
+                        }) => apply_part(&tx, base, &nonce, index, last, bytes, id.index())?,
                         EntryPayload::Normal(crate::Proposal::Pages(change)) => {
                             apply_commit(&tx, change, id.index())?
                         }
-                        EntryPayload::Normal(crate::Proposal::TrackBackups(enabled)) => {
+                        EntryPayload::Normal(crate::Proposal::BackupSettings {
+                            track: enabled,
+                            sealed,
+                        }) => {
+                            set(&tx, "backup_settings", &sealed)?;
+                            new_settings = Some(sealed);
                             set(&tx, "track_backups", &enabled)?;
                             if !enabled {
                                 tx.execute("DELETE FROM backup_changes", [])
@@ -282,6 +422,15 @@ impl RaftStateMachine<Types> for Replica {
                     };
                     set(&tx, "applied", &id)?;
                     tx.commit().map_err(error)?;
+                    if !revoked.is_empty() {
+                        let mut current = grants.write();
+                        for scope in revoked {
+                            current.remove(&scope);
+                        }
+                    }
+                    if let Some(sealed) = new_settings {
+                        *settings.write() = Some(sealed);
+                    }
                     if let Some((scope, hash)) = grant_change {
                         let mut current = grants.write();
                         match hash {
@@ -317,6 +466,7 @@ impl RaftStateMachine<Types> for Replica {
     async fn install_snapshot(&mut self, meta: &Meta, file: SnapshotFile) -> io::Result<()> {
         let expected = meta.clone();
         let source = file.clone();
+        let settings = self.settings.clone();
         let grants = self.grants.clone();
         self.disk
             .run(move |db| {
@@ -331,11 +481,13 @@ impl RaftStateMachine<Types> for Replica {
                     ));
                 }
                 let restored_grants = read_grants(&conn)?;
+                let restored_settings = get(&conn, "backup_settings")?;
                 let backup = Backup::new(&conn, db).map_err(error)?;
                 backup
                     .run_to_completion(128, std::time::Duration::ZERO, None)
                     .map_err(error)?;
                 *grants.write() = restored_grants;
+                *settings.write() = restored_settings;
                 Ok(())
             })
             .await?;

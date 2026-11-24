@@ -1,160 +1,13 @@
 //! Creating a name is a catalog transaction. Each winning group subsequently
 //! elects its own leader and commits independently of the catalog.
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
+use crate::commands::db::replication::{catalog, claim, command, leader, reserve};
 use futures_util::future::join_all;
-use std::time::{Duration, Instant};
-use tako_core::{StorageClaim, StorageOperation as Op};
+use std::time::Duration;
+use tako_core::StorageOperation as Op;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-async fn command<T: serde::de::DeserializeOwned>(home: &Home, request: Op) -> Result<T> {
-    crate::commands::db::send(home, Command::CoordinateStorage { request }).await
-}
-
-async fn leader(homes: &[Home], group: &str) -> Result<Home> {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let replies = join_all(homes.iter().map(|home| {
-            command::<serde_json::Value>(
-                home,
-                Op::Progress {
-                    group: group.to_owned(),
-                },
-            )
-        }))
-        .await;
-        for (home, reply) in homes.iter().zip(replies) {
-            if let Ok(reply) = reply
-                && reply["leader"].is_string()
-                && reply["here"] == reply["leader"]
-            {
-                return Ok(home.clone());
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(
-                format!("Could not reach an elected leader for storage group {group}.").into(),
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-async fn catalog(homes: &[Home]) -> Result<Home> {
-    let replies = join_all(
-        homes
-            .iter()
-            .map(|home| command::<serde_json::Value>(home, Op::OpenCatalog { key: None })),
-    )
-    .await;
-    let key=replies.iter().filter_map(|r|r.as_ref().ok()).find_map(|r|r["key"].as_str()).ok_or("Cannot establish the storage catalog. The first enrollment or an existing catalog member must be reachable.")?;
-    let mut opened = Vec::new();
-    for (home, reply) in homes.iter().zip(&replies) {
-        if let Ok(result) = reply
-            && result["key"].as_str() != Some(key)
-        {
-            return Err("Servers disagree about the network storage catalog.".into());
-        }
-        if reply.is_ok()
-            || command::<serde_json::Value>(
-                home,
-                Op::OpenCatalog {
-                    key: Some(key.to_owned()),
-                },
-            )
-            .await
-            .is_ok()
-        {
-            opened.push(home.clone());
-        }
-    }
-    let home = leader(&opened, "catalog").await?;
-    command::<serde_json::Value>(
-        &home,
-        Op::AddMembers {
-            group: "catalog".into(),
-            targets: opened.iter().map(|h| h.device_id.clone()).collect(),
-        },
-    )
-    .await?;
-    Ok(home)
-}
-
-fn claim(record: &DatabaseRecord) -> StorageClaim {
-    StorageClaim {
-        name: record.name.clone(),
-        engine: record.engine,
-        generation: record.generation.clone(),
-        founders: record.founders.clone(),
-        created_at_unix_secs: record.created_at_unix_secs,
-        channel_owner: record.channel_owner.clone(),
-        workflows_owner: record.workflows_owner.clone(),
-    }
-}
-
-async fn reserve(
-    network: &crate::config::LocalNetwork,
-    catalog: &Home,
-    targets: &[Home],
-    name: &str,
-    engine: tako_core::DatabaseEngine,
-    owner: (Option<String>, Option<String>),
-) -> Result<DatabaseRecord> {
-    let mut bytes = [0; 16];
-    getrandom::fill(&mut bytes)?;
-    let founders: BTreeSet<_> = targets
-        .iter()
-        .map(|h| h.device_id.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .take(3)
-        .collect();
-    let mut record = DatabaseRecord {
-        name: name.to_owned(),
-        engine,
-        generation: hex::encode(bytes),
-        created_at_unix_secs: crate::commands::db::unix_now(),
-        server: founders.first().ok_or("no deployment targets")?.clone(),
-        founders,
-        channel_owner: owner.0,
-        workflows_owner: owner.1,
-    };
-    let mut key = [0; 32];
-    getrandom::fill(&mut key)?;
-    tokio::task::block_in_place(|| {
-        crate::network::databases::publish_key(network, &record, &BASE64.encode(key))
-    })?;
-    let winner: StorageClaim = command(
-        catalog,
-        Op::Claim {
-            candidate: claim(&record),
-        },
-    )
-    .await?;
-    if record.generation != winner.generation {
-        tokio::task::block_in_place(|| crate::network::databases::remove_key(network, &record))?;
-    }
-    if winner.name != name
-        || winner.engine != engine
-        || winner.channel_owner != record.channel_owner
-        || winner.workflows_owner != record.workflows_owner
-    {
-        return Err(
-            format!("Resource {name} was reserved for a different engine or service.").into(),
-        );
-    }
-    record.server = winner
-        .founders
-        .first()
-        .ok_or("catalog returned an empty initial membership")?
-        .clone();
-    record.generation = winner.generation;
-    record.founders = winner.founders;
-    record.created_at_unix_secs = winner.created_at_unix_secs;
-    tokio::task::block_in_place(|| crate::network::databases::publish(network, &record, None))?;
-    Ok(record)
-}
 
 pub(super) async fn prepare_replicas(
     plan: &mut Plan,
@@ -236,7 +89,7 @@ pub(super) async fn prepare_replicas(
         for target in &targets {
             if let Some(tree) = tree {
                 for alias in &aliases {
-                    tree.storage_step(&target.key, alias, None, false);
+                    tree.storage_step(&target.key, alias, None, 0, false);
                 }
             }
         }
@@ -268,8 +121,9 @@ pub(super) async fn prepare_replicas(
                 }
             }
         }
+        let mut initial_bytes = HashMap::new();
         for home in &participants {
-            let _: serde_json::Value = command(
+            let initial: serde_json::Value = command(
                 home,
                 Op::OpenReplica {
                     claim: claim(&record),
@@ -277,6 +131,7 @@ pub(super) async fn prepare_replicas(
                 },
             )
             .await?;
+            initial_bytes.insert(home.key.clone(), initial["received"].as_u64().unwrap_or(0));
         }
         let elected = leader(&homes, generation).await?;
         let _: serde_json::Value = command(
@@ -287,6 +142,23 @@ pub(super) async fn prepare_replicas(
             },
         )
         .await?;
+        let mut ticket = [0; 16];
+        getrandom::fill(&mut ticket)?;
+        let ticket = hex::encode(ticket);
+        let _: tako_core::ResourcePlacement = command(
+            &elected,
+            Op::Placement {
+                group: generation.clone(),
+                change: Some(tako_core::PlacementChange::Reserve {
+                    app: app.into(),
+                    servers: targets.iter().map(|h| h.device_id.clone()).collect(),
+                    founders: record.founders.clone(),
+                    ticket: ticket.clone(),
+                }),
+            },
+        )
+        .await?;
+        plan.reservations.insert(generation.clone(), ticket);
         let join = command::<serde_json::Value>(
             &elected,
             Op::AddMembers {
@@ -317,7 +189,16 @@ pub(super) async fn prepare_replicas(
                     )?;
                     if let Some(tree) = tree {
                         for alias in &aliases {
-                            tree.storage_step(&home.key, alias, bytes, done);
+                            tree.storage_step(
+                                &home.key,
+                                alias,
+                                bytes,
+                                progress["received"]
+                                    .as_u64()
+                                    .unwrap_or(0)
+                                    .saturating_sub(initial_bytes[&home.key]),
+                                done,
+                            );
                         }
                     }
                     if done {

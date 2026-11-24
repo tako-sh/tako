@@ -8,6 +8,7 @@ publish = false
 tako-core = { path = "../tako-core" }
 futures-util = "0.3"
 subtle = "2"
+getrandom = "0.4"
 openraft = { version = "=0.10.1", default-features = false, features = ["tokio-rt", "serde", "type-alias"] }
 parking_lot = "0.13"
 postcard = { version = "1", features = ["alloc"] }

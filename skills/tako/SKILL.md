@@ -267,7 +267,7 @@ validation.
   one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
   bound in `[envs.<env>].kv`, read as `tako.kv.<binding>` with `get`, `put`
   with an optional TTL, and `delete` of JSON values; Go `tako.GetKV`, Rust
-  `tako::kv`): a store hosted on one server and reachable from all of them
+  `tako::kv`): a replicated store reachable from the application’s selected targets
   through each app's internal socket. `tako.cache` is per server and evicts,
   so a value cached on one server is a miss on the next. KV stores are backed
   up with snapshots, hourly while they change (`[envs.<env>].backup.storage`
@@ -314,9 +314,7 @@ reach it over the private network). `[envs.<env>.channels].db` names it;
 otherwise a channel-capable release (JS channel/presence/store definitions, a
 native app depending on a Tako SDK, `container_options.sdk`, or a Compose
 service with `x-tako.sdk: true`) gets a generated `channels-<slug>-<hash>`
-database. A full-access deploy creates a missing database only when the network
-has exactly one trusted server; on several servers it stops with the
-`tako db create <name>` command to run before setting `db`.
+database. A full-access deploy creates a missing database on the selected targets.
 Deploy-only identities cannot create databases or grants, so run that first
 deploy with full access. Ephemeral channels stay in broker memory; presence
 leases live in memory on the server that holds the connection and are exchanged
@@ -325,9 +323,7 @@ import resets replay cursors and clients resync. Replay is not permanent
 history, and credential failures must not trigger a backend fallback.
 Workflow runs, steps, and schedules also live in a hosted database:
 `[envs.<env>.workflows].db` names it (it may be the channel database);
-otherwise a deploy to a one-trusted-server network creates
-`workflows-<slug>-<hash>`, and on several servers deploy refuses until
-`tako db create <name>` has run and `db` is set. `tako dev` keeps both in the
+otherwise a full-access deploy creates `workflows-<slug>-<hash>` on the selected targets. `tako dev` keeps both in the
 project's `.tako/data/tako/channels.sqlite` and `.tako/data/tako/workflows.sqlite`,
 served through the same SQLite server protocol as production. See
 https://tako.sh/docs/channels/#deploy-replay-storage and

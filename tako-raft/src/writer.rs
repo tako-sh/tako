@@ -155,16 +155,44 @@ impl Writer {
             file_size,
             pages,
         };
-        let reply = self.runtime.block_on(async {
-            timeout(
-                Duration::from_secs(10),
-                self.raft.client_write(crate::Proposal::Pages(commit)),
-            )
-            .await
-            .map_err(error)?
-            .map_err(error)
-        })?;
-        match reply.data {
+        const PART_SIZE: usize = 8 * 1024 * 1024;
+        let submit = |proposal| {
+            self.runtime.block_on(async {
+                let reply = timeout(Duration::from_secs(10), self.raft.client_write(proposal))
+                    .await
+                    .map_err(error)?
+                    .map_err(error)?;
+                Ok::<_, io::Error>(reply.data)
+            })
+        };
+        let result = if commit.pages.len().saturating_mul(page_size as usize + 10) <= PART_SIZE {
+            submit(crate::Proposal::Pages(commit))?
+        } else {
+            let encoded = crate::disk::encode(&commit)?;
+            drop(commit);
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).map_err(error)?;
+            let mut result = Applied::Invalid;
+            let parts = encoded.chunks(PART_SIZE);
+            let count = parts.len();
+            for (index, bytes) in parts.enumerate() {
+                let last = index + 1 == count;
+                result = submit(crate::Proposal::CommitPart {
+                    base: base_revision,
+                    nonce,
+                    index: index as u64,
+                    last,
+                    bytes: bytes.to_vec(),
+                })?;
+                if !last && result != Applied::NoChange {
+                    return Err(error(
+                        "staged transaction lost its base revision or was superseded",
+                    ));
+                }
+            }
+            result
+        };
+        match result {
             Applied::Committed(revision) => {
                 self.revision = Some(revision);
                 Ok(())
@@ -199,20 +227,26 @@ impl Resource {
         self.replica.grant_matches(scope, hash)
     }
 
-    pub async fn track_backups(&self, enabled: bool) -> io::Result<()> {
-        if self.replica.tracking().await? != enabled {
-            timeout(
-                Duration::from_secs(10),
-                self.raft
-                    .client_write(crate::Proposal::TrackBackups(enabled)),
-            )
-            .await
-            .map_err(error)?
-            .map_err(error)?;
-        }
+    pub async fn set_backup_settings(&self, track: bool, sealed: Vec<u8>) -> io::Result<()> {
+        timeout(
+            Duration::from_secs(10),
+            self.raft
+                .client_write(crate::Proposal::BackupSettings { track, sealed }),
+        )
+        .await
+        .map_err(error)?
+        .map_err(error)?;
         Ok(())
     }
 
+    pub fn backup_settings(&self) -> Option<Vec<u8>> {
+        self.replica.backup_settings()
+    }
+    pub fn leads(&self) -> bool {
+        let rx = self.raft.metrics();
+        let metrics = rx.borrow_watched();
+        metrics.current_leader == Some(metrics.id)
+    }
     pub fn backup_image(&self) -> io::Result<(NamedTempFile, crate::BackupPosition)> {
         self.runtime
             .block_on(self.replica.checkout_position(&self.dir))

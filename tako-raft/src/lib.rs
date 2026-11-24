@@ -3,6 +3,7 @@
 pub use openraft::{Config, Raft};
 pub type Node = Raft<Types, Replica>;
 mod catalog;
+mod placement;
 pub use catalog::Claim;
 mod disk;
 mod engines;
@@ -40,24 +41,48 @@ pub enum Applied {
     NoChange,
     Claimed(Claim),
     EngineConflict,
+    Placement(tako_core::ResourcePlacement),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Proposal {
     Pages(Commit),
-    TrackBackups(bool),
+    Placement(tako_core::PlacementChange),
+    Retirement {
+        generation: String,
+        targets: std::collections::BTreeSet<String>,
+    },
+    RetireName {
+        name: String,
+        generation: String,
+    },
+    BackupSettings {
+        track: bool,
+        sealed: Vec<u8>,
+    },
     Claim(Claim),
     Grant {
         scope: String,
         key_hash: Option<[u8; 32]>,
+    },
+    CommitPart {
+        base: u64,
+        nonce: [u8; 16],
+        index: u64,
+        last: bool,
+        bytes: Vec<u8>,
     },
 }
 
 impl std::fmt::Display for Proposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Placement(_) => f.write_str("placement"),
+            Self::Retirement { generation, .. } => write!(f, "retirement {generation}"),
+            Self::RetireName { name, .. } => write!(f, "retire {name}"),
+            Self::CommitPart { index, .. } => write!(f, "commit part {index}"),
             Self::Pages(commit) => std::fmt::Display::fmt(commit, f),
-            Self::TrackBackups(enabled) => write!(f, "track backups {enabled}"),
+            Self::BackupSettings { track: enabled, .. } => write!(f, "track backups {enabled}"),
             Self::Grant { scope, .. } => write!(f, "grant {scope}"),
             Self::Claim(claim) => write!(f, "claim {}", claim.name),
         }
@@ -106,7 +131,9 @@ pub async fn reconcile(
         voters.insert(id);
     }
     for (&id, &address) in targets {
-        if membership.membership().get_node(&id) != Some(&address) || !before.contains(&id) {
+        if membership.membership().get_node(&id) != Some(&address)
+            || (voters.contains(&id) && !before.contains(&id))
+        {
             raft.add_learner(id, address, true)
                 .await
                 .map_err(disk::error)?;
@@ -166,4 +193,20 @@ pub async fn add_members(
         targets.entry(id).or_insert(addr);
     }
     reconcile(raft, &targets).await
+}
+
+pub async fn remove_member(node: &Node, id: u128) -> std::io::Result<()> {
+    node.ensure_linearizable(openraft::ReadPolicy::ReadIndex)
+        .await
+        .map_err(disk::error)?;
+    let membership = node.metrics().borrow_watched().membership_config.clone();
+    let mut members = membership
+        .membership()
+        .nodes()
+        .map(|(id, addr)| (*id, *addr))
+        .collect::<BTreeMap<_, _>>();
+    if members.remove(&id).is_none() {
+        return Ok(());
+    }
+    reconcile(node, &members).await
 }

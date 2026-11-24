@@ -20,6 +20,7 @@ pub(crate) struct GroupConfig {
 struct Group {
     name: Option<String>,
     membership: Arc<tokio::sync::Mutex<()>>,
+    watcher: Arc<parking_lot::Mutex<Option<tokio::task::AbortHandle>>>,
     node: Node,
     replica: Replica,
     resource: Resource,
@@ -65,6 +66,21 @@ impl ServerState {
             .replication_groups()
             .map_err(|e| e.to_string())?
         {
+            if self
+                .state_store
+                .withdrawal(&id)
+                .map_err(|e| e.to_string())?
+                == Some(true)
+            {
+                if let Some(name) = config.name {
+                    self.coordinate_storage(StorageOperation::PurgeReplica {
+                        name,
+                        generation: id,
+                    })
+                    .await?;
+                }
+                continue;
+            }
             self.open_storage_group(&id, &config).await?;
         }
         Ok(())
@@ -109,10 +125,15 @@ impl ServerState {
             tako_core::validate_database_generation(id)?;
         }
         create_private_dir(&dir)?;
-        if self
-            .state_store
-            .storage_initialized(id)
-            .map_err(|e| e.to_string())?
+        let withdrawn = self.state_store.withdrawal(id).map_err(|e| e.to_string())?;
+        if withdrawn == Some(true) {
+            return Err(format!("Storage replica {id} is being removed"));
+        }
+        if withdrawn.is_none()
+            && self
+                .state_store
+                .storage_initialized(id)
+                .map_err(|e| e.to_string())?
             && (!dir.join("raft.sqlite").is_file() || !dir.join("replica.sqlite").is_file())
         {
             return Err(format!(
@@ -139,15 +160,17 @@ impl ServerState {
         let group = Group {
             name: config.name.clone(),
             membership: Default::default(),
+            watcher: Default::default(),
             node,
             replica,
             resource,
         };
         let result = async {
-            if config
-                .founders
-                .first_key_value()
-                .is_some_and(|(id, _)| *id == config.local)
+            if withdrawn.is_none()
+                && config
+                    .founders
+                    .first_key_value()
+                    .is_some_and(|(id, _)| *id == config.local)
                 && !group
                     .node
                     .is_initialized()
@@ -229,7 +252,7 @@ impl ServerState {
                 })
                 .await;
             });
-            self.databases.tasks.lock().push(watcher.abort_handle());
+            *group.watcher.lock() = Some(watcher.abort_handle());
         }
         Ok(group)
     }
@@ -247,6 +270,170 @@ impl ServerState {
         let local = u128::from(proxy.address);
         let storage = &self.databases.raft;
         match op {
+            StorageOperation::Placement { group, change } => {
+                let g = storage.group(&group)?;
+                let _lock = g.membership.lock().await;
+                let placement = match change {
+                    None => {
+                        storage
+                            .peer
+                            .read_barrier(&group)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        g.replica.placement().await.map_err(|e| e.to_string())?
+                    }
+                    Some(change) => {
+                        let response = tokio::time::timeout(
+                            Duration::from_secs(10),
+                            g.node.client_write(tako_raft::Proposal::Placement(change)),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string())?;
+                        let tako_raft::Applied::Placement(p) = response.data else {
+                            return Err(
+                                "Storage placement changed during this deploy. Retry it.".into()
+                            );
+                        };
+                        p
+                    }
+                };
+                serde_json::to_value(placement).map_err(|e| e.to_string())
+            }
+            StorageOperation::RemoveMember { group, server } => {
+                let g = storage.group(&group)?;
+                let _lock = g.membership.lock().await;
+                storage
+                    .peer
+                    .read_barrier(&group)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let placement = g.replica.placement().await.map_err(|e| e.to_string())?;
+                if placement.retired || !placement.removing.contains(&server) {
+                    return Err("member is still needed".into());
+                }
+                let (id, _) = self
+                    .storage_addresses(std::iter::once(server))?
+                    .into_iter()
+                    .next()
+                    .ok_or("missing retiring server")?;
+                tako_raft::remove_member(&g.node, id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!({}))
+            }
+            StorageOperation::Retirement {
+                generation,
+                targets,
+            } => {
+                let g = storage.group(CATALOG)?;
+                storage
+                    .peer
+                    .read_barrier(CATALOG)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if let Some(targets) = targets {
+                    let reply = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        g.node.client_write(tako_raft::Proposal::Retirement {
+                            generation: generation.clone(),
+                            targets,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                    if reply.data != tako_raft::Applied::NoChange {
+                        return Err("retirement conflict".into());
+                    }
+                }
+                serde_json::to_value(
+                    g.replica
+                        .retirement(generation)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())
+            }
+            StorageOperation::RetireName { name, generation } => {
+                let g = storage.group(CATALOG)?;
+                let result = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    g.node
+                        .client_write(tako_raft::Proposal::RetireName { name, generation }),
+                )
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+                if result.data != tako_raft::Applied::NoChange {
+                    return Err("resource generation changed".into());
+                }
+                Ok(serde_json::json!({}))
+            }
+            StorageOperation::PurgeReplica { name, generation } => {
+                let _lock = storage.opening.lock().await;
+                tako_core::validate_database_generation(&generation)?;
+                if let Some(stored) = self
+                    .state_store
+                    .get_database(&name)
+                    .map_err(|e| e.to_string())?
+                    && stored.generation == generation
+                {
+                    if self
+                        .state_store
+                        .withdrawal(&generation)
+                        .map_err(|e| e.to_string())?
+                        != Some(true)
+                    {
+                        let placement = storage
+                            .group(&generation)?
+                            .replica
+                            .placement()
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if !placement.retired
+                            && !self
+                                .databases
+                                .server_id()
+                                .is_some_and(|id| placement.removing.contains(&id))
+                        {
+                            return Err("replica has not applied its retirement".into());
+                        }
+                        if !self.database_info(&stored)?.bindings.is_empty() {
+                            return Err("replica still has release bindings".into());
+                        }
+                        self.state_store
+                            .mark_withdrawing(&generation)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    self.delete_database_inner(&name, Some(&generation), true, true)
+                        .await?;
+                }
+                if let Some(group) = storage.groups.write().remove(&generation)
+                    && let Some(watcher) = group.watcher.lock().take()
+                {
+                    watcher.abort();
+                }
+                storage
+                    .peer
+                    .close(&generation)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let directory = self
+                    .runtime_config()
+                    .data_dir
+                    .join("raft")
+                    .join(&generation);
+                match std::fs::remove_dir_all(directory) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+                self.state_store
+                    .forget_replication_group(&generation)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!({}))
+            }
             StorageOperation::SetGrant {
                 generation,
                 scope,
@@ -376,7 +563,20 @@ impl ServerState {
                         name: Some(claim.name.clone()),
                         key: BASE64.encode(hash.finalize()),
                         local,
-                        founders: self.storage_addresses(claim.founders.into_iter())?,
+                        founders: if self
+                            .databases
+                            .server_id()
+                            .is_some_and(|id| claim.founders.contains(&id))
+                            && self
+                                .state_store
+                                .withdrawal(&claim.generation)
+                                .map_err(|e| e.to_string())?
+                                .is_none()
+                        {
+                            self.storage_addresses(claim.founders.into_iter())?
+                        } else {
+                            BTreeMap::new()
+                        },
                     };
                     self.state_store
                         .insert_replication_group(&claim.generation, &config)
@@ -384,7 +584,13 @@ impl ServerState {
                     config
                 };
                 self.open_storage_group(&claim.generation, &config).await?;
-                Ok(serde_json::json!({}))
+                serde_json::to_value(
+                    storage
+                        .peer
+                        .local_progress(&claim.generation)
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())
             }
             StorageOperation::Claim { candidate } => {
                 let group = storage.group(CATALOG)?;
@@ -410,6 +616,10 @@ impl ServerState {
             StorageOperation::AddMembers { group, targets } => {
                 let group = storage.group(&group)?;
                 let _lock = group.membership.lock().await;
+                let placement = group.replica.placement().await.map_err(|e| e.to_string())?;
+                if placement.retired || targets.iter().any(|t| placement.removing.contains(t)) {
+                    return Err("resource placement is being retired".into());
+                }
                 let node = group.node;
                 let targets = self.storage_addresses(targets.into_iter())?;
                 tako_raft::add_members(&node, targets)
@@ -435,13 +645,14 @@ impl ServerState {
                         .await
                         .map_err(|e| e.to_string())?,
                 };
-                let progress = storage
-                    .peer
-                    .progress(&group, addr)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let progress = if addr.ip() == IpAddr::V6(proxy.address) {
+                    storage.peer.local_progress(&group)
+                } else {
+                    storage.peer.progress(&group, addr).await
+                }
+                .map_err(|e| e.to_string())?;
                 Ok(
-                    serde_json::json!({"barrier":barrier,"applied":progress.applied,"snapshot_bytes":progress.snapshot_bytes}),
+                    serde_json::json!({"barrier":barrier,"applied":progress.applied,"snapshot_bytes":progress.snapshot_bytes,"received":progress.received}),
                 )
             }
             StorageOperation::SeedReplica { name, generation } => {
@@ -472,13 +683,19 @@ impl ServerState {
             }
             StorageOperation::Progress { group } => {
                 let group = storage.group(&group)?;
+                let placement = group.replica.placement().await.map_err(|e| e.to_string())?;
+                let retiring = placement.retired
+                    || self
+                        .databases
+                        .server_id()
+                        .is_some_and(|id| placement.removing.contains(&id));
                 let leader = group
                     .node
                     .current_leader()
                     .await
                     .map(std::net::Ipv6Addr::from);
                 Ok(
-                    serde_json::json!({"leader":leader,"here":proxy.address,"revision":group.replica.revision().await.map_err(|e|e.to_string())?}),
+                    serde_json::json!({"leader":leader,"here":proxy.address,"retiring":retiring,"revision":group.replica.revision().await.map_err(|e|e.to_string())?}),
                 )
             }
         }
@@ -506,7 +723,10 @@ impl Storage {
 
     pub(super) async fn shutdown(&self) {
         let groups = std::mem::take(&mut *self.groups.write());
-        for (id, _) in groups {
+        for (id, group) in groups {
+            if let Some(watcher) = group.watcher.lock().take() {
+                watcher.abort();
+            }
             if let Err(error) = self.peer.close(&id).await {
                 tracing::warn!(%error, %id, "Could not close storage group");
             }

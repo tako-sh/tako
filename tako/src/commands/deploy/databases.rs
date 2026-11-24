@@ -47,11 +47,37 @@ pub(super) async fn provision(
         if !checked.insert(&entry.database_name) {
             continue;
         }
-        if plan.create.contains_key(&entry.database_name)
-            || records
-                .iter()
-                .any(|r| r.name == entry.database_name && !r.founders.is_empty())
-        {
+        let name = &entry.database_name;
+        let planned = records.iter().find(|r| &r.name == name);
+        let latest = current.iter().find(|r| &r.name == name);
+        if plan.create.contains_key(name) {
+            if let Some(record) = latest {
+                let expected_owner = |service: &plan::ServicePlan| {
+                    service.implicit
+                        && service
+                            .binding
+                            .as_ref()
+                            .is_some_and(|p| &p.database_name == name)
+                };
+                if record.founders.is_empty()
+                    || record.engine != entry.binding.engine
+                    || record.channel_owner.as_deref()
+                        != expected_owner(&plan.replay).then_some(app)
+                    || record.workflows_owner.as_deref()
+                        != expected_owner(&plan.workflows).then_some(app)
+                {
+                    return Err(format!("Resource '{name}' was concurrently created for a different purpose. Retry the deploy.").into());
+                }
+            }
+            continue;
+        }
+        if planned != latest {
+            return Err(format!(
+                "Placement of database '{name}' changed while building. Retry the deploy."
+            )
+            .into());
+        }
+        if planned.is_some_and(|r| !r.founders.is_empty()) {
             continue;
         }
         if !hosted.contains_key(&entry.home.device_id) {
@@ -64,18 +90,10 @@ pub(super) async fn provision(
                     .await?;
             hosted.insert(entry.home.device_id.clone(), status.databases);
         }
-        let name = entry.database_name.as_str();
-        let planned = records.iter().find(|r| r.name == name);
-        if current.iter().find(|r| r.name == name) != planned {
-            return Err(format!(
-                "Placement of database '{name}' changed while building. Retry the deploy."
-            )
-            .into());
-        }
         let expected = planned.map(|r| (r.generation.as_str(), r.engine));
         let actual = hosted[&entry.home.device_id]
             .iter()
-            .find(|db| db.name == name)
+            .find(|db| &db.name == name)
             .map(|db| (db.generation.as_str(), db.engine));
         if expected != actual {
             return Err(format!("The network record for database '{name}' does not match what {} hosts. Repair its placement before deploying.", entry.home.name).into());

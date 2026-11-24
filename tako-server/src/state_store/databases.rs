@@ -79,6 +79,28 @@ impl SqliteStateStore {
     ) -> Result<BTreeMap<String, crate::databases::replication::GroupConfig>, StateStoreError> {
         self.all_database_rows("SELECT app,encrypted_data FROM replication_groups")
     }
+    pub(crate) fn withdrawal(&self, id: &str) -> Result<Option<bool>, StateStoreError> {
+        Ok(self
+            .lock_conn()?
+            .query_row(
+                "SELECT pending FROM storage_withdrawals WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+    pub(crate) fn mark_withdrawing(&self, id: &str) -> Result<(), StateStoreError> {
+        self.lock_conn()?.execute(
+            "INSERT OR REPLACE INTO storage_withdrawals VALUES(?1,1)",
+            [id],
+        )?;
+        Ok(())
+    }
+    pub(crate) fn forget_replication_group(&self, id: &str) -> Result<(), StateStoreError> {
+        self.lock_conn()?
+            .execute("DELETE FROM replication_groups WHERE app=?1", [id])?;
+        Ok(())
+    }
     pub(crate) fn storage_initialized(&self, id: &str) -> Result<bool, StateStoreError> {
         Ok(self.lock_conn()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM storage_bootstraps WHERE id=?1)",
@@ -99,10 +121,11 @@ impl SqliteStateStore {
         config: &crate::databases::replication::GroupConfig,
     ) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(config)?;
-        self.lock_conn()?.execute(
-            "INSERT INTO replication_groups VALUES (?1,?2)",
-            (id, encrypted),
-        )?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM replication_groups WHERE app=?1", [id])?;
+        tx.execute("UPDATE storage_withdrawals SET pending=0 WHERE id=?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 

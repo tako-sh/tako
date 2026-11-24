@@ -239,7 +239,7 @@ async fn run_async(
         }
         KvCommands::Import { name, file, yes } => {
             ctx.require_admin()?;
-            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
+            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv).await?;
             db::confirm(
                 &format!("Replace every key of {name} with {}?", file.display()),
                 "Apps keep using the current keys until the import replaces them all at once. A snapshot of the current contents is taken first when backups are configured.",
@@ -255,7 +255,7 @@ async fn run_async(
         }
         KvCommands::Export { name, file } => {
             ctx.require_admin()?;
-            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv)?;
+            let (_, home) = ctx.resource(&name, DatabaseEngine::Kv).await?;
             if output::is_dry_run() {
                 return db::dry_run(
                     &format!("Export {name} to {}", file.display()),
@@ -279,7 +279,7 @@ async fn query(
     request: KvRequest,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.resource(name, DatabaseEngine::Kv)?;
+    let (_, home) = ctx.resource(name, DatabaseEngine::Kv).await?;
     send(
         &home,
         Command::QueryKv {

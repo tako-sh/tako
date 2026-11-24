@@ -266,6 +266,7 @@ impl DeployTaskTreeController {
         server: &str,
         alias: &str,
         bytes: Option<(u64, u64)>,
+        log_bytes: u64,
         done: bool,
     ) {
         let parent = deploy_task_step_id(server, "preparing");
@@ -289,6 +290,9 @@ impl DeployTaskTreeController {
                 super::format::format_size(total)
             ));
             item.progress = (total > 0).then(|| copied as f64 / total as f64);
+        }
+        if bytes.is_none() && log_bytes != 0 {
+            item.detail = Some(super::format::format_size(log_bytes));
         }
         if done {
             let elapsed = match item.state {

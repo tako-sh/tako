@@ -7,8 +7,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{Args, Subcommand};
 use serde::de::DeserializeOwned;
 use tako_core::{
@@ -22,6 +20,8 @@ use crate::management_http::ManagementClient;
 use crate::network::databases::DatabaseRecord;
 use crate::output;
 
+pub(crate) mod cleanup;
+pub(crate) mod replication;
 mod shell;
 pub(crate) mod target;
 pub(crate) mod transfer;
@@ -448,22 +448,31 @@ impl Context {
     }
 
     /// A SQLite database of the network and its home server.
-    fn database(&self, name: &str) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
-        self.resource(name, DatabaseEngine::Sqlite)
+    async fn database(
+        &self,
+        name: &str,
+    ) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
+        self.resource(name, DatabaseEngine::Sqlite).await
     }
 
     /// A database of `engine` and its home server.
-    pub(crate) fn resource(
+    pub(crate) async fn resource(
         &self,
         name: &str,
         engine: DatabaseEngine,
     ) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
         let record = self.record_of(name, engine)?;
-        let home = self.database_home(&record)?;
+        let home = self.database_home(&record).await?;
         Ok((record, home))
     }
 
-    fn database_home(&self, record: &DatabaseRecord) -> Result<Home, Box<dyn std::error::Error>> {
+    async fn database_home(
+        &self,
+        record: &DatabaseRecord,
+    ) -> Result<Home, Box<dyn std::error::Error>> {
+        if !record.founders.is_empty() && !output::is_dry_run() {
+            return replication::leader(&self.network_homes()?, &record.generation).await;
+        }
         self.home(&record.server).map_err(|error| {
             format!(
                 "The server of {} '{}': {error}",
@@ -717,7 +726,7 @@ async fn run_async(
         DbCommands::Shell { name, sql } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
-            let (_, home) = ctx.database(&name)?;
+            let (_, home) = ctx.database(&name).await?;
             shell::run(&home, &name, sql).await
         }
         DbCommands::Migration(command) => match command {
@@ -773,7 +782,7 @@ async fn run_async(
         DbCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
-            let (_, home) = ctx.database(&name)?;
+            let (_, home) = ctx.database(&name).await?;
             confirm(
                 &format!("Replace {name} with {}?", file.display()),
                 "Apps' requests to the database pause while it is replaced. When backups are configured, the current contents are backed up first and named with a restore point.",
@@ -790,7 +799,7 @@ async fn run_async(
         DbCommands::Export { name, file } => {
             let ctx = Context::load(config_path, network).await?;
             ctx.require_admin()?;
-            let (_, home) = ctx.database(&name)?;
+            let (_, home) = ctx.database(&name).await?;
             if output::is_dry_run() {
                 return dry_run(
                     &format!("Export {name} to {}", file.display()),
@@ -893,15 +902,9 @@ pub(crate) async fn create(
         &format!("Creating {name} on {}", home.name),
         &format!("Created {name} on {}", home.name),
         async {
-            create_database(
-                &ctx.alias().map_err(|e| e.to_string())?,
-                &home,
-                name,
-                None,
-                engine,
-            )
-            .await
-            .map_err(|e| e.to_string())
+            create_database(ctx, &home, name, engine)
+                .await
+                .map_err(|e| e.to_string())
         },
     )
     .await?;
@@ -925,113 +928,56 @@ pub(crate) async fn create(
 
 /// Create and publish one database or KV store generation. Both callers
 /// have already resolved placement and checked for full access.
-pub(crate) async fn create_database(
-    network: &crate::config::LocalNetwork,
+async fn create_database(
+    ctx: &Context,
     home: &Home,
     name: &str,
-    owner: Option<(crate::network::databases::ServiceOwner, &str)>,
     engine: DatabaseEngine,
 ) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
-    use crate::network::databases::ServiceOwner;
-    let owned_by = |service: ServiceOwner| {
-        owner
-            .filter(|(kind, _)| *kind == service)
-            .map(|(_, app)| app.to_owned())
-    };
-    let noun = engine.noun();
-    let records = || tokio::task::block_in_place(|| crate::network::databases::list(network));
-    if let Some(existing) = records()?.iter().find(|record| record.name == name) {
-        return Err(format!(
-            "The network already has a {} named '{name}'.",
-            existing.engine.noun()
-        )
-        .into());
-    }
-    let mut key = [0u8; 32];
-    getrandom::fill(&mut key)?;
-    let backup_key = BASE64.encode(key);
-    let mut generation = [0u8; 16];
-    getrandom::fill(&mut generation)?;
-    let record = DatabaseRecord {
-        name: name.to_owned(),
-        founders: Default::default(),
-        server: home.device_id.clone(),
-        generation: hex::encode(generation),
-        created_at_unix_secs: unix_now(),
+    use tako_core::StorageOperation as Op;
+    let network = ctx.alias()?;
+    let homes = ctx.network_homes()?;
+    let catalog = replication::catalog(&homes).await?;
+    let record = replication::reserve(
+        &network,
+        &catalog,
+        std::slice::from_ref(home),
+        name,
         engine,
-        channel_owner: owned_by(ServiceOwner::Channels),
-        workflows_owner: owned_by(ServiceOwner::Workflows),
-    };
-    // Backups are configured by the deploys that bind it.
-    send::<DatabaseInfo>(
-        home,
-        Command::CreateDatabase {
-            name: name.to_owned(),
-            engine,
+        (None, None),
+    )
+    .await?;
+    let key = ctx.backup_key(&record)?;
+    let mut targets = record.founders.clone();
+    targets.insert(home.device_id.clone());
+    for target in &targets {
+        let member = ctx.home(target)?;
+        replication::command::<serde_json::Value>(
+            &member,
+            Op::OpenReplica {
+                claim: replication::claim(&record),
+                backup_key: key.clone(),
+            },
+        )
+        .await?;
+    }
+    let leader = replication::leader(&homes, &record.generation).await?;
+    replication::command::<serde_json::Value>(
+        &leader,
+        Op::SeedReplica {
+            name: record.name.clone(),
             generation: record.generation.clone(),
-            backup_key_base64: backup_key.clone(),
-            backup: None,
         },
     )
     .await?;
-    // Checked again just before publishing, so another create of the name
-    // since the first check is found here rather than after both publish.
-    // The network's records have no conditional write, so two creates
-    // that publish at the same moment can still both succeed.
-    if records()?.iter().any(|published| published.name == name) {
-        let _ = send::<serde_json::Value>(
-            home,
-            Command::DeleteDatabase {
-                generation: Some(record.generation.clone()),
-                name: name.to_owned(),
-                keep_snapshots: false,
-            },
-        )
-        .await;
-        return Err(format!(
-            "Another client created a {noun} named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
-        )
-        .into());
-    }
-    // The snapshot key is needed to recover the database elsewhere, so a
-    // failure to record it undoes the creation.
-    if let Err(error) = tokio::task::block_in_place(|| {
-        crate::network::databases::publish(network, &record, Some(&backup_key))
-    }) {
-        let _ = send::<serde_json::Value>(
-            home,
-            Command::DeleteDatabase {
-                generation: Some(record.generation.clone()),
-                name: name.to_owned(),
-                keep_snapshots: false,
-            },
-        )
-        .await;
-        return Err(format!("Could not record the {noun} in the network: {error}").into());
-    }
-    // Another administrator may have created the same name at the same
-    // moment. Its key has its own address; the directory record decides.
-    let won = records()?
-        .into_iter()
-        .find(|published| published.name == name)
-        .is_some_and(|published| published.generation == record.generation);
-    if !won {
-        let _ =
-            tokio::task::block_in_place(|| crate::network::databases::remove_key(network, &record));
-        let _ = send::<serde_json::Value>(
-            home,
-            Command::DeleteDatabase {
-                generation: Some(record.generation.clone()),
-                name: name.to_owned(),
-                keep_snapshots: false,
-            },
-        )
-        .await;
-        return Err(format!(
-            "Another client created a {noun} named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
-        )
-        .into());
-    }
+    replication::command::<serde_json::Value>(
+        &leader,
+        Op::AddMembers {
+            group: record.generation.clone(),
+            targets: targets.into_iter().collect(),
+        },
+    )
+    .await?;
     Ok(record)
 }
 
@@ -1137,7 +1083,9 @@ pub(crate) async fn status(
     };
     let mut infos = Vec::new();
     for name in &names {
-        let home = ctx.database_home(find_record_of(&records, name, engine)?)?;
+        let home = ctx
+            .database_home(find_record_of(&records, name, engine)?)
+            .await?;
         let value: serde_json::Value = send(
             &home,
             Command::DatabaseStatus {
@@ -1245,7 +1193,7 @@ pub(crate) async fn backup_now(
     engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.resource(name, engine)?;
+    let (_, home) = ctx.resource(name, engine).await?;
     if output::is_dry_run() {
         return dry_run(
             &format!("Full snapshot of {name}"),
@@ -1293,7 +1241,7 @@ pub(crate) async fn backups(
     engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.resource(name, engine)?;
+    let (_, home) = ctx.resource(name, engine).await?;
     let value: serde_json::Value = send(
         &home,
         Command::ListDatabaseSnapshots {
@@ -1367,7 +1315,16 @@ pub(crate) async fn restore(
     let record = ctx.record_of(name, engine)?;
     // A home server removed from the network is gone: recovery restores the
     // database onto another server from its backups.
-    let home = ctx.home(&record.server).ok();
+    let home = if record.founders.is_empty() {
+        ctx.home(&record.server).ok()
+    } else {
+        Some(ctx.database_home(&record).await?)
+    };
+    if !record.founders.is_empty() && server.is_some() {
+        return Err(
+            "A replicated restore replaces the contents on the entire group. Omit --server.".into(),
+        );
+    }
     let requested = server.map(|server| ctx.home(server)).transpose()?;
     let (target, moving) = restore_target(name, home.as_ref(), requested, command)?;
     let home_name = home
@@ -1637,7 +1594,7 @@ pub(crate) async fn delete(
             return forget_lost_store(ctx, &record, yes);
         }
     }
-    let (record, home) = ctx.resource(name, engine)?;
+    let (record, home) = ctx.resource(name, engine).await?;
     if engine == DatabaseEngine::Sqlite {
         check_service_delete(
             &ctx.config,
@@ -1867,7 +1824,7 @@ pub(crate) async fn delete_old_copy(
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let command = command_name(engine);
-    let (record, home) = ctx.resource(name, engine)?;
+    let (record, home) = ctx.resource(name, engine).await?;
     let old = ctx.home(server)?;
     if old.device_id == home.device_id {
         return Err(format!(
@@ -2017,7 +1974,7 @@ async fn migrate(
         )?;
         for (_, selected) in selected {
             let (binding, migrations) = (selected.binding, selected.migrations);
-            let (_, home) = ctx.database(&database)?;
+            let (_, home) = ctx.database(&database).await?;
             let report =
                 apply_migrations(&home, &database, &owner, migrations, dry_run, app.clone())
                     .await
@@ -2278,7 +2235,7 @@ async fn reset(
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (record, home) = ctx.database(name)?;
+    let (record, home) = ctx.database(name).await?;
     if !force
         && database_users(
             &ctx.config,

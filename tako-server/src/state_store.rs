@@ -9,7 +9,7 @@ mod credentials;
 mod device_key;
 mod drain;
 pub(crate) use drain::{DrainLease, wait_for_lease};
-mod encryption;
+pub(crate) mod encryption;
 mod release_routing;
 mod schema;
 pub(crate) use release_routing::ReleaseRouting;

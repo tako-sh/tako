@@ -915,6 +915,19 @@ async fn run_async(
         if let Some(granted) = granted {
             databases::narrow_grants(granted).await;
         }
+        if configure_bindings
+            && database_records.iter().any(|r| !r.founders.is_empty())
+            && let Err(e) = crate::commands::db::cleanup::collect(
+                &network,
+                &servers,
+                &deployment_app_name,
+                &server_names,
+                &database_plan.reservations,
+            )
+            .await
+        {
+            output::warning(&format!("Storage cleanup is pending: {e}"));
+        }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
             task_tree.set_success_summary(&version, &routes, https_port);

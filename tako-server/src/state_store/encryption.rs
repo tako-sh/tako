@@ -5,7 +5,7 @@ use aes_gcm::{
 
 use super::StateStoreError;
 
-pub(super) fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, StateStoreError> {
+pub(crate) fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, StateStoreError> {
     let mut nonce = [0u8; 12];
     getrandom::fill(&mut nonce)
         .map_err(|e| StateStoreError::Sqlite(format!("generate nonce: {e}")))?;
@@ -21,7 +21,7 @@ pub(super) fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, 
     Ok(blob)
 }
 
-pub(super) fn decrypt_blob(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, StateStoreError> {
+pub(crate) fn decrypt_blob(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, StateStoreError> {
     if blob.len() < 28 {
         return Err(StateStoreError::InvalidData(
             "encrypted blob too short".to_string(),

@@ -3,7 +3,7 @@ title: KV stores
 description: "Create Tako-hosted key-value stores of JSON values with optional expiry, bind them to apps, back them up, and share challenges, sessions, and flags across every server of a network."
 ---
 
-A Tako KV store is a key-value store that `tako-server` hosts on one server of a [native network](/networks/). Apps `get`, `put`, and `delete` JSON values by key, each with an optional TTL, through the Tako SDK in JavaScript, Go, and Rust. Apps on every server of the network use the same store, which makes it the place for state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Writes are on disk before they are acknowledged, stores are backed up like [hosted databases](/databases/), and the same code runs under `tako dev`.
+A Tako KV store is a key-value store that `tako-server` replicates across the deployment targets of a [native network](/networks/). Apps `get`, `put`, and `delete` JSON values by key, each with an optional TTL, through the Tako SDK in JavaScript, Go, and Rust. Apps on every server of the network use the same store, which makes it the place for state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Writes are on disk before they are acknowledged, stores are backed up like [hosted databases](/databases/), and the same code runs under `tako dev`.
 
 | Need                                                           | Use                                   |
 | -------------------------------------------------------------- | ------------------------------------- |
@@ -22,7 +22,7 @@ A KV store belongs to the network, like a database. Names start with a lowercase
 kv = { sessions = "auth-sessions", limits = "rate-limits" }
 ```
 
-On a network with one trusted server, run `tako deploy --env production` with full access. The first deploy creates each missing store and subsequent deploys reuse it. On a network with multiple servers, choose a home for each missing store first, for example `tako kv create auth-sessions --server edge-a`. A name that already belongs to a SQLite database fails validation. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
+A full-access deploy creates missing stores and prepares a replica on each selected target. Several apps can share the same store. A name that already belongs to a SQLite database fails validation. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
 
 `tako kv` commands find the network like `tako db` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
 
@@ -205,7 +205,7 @@ tako kv delete-key sessions challenge:42
 
 An app on another server than its store's calls its own server as usual. That server checks the token and forwards the request over the network's private WireGuard transport to the store's server on port 9848, which the network firewall opens only to other servers. The forwarded request carries the key of the grant that a full client's deploy gave the app environment on the store's server, so other processes on a granted server cannot act for the environment, and tokens are checked only on the app's server. Grants work as for [databases](/databases/#apps-on-other-servers): a deploy adds them before its rollout and narrows them once it succeeds.
 
-Each request to a store on another server adds a private-network round trip, so place a store on the server where most of its traffic runs. While a store's server is down, requests from every server fail with `unavailable`.
+The ordinary binding routes requests to the elected leader. A successful write is durable on a voting majority. With two voters, both must be available. With three, two can continue after an election. The read replica serves locally applied values and can lag recent writes. Use the ordinary binding for session revocation, single-use tokens, and other reads that require the newest committed value.
 
 ## Delete a store
 

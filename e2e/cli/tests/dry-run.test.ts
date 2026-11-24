@@ -122,7 +122,7 @@ describe("deploy --dry-run", () => {
     expect(await readFile(configPath, "utf8")).toBe(config);
   });
 
-  test("requires database placement even when only one of two network servers is a deploy target", async () => {
+  test("places a new database on the selected deploy target", async () => {
     await setupProject({ servers: { east: { host: "10.0.0.1" }, west: { host: "10.0.0.2" } } });
     const path = join(tempDir, "tako.toml");
     const config = (await readFile(path, "utf8")).replace('["east", "west"]', '["east"]');
@@ -132,9 +132,9 @@ describe("deploy --dry-run", () => {
       cols: 400,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
-    expect(exitCode).toBe(1);
-    expect(term.fullText()).toContain("tako db create chat-replay --server west --network");
-    expect(term.fullText()).toContain("tako db create chat-replay --server east --network");
+    expect(exitCode).toBe(0);
+    expect(term.fullText()).toContain("Create database chat-replay on east");
+    expect(term.fullText()).not.toContain("chat-replay on west");
   });
 
   test("shows app summary when env is auto-resolved", async () => {

@@ -97,6 +97,7 @@ pub(in crate::commands::deploy) struct Plan {
     pub workflows: ServicePlan,
     /// One creation per database, even if several bindings point at it.
     pub create: BTreeMap<String, PlannedBinding>,
+    pub reservations: BTreeMap<String, String>,
 }
 
 impl Plan {
@@ -190,14 +191,22 @@ pub(in crate::commands::deploy) fn plan(
                 }
                 _ => {}
             }
-            let home = resolve_home(servers, network, &record.server, env)
-                .map_err(|error| format!("The server of database '{name}': {error}"))?;
-            if home.device_id != record.server {
-                return Err(format!(
-                    "Database '{name}' has no valid server device ID in the network directory."
-                ));
+            if !record.founders.is_empty()
+                && let Some(key) = members.first()
+            {
+                // Replicated groups elect their own leader. The original founder
+                // may have left the inventory since this name was created.
+                inventory_home(servers, key)?
+            } else {
+                let home = resolve_home(servers, network, &record.server, env)
+                    .map_err(|error| format!("The server of database '{name}': {error}"))?;
+                if home.device_id != record.server {
+                    return Err(format!(
+                        "Database '{name}' has no valid server device ID in the network directory."
+                    ));
+                }
+                home
             }
-            home
         } else if let Some(key) = members.first()
             && administrator
         {

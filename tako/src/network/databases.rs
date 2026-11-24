@@ -96,17 +96,33 @@ pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
 
 /// Dry runs consult the authenticated cache without contacting a server.
 pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<DatabaseRecord>> {
-    let mut records = Vec::new();
-    for (name, value) in read(alias, RecordKind::Database, cached)? {
-        let record: DatabaseRecord = serde_json::from_str(&value)?;
-        if record.name != name {
+    let values = read(alias, RecordKind::Database, cached)?;
+    let mut records = std::collections::BTreeMap::new();
+    for (address, value) in &values {
+        if let Some(generation) = address.strip_prefix("retired.") {
+            tako_core::validate_database_generation(generation)?;
+            if value.as_str() != generation {
+                return Err("Invalid resource retirement record".into());
+            }
+            continue;
+        }
+        let record: DatabaseRecord = serde_json::from_str(value)?;
+        if record.name != *address
+            && (record.founders.is_empty() || *address != format!("live.{}", record.generation))
+        {
             return Err(format!(
-                "Database directory entry for '{name}' contains a different name."
+                "Database directory entry for '{address}' contains a different name."
             )
             .into());
         }
-        records.push(record);
+        if values.contains_key(&format!("retired.{}", record.generation)) {
+            continue;
+        }
+        if records.insert(record.name.clone(), record).is_some() {
+            return Err("Database directory changes are still arriving. Retry after the network synchronizes.".into());
+        }
     }
+    let records = records.into_values().collect();
     Ok(records)
 }
 
@@ -154,8 +170,26 @@ pub(crate) fn publish(
     mutate(
         alias,
         RecordKind::Database,
-        &record.name,
+        &directory_address(record),
         Some(&serde_json::to_string(record)?),
+    )
+}
+
+fn directory_address(record: &DatabaseRecord) -> String {
+    if record.founders.is_empty() {
+        record.name.clone()
+    } else {
+        format!("live.{}", record.generation)
+    }
+}
+
+pub(crate) fn retire(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
+    tako_core::validate_database_generation(&record.generation)?;
+    mutate(
+        alias,
+        RecordKind::Database,
+        &format!("retired.{}", record.generation),
+        Some(&record.generation),
     )
 }
 

@@ -41,15 +41,31 @@ struct Group {
     raft: Node,
     directory: PathBuf,
     secret: [u8; 32],
+    received: Arc<std::sync::atomic::AtomicU64>,
     transfer: Arc<parking_lot::Mutex<Option<(u64, u64)>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Progress {
+    pub received: u64,
     pub applied: Option<u64>,
     pub snapshot_bytes: Option<(u64, u64)>,
 }
 
+impl Group {
+    fn progress(&self) -> Progress {
+        Progress {
+            applied: self
+                .raft
+                .metrics()
+                .borrow_watched()
+                .last_applied
+                .map(|id| id.index()),
+            snapshot_bytes: *self.transfer.lock(),
+            received: self.received.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
 /// Several resource groups share the server's private listener. The caller
 /// supplies its WireGuard server directory to authenticate connections.
 #[derive(Clone, Default)]
@@ -97,6 +113,7 @@ impl Peer {
                 directory: directory.to_owned(),
                 secret,
                 transfer: Default::default(),
+                received: Default::default(),
             },
         );
         Ok((raft, replica))
@@ -121,6 +138,14 @@ impl Peer {
         .map_err(error)?
         .index();
         Ok(barrier)
+    }
+
+    pub fn local_progress(&self, generation: &str) -> io::Result<Progress> {
+        let groups = self.groups.read();
+        let g = groups
+            .get(generation)
+            .ok_or_else(|| error("unknown resource group"))?;
+        Ok(g.progress())
     }
 
     pub async fn progress(&self, generation: &str, target: SocketAddr) -> io::Result<Progress> {
@@ -216,31 +241,20 @@ impl Peer {
         )) {
             return Err(error("invalid resource credential"));
         }
-        let req = timeout(
+        let (req, length) = timeout(
             Duration::from_secs(30),
-            read_frame(&mut stream, FRAME_LIMIT),
+            read_sized_frame(&mut stream, FRAME_LIMIT),
         )
         .await
         .map_err(error)??;
         match req {
-            Request::Progress => {
-                let applied = group
-                    .raft
-                    .metrics()
-                    .borrow_watched()
-                    .last_applied
-                    .map(|id| id.index());
-                let snapshot_bytes = *group.transfer.lock();
-                write_frame(
-                    &mut stream,
-                    &Progress {
-                        applied,
-                        snapshot_bytes,
-                    },
-                )
-                .await
-            }
+            Request::Progress => write_frame(&mut stream, &group.progress()).await,
             Request::Append(req) => {
+                if !req.entries.is_empty() {
+                    group
+                        .received
+                        .fetch_add(length as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 let reply = match group.raft.append_entries(req).await.map_err(error)? {
                     Ok(id) => AppendReply::Accepted(id),
                     Err(AppendError::HigherVote(vote)) => AppendReply::HigherVote(vote),
@@ -281,15 +295,13 @@ impl Peer {
                     meta,
                     snapshot: file,
                 };
-                write_frame(
-                    &mut stream,
-                    &group
-                        .raft
-                        .install_full_snapshot(vote, snapshot)
-                        .await
-                        .map_err(error)?,
-                )
-                .await
+                let reply = group
+                    .raft
+                    .install_full_snapshot(vote, snapshot)
+                    .await
+                    .map_err(error)?;
+                *group.transfer.lock() = None;
+                write_frame(&mut stream, &reply).await
             }
         }
     }
@@ -316,13 +328,19 @@ enum AppendReply {
 }
 
 async fn read_frame<T: DeserializeOwned>(stream: &mut TcpStream, limit: usize) -> io::Result<T> {
+    Ok(read_sized_frame(stream, limit).await?.0)
+}
+async fn read_sized_frame<T: DeserializeOwned>(
+    stream: &mut TcpStream,
+    limit: usize,
+) -> io::Result<(T, usize)> {
     let len = stream.read_u32().await? as usize;
     if len > limit {
         return Err(error("Raft frame too large"));
     }
     let mut bytes = vec![0; len];
     stream.read_exact(&mut bytes).await?;
-    decode(&bytes)
+    Ok((decode(&bytes)?, len))
 }
 async fn write_frame<T: Serialize>(stream: &mut TcpStream, value: &T) -> io::Result<()> {
     let bytes = encode(value)?;
@@ -411,9 +429,24 @@ impl RaftNetworkV2<Types> for Client {
     }
     async fn append_entries(
         &mut self,
-        req: AppendEntriesRequest<Types>,
+        mut req: AppendEntriesRequest<Types>,
         option: RPCOption,
     ) -> Result<AppendResult<Types>, RPCError<Types>> {
+        // A catch-up batch can contain many large proposals. Acknowledge the
+        // prefix actually persisted by the follower. OpenRaft sends the rest.
+        let mut remaining = FRAME_LIMIT - 1024;
+        for (index, entry) in req.entries.iter().enumerate() {
+            let size = postcard::experimental::serialized_size(entry)
+                .map_err(|e| NetworkError::new(&e))?;
+            if size > remaining {
+                if index == 0 {
+                    return Err(NetworkError::new(&error("Raft entry exceeds frame limit")).into());
+                }
+                req.entries.truncate(index);
+                break;
+            }
+            remaining -= size;
+        }
         Ok(match self.rpc(Request::Append(req), option).await? {
             AppendReply::Accepted(id) => Ok(id),
             AppendReply::HigherVote(vote) => Err(AppendError::HigherVote(vote)),

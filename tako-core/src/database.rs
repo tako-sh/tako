@@ -497,12 +497,69 @@ pub struct StorageClaim {
     pub founders: std::collections::BTreeSet<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageUse {
+    pub ticket: String,
+    pub pending: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePlacement {
+    pub revision: u64,
+    pub retired: bool,
+    pub known: std::collections::BTreeSet<String>,
+    pub removing: std::collections::BTreeSet<String>,
+    pub uses: std::collections::BTreeMap<String, std::collections::BTreeMap<String, StorageUse>>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PlacementChange {
+    Reserve {
+        app: String,
+        servers: Vec<String>,
+        founders: std::collections::BTreeSet<String>,
+        ticket: String,
+    },
+    Confirm {
+        app: String,
+        server: String,
+        ticket: String,
+    },
+    Release {
+        app: String,
+        server: String,
+        ticket: String,
+    },
+    Removed {
+        server: String,
+    },
+}
+
 /// Full-client storage coordination on the network management channel.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum StorageOperation {
     /// The first enrolled server can mint the catalog credential. Other
     /// participants receive the same credential through their management channel.
+    Placement {
+        group: String,
+        change: Option<PlacementChange>,
+    },
+    RemoveMember {
+        group: String,
+        server: String,
+    },
+    PurgeReplica {
+        name: String,
+        generation: String,
+    },
+    Retirement {
+        generation: String,
+        targets: Option<std::collections::BTreeSet<String>>,
+    },
+    RetireName {
+        name: String,
+        generation: String,
+    },
     SetGrant {
         generation: String,
         scope: String,
@@ -540,6 +597,17 @@ pub enum StorageOperation {
 impl std::fmt::Debug for StorageOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Placement { group, .. } => f.debug_tuple("Placement").field(group).finish(),
+            Self::RemoveMember { group, server } => f
+                .debug_tuple("RemoveMember")
+                .field(group)
+                .field(server)
+                .finish(),
+            Self::PurgeReplica { name, .. } => f.debug_tuple("PurgeReplica").field(name).finish(),
+            Self::Retirement { generation, .. } => {
+                f.debug_tuple("Retirement").field(generation).finish()
+            }
+            Self::RetireName { name, .. } => f.debug_tuple("RetireName").field(name).finish(),
             Self::SetGrant { scope, .. } => f.debug_tuple("SetGrant").field(scope).finish(),
             Self::OpenCatalog { .. } => f.write_str("OpenCatalog"),
             Self::Claim { candidate } => f.debug_tuple("Claim").field(&candidate.name).finish(),

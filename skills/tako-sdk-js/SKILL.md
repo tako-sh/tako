@@ -213,11 +213,7 @@ object URLs.
 
 ## Databases
 
-Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Create one with the CLI (administrator permission), bind it in `tako.toml`, then use the binding with `@libsql/client` or `@tursodatabase/serverless`:
-
-```bash
-tako db create main --server <server>
-```
+Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Declare the name under the environment and deploy with full access. Use the binding with `@libsql/client` or `@tursodatabase/serverless`.
 
 ```toml
 [envs.production]
@@ -247,11 +243,11 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 - Container and Compose releases cannot bind databases yet.
 - In Docker Compose, a service gets secrets, channels, workflows and `tako.dataDir` only with `x-tako: { sdk: true }`; without it those calls throw an error that names the setting. Run a Compose workflow worker as its own service with `bun node_modules/tako.sh/dist/entrypoints/bun-worker.mjs` (or the Node worker).
 
-Use `tako.db.main.readReplica` with the same driver, or `tako.kv.sessions.readReplica.get(key)`, for read-only access on the resource’s home or in local development. A request on a server without a local copy returns unavailable.
+Use `tako.db.main.readReplica` with the same driver, or `tako.kv.sessions.readReplica.get(key)`, for read-only access to the latest locally applied state on a deployment target or in local development. A request on a server without a local copy returns unavailable.
 
 ## KV stores
 
-Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Bind the store by name. A full-access deploy creates it on a single-server network. With multiple servers, place it first with `tako kv create auth-sessions --server <server>`.
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on the selected deployment targets. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Bind the store by name. A full-access deploy creates the store and prepares a replica on each selected target.
 
 ```toml
 [envs.production]
@@ -517,11 +513,7 @@ message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
 response that ends without `tako.close` stay reconnectable.
 
 In production, durable replay lives in the environment's Tako-hosted SQLite
-database (one home server, reached by the others over the private network).
-`[envs.<env>.channels].db = "<name>"` binds one created with
-`tako db create <name>`; without it, a deploy to a network with exactly one
-trusted server creates a generated `channels-<slug>-<hash>` database, and a
-larger network needs the explicit setting. Ephemeral channels and presence
+database on the selected deployment targets. Set `[envs.<env>.channels].db` to use an explicit name, or let a full-access deploy create the generated database. Ephemeral channels and presence
 leases stay in broker memory. Replay gaps, expired history, and a restore or
 import of the replay database trigger quiet SDK resync, not business reset
 messages; reload authoritative state. Credential failures stop deployment

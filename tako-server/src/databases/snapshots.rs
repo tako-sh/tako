@@ -552,6 +552,17 @@ pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) 
         }
     };
     for stored in databases {
+        if state
+            .databases
+            .raft
+            .resource(&stored.generation)
+            .is_some_and(|r| !r.leads())
+        {
+            continue;
+        }
+        let Ok(stored) = state.databases.committed_settings(stored) else {
+            continue;
+        };
         if stored.engine == DatabaseEngine::Kv
             && stored.secrets.backup.is_some()
             && has_changes(state, &stored)

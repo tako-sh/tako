@@ -269,6 +269,19 @@ impl Databases {
             .clone()
     }
 
+    fn committed_settings(&self, mut stored: StoredDatabase) -> Result<StoredDatabase, String> {
+        if let Some(resource) = self.raft.resource(&stored.generation) {
+            stored.secrets.backup = if let Some(sealed) = resource.backup_settings() {
+                let key = backup_settings_key(&stored.secrets.backup_key_base64)?;
+                let bytes = crate::state_store::encryption::decrypt_blob(&key, &sealed)
+                    .map_err(|e| e.to_string())?;
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
+            } else {
+                None
+            };
+        }
+        Ok(stored)
+    }
     pub(crate) fn server_id(&self) -> Option<String> {
         self.server_id.read().clone()
     }
@@ -807,7 +820,11 @@ impl ServerState {
         if let Some((_, proxy)) = native {
             *databases.proxy.write() = Some(proxy);
         }
-        self.start_storage_replication().await?;
+        if let Err(error) = self.start_storage_replication().await {
+            self.stop_databases().await;
+            databases.started.store(false, Ordering::Release);
+            return Err(error);
+        }
         self.refresh_database_routes();
         match self.state_store.all_database_grants() {
             Ok(grants) => {
@@ -1069,10 +1086,12 @@ impl ServerState {
 
     pub(crate) fn hosted_database(&self, id: &str) -> Result<StoredDatabase, String> {
         tako_core::validate_database_name(id)?;
-        self.state_store
+        let stored = self
+            .state_store
             .get_database(id)
             .map_err(|e| format!("read database: {e}"))?
-            .ok_or_else(|| format!("Database {id} is not hosted on this server."))
+            .ok_or_else(|| format!("Database {id} is not hosted on this server."))?;
+        self.databases.committed_settings(stored)
     }
 
     async fn create_database(
@@ -1189,6 +1208,17 @@ impl ServerState {
         generation: Option<&str>,
         keep_snapshots: bool,
     ) -> Result<serde_json::Value, String> {
+        self.delete_database_inner(id, generation, keep_snapshots, false)
+            .await
+    }
+
+    async fn delete_database_inner(
+        &self,
+        id: &str,
+        generation: Option<&str>,
+        keep_snapshots: bool,
+        retiring: bool,
+    ) -> Result<serde_json::Value, String> {
         let requested = self.hosted_database(id)?;
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
@@ -1200,6 +1230,9 @@ impl ServerState {
             return Err(format!(
                 "Database {id} on this server is not the one asked for: a database of the same name was created again meanwhile. Nothing was deleted."
             ));
+        }
+        if !retiring && self.databases.raft.hosts(&stored.generation, id) {
+            return Err("This resource is replicated. Release its app and rollback bindings before retiring the group.".into());
         }
         // From here, deploys cannot start binding the database; one already
         // binding it makes the delete wait for it to finish.
@@ -1346,7 +1379,11 @@ impl ServerState {
         let mut bindings = BTreeSet::new();
         let mut record = |scope: &str, set: &HashMap<String, AppDatabase>| {
             for (alias, binding) in set {
-                if self.databases.binds_here(&binding.binding, &stored.name) {
+                let matches = match binding.binding.generation.as_ref() {
+                    Some(id) => id == &stored.generation && binding.binding.name == stored.name,
+                    None => self.databases.binds_here(&binding.binding, &stored.name),
+                };
+                if matches {
                     bindings.insert(
                         tako_core::runtime_grant_scope(alias, scope)
                             .unwrap_or_else(|| scope.to_owned()),
@@ -1436,11 +1473,17 @@ impl ServerState {
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
         let stored = self.hosted_database(id)?;
-        if stored.engine.is_sqlite()
-            && let Some(resource) = self.databases.raft.resource(&stored.generation)
+        if let Some(resource) = self.databases.raft.resource(&stored.generation)
+            && (resource.backup_settings().is_none() || stored.secrets.backup != backup)
         {
+            let key = backup_settings_key(&stored.secrets.backup_key_base64)?;
+            let sealed = crate::state_store::encryption::encrypt_blob(
+                &key,
+                &serde_json::to_vec(&backup).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
             resource
-                .track_backups(backup.is_some())
+                .set_backup_settings(stored.engine.is_sqlite() && backup.is_some(), sealed)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -1824,6 +1867,15 @@ pub(crate) fn validate_backup_storage(storage: &StorageBinding) -> Result<(), St
         }
     }
     Ok(())
+}
+
+fn backup_settings_key(key: &str) -> Result<[u8; 32], String> {
+    use sha2::{Digest, Sha256};
+    Ok(Sha256::new()
+        .chain_update(b"tako/resource-backup-settings/v1")
+        .chain_update(decode_backup_key(key)?)
+        .finalize()
+        .into())
 }
 
 fn create_private_dir(path: &Path) -> Result<(), String> {

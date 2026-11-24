@@ -1063,6 +1063,14 @@ pub(crate) async fn back_up(state: &ServerState, name: &str) {
     let Ok(stored) = state.hosted_database(name) else {
         return;
     };
+    if let Some(resource) = state.databases.raft.resource(&stored.generation)
+        && !resource.leads()
+    {
+        if slot.open.is_some() {
+            close(&mut slot).await;
+        }
+        return;
+    }
     let Some(backup) = stored.secrets.backup.clone() else {
         if slot.open.is_some() {
             close(&mut slot).await;
