@@ -5,6 +5,8 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+tako-raft = { path = "../tako-raft" }
+tempfile = "=3.27.0"
 getrandom = "0.4"
 hex = "0.4"
 parking_lot = "0.13"

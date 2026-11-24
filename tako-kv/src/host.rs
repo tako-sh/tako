@@ -262,6 +262,22 @@ impl KvHost {
 
     /// Opens a store file, creating it if needed, and serves it. Blocks.
     pub fn register(&self, id: StoreId, path: PathBuf) -> Result<(), HostError> {
+        self.register_inner(id, path, None)
+    }
+    pub fn register_replicated(
+        &self,
+        id: StoreId,
+        path: PathBuf,
+        resource: tako_raft::Resource,
+    ) -> Result<(), HostError> {
+        self.register_inner(id, path, Some(resource))
+    }
+    fn register_inner(
+        &self,
+        id: StoreId,
+        path: PathBuf,
+        resource: Option<tako_raft::Resource>,
+    ) -> Result<(), HostError> {
         if self.is_registered(&id) {
             return Err(HostError::AlreadyRegistered(id));
         }
@@ -278,7 +294,11 @@ impl KvHost {
             caches.insert(id.clone(), cache);
             cache
         };
-        let opened = Store::open(&path, self.inner.config.store_config(cache));
+        let config = self.inner.config.store_config(cache);
+        let opened = match resource {
+            Some(resource) => Store::open_replicated(&path, config, resource),
+            None => Store::open(&path, config),
+        };
         let mut stores = self.inner.stores.write();
         match opened {
             Ok(store) if !stores.contains_key(&id) => {
@@ -417,6 +437,13 @@ impl KvHost {
         let replica = hash == binding.tokens.replica;
         if replica && request.writes() {
             return Err(KvError::invalid("the local replica is read-only"));
+        }
+        if replica
+            && let KvRequest::Get { key } = &request
+            && let Some(store) = self.store(&binding.store)
+            && store.is_replicated()
+        {
+            return Ok(reply(store.get_local(key)?));
         }
         match binding.home {
             Home::Remote { .. } if replica => {

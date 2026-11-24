@@ -123,6 +123,54 @@ impl<R: Read + Seek> WalReader<R> {
     }
 }
 
+/// Captures a private SQLite writer's transaction at the exact frame count
+/// reported by sqlite3_wal_hook. No other connection may write or checkpoint
+/// this WAL while the hook runs.
+#[derive(Default)]
+pub struct CommitCursor {
+    end: u64,
+    previous: Vec<u8>,
+}
+
+impl CommitCursor {
+    pub fn capture(
+        &mut self,
+        input: &mut (impl Read + Seek),
+        frame_count: u32,
+    ) -> Result<(u32, u64, BTreeMap<u64, Vec<u8>>)> {
+        input.rewind()?;
+        let mut wal = WalReader::new(&mut *input)?;
+        let end = HEADER_SIZE + u64::from(frame_count) * wal.frame_size();
+        if self.end != 0 && self.end <= end {
+            wal.resume(self.end, &self.previous)?;
+        }
+        let remaining = end
+            .checked_sub(wal.offset)
+            .ok_or_else(|| anyhow::anyhow!("invalid WAL position"))?;
+        ensure!(remaining > 0, "commit has no new WAL frames");
+        let changes = wal.scan(remaining)?;
+        ensure!(
+            changes.end == end && changes.commit > 0,
+            "incomplete WAL commit"
+        );
+        let page_size = wal.page_size;
+        let mut pages = BTreeMap::new();
+        for (number, offset) in changes.pages {
+            let mut bytes = vec![0; page_size as usize];
+            input.seek(SeekFrom::Start(offset + FRAME_HEADER_SIZE))?;
+            input.read_exact(&mut bytes)?;
+            pages.insert(u64::from(number - 1), bytes);
+        }
+        self.end = end;
+        self.previous = changes.last_frame;
+        Ok((
+            page_size,
+            u64::from(changes.commit) * u64::from(page_size),
+            pages,
+        ))
+    }
+}
+
 fn read_complete(input: &mut impl Read, bytes: &mut [u8]) -> io::Result<bool> {
     match input.read_exact(bytes) {
         Ok(()) => Ok(true),

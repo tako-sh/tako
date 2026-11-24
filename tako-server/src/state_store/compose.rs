@@ -116,6 +116,10 @@ impl SqliteStateStore {
         for (table, blob) in blobs {
             match blob {
                 Some(bytes) => {
+                    if table == "app_databases" {
+                        tx.execute("INSERT OR REPLACE INTO release_databases (app,version,encrypted_data) VALUES (?1,?2,?3)",
+                            (&app, &config.version, &bytes))?;
+                    }
                     tx.execute(&format!("INSERT INTO {table} (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;"), (&app, bytes))?;
                 }
                 None => {

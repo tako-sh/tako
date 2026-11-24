@@ -218,6 +218,8 @@ pub(crate) struct Database {
     path: PathBuf,
     engine: EngineConfig,
     pool_size: usize,
+    resource: Option<tako_raft::Resource>,
+    primary: Mutex<Option<tako_raft::SqliteWal>>,
     state: Mutex<DatabaseState>,
     idle: Notify,
     pool: Mutex<Vec<engine::Connection>>,
@@ -238,6 +240,9 @@ struct DatabaseState {
 
 impl Database {
     pub(crate) fn acquire(&self, read_only: bool) -> Result<engine::Connection, Error> {
+        if let Some(resource) = &self.resource {
+            return self.replicated_connection(resource, read_only, &self.engine);
+        }
         {
             let mut pool = self.pool.lock();
             if let Some(index) = pool.iter().rposition(|c| c.read_only == read_only) {
@@ -247,10 +252,30 @@ impl Database {
         engine::Connection::open_mode(&self.path, &self.engine, read_only)
     }
 
+    fn replicated_connection(
+        &self,
+        resource: &tako_raft::Resource,
+        read_only: bool,
+        config: &EngineConfig,
+    ) -> Result<engine::Connection, Error> {
+        if read_only {
+            return engine::Connection::replica(
+                resource.local_file().map_err(engine::replication_error)?,
+                config,
+            );
+        }
+        let mut primary = self.primary.lock();
+        if primary.as_ref().is_none_or(|wal| !wal.usable()) {
+            let writer = resource.writer().map_err(engine::replication_error)?;
+            *primary = Some(tako_raft::SqliteWal::new(writer));
+        }
+        engine::Connection::primary(primary.as_ref().expect("writer opened").clone(), config)
+    }
+
     /// Returns a connection for reuse when it carries no stream state.
     pub(crate) fn release(&self, mut conn: engine::Connection) {
         conn.rollback();
-        if conn.is_dirty() || !conn.is_autocommit() {
+        if self.resource.is_some() || conn.is_dirty() || !conn.is_autocommit() {
             return;
         }
         let mut pool = self.pool.lock();
@@ -523,6 +548,24 @@ impl DatabaseHost {
     /// Serves an existing database file. Takes a shared lock on
     /// `<path>.lock` so a swap in another process waits for this one.
     pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
+        self.register_inner(id, path, None)
+    }
+
+    pub fn register_replicated(
+        &self,
+        id: DatabaseId,
+        path: PathBuf,
+        resource: tako_raft::Resource,
+    ) -> Result<(), HostError> {
+        self.register_inner(id, path, Some(resource))
+    }
+
+    fn register_inner(
+        &self,
+        id: DatabaseId,
+        path: PathBuf,
+        resource: Option<tako_raft::Resource>,
+    ) -> Result<(), HostError> {
         let mut databases = self.inner.databases.write();
         if databases.contains_key(&id) {
             return Err(HostError::AlreadyRegistered(id));
@@ -537,6 +580,8 @@ impl DatabaseHost {
                 path,
                 engine: config.engine.clone(),
                 pool_size: config.pool_size,
+                resource,
+                primary: Mutex::new(None),
                 state: Mutex::new(DatabaseState {
                     paused: None,
                     closed: false,
@@ -919,9 +964,12 @@ impl DatabaseHost {
             let _permit = permit;
             // A connection of its own, with migrations' longer limits; it is
             // not returned to the pool.
-            let mut conn =
-                engine::Connection::open(&database.path, &crate::migrate::config(&database.engine))
-                    .map_err(|e| HostError::Engine(e.message))?;
+            let config = crate::migrate::config(&database.engine);
+            let mut conn = match &database.resource {
+                Some(resource) => database.replicated_connection(resource, false, &config),
+                None => engine::Connection::open(&database.path, &config),
+            }
+            .map_err(|e| HostError::Engine(e.message))?;
             let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
             if conn.take_wrote() {
                 database.mark_changed();

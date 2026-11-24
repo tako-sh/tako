@@ -41,7 +41,8 @@ impl SqliteStateStore {
     }
 
     pub fn delete_app(&self, name: &str, environment: &str) -> Result<(), StateStoreError> {
-        let conn = self.lock_conn()?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
         // Delete secrets for this app to prevent leaking to a future app with the same name.
         let secret_key = format!("{name}/{environment}");
         for table in [
@@ -55,16 +56,18 @@ impl SqliteStateStore {
             "app_compose_scales",
             "app_lifecycle",
             "app_release_routing",
+            "release_databases",
         ] {
-            conn.execute(
+            tx.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
                 (secret_key.as_str(),),
             )?;
         }
-        conn.execute(
+        tx.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
             (name, environment),
         )?;
+        tx.commit()?;
         Ok(())
     }
 

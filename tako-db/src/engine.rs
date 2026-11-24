@@ -403,6 +403,9 @@ pub fn snapshot_database(source: &Path, dest: &Path, busy_timeout: Duration) -> 
 /// A client connection: one SQLite connection hardened for untrusted SQL.
 pub struct Connection {
     pub(crate) read_only: bool,
+    primary: Option<tako_raft::SqliteWal>,
+    // Keep the committed snapshot alive while the SQLite connection uses it.
+    replica: Option<Arc<tempfile::NamedTempFile>>,
     conn: rusqlite::Connection,
     epoch: Instant,
     /// Deadline in nanoseconds since `epoch`; zero means none.
@@ -545,6 +548,8 @@ impl Connection {
         Ok(Self {
             conn,
             read_only,
+            primary: None,
+            replica: None,
             epoch,
             deadline,
             dirty,
@@ -554,6 +559,27 @@ impl Connection {
             statement_timeout: config.statement_timeout,
             rowids,
         })
+    }
+
+    pub(crate) fn primary(
+        primary: tako_raft::SqliteWal,
+        config: &EngineConfig,
+    ) -> Result<Self, Error> {
+        let mut connection = Self::open(primary.path(), config)?;
+        primary
+            .install(&mut connection.conn)
+            .map_err(replication_error)?;
+        connection.primary = Some(primary);
+        Ok(connection)
+    }
+
+    pub(crate) fn replica(
+        file: Arc<tempfile::NamedTempFile>,
+        config: &EngineConfig,
+    ) -> Result<Self, Error> {
+        let mut connection = Self::open_mode(file.path(), config, true)?;
+        connection.replica = Some(file);
+        Ok(connection)
     }
 
     pub fn is_autocommit(&self) -> bool {
@@ -589,6 +615,12 @@ impl Connection {
         let started = Instant::now();
         let mut rows = Vec::new();
         let mut cols = Vec::new();
+        let primary = self.primary.clone();
+        let guarded = primary
+            .as_ref()
+            .map(|p| p.begin_buffered())
+            .transpose()
+            .map_err(replication_error)?;
         let outcome = self.run(sql, args, want_rows, |event| match event {
             // Charged before the names are copied, as rows are.
             Event::Begin(columns) => {
@@ -614,7 +646,13 @@ impl Connection {
                 }
                 Ok(())
             }
-        })?;
+        });
+        if let (Some(primary), Some((_, before))) = (&primary, &guarded) {
+            primary
+                .confirm_buffered(*before)
+                .map_err(replication_error)?;
+        }
+        let outcome = outcome?;
         Ok(StmtResult {
             cols,
             rows,
@@ -634,6 +672,12 @@ impl Connection {
         args: &Args<'_>,
         sink: impl FnMut(Event<'_>) -> Result<(), Error>,
     ) -> Result<(u64, Option<i64>), Error> {
+        let primary = self.primary.clone();
+        let _guard = primary
+            .as_ref()
+            .map(|p| p.enter())
+            .transpose()
+            .map_err(replication_error)?;
         let outcome = self.run(sql, args, true, sink)?;
         Ok((outcome.affected, outcome.last_insert_rowid))
     }
@@ -659,6 +703,12 @@ impl Connection {
     /// the first failure. The statements share one time limit, so a long
     /// script cannot hold the connection for the limit once per statement.
     pub fn sequence(&mut self, sql: &str) -> Result<(), Error> {
+        let primary = self.primary.clone();
+        let _guard = primary
+            .as_ref()
+            .map(|p| p.enter())
+            .transpose()
+            .map_err(replication_error)?;
         let mut wrote = false;
         let mut batch = rusqlite::Batch::new(&self.conn, sql);
         self.arm_deadline();
@@ -701,6 +751,12 @@ impl Connection {
     /// Describes a statement, charging its columns and parameters to
     /// `budget` before they are copied.
     pub fn describe(&mut self, sql: &str, budget: &mut Budget) -> Result<DescribeResult, Error> {
+        let primary = self.primary.clone();
+        let _guard = primary
+            .as_ref()
+            .map(|p| p.enter())
+            .transpose()
+            .map_err(replication_error)?;
         check_not_empty(sql)?;
         let (mut cached, mut fresh) = (None, None);
         // Preparing a large statement can take long too.
@@ -1558,3 +1614,7 @@ fn extended_code_name(code: i32) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn replication_error(error: std::io::Error) -> Error {
+    Error::new("DATABASE_UNAVAILABLE", error.to_string())
+}

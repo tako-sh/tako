@@ -74,6 +74,34 @@ fn parse_engine(name: &str) -> Result<tako_core::DatabaseEngine, StateStoreError
 }
 
 impl SqliteStateStore {
+    pub(crate) fn release_databases(
+        &self,
+        app: &str,
+        version: &str,
+    ) -> Result<Option<HashMap<String, AppDatabase>>, StateStoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .lock_conn()?
+            .query_row(
+                "SELECT encrypted_data FROM release_databases WHERE app=?1 AND version=?2",
+                (app, version),
+                |row| row.get(0),
+            )
+            .optional()?;
+        bytes
+            .as_deref()
+            .map(|data| self.decrypt_json(data))
+            .transpose()
+    }
+
+    pub(crate) fn releases_with_databases(&self) -> Result<Vec<(String, String)>, StateStoreError> {
+        let conn = self.lock_conn()?;
+        let mut stmt =
+            conn.prepare("SELECT app,version FROM release_databases ORDER BY app,version")?;
+        Ok(stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?)
+    }
+
     pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(&database.secrets)?;
         self.lock_conn()?.execute(

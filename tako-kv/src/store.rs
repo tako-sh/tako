@@ -230,6 +230,7 @@ struct Job {
 
 pub struct Store {
     path: PathBuf,
+    replicated: Option<Arc<Replicated>>,
     db: RwLock<Option<Arc<Database>>>,
     writer: Mutex<Option<SyncSender<Job>>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -239,25 +240,90 @@ pub struct Store {
     changed: Arc<AtomicBool>,
 }
 
+/// A writer's private file can contain an unacknowledged redb commit.
+/// All readers therefore use the last applied image, including local reads.
+struct Replicated {
+    resource: tako_raft::Resource,
+    reader: Mutex<Option<(Arc<tempfile::NamedTempFile>, Arc<Database>)>>,
+}
+impl Replicated {
+    fn read(&self, cache_bytes: usize) -> Result<Arc<Database>> {
+        let file = self.resource.local_file().map_err(storage)?;
+        let mut cached = self.reader.lock();
+        if let Some((existing, db)) = cached.as_ref()
+            && Arc::ptr_eq(existing, &file)
+        {
+            return Ok(db.clone());
+        }
+        let db = Arc::new(open_database(file.path(), cache_bytes)?);
+        *cached = Some((file, db.clone()));
+        Ok(db)
+    }
+}
+
+struct Primary {
+    db: Database,
+    file: tako_raft::RedbFile,
+    writer: tako_raft::Writer,
+}
+impl Primary {
+    fn open(resource: &tako_raft::Resource, cache_bytes: usize) -> Result<Self> {
+        let writer = resource.writer().map_err(storage)?;
+        let file = tako_raft::RedbFile::open(&writer).map_err(storage)?;
+        let db = Database::builder()
+            .set_cache_size(cache_bytes)
+            .create_with_backend(file.clone())
+            .map_err(storage)?;
+        init_tables(&db)?;
+        Ok(Self { db, file, writer })
+    }
+}
+
 impl Store {
     /// Opens the store at `path`, creating the file if needed.
     pub fn open(path: &Path, config: StoreConfig) -> Result<Self> {
-        let db = Arc::new(open_database(path, config.cache_bytes)?);
+        Self::open_inner(path, config, None)
+    }
+
+    pub fn open_replicated(
+        path: &Path,
+        config: StoreConfig,
+        resource: tako_raft::Resource,
+    ) -> Result<Self> {
+        let replicated = Arc::new(Replicated {
+            resource,
+            reader: Default::default(),
+        });
+        Self::open_inner(path, config, Some(replicated))
+    }
+
+    fn open_inner(
+        path: &Path,
+        config: StoreConfig,
+        replicated: Option<Arc<Replicated>>,
+    ) -> Result<Self> {
+        let db = if replicated.is_some() {
+            None
+        } else {
+            Some(Arc::new(open_database(path, config.cache_bytes)?))
+        };
         let config = Arc::new(config);
         let changed = Arc::new(AtomicBool::new(true));
         let (sender, receiver) = sync_channel(QUEUE);
         let thread = {
             let db = db.clone();
+            let replicated = replicated.clone();
             let config = config.clone();
             let changed = changed.clone();
             std::thread::Builder::new()
                 .name("tako-kv-writer".into())
-                .spawn(move || writer(db, receiver, config, changed))
+                .spawn(move || writer(db, replicated, receiver, config, changed))
                 .map_err(storage)?
         };
         Ok(Self {
             path: path.to_owned(),
-            db: RwLock::new(Some(db)),
+            db: RwLock::new(db),
+            replicated,
             writer: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
             config,
@@ -270,6 +336,12 @@ impl Store {
     }
 
     fn db(&self) -> Result<Arc<Database>> {
+        if let Some(replica) = &self.replicated {
+            if self.writer.lock().is_none() {
+                return Err(StoreError::Closed);
+            }
+            return replica.read(self.config.cache_bytes);
+        }
         self.db.read().clone().ok_or(StoreError::Closed)
     }
 
@@ -302,6 +374,17 @@ impl Store {
 
     /// The value's JSON, or `None` when the key is missing or expired.
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(replica) = &self.replicated {
+            replica.resource.leader_barrier().map_err(storage)?;
+        }
+        self.get_local(key)
+    }
+
+    pub fn is_replicated(&self) -> bool {
+        self.replicated.is_some()
+    }
+
+    pub fn get_local(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let db = self.db()?;
         let txn = db.begin_read().map_err(storage)?;
         let (generation, _) = read_generations(&txn.open_table(META).map_err(storage)?)?;
@@ -423,12 +506,17 @@ fn open_database(path: &Path, cache_bytes: usize) -> Result<Database> {
         .set_cache_size(cache_bytes)
         .create_with_backend(FileBackend::new(file))
         .map_err(storage)?;
+    init_tables(&db)?;
+    Ok(db)
+}
+
+fn init_tables(db: &Database) -> Result<()> {
     let txn = db.begin_write().map_err(storage)?;
     let (generation, _) = read_generations(&txn.open_table(META).map_err(storage)?)?;
     open_entries(&txn, generation)?;
     open_index(&txn, generation)?;
     txn.commit().map_err(storage)?;
-    Ok(db)
+    Ok(())
 }
 
 /// Writes every live key of `db`'s last commit to a new export file.
@@ -702,11 +790,13 @@ impl<'t> WriteView<'t> {
 }
 
 fn writer(
-    db: Arc<Database>,
+    db: Option<Arc<Database>>,
+    replicated: Option<Arc<Replicated>>,
     jobs: Receiver<Job>,
     config: Arc<StoreConfig>,
     changed: Arc<AtomicBool>,
 ) {
+    let mut primary: Option<Primary> = None;
     let mut next_sweep = Instant::now() + SWEEP_INTERVAL;
     // A replace runs in its own transaction; one received while batching
     // waits here for the next round.
@@ -737,7 +827,10 @@ fn writer(
             }
         }
         let sweep = Instant::now() >= next_sweep;
-        if batch.is_empty() && (!sweep || !has_cleanup(&db, (config.clock)())) {
+        let current = db.as_deref().or_else(|| primary.as_ref().map(|p| &p.db));
+        if batch.is_empty()
+            && (!sweep || !current.is_some_and(|db| has_cleanup(db, (config.clock)())))
+        {
             if sweep {
                 next_sweep = Instant::now() + SWEEP_INTERVAL;
             }
@@ -746,7 +839,27 @@ fn writer(
         let (works, replies): (Vec<_>, Vec<_>) =
             batch.into_iter().map(|job| (job.work, job.reply)).unzip();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply(&db, &works, sweep, &config, &changed)
+            if let Some(replica) = &replicated {
+                if primary
+                    .as_ref()
+                    .is_none_or(|p| p.writer.revision_hint().is_err())
+                {
+                    primary = None;
+                    primary = Some(Primary::open(&replica.resource, config.cache_bytes)?);
+                }
+                let p = primary.as_mut().expect("opened replicated writer");
+                let result = apply(&p.db, &works, sweep, &config, &changed)?;
+                p.file.publish(&mut p.writer).map_err(storage)?;
+                Ok(result)
+            } else {
+                apply(
+                    db.as_ref().expect("opened local database"),
+                    &works,
+                    sweep,
+                    &config,
+                    &changed,
+                )
+            }
         }))
         .unwrap_or_else(|_| Err(StoreError::Storage("internal error".into())));
         match result {

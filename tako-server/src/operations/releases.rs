@@ -458,6 +458,19 @@ impl crate::ServerState {
                     .unwrap_or_default()
             });
 
+        let databases = match self.state_store.release_databases(app_name, version) {
+            Ok(bindings) => bindings.map(|bindings| {
+                bindings
+                    .into_iter()
+                    .map(|(alias, binding)| (alias, binding.binding))
+                    .collect()
+            }),
+            Err(error) => {
+                return Response::error(format!(
+                    "Failed to read release database bindings: {error}"
+                ));
+            }
+        };
         let target_path = target_path.to_string_lossy();
         if needs_preparation {
             let secrets = match self.state_store.get_secrets(app_name) {
@@ -480,7 +493,7 @@ impl crate::ServerState {
                 source_ip,
                 secrets: None,
                 storages: None,
-                databases: None,
+                databases,
                 ssl,
                 force: false,
             })

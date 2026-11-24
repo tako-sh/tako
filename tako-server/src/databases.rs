@@ -1279,6 +1279,29 @@ impl ServerState {
         {
             record(&scope, &set);
         }
+        // A compacted release can still roll back from its archive. Only an
+        // actual archive makes a historical binding reachable. An I/O error
+        // must never be interpreted as permission to drop the resource.
+        for (scope, version) in self
+            .state_store
+            .releases_with_databases()
+            .map_err(|e| e.to_string())?
+        {
+            let archive = crate::release::app_root(&self.runtime_config().data_dir, &scope)
+                .join("archives")
+                .join(&version)
+                .join("release.tar.zst");
+            if archive
+                .try_exists()
+                .map_err(|e| format!("inspect release archive: {e}"))?
+                && let Some(bindings) = self
+                    .state_store
+                    .release_databases(&scope, &version)
+                    .map_err(|e| e.to_string())?
+            {
+                record(&scope, &bindings);
+            }
+        }
         // The binding sets in use, also the previous one a rollout keeps
         // until old instances drain, and a release command's.
         for (scope, sets) in self.databases.applied.lock().iter() {

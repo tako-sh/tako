@@ -8,9 +8,10 @@ publish = false
 # A blocking client for Tako's own statements (channel replay, workflow runs).
 client = ["dep:reqwest"]
 # An in-process host on a loopback port, for tests of code that uses it.
-testing = ["client", "dep:tempfile"]
+testing = ["client"]
 
 [dependencies]
+tako-raft = { path = "../tako-raft" }
 tako-core = { path = "../tako-core" }
 base64 = "0.23"
 bytes = "1"
@@ -31,7 +32,7 @@ serde_json.workspace = true
 sha2 = "0.11"
 thiserror.workspace = true
 tokio.workspace = true
-tempfile = { version = "=3.27.0", optional = true }
+tempfile = "=3.27.0"
 tracing.workspace = true
 
 [dev-dependencies]

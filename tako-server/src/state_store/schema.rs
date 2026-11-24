@@ -209,6 +209,13 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             engine TEXT NOT NULL DEFAULT 'sqlite'
         );
 
+        CREATE TABLE IF NOT EXISTS release_databases (
+            app TEXT NOT NULL,
+            version TEXT NOT NULL,
+            encrypted_data BLOB NOT NULL,
+            PRIMARY KEY (app, version)
+        );
+
         CREATE TABLE IF NOT EXISTS app_databases (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
