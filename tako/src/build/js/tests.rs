@@ -377,7 +377,7 @@ fn declarations_include_custom_environment_secrets_and_bindings_alongside_develo
         for name in ["main", "assertions"] {
             assert!(
                 content.contains(&format!(
-                    "readonly {name}: import(\"tako.sh\").TakoDbBinding;"
+                    "readonly {name}: import(\"tako.sh\").TakoDbConnection;"
                 )),
                 "{content}"
             );
@@ -422,8 +422,8 @@ db = { main = "shop", "audit-log" = "audit" }
 
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
     assert!(content.contains("export interface TakoDb {"));
-    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbBinding;"));
-    assert!(content.contains("readonly \"audit-log\": import(\"tako.sh\").TakoDbBinding;"));
+    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbConnection;"));
+    assert!(content.contains("readonly \"audit-log\": import(\"tako.sh\").TakoDbConnection;"));
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn write_tako_declarations_with_config_type_the_selected_configs_bindings() {
     write_tako_declarations_with_config(dir.path(), BuildAdapter::Unknown, &config, None).unwrap();
 
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
-    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbBinding;"));
+    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDbConnection;"));
     assert!(!content.contains("stale"), "{content}");
 }
 
