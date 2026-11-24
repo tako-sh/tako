@@ -47,6 +47,21 @@ for file, const in [
         r"pub const " + const + r': &str = (".*?");', text, re.DOTALL
     ).group(1)
     schema.append(ast.literal_eval(literal.replace("\\\n", "")))
+# Servers generate their Corrosion config with these gossip and sync settings.
+corrosion_source = (repository / "tako-network" / "src" / "corrosion.rs").read_text()
+
+
+def setting(name):
+    return int(re.search(r"pub const " + name + r": u32 = (\d+);", corrosion_source).group(1))
+
+
+idle_timeout = setting("GOSSIP_IDLE_TIMEOUT_SECS")
+max_sync_backoff = setting("MAX_SYNC_BACKOFF_SECS")
+# A deploy waits 30 s for a server to hold the secrets it published
+# (tako-server/src/secret_snapshot.rs). With these settings a crashed server
+# catches up 13-19 s after the crash. Leave room for slower hosts, but stay
+# below the 25-29 s a peer's 15 s sync backoff takes without the cap.
+CRASH_CATCH_UP_SECONDS = 24
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -76,6 +91,43 @@ def wait_ready(i):
             time.sleep(0.1)
 
 
+def start(i):
+    with (root / str(i) / "agent.log").open("a") as log:
+        return subprocess.Popen(
+            [binary, "-c", str(root / str(i) / "config.toml"), "agent"],
+            stdout=log,
+            stderr=log,
+        )
+
+
+def publish(i, record_id, value):
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    result = post(i, "/v1/transactions", [[
+        "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
+        ["secret", record_id, digest, value],
+    ]])
+    assert "error" not in result, result
+
+
+def wait_for_payload(i, value, deadline):
+    while time.monotonic() < deadline:
+        response = post(i, "/v1/queries", [
+            "SELECT payload FROM tako_shared_records WHERE payload = ?", [value],
+        ])
+        rows = []
+        for line in response.splitlines():
+            event = json.loads(line)
+            assert "error" not in event, event
+            if "row" in event:
+                rows.append(event["row"][1])
+        if [value] in rows and time.monotonic() <= deadline:
+            return
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"Server {i} did not receive {value} within {CRASH_CATCH_UP_SECONDS} s of the crash"
+    )
+
+
 try:
     for i, (api, gossip) in enumerate(ports):
         d = root / str(i)
@@ -92,17 +144,13 @@ addr = "127.0.0.1:{gossip}"
 client_addr = "127.0.0.1:0"
 bootstrap = ["127.0.0.1:{ports[1 - i][1]}"]
 plaintext = true
+idle_timeout_secs = {idle_timeout}
+[perf]
+max_sync_backoff = {max_sync_backoff}
 [admin]
 path = "{d}/admin.sock"
 ''')
-        with open(d / "agent.log", "w") as log:
-            processes.append(
-                subprocess.Popen(
-                    [binary, "-c", str(d / "config.toml"), "agent"],
-                    stdout=log,
-                    stderr=log,
-                )
-            )
+        processes.append(start(i))
     for i in range(2):
         wait_ready(i)
     expected = []
@@ -112,18 +160,7 @@ path = "{d}/admin.sock"
         for operation in (f"independent-{i}", "conflicting-operation"):
             value = f"ciphertext-{operation}-{i}"
             expected.append(value)
-            digest = hashlib.sha256(value.encode()).hexdigest()
-            result = post(
-                i,
-                "/v1/transactions",
-                [
-                    [
-                        "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
-                        ["secret", operation, digest, value],
-                    ]
-                ],
-            )
-            assert "error" not in result, result
+            publish(i, operation, value)
     for _ in range(100):
         result = [
             post(
@@ -142,16 +179,25 @@ path = "{d}/admin.sock"
     else:
         raise RuntimeError(result)
 
+    # A crashed server leaves its peer holding a stale gossip connection.
+    # Both writes must reach the restarted server within the same budget.
+    deadline = time.monotonic() + CRASH_CATCH_UP_SECONDS
+    processes[0].kill()
+    processes[0].wait(timeout=20)
+    publish(1, "while-down", "missed-ciphertext")
+    processes[0] = start(0)
+    wait_ready(0)
+    # Observe catch-up before publishing again. A startup pull can deliver the
+    # missed write, but cannot already contain the second one.
+    wait_for_payload(0, "missed-ciphertext", deadline)
+    publish(1, "after-catch-up", "fresh-ciphertext")
+    wait_for_payload(0, "fresh-ciphertext", deadline)
+
     # Membership/CA changes restart Corrosion. A spawned process is not yet an
     # HTTP-ready store; wait for reads and verify its durable records survive.
     processes[0].terminate()
     processes[0].wait(timeout=20)
-    with (root / "0" / "agent.log").open("a") as log:
-        processes[0] = subprocess.Popen(
-            [binary, "-c", str(root / "0" / "config.toml"), "agent"],
-            stdout=log,
-            stderr=log,
-        )
+    processes[0] = start(0)
     wait_ready(0)
     restored = post(
         0,
@@ -198,7 +244,7 @@ path = "{d}/admin.sock"
     else:
         raise RuntimeError(result)
     print(
-        "PASS: actual Corrosion accepts schemas, replicates conflicting operations, recovers after restart, and retires observed ciphertext without losing concurrent candidates"
+        "PASS: actual Corrosion accepts schemas, replicates conflicting operations, recovers after restart and crash, and retires observed ciphertext without losing concurrent candidates"
     )
 except Exception:
     for i in range(len(processes)):

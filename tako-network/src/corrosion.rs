@@ -27,6 +27,15 @@ mod shared_store;
 pub const MAX_REGISTRY_ROWS: usize = 10_000;
 pub const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
+/// Gossip QUIC idle timeout; Corrosion sends keep-alives at half of it. A peer
+/// that crashed leaves the others writing into its dead connection until this
+/// expires, so nothing reaches the restarted server before then. Corrosion's
+/// default of 30 s outlasts the time a deploy waits for published secrets.
+pub const GOSSIP_IDLE_TIMEOUT_SECS: u32 = 10;
+/// Longest pause between Corrosion's anti-entropy syncs (default 15 s). Changes
+/// broadcast into a dead connection reach the restarted server only through
+/// the next sync, so this bounds how long they wait after it reconnects.
+pub const MAX_SYNC_BACKOFF_SECS: u32 = 5;
 // Start with large pages to minimize loopback round-trips for small records.
 const PAGE_ROWS: usize = 256;
 const MAX_ADMISSION_ROWS: usize = MAX_REGISTRY_ROWS / 2;

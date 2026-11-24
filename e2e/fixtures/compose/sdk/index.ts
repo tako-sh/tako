@@ -33,14 +33,6 @@ export default async function fetch(request: Request): Promise<Response> {
     }
   }
 
-  if (url.pathname === "/ticks" && request.method === "GET") {
-    try {
-      return Response.json({ ticks: readFileSync(join(tako.dataDir, "ticks.txt"), "utf8") });
-    } catch {
-      return Response.json({ ticks: "" });
-    }
-  }
-
   if (url.pathname === "/publish" && request.method === "POST") {
     const { message } = (await request.json()) as { message: string };
     const published = await demo.publish({ type: "message", data: { message } });

@@ -1033,16 +1033,21 @@ run_compose_sdk_checks() {
     fi
   }
   sdk_wait_for_ticks() {
-    local ticks
+    # Either server can claim a scheduled run from the shared workflow DB.
+    # Require a new successful tick even if an earlier deploy already ran it.
+    local since
+    since=$(date +%s%3N)
     for _ in $(seq 1 60); do
-      sdk_get /ticks
-      ticks=$(jq -r '.ticks' "$body")
-      if [[ -n "$ticks" ]]; then
+      HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
+        --json workflow list --env production --name tick --status succeeded --limit 1 >"$body"
+      if jq -e --argjson since "$since" \
+        'any(.runs[]; (.id | startswith("cron:tick:")) and .created_at_ms >= $since)' "$body" >/dev/null; then
         return 0
       fi
       sleep 0.5
     done
-    echo "The worker's cron schedule never fired" >&2
+    echo "No new successful cron tick was visible from $server_host" >&2
+    cat "$body" >&2
     return 1
   }
 

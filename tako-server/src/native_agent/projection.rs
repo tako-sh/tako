@@ -209,19 +209,23 @@ fn write_corrosion_at(
         "[db]\npath = {}\nschema_paths = [{}]\nsubscriptions_path = {}\n\
          [api]\naddr = \"127.0.0.1:9834\"\nauthz.bearer-token = {}\n\
          [gossip]\naddr = \"[{ip}]:8787\"\nclient_addr = \"[{ip}]:0\"\nbootstrap = {}\nplaintext = false\n\
+         idle_timeout_secs = {}\n\
          [gossip.tls]\ncert_file = {}\nkey_file = {}\nca_file = {}\ninsecure = false\n\
          [gossip.tls.client]\ncert_file = {}\nkey_file = {}\n\
+         [perf]\nmax_sync_backoff = {}\n\
          [admin]\npath = {}\n[log]\nformat = \"json\"\n",
         q(&path("corrosion.db")?)?,
         q(&path("corrosion.schema.sql")?)?,
         q(&path("subscriptions")?)?,
         q(token)?,
         serde_json::to_string(seeds)?,
+        tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS,
         q(&path(&config.files.gossip_certificate)?)?,
         q(&path(&config.files.gossip_private_key)?)?,
         q(&path("corrosion-ca.pem")?)?,
         q(&path(&config.files.gossip_certificate)?)?,
         q(&path(&config.files.gossip_private_key)?)?,
+        tako_network::corrosion::MAX_SYNC_BACKOFF_SECS,
         q(&path("corrosion-admin.sock")?)?
     ));
     directory.write("corrosion-ca.pem", bundle.as_bytes())?;
