@@ -80,24 +80,43 @@ impl Writer {
     /// Publish the initial, closed engine file. A concurrent successful
     /// creator wins the base-revision check and can be reused on retry.
     pub fn seed(&mut self, path: &Path) -> io::Result<()> {
-        use std::io::Read;
         if self.revision != Some(0) {
             return Ok(());
         }
+        self.replace_file(path)
+    }
+
+    /// The replacement is already a closed, validated SQLite or redb file.
+    pub fn replace_file(&mut self, path: &Path) -> io::Result<()> {
+        use std::io::{Read, Seek};
         let mut file = std::fs::File::open(path)?;
+        let mut header = [0; 18];
+        file.read_exact(&mut header)?;
+        let page_size = if &header[..16] == b"SQLite format 3\0" {
+            match u16::from_be_bytes([header[16], header[17]]) {
+                1 => 65536,
+                other => u32::from(other),
+            }
+        } else {
+            4096
+        };
         let size = file.metadata()?.len();
-        if size == 0 || !size.is_multiple_of(4096) {
-            return Err(error("invalid initial engine file size"));
+        if !(512..=65536).contains(&page_size)
+            || !page_size.is_power_of_two()
+            || !size.is_multiple_of(u64::from(page_size))
+        {
+            return Err(error("invalid engine file size"));
         }
+        file.rewind()?;
         let mut pages = BTreeMap::new();
-        for i in 0..size / 4096 {
-            let mut page = vec![0; 4096];
+        for i in 0..size / u64::from(page_size) {
+            let mut page = vec![0; page_size as usize];
             file.read_exact(&mut page)?;
             if page.iter().any(|&b| b != 0) {
                 pages.insert(i, page);
             }
         }
-        self.publish(4096, size, pages)
+        self.publish_pages(page_size, size, pages, true)
     }
 
     pub fn fence(&mut self) {
@@ -112,9 +131,26 @@ impl Writer {
         file_size: u64,
         pages: BTreeMap<u64, Vec<u8>>,
     ) -> io::Result<()> {
+        self.publish_pages(page_size, file_size, pages, false)
+    }
+
+    fn publish_pages(
+        &mut self,
+        page_size: u32,
+        file_size: u64,
+        pages: BTreeMap<u64, Vec<u8>>,
+        replace: bool,
+    ) -> io::Result<()> {
         let base_revision = self.revision.take().ok_or_else(|| error("writer fenced"))?;
         let commit = Commit {
+            replace,
             base_revision,
+            captured_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(error)?
+                .as_millis()
+                .try_into()
+                .map_err(error)?,
             page_size,
             file_size,
             pages,
@@ -163,6 +199,31 @@ impl Resource {
         self.replica.grant_matches(scope, hash)
     }
 
+    pub async fn track_backups(&self, enabled: bool) -> io::Result<()> {
+        if self.replica.tracking().await? != enabled {
+            timeout(
+                Duration::from_secs(10),
+                self.raft
+                    .client_write(crate::Proposal::TrackBackups(enabled)),
+            )
+            .await
+            .map_err(error)?
+            .map_err(error)?;
+        }
+        Ok(())
+    }
+
+    pub fn backup_image(&self) -> io::Result<(NamedTempFile, crate::BackupPosition)> {
+        self.runtime
+            .block_on(self.replica.checkout_position(&self.dir))
+    }
+
+    pub fn transaction_id(&self) -> io::Result<u64> {
+        self.runtime.block_on(self.replica.transaction_id())
+    }
+    pub fn backup_delta(&self, txid: u64) -> io::Result<Option<Commit>> {
+        self.runtime.block_on(self.replica.backup_delta(txid))
+    }
     pub fn current_leader(&self) -> Option<u128> {
         self.raft.metrics().borrow_watched().current_leader
     }

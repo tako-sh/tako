@@ -14,10 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::backup_capture::Source as Capture;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tako_backup::{Capture, Point, Replica, Stored, Target};
+use tako_backup::{Point, Replica, Stored, Target};
 use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageBinding};
 use tako_db::DatabaseId;
 
@@ -608,7 +609,9 @@ async fn ensure_open(
     let unrestored = is_unrestored(state, &stored.name)?;
     let fenced = fenced_marker(state, &stored.name);
     let positioned = tako_backup::spool_has_segments(&spool).map_err(|e| e.to_string())?;
-    let floor = if positioned && !unrestored && !fenced.exists() {
+    let resource = state.databases.raft.resource(&stored.generation);
+    let mut committed_remote = 0;
+    let floor = if resource.is_none() && positioned && !unrestored && !fenced.exists() {
         0
     } else {
         let (replica, remote) = replica(stored, backup, None)?;
@@ -629,8 +632,9 @@ async fn ensure_open(
         .iter()
         .map(Stored::txid)
         .max();
+        committed_remote = newest.unwrap_or(0);
         if unrestored {
-            if newest.is_some() {
+            if resource.is_none() && newest.is_some() {
                 return Err(format!(
                     "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako db restore {} --latest`)",
                     stored.name, stored.name
@@ -647,7 +651,7 @@ async fn ensure_open(
     let path = state.databases.database_path(&stored.name);
     let (capture, base, captured_at_ms) = tokio::task::spawn_blocking(
         move || -> tako_backup::anyhow::Result<(Capture, u64, i64)> {
-            let mut capture = Capture::open(&path, &spool, floor)?;
+            let mut capture = Capture::open(&path, &spool, floor, resource, committed_remote)?;
             let (base, captured_at) = full_image(&mut capture)?;
             Ok((capture, base, captured_at))
         },
@@ -1888,10 +1892,21 @@ async fn replace_inner(
         .databases
         .database_dir(&stored.name)
         .join("previous.sqlite");
+    let resource = state.databases.raft.resource(&current.generation);
     let swapped = tokio::task::spawn_blocking(move || {
-        prepare_runtime_state(&path, &replacement)
+        let mut writer = resource
+            .map(|r| r.writer())
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let path = writer.as_ref().map_or(path.as_path(), |w| w.path());
+        prepare_runtime_state(path, &replacement)
             .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
-        tako_db::replace_database(&path, &replacement, &previous)
+        tako_db::replace_database(path, &replacement, &previous)?;
+        let restored = path.to_owned();
+        if let Some(w) = writer.as_mut() {
+            w.replace_file(&restored).map_err(|e| e.to_string())?;
+        }
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| e.to_string())?;

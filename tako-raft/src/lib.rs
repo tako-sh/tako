@@ -13,7 +13,7 @@ mod log;
 mod machine;
 mod network;
 pub use log::LogStore;
-pub use machine::{Replica, SnapshotFile};
+pub use machine::{BackupPosition, Replica, SnapshotFile};
 pub use network::{Peer, Progress};
 
 use openraft::async_runtime::WatchReceiver;
@@ -25,6 +25,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Commit {
     pub base_revision: u64,
+    pub replace: bool,
+    pub captured_at_ms: i64,
     pub page_size: u32,
     pub file_size: u64,
     pub pages: BTreeMap<u64, Vec<u8>>,
@@ -43,6 +45,7 @@ pub enum Applied {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Proposal {
     Pages(Commit),
+    TrackBackups(bool),
     Claim(Claim),
     Grant {
         scope: String,
@@ -54,6 +57,7 @@ impl std::fmt::Display for Proposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pages(commit) => std::fmt::Display::fmt(commit, f),
+            Self::TrackBackups(enabled) => write!(f, "track backups {enabled}"),
             Self::Grant { scope, .. } => write!(f, "grant {scope}"),
             Self::Claim(claim) => write!(f, "claim {}", claim.name),
         }

@@ -95,6 +95,110 @@ async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
     .await;
 }
 
+async fn wait_storage_leader(state: &ServerState, group: &str) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let result = ok(
+            state,
+            Command::CoordinateStorage {
+                request: tako_core::StorageOperation::Progress {
+                    group: group.into(),
+                },
+            },
+        )
+        .await;
+        if result["leader"].is_string() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "leader election timed out"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replicated_sql_reopens_and_restores_a_committed_snapshot() {
+    use tako_core::{StorageClaim, StorageOperation as Op};
+    let temp = TempDir::new().unwrap();
+    let server = state(&temp);
+    let founder = "a".repeat(64);
+    let proxy = crate::native_proxy::NativeProxy::loopback_storage(temp.path(), founder.clone());
+    server
+        .start_databases(Some((founder.clone(), proxy.clone())))
+        .await
+        .unwrap();
+    let coordinate = |request| ok(&server, Command::CoordinateStorage { request });
+    let catalog = coordinate(Op::OpenCatalog { key: None }).await;
+    assert!(catalog["key"].is_string());
+    wait_storage_leader(&server, "catalog").await;
+    let candidate = StorageClaim {
+        name: ID.to_owned(),
+        engine: tako_core::DatabaseEngine::Sqlite,
+        generation: GENERATION.to_owned(),
+        created_at_unix_secs: 1,
+        founders: [founder.clone()].into(),
+        channel_owner: None,
+        workflows_owner: None,
+    };
+    let claim: StorageClaim =
+        serde_json::from_value(coordinate(Op::Claim { candidate }).await).unwrap();
+    coordinate(Op::OpenReplica {
+        claim,
+        backup_key: key(),
+    })
+    .await;
+    wait_storage_leader(&server, GENERATION).await;
+    coordinate(Op::SeedReplica {
+        name: ID.to_owned(),
+        generation: GENERATION.to_owned(),
+    })
+    .await;
+    ok(
+        &server,
+        Command::ConfigureDatabaseBackup {
+            name: ID.into(),
+            backup: Some(backup("raft-restore")),
+        },
+    )
+    .await;
+    query(&server, ID, "CREATE TABLE items(name TEXT)").await;
+    query(&server, ID, "INSERT INTO items VALUES('kept')").await;
+    let snapshot = ok(
+        &server,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    let txid = snapshot["snapshot"]["id"].as_str().unwrap().to_string();
+    query(&server, ID, "INSERT INTO items VALUES('second')").await;
+    assert_eq!(count(&server, ID).await, 2);
+    ok(
+        &server,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: Some(txid),
+            at_unix_ms: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert_eq!(count(&server, ID).await, 1);
+    server.stop_databases().await;
+    drop(server);
+    let reopened = state(&temp);
+    reopened
+        .start_databases(Some((founder, proxy)))
+        .await
+        .unwrap();
+    wait_storage_leader(&reopened, GENERATION).await;
+    assert_eq!(count(&reopened, ID).await, 1);
+    reopened.stop_databases().await;
+}
 #[tokio::test]
 async fn snapshots_restore_the_contents_they_captured() {
     let temp = TempDir::new().unwrap();

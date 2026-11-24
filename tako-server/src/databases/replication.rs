@@ -486,6 +486,9 @@ impl ServerState {
 }
 
 impl Storage {
+    pub(super) fn resource(&self, id: &str) -> Option<Resource> {
+        self.groups.read().get(id).map(|g| g.resource.clone())
+    }
     pub(super) fn hosts(&self, id: &str, name: &str) -> bool {
         self.groups
             .read()

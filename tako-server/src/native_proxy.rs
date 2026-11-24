@@ -348,10 +348,19 @@ fn now() -> u64 {
 }
 
 #[cfg(test)]
+impl NativeProxy {
+    pub(crate) fn loopback_storage(path: &std::path::Path, founder: String) -> Arc<Self> {
+        let mut proxy = tests::proxy(path, None);
+        proxy.catalog_founder = Some(founder);
+        Arc::new(proxy)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn proxy(path: &std::path::Path, export_owner: Option<&str>) -> NativeProxy {
+    pub(super) fn proxy(path: &std::path::Path, export_owner: Option<&str>) -> NativeProxy {
         let keys = tako_network::LocalDeviceKeys::generate().unwrap();
         let network = tako_network::NetworkId::random().unwrap();
         let server = keys

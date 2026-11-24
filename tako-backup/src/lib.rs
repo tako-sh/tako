@@ -32,6 +32,8 @@ use object_store::{
 use tempfile::NamedTempFile;
 use terse_litestream::{Database, Durability, FileStore, Options, SegmentWriter};
 
+mod committed;
+pub use committed::CommittedSpool;
 pub mod encryption;
 pub use anyhow;
 pub use terse_litestream::{FileStore as Spool, ReplicaStore, Segment};

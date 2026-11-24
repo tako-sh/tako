@@ -27,6 +27,7 @@ use crate::ServerState;
 use crate::instances::{AppConfig, AppLaunch};
 use crate::state_store::{AppDatabase, DatabaseSecrets, StoredDatabase};
 
+mod backup_capture;
 pub(crate) mod backups;
 mod encryption;
 mod objects;
@@ -1435,6 +1436,14 @@ impl ServerState {
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
         let stored = self.hosted_database(id)?;
+        if stored.engine.is_sqlite()
+            && let Some(resource) = self.databases.raft.resource(&stored.generation)
+        {
+            resource
+                .track_backups(backup.is_some())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         let moved = match (&stored.secrets.backup, &backup) {
             (Some(old), Some(new)) => !tako_core::same_backup_destination(old, new),
             (None, None) => false,

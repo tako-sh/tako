@@ -769,6 +769,7 @@ impl DatabaseHost {
         }
         let streams = self.take_streams(|entry| &entry.database == id);
         let pool = std::mem::take(&mut *database.pool.lock());
+        database.primary.lock().take();
         let lock_path = lock_path(&database.path);
         let lock = database.lock.lock().take();
         let timeout = self.inner.config.pause_timeout;

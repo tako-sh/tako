@@ -1,6 +1,6 @@
 use crate::{
     Applied, Commit, Types,
-    disk::{Disk, error, get, set},
+    disk::{Disk, decode, encode, error, get, set},
 };
 use futures_util::{Stream, TryStreamExt};
 use openraft::{
@@ -46,12 +46,20 @@ fn read_grants(db: &Connection) -> io::Result<std::collections::BTreeMap<String,
         .map_err(error)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BackupPosition {
+    pub revision: u64,
+    pub txid: u64,
+    pub captured_at_ms: i64,
+    pub page_size: u32,
+}
+
 impl Replica {
     pub fn open(directory: &Path) -> io::Result<Self> {
         let disk = Disk::open(
             &directory.join("replica.sqlite"),
             &format!(
-                "CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
+                "CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS backup_changes(txid INTEGER PRIMARY KEY,captured INTEGER NOT NULL,change BLOB NOT NULL); CREATE INDEX IF NOT EXISTS backup_expiry ON backup_changes(captured); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
                 crate::catalog::SCHEMA
             ),
         )?;
@@ -81,6 +89,39 @@ impl Replica {
     /// Reconstruct a private writer or local reader from one committed
     /// revision. A failed copy discards the partial file with its owner.
     pub async fn checkout(&self, dir: &Path) -> io::Result<(NamedTempFile, u64)> {
+        let (file, pos) = self.checkout_position(dir).await?;
+        Ok((file, pos.revision))
+    }
+    pub(crate) async fn transaction_id(&self) -> io::Result<u64> {
+        self.disk.run(|db| Ok(get(db, "txid")?.unwrap_or(0))).await
+    }
+    pub(crate) async fn tracking(&self) -> io::Result<bool> {
+        self.disk
+            .run(|db| Ok(get(db, "track_backups")?.unwrap_or(false)))
+            .await
+    }
+
+    pub(crate) async fn backup_delta(&self, txid: u64) -> io::Result<Option<Commit>> {
+        self.disk
+            .run(move |db| {
+                use rusqlite::OptionalExtension;
+                let data: Option<Vec<u8>> = db
+                    .query_row(
+                        "SELECT change FROM backup_changes WHERE txid=?1",
+                        [i64::try_from(txid).map_err(error)?],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(error)?;
+                data.map(|d| decode(&d)).transpose()
+            })
+            .await
+    }
+
+    pub(crate) async fn checkout_position(
+        &self,
+        dir: &Path,
+    ) -> io::Result<(NamedTempFile, BackupPosition)> {
         let mut file = NamedTempFile::new_in(dir)?;
         self.disk
             .run(move |db| {
@@ -100,13 +141,21 @@ impl Replica {
                     file.write_all(row.get_ref(1).map_err(error)?.as_blob().map_err(error)?)?;
                 }
                 file.rewind()?;
-                Ok((file, revision))
+                Ok((
+                    file,
+                    BackupPosition {
+                        revision,
+                        page_size,
+                        txid: get(&tx, "txid")?.unwrap_or(0),
+                        captured_at_ms: get(&tx, "captured_at_ms")?.unwrap_or(0),
+                    },
+                ))
             })
             .await
     }
 }
 
-fn apply_commit(db: &Connection, commit: Commit, revision: u64) -> io::Result<Applied> {
+fn apply_commit(db: &Connection, mut commit: Commit, revision: u64) -> io::Result<Applied> {
     let current_revision = get(db, "revision")?.unwrap_or(0);
     if commit.base_revision != current_revision {
         return Ok(Applied::Stale { current_revision });
@@ -115,7 +164,7 @@ fn apply_commit(db: &Connection, commit: Commit, revision: u64) -> io::Result<Ap
     let existing: Option<u32> = get(db, "page_size")?;
     if !(512..=65536).contains(&page_size)
         || !page_size.is_power_of_two()
-        || existing.is_some_and(|size| size != commit.page_size)
+        || (!commit.replace && existing.is_some_and(|size| size != commit.page_size))
         || commit.file_size > i64::MAX as u64
         || !commit.file_size.is_multiple_of(page_size)
     {
@@ -128,6 +177,36 @@ fn apply_commit(db: &Connection, commit: Commit, revision: u64) -> io::Result<Ap
         .any(|(&index, bytes)| index >= page_count || bytes.len() != page_size as usize)
     {
         return Ok(Applied::Invalid);
+    }
+    // Raft log indices also include elections and configuration changes.
+    // The backup format needs a consecutive transaction number for page commits.
+    let txid = get::<u64>(db, "txid")?
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| error("transaction overflow"))?;
+    commit.captured_at_ms = commit
+        .captured_at_ms
+        .max(get::<i64>(db, "captured_at_ms")?.unwrap_or(0));
+    set(db, "txid", &txid)?;
+    set(db, "captured_at_ms", &commit.captured_at_ms)?;
+    if get::<bool>(db, "track_backups")?.unwrap_or(false) {
+        db.execute(
+            "INSERT INTO backup_changes VALUES (?1,?2,?3)",
+            (
+                i64::try_from(txid).map_err(error)?,
+                commit.captured_at_ms,
+                encode(&commit)?,
+            ),
+        )
+        .map_err(error)?;
+        let expiry = commit
+            .captured_at_ms
+            .saturating_sub(7 * 24 * 60 * 60 * 1000);
+        db.execute("DELETE FROM backup_changes WHERE captured < ?1", [expiry])
+            .map_err(error)?;
+    }
+    if commit.replace {
+        db.execute("DELETE FROM pages", []).map_err(error)?;
     }
     let mut stmt = db
         .prepare_cached("INSERT OR REPLACE INTO pages VALUES (?1,?2)")
@@ -174,6 +253,14 @@ impl RaftStateMachine<Types> for Replica {
                         }
                         EntryPayload::Normal(crate::Proposal::Pages(change)) => {
                             apply_commit(&tx, change, id.index())?
+                        }
+                        EntryPayload::Normal(crate::Proposal::TrackBackups(enabled)) => {
+                            set(&tx, "track_backups", &enabled)?;
+                            if !enabled {
+                                tx.execute("DELETE FROM backup_changes", [])
+                                    .map_err(error)?;
+                            }
+                            Applied::NoChange
                         }
                         EntryPayload::Normal(crate::Proposal::Grant { scope, key_hash }) => {
                             if let Some(hash) = &key_hash {
