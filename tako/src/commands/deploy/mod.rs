@@ -51,6 +51,15 @@ use task_tree::{
 pub(crate) use config::{project_needs_channel_replay, project_needs_workflows};
 pub(crate) use manifest::resolve_deploy_main;
 
+fn creation_json(creation: &crate::commands::db::target::PlannedBinding) -> serde_json::Value {
+    let mut value =
+        serde_json::json!({"name": creation.database_name, "server": creation.home.name});
+    if !creation.binding.engine.is_sqlite() {
+        value["engine"] = serde_json::json!(creation.binding.engine);
+    }
+    value
+}
+
 /// A deploy-only client cannot create a service's generated database.
 fn unprovisioned_service(service: databases::Service) -> String {
     format!(
@@ -411,10 +420,11 @@ async fn run_async(
         }
     }
     if output::is_dry_run() {
-        for (name, home) in &database_plan.create {
+        for (name, creation) in &database_plan.create {
             output::dry_run_skip(&format!(
-                "Create database {name} on {} (cached network plan)",
-                home.name
+                "Create {} {name} on {} (cached network plan)",
+                creation.binding.engine.noun(),
+                creation.home.name
             ));
         }
         for service in [databases::Service::Channels, databases::Service::Workflows] {
@@ -449,7 +459,7 @@ async fn run_async(
             return output::json_result(serde_json::json!({
                 "ok": true, "command": "deploy", "dry_run": true, "app": deployment_app_name,
                 "servers": server_names, "source": "cached_network",
-                "create_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name,"server":home.name})).collect::<Vec<_>>(),
+                "create_databases": database_plan.create.values().map(creation_json).collect::<Vec<_>>(),
                 "channel_database": database_plan.replay.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.replay.implicit})),
                 "channel_replay_unprovisioned": database_plan.replay.unprovisioned,
                 "workflows_database": database_plan.workflows.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.workflows.implicit})),
@@ -912,7 +922,7 @@ async fn run_async(
         if output::is_json() {
             return output::json_result(serde_json::json!({
                 "ok": true, "command": "deploy",
-                "created_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name, "server":home.name})).collect::<Vec<_>>()
+                "created_databases": database_plan.create.values().map(creation_json).collect::<Vec<_>>()
             }));
         }
         Ok(())

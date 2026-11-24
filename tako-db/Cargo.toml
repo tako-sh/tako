@@ -11,6 +11,7 @@ client = ["dep:reqwest"]
 testing = ["client", "dep:tempfile"]
 
 [dependencies]
+tako-core = { path = "../tako-core" }
 base64 = "0.23"
 bytes = "1"
 fallible-iterator = "0.3"

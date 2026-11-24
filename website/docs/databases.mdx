@@ -40,7 +40,13 @@ Each environment can bind a different database under the same name, such as `mai
 
 `tako db` commands use `--network` when given, else the network configured in the selected TOML file's environments, else this machine's only network, else they ask in an interactive terminal. When the environments configure several networks, pass `--network <alias-or-id>`.
 
-### Use a database for channel replay
+#### Read from the local database
+
+Pass `tako.db.main.readReplica` to the same libSQL client as `tako.db.main`. SQLite opens the local file read-only and rejects writes to it with `SQLITE_READONLY`. Interactive read transactions use the same connection for their lifetime. Go exposes `db.ReadReplica()` and Rust exposes `db.read_replica()`.
+
+Today a deployed database has a local copy on its home server. Reads through this view succeed there and in local development. On an app server without a local copy, the read returns HTTP 503. Use the ordinary binding when the app needs to reach the database from every deployment target.
+
+## Use a database for channel replay
 
 `[envs.production.channels]` with `database = "chat-prod-replay"` selects a database for Tako to use on behalf of the app. It does **not** create an app SQL alias, run the project's SQL migrations against a replay-only database, or give the app, its workers or its release command a SQL token for replay. The same setting works for an SDK-enabled Compose group, which cannot use ordinary app SQL bindings.
 

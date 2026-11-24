@@ -70,13 +70,16 @@ deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
 the release command; the endpoint is loopback-only on the server. Container
 releases cannot bind databases yet.
 
+Use `db.read_replica()` and `store.read_replica()` for read-only access on the resource’s home or in local development. Each returns an `Option`. A request on a server without a local copy returns unavailable.
+
 ## KV stores
 
 Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on
 one server of the network, reachable from apps on every server. Use them for
 values any server may need next: login and WebAuthn challenges, one-time
-tokens, sessions, and feature flags. Create one with `tako kv create <name>`
-(administrator permission) and bind it in `[envs.<env>].kv`, such as
+tokens, sessions, and feature flags. A full-access deploy creates a missing store on a single-server network.
+With multiple servers, place it first with `tako kv create <name> --server <server>`.
+Bind it in `[envs.<env>].kv`, such as
 `kv = { sessions = "<name>" }`; an environment can bind several stores, and
 several apps can bind one. `tako::kv("sessions")` returns
 `Option<tako::Kv>`; requests go through the internal socket with the

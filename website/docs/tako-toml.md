@@ -245,7 +245,7 @@ kv = { auth = "sessions_staging" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `db` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
+`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to network KV store names. A full-access deploy creates missing stores on a one-server network. On a multi-server network, place each missing store with `tako kv create <name> --server <server>`. A KV binding that names a SQLite database fails validation. An environment's `db` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
 
 Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`.
 

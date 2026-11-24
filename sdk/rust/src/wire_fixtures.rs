@@ -350,6 +350,14 @@ fn bootstrap_fixture_parses() {
     assert!(!format!("{main:?}").contains(main.auth_token()));
     let sessions = bootstrap.kv("sessions").unwrap();
     let token = fixture("bootstrap.json")["kv"]["sessions"]["token"].clone();
-    assert_eq!(sessions, &crate::Kv::new(token.as_str().unwrap()));
+    assert_eq!(
+        sessions,
+        &serde_json::from_value(fixture("bootstrap.json")["kv"]["sessions"].clone()).unwrap()
+    );
+    assert!(sessions.read_replica().is_some());
+    assert_eq!(
+        main.read_replica().unwrap().auth_token(),
+        expected["replicaAuthToken"]
+    );
     assert!(!format!("{sessions:?}").contains(token.as_str().unwrap()));
 }

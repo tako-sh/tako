@@ -247,13 +247,11 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 - Container and Compose releases cannot bind databases yet.
 - In Docker Compose, a service gets secrets, channels, workflows and `tako.dataDir` only with `x-tako: { sdk: true }`; without it those calls throw an error that names the setting. Run a Compose workflow worker as its own service with `bun node_modules/tako.sh/dist/entrypoints/bun-worker.mjs` (or the Node worker).
 
+Use `tako.db.main.readReplica` with the same driver, or `tako.kv.sessions.readReplica.get(key)`, for read-only access on the resource’s home or in local development. A request on a server without a local copy returns unavailable.
+
 ## KV stores
 
-Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with the CLI (administrator permission), bind it in `tako.toml`, then call `get`, `put`, and `delete` on the binding:
-
-```bash
-tako kv create auth-sessions --server <server>
-```
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Bind the store by name. A full-access deploy creates it on a single-server network. With multiple servers, place it first with `tako kv create auth-sessions --server <server>`.
 
 ```toml
 [envs.production]

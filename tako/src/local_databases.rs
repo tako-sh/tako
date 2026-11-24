@@ -395,7 +395,7 @@ impl LocalDatabases {
             };
             let token = tako_db::generate_token();
             host_bindings.push(Binding {
-                token_hash: tako_db::hash_token(&token),
+                tokens: tako_core::BindingTokenHashes::new(&token),
                 database: id,
                 home: Home::Local,
             });
@@ -403,6 +403,7 @@ impl LocalDatabases {
                 binding.clone(),
                 DatabaseConnection {
                     url: url.clone(),
+                    replica_auth_token: Some(tako_core::replica_token(&token)),
                     auth_token: token,
                 },
             );
@@ -466,7 +467,7 @@ fn open_kv(
         };
         let token = tako_kv::generate_token();
         bindings.push(tako_kv::Binding {
-            token_hash: tako_kv::hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             store: id,
             home: tako_kv::Home::Local,
         });

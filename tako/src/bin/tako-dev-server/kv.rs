@@ -190,7 +190,7 @@ async fn open_bindings(
             _ => tako_kv::generate_token(),
         };
         host_bindings.push(Binding {
-            token_hash: tako_kv::hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             store: id,
             home: Home::Local,
         });

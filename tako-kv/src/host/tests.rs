@@ -27,7 +27,7 @@ fn apps_reach_their_own_bindings_only() {
     host.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token("token"),
+            tokens: tako_core::BindingTokenHashes::new("token"),
             store: sessions.clone(),
             home: Home::Local,
         }],
@@ -36,7 +36,7 @@ fn apps_reach_their_own_bindings_only() {
     host.set_bindings(
         "shop/production#release",
         vec![Binding {
-            token_hash: hash_token("release-token"),
+            tokens: tako_core::BindingTokenHashes::new("release-token"),
             store: sessions.clone(),
             home: Home::Local,
         }],
@@ -65,9 +65,21 @@ fn apps_reach_their_own_bindings_only() {
         .call("shop/production", "token", get(&"k".repeat(1025)))
         .unwrap_err();
     assert_eq!(error.code, Some(ErrorCode::InvalidRequest));
+    let replica = tako_core::replica_token("token");
+    assert_eq!(
+        host.call("shop/production", &replica, get("k")).unwrap(),
+        host.call("shop/production", "token", get("k")).unwrap()
+    );
+    for op in [put("k", "2"), KvRequest::Delete { key: "k".into() }] {
+        assert_eq!(
+            host.call("shop/production", &replica, op).unwrap_err().code,
+            Some(ErrorCode::InvalidRequest)
+        );
+    }
     // Revoking the binding ends access.
     host.set_bindings("shop/production", Vec::new());
     assert!(host.call("shop/production", "token", get("k")).is_err());
+    assert!(host.call("shop/production", &replica, get("k")).is_err());
     assert_eq!(
         host.admin(&sessions, get("k")).unwrap(),
         serde_json::json!(r#"{"a":1}"#)
@@ -105,7 +117,7 @@ async fn other_servers_forward_with_their_grant() {
     let edge = KvHost::new(HostConfig::default());
     let bind = |key: &str| {
         vec![Binding {
-            token_hash: hash_token("edge-token"),
+            tokens: tako_core::BindingTokenHashes::new("edge-token"),
             store: id.clone(),
             home: Home::Remote {
                 upstream,
@@ -114,6 +126,14 @@ async fn other_servers_forward_with_their_grant() {
         }]
     };
     edge.set_bindings("shop/production#release", bind("grant-key"));
+    let replica = tako_core::replica_token("edge-token");
+    assert_eq!(
+        edge.call("shop/production", &replica, get("k"))
+            .unwrap_err()
+            .code,
+        Some(ErrorCode::Unavailable)
+    );
+
     let call = {
         let edge = edge.clone();
         move |request: KvRequest| {
@@ -162,7 +182,7 @@ async fn other_servers_forward_with_their_grant() {
     edge.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token("edge-token"),
+            tokens: tako_core::BindingTokenHashes::new("edge-token"),
             store: id.clone(),
             home: Home::Remote {
                 upstream: gone,
@@ -202,7 +222,7 @@ fn stores_share_one_page_cache_budget() {
     host.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token("token"),
+            tokens: tako_core::BindingTokenHashes::new("token"),
             store: fourth,
             home: Home::Local,
         }],

@@ -200,8 +200,8 @@ export type {
   TakoStorageBag,
   TakoStorageBinding,
 } from "./storage";
-export type { TakoDbConnection, TakoDbBag } from "./db";
-export type { KvPutOptions, TakoKvBag, TakoKvStore } from "./kv";
+export type { TakoDbConnection, TakoDbBinding, TakoDbBag } from "./db";
+export type { KvPutOptions, TakoKvBag, TakoKvReader, TakoKvStore } from "./kv";
 
 /**
  * Extract the payload type from a workflow definition.

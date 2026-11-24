@@ -590,6 +590,7 @@ mod tests {
         let token = tako_db::generate_token();
         let connection = tako_core::DatabaseConnection {
             url: ChannelTarget::hosted_url(&token),
+            replica_auth_token: None,
             auth_token: token,
         };
         let target = ChannelTarget::resolve(Some(connection.clone())).unwrap();

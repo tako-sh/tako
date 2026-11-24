@@ -205,7 +205,7 @@ Rejections carry a reason (`TakoError.reason` in JavaScript, `errors.Is` in Go, 
 - `unavailable` with `not reachable`: this server could not reach the store's server over the private network. Check `tako network status --json`.
 - `unavailable` with `not serving the KV store right now`: the store's server is restarting or opening the store. Retry.
 
-A deploy that says the network has no KV store with a bound name needs `tako kv create <name>`, or a binding to one of the names `tako kv list` shows; one that says the name is a SQLite database needs the binding moved to `databases`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
+For a missing KV store, deploy with full access on a one-server network, or place the store with `tako kv create <name> --server <server>` on a multi-server network. If the name belongs to a SQLite database, bind it under `db`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
 
 ## Secret Or Credential Key Problems
 

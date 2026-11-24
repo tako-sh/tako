@@ -60,17 +60,19 @@ pub(super) async fn provision(
             )
             .into());
         }
-        let expected = planned.map(|r| r.generation.as_str());
+        let expected = planned.map(|r| (r.generation.as_str(), r.engine));
         let actual = hosted[&entry.home.device_id]
             .iter()
             .find(|db| db.name == name)
-            .map(|db| db.generation.as_str());
+            .map(|db| (db.generation.as_str(), db.engine));
         if expected != actual {
             return Err(format!("The network record for database '{name}' does not match what {} hosts. Repair its placement before deploying.", entry.home.name).into());
         }
     }
     *records = current;
-    for (name, home) in &plan.create {
+    for (name, creation) in &plan.create {
+        let home = &creation.home;
+        let engine = creation.binding.engine;
         // Membership may have changed while building the release.
         tokio::task::block_in_place(|| -> crate::network::Result<()> {
             let profile = crate::network::client::refresh(network)?;
@@ -96,17 +98,13 @@ pub(super) async fn provision(
         } else {
             None
         };
-        records.push(
-            crate::commands::db::create_database(
-                network,
-                home,
-                name,
-                owner,
-                tako_core::DatabaseEngine::Sqlite,
-            )
-            .await?,
-        );
-        output::success(&format!("Created database {name} on {}", home.name));
+        records
+            .push(crate::commands::db::create_database(network, home, name, owner, engine).await?);
+        output::success(&format!(
+            "Created {} {name} on {}",
+            engine.noun(),
+            home.name
+        ));
     }
     Ok(())
 }

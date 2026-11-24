@@ -42,8 +42,28 @@ const (
 // in development and in production; the store may live on another server of
 // the network.
 type KV struct {
-	name  string
-	token string
+	name         string
+	token        string
+	replicaToken string
+}
+
+// KVReplica reads a local KV copy. It can lag a successful primary write.
+type KVReplica interface {
+	Get(context.Context, string, any) (bool, error)
+}
+
+// ReadReplica returns a read-only view served on this app server.
+func (k *KV) ReadReplica() (KVReplica, bool) {
+	if k.replicaToken == "" {
+		return nil, false
+	}
+	return &kvReplica{store: &KV{name: k.name, token: k.replicaToken}}, true
+}
+
+type kvReplica struct{ store *KV }
+
+func (r *kvReplica) Get(ctx context.Context, key string, value any) (bool, error) {
+	return r.store.Get(ctx, key, value)
 }
 
 // Name is the binding name from tako.toml.
@@ -204,7 +224,7 @@ func GetKV(name string) (*KV, bool) {
 	if !ok || connection.Token == "" {
 		return nil, false
 	}
-	return &KV{name: name, token: connection.Token}, true
+	return &KV{name: name, token: connection.Token, replicaToken: connection.ReplicaToken}, true
 }
 
 // KVNames returns the names of this app's KV store bindings, sorted.

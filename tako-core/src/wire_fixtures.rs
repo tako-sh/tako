@@ -606,6 +606,7 @@ fn bootstrap() -> Fixture {
         "main".to_string(),
         DatabaseConnection {
             url: "http://127.0.0.1:9845".into(),
+            replica_auth_token: Some(crate::replica_token("token-example")),
             auth_token: "token-example".into(),
         },
     )]);

@@ -166,7 +166,7 @@ pub(super) fn checks(
                     }
                     for binding in env.kv.iter().filter(|db| db.server.is_none()) {
                         databases.warnings.push(format!(
-                            "{}: {} binds KV store {}, which has no network record; create it with `tako kv create {}`",
+                            "{}: {} binds KV store {}, which has no network record. Deploy with full access on a single-server network or place it with `tako kv create {} --server <server>`",
                             env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }

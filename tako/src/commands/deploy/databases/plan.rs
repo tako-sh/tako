@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sha2::{Digest, Sha256};
+use tako_core::DatabaseEngine;
 
-use crate::commands::db::target::{Home, PlannedBinding, inventory_home, resolve_home};
+use crate::commands::db::target::{PlannedBinding, inventory_home, resolve_home};
 use crate::config::{ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 
@@ -90,13 +91,12 @@ pub(in crate::commands::deploy) struct ServicePlan {
 #[derive(Default)]
 pub(in crate::commands::deploy) struct Plan {
     pub sql: HashMap<String, PlannedBinding>,
-    /// KV store bindings. They are backed up and granted like databases,
-    /// have no migrations, and deploys never create them.
+    /// KV store bindings share database grants and backup configuration.
     pub kv: HashMap<String, PlannedBinding>,
     pub replay: ServicePlan,
     pub workflows: ServicePlan,
     /// One creation per database, even if several bindings point at it.
-    pub create: BTreeMap<String, Home>,
+    pub create: BTreeMap<String, PlannedBinding>,
 }
 
 impl Plan {
@@ -144,10 +144,16 @@ pub(in crate::commands::deploy) fn plan(
     // Where a database named in this plan lives: its record's server, or a
     // new database on the network's only server for a full client.
     let mut resolve = |name: &str,
+                       engine: DatabaseEngine,
                        usage: Option<(Service, bool)>|
      -> Result<PlannedBinding, String> {
         let home = if let Some(record) = records.iter().find(|r| r.name == name) {
-            if record.engine != tako_core::DatabaseEngine::Sqlite {
+            if record.engine != engine {
+                if engine == DatabaseEngine::Kv {
+                    return Err(format!(
+                        "'{name}' is a SQLite database. Bind it under [envs.{env}].db instead of kv."
+                    ));
+                }
                 return Err(match usage {
                     Some((service, _)) => format!(
                         "'{name}' is a KV store, so it cannot hold {}. Select a SQLite database with [envs.{env}.{}].db.",
@@ -191,7 +197,9 @@ pub(in crate::commands::deploy) fn plan(
             && administrator
         {
             let home = inventory_home(servers, key)?;
-            plan.create.insert(name.to_owned(), home.clone());
+            plan.create
+                .entry(name.to_owned())
+                .or_insert_with(|| PlannedBinding::new(name, home.clone(), engine));
             home
         } else {
             let hint = match usage {
@@ -201,6 +209,7 @@ pub(in crate::commands::deploy) fn plan(
                 ),
                 _ => String::new(),
             };
+            let command = if engine.is_sqlite() { "db" } else { "kv" };
             let mut commands = Vec::new();
             for key in &members {
                 let home = inventory_home(servers, key)?;
@@ -211,7 +220,7 @@ pub(in crate::commands::deploy) fn plan(
                     home.device_id
                 };
                 commands.push(format!(
-                    "`tako db create {name} --server {selector} --network {network}`"
+                    "`tako {command} create {name} --server {selector} --network {network}`"
                 ));
             }
             return Err(format!(
@@ -219,11 +228,7 @@ pub(in crate::commands::deploy) fn plan(
                 commands.join(" or ")
             ));
         };
-        Ok(PlannedBinding::new(
-            name,
-            home,
-            tako_core::DatabaseEngine::Sqlite,
-        ))
+        Ok(PlannedBinding::new(name, home, engine))
     };
 
     // The services' choices are checked before anything is resolved, so a
@@ -260,32 +265,19 @@ pub(in crate::commands::deploy) fn plan(
     }
 
     for (binding, name) in &environment.databases {
-        plan.sql.insert(binding.clone(), resolve(name, None)?);
-    }
-    // KV stores must exist: `tako kv create` places them, since a deploy
-    // cannot choose where shared state should live.
-    for (binding, name) in &environment.kv {
-        let record = records.iter().find(|r| &r.name == name).ok_or_else(|| {
-            format!(
-                "KV store '{name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako kv create {name}`, or run `tako kv list` to see the network's KV stores."
-            )
-        })?;
-        if record.engine != tako_core::DatabaseEngine::Kv {
+        if environment.kv.values().any(|store| store == name) {
             return Err(format!(
-                "'{name}', bound as '{binding}' under kv in {env}, is a SQLite database. Bind it under db instead."
+                "'{name}' is bound as both a SQLite database and a KV store in {env}. Use separate resource names."
             ));
         }
-        let home = resolve_home(servers, network, &record.server, env)
-            .map_err(|error| format!("The server of KV store '{name}': {error}"))?;
-        if home.device_id != record.server {
-            return Err(format!(
-                "KV store '{name}' has no valid server device ID in the network directory."
-            ));
-        }
-        plan.kv.insert(
+        plan.sql.insert(
             binding.clone(),
-            PlannedBinding::new(name, home, tako_core::DatabaseEngine::Kv),
+            resolve(name, DatabaseEngine::Sqlite, None)?,
         );
+    }
+    for (binding, name) in &environment.kv {
+        plan.kv
+            .insert(binding.clone(), resolve(name, DatabaseEngine::Kv, None)?);
     }
     for (service, name, implicit) in services {
         let planned = if implicit && !administrator {
@@ -301,7 +293,11 @@ pub(in crate::commands::deploy) fn plan(
             }
         } else {
             ServicePlan {
-                binding: Some(resolve(&name, Some((service, implicit)))?),
+                binding: Some(resolve(
+                    &name,
+                    DatabaseEngine::Sqlite,
+                    Some((service, implicit)),
+                )?),
                 implicit,
                 unprovisioned: false,
             }
@@ -495,6 +491,7 @@ mod tests {
         assert!(explicit.replay.binding.unwrap().binding.peer_key.is_none());
         for settings in [
             "db={main='orders'}",
+            "kv={auth='sessions'}",
             "[envs.production.channels]\ndb='orders'",
         ] {
             assert!(
@@ -506,7 +503,7 @@ mod tests {
         }
     }
     #[test]
-    fn kv_stores_are_planned_only_when_they_exist_and_never_hold_replay() {
+    fn kv_stores_are_created_once_with_their_own_engine_and_never_hold_replay() {
         let kv = |name: &str| DatabaseRecord {
             engine: tako_core::DatabaseEngine::Kv,
             ..record(name, None)
@@ -531,12 +528,16 @@ mod tests {
             tako_core::DatabaseEngine::Kv
         );
         assert!(planned.sql.is_empty() && planned.create.is_empty());
-        // Deploys never create KV stores, even on a one-server network.
+        let first = place("kv={auth='sessions', shared='sessions'}", &[]).unwrap();
+        assert_eq!(first.create.len(), 1);
+        assert_eq!(first.kv.len(), 2);
+        assert_eq!(first.create["sessions"].binding.engine, DatabaseEngine::Kv);
+        assert_eq!(first.create["sessions"].home.name, "west");
         assert!(
-            place("kv={auth='sessions'}", &[])
+            place("db={main='sessions'}\nkv={auth='sessions'}", &[])
                 .err()
                 .unwrap()
-                .contains("tako kv create sessions")
+                .contains("both")
         );
         // Each kind of binding names a record of its own kind.
         assert!(

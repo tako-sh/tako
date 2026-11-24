@@ -298,7 +298,7 @@ fn build_databases_block(names: &[String]) -> String {
             ts_property_name(name)
         ));
         out.push_str(&format!(
-            "    readonly {}: import(\"tako.sh\").TakoDbConnection;\n",
+            "    readonly {}: import(\"tako.sh\").TakoDbBinding;\n",
             ts_property_name(name)
         ));
     }

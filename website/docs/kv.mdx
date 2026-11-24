@@ -15,26 +15,22 @@ A Tako KV store is a key-value store that `tako-server` hosts on one server of a
 
 ## Create and bind a store
 
-A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Creating one requires full access:
-
-```bash
-tako kv create sessions --server edge-a
-```
-
-`--server` can be omitted when the network has a single server. Bind the store in each environment that uses it; the key is the binding name the app reads, and the value is the store's name. An environment can bind several stores, and several apps and environments can bind the same store:
+A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Bind each store in the environments that use it. The key is the binding name the app reads and the value is the store's network name. An environment can bind several stores, and several apps and environments can bind the same store:
 
 ```toml
 [envs.production]
 kv = { sessions = "auth-sessions", limits = "rate-limits" }
 ```
 
-Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. Deploys never create KV stores. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
+On a network with one trusted server, run `tako deploy --env production` with full access. The first deploy creates each missing store and subsequent deploys reuse it. On a network with multiple servers, choose a home for each missing store first, for example `tako kv create auth-sessions --server edge-a`. A name that already belongs to a SQLite database fails validation. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
 
 `tako kv` commands find the network like `tako db` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
 
 ## Use it from application code
 
 Each binding has `get`, `put`, and `delete`. Values are anything that encodes as JSON. `get` returns nothing for a key that is not set or has expired; a stored JSON `null` is a value. `put` without a TTL keeps the key until it is deleted; putting a key again replaces its value and its TTL.
+
+Use `tako.kv.sessions.readReplica.get(key)` for a local read. Go exposes `store.ReadReplica()` and Rust exposes `store.read_replica()`. Each view exposes only reads. The server also rejects mutations with its replica token. On a server without a local copy, the call returns `unavailable`. The store's home and local development both serve this view.
 
 <CodeGroup>
 

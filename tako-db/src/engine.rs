@@ -402,6 +402,7 @@ pub fn snapshot_database(source: &Path, dest: &Path, busy_timeout: Duration) -> 
 
 /// A client connection: one SQLite connection hardened for untrusted SQL.
 pub struct Connection {
+    pub(crate) read_only: bool,
     conn: rusqlite::Connection,
     epoch: Instant,
     /// Deadline in nanoseconds since `epoch`; zero means none.
@@ -442,11 +443,22 @@ struct RowidWatch {
 
 impl Connection {
     pub fn open(path: &Path, config: &EngineConfig) -> Result<Self, Error> {
+        Self::open_mode(path, config, false)
+    }
+
+    pub(crate) fn open_mode(
+        path: &Path,
+        config: &EngineConfig,
+        read_only: bool,
+    ) -> Result<Self, Error> {
+        let access = if read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        };
         let mut conn = rusqlite::Connection::open_with_flags(
             path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_EXRESCODE,
+            access | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_EXRESCODE,
         )
         .map_err(map_error)?;
         use rusqlite::config::DbConfig;
@@ -475,6 +487,10 @@ impl Connection {
         ))
         .map_err(map_error)?;
 
+        if read_only {
+            conn.execute_batch("PRAGMA query_only=ON")
+                .map_err(map_error)?;
+        }
         let dirty = Arc::new(AtomicBool::new(false));
         let transactions = Arc::new(TransactionControl::default());
         let authorizer_dirty = dirty.clone();
@@ -486,6 +502,9 @@ impl Connection {
                 authorizer_transactions
                     .refused
                     .store(true, Ordering::Relaxed);
+                return Authorization::Deny;
+            }
+            if read_only && matches!(ctx.action, AuthAction::Pragma { pragma_name, pragma_value: Some(_) } if pragma_name.eq_ignore_ascii_case("query_only")) {
                 return Authorization::Deny;
             }
             authorize(&ctx.action, &authorizer_dirty)
@@ -525,6 +544,7 @@ impl Connection {
 
         Ok(Self {
             conn,
+            read_only,
             epoch,
             deadline,
             dirty,

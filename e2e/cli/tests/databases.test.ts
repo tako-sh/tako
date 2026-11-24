@@ -38,6 +38,7 @@ beforeAll(async () => {
       "",
       "[envs.development]",
       'db = { main = "app-db", drizzle = "drizzle-db" }',
+      'kv = { sessions = "sessions" }',
       "",
       "[envs.production]",
       'route = "db.example.com"',
@@ -80,6 +81,9 @@ describe("tako run with a database binding", () => {
     expect(report["url"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(existsSync(join(project, ".tako", "data", "databases", "app-db.sqlite"))).toBe(true);
     expect(report["previousRows"]).toBe(0);
+    expect(report["replicaRead"]).toBe(42);
+    expect(report["replicaWrite"]).toBe("SQLITE_READONLY");
+    expect(report["replicaKV"]).toBe("example");
 
     expect(report["insert"]).toEqual({ rowsAffected: 1, hasRowid: true });
     expect(report["blob"]).toEqual([1, 2, 3]);

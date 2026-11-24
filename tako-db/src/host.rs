@@ -189,7 +189,7 @@ struct Grant {
 /// A binding of one app environment on this server.
 #[derive(Clone, Debug)]
 pub struct Binding {
-    pub token_hash: TokenHash,
+    pub tokens: tako_core::BindingTokenHashes,
     pub database: DatabaseId,
     pub home: Home,
 }
@@ -205,8 +205,12 @@ struct ScopedBinding {
 pub(crate) enum Principal {
     /// An app on this server, identified by its binding token.
     Local(TokenHash),
+    Replica(TokenHash),
     /// An app on another server, forwarded by that server.
-    Remote { server: IpAddr, scope: String },
+    Remote {
+        server: IpAddr,
+        scope: String,
+    },
 }
 
 pub(crate) struct Database {
@@ -233,11 +237,14 @@ struct DatabaseState {
 }
 
 impl Database {
-    pub(crate) fn acquire(&self) -> Result<engine::Connection, Error> {
-        if let Some(conn) = self.pool.lock().pop() {
-            return Ok(conn);
+    pub(crate) fn acquire(&self, read_only: bool) -> Result<engine::Connection, Error> {
+        {
+            let mut pool = self.pool.lock();
+            if let Some(index) = pool.iter().rposition(|c| c.read_only == read_only) {
+                return Ok(pool.swap_remove(index));
+            }
         }
-        engine::Connection::open(&self.path, &self.engine)
+        engine::Connection::open_mode(&self.path, &self.engine, read_only)
     }
 
     /// Returns a connection for reuse when it carries no stream state.
@@ -344,6 +351,7 @@ impl StoredSqlBudget {
 
 /// An open stream: one connection plus its stored SQL texts.
 pub(crate) struct Stream {
+    pub(crate) read_only: bool,
     pub(crate) conn: Option<engine::Connection>,
     pub(crate) stored_sql: HashMap<i32, String>,
     /// A statement may have changed the database since this was cleared.
@@ -356,6 +364,7 @@ impl Stream {
     pub(crate) fn new(budget: Arc<StoredSqlBudget>) -> Self {
         Self {
             conn: None,
+            read_only: false,
             stored_sql: HashMap::new(),
             wrote: false,
             budget,
@@ -578,18 +587,21 @@ impl DatabaseHost {
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
             for binding in previous {
-                by_token.remove(&binding.token_hash);
+                by_token.remove(&binding.tokens.primary);
+                by_token.remove(&binding.tokens.replica);
             }
         }
         if !bindings.is_empty() {
             for binding in &bindings {
-                by_token.insert(
-                    binding.token_hash,
-                    ScopedBinding {
-                        scope: scope.to_owned(),
-                        binding: binding.clone(),
-                    },
-                );
+                for hash in [binding.tokens.primary, binding.tokens.replica] {
+                    by_token.insert(
+                        hash,
+                        ScopedBinding {
+                            scope: scope.to_owned(),
+                            binding: binding.clone(),
+                        },
+                    );
+                }
             }
             all.insert(scope.to_owned(), bindings);
         }
@@ -828,7 +840,7 @@ impl DatabaseHost {
             let _active = active;
             let _permit = permit;
             let mut conn = database
-                .acquire()
+                .acquire(false)
                 .map_err(|e| HostError::Engine(e.message))?;
             let mut rows = Vec::new();
             let mut columns = Vec::new();
@@ -976,11 +988,16 @@ impl DatabaseHost {
     pub(crate) fn resolve_token(&self, token: &str) -> Option<Resolved> {
         let hash = hash_token(token);
         let ScopedBinding { scope, binding } = self.inner.by_token.read().get(&hash).cloned()?;
+        let replica = hash == binding.tokens.replica;
         match binding.home {
             Home::Local => Some(match self.database(&binding.database) {
                 Ok(database) => Resolved::Serve {
                     database,
-                    principal: Principal::Local(hash),
+                    principal: if replica {
+                        Principal::Replica(hash)
+                    } else {
+                        Principal::Local(hash)
+                    },
                 },
                 // The token is valid; this process just no longer serves the
                 // database (it handed it over, or is reopening it).
@@ -988,6 +1005,9 @@ impl DatabaseHost {
                     "this server is not serving the database right now; retry".into(),
                 ),
             }),
+            Home::Remote { .. } if replica => Some(Resolved::Unavailable(
+                "this server has no ready database replica".into(),
+            )),
             Home::Remote { upstream, key } => Some(Resolved::Forward {
                 database: binding.database,
                 upstream,

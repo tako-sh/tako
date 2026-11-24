@@ -22,7 +22,7 @@ mod stores_http;
 #[cfg(all(test, unix))]
 mod wire_fixtures;
 pub use error::{ErrorCode, KvRejected, Rejected};
-pub use kv::Kv;
+pub use kv::{Kv, KvReplica};
 pub use presence::{
     PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
     PresenceSnapshot, PresenceVerifyInput,
@@ -66,9 +66,20 @@ pub struct Db {
     url: String,
     #[serde(rename = "authToken")]
     auth_token: String,
+    #[serde(rename = "replicaAuthToken", default)]
+    replica_auth_token: Option<String>,
 }
 
 impl Db {
+    /// The local read-only connection, when the runtime supplies replica credentials.
+    pub fn read_replica(&self) -> Option<Self> {
+        Some(Self {
+            url: self.url.clone(),
+            auth_token: self.replica_auth_token.clone()?,
+            replica_auth_token: None,
+        })
+    }
+
     /// The database endpoint.
     pub fn url(&self) -> &str {
         &self.url

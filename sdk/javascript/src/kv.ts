@@ -34,9 +34,14 @@ export interface KvPutOptions {
 }
 
 /** A Tako-hosted KV store of JSON values. */
-export interface TakoKvStore {
+export interface TakoKvReader {
   /** The key's value, or undefined when it is not set or has expired. */
   get<T = unknown>(key: string): Promise<T | undefined>;
+}
+
+/** A writable store and its local read-only view. */
+export interface TakoKvStore extends TakoKvReader {
+  readonly readReplica: TakoKvReader;
   /** Sets the key to `value`, which must be JSON-serializable. */
   put<T>(key: string, value: T, options?: KvPutOptions): Promise<void>;
   /** Removes the key. Removing a key that is not set succeeds. */
@@ -100,22 +105,32 @@ export function createKvBag<T = Record<never, never>>(
 }
 
 function createKvStore(name: string, raw: Record<string, unknown>): TakoKvStore {
-  const { token } = raw;
+  const { token, replicaToken } = raw;
   if (typeof token !== "string" || token === "") {
     throw new Error(`Tako: KV binding "${name}" must have a token`);
   }
-  const request = (key: string, args: Record<string, unknown>): Promise<unknown> => {
+  const request = (key: string, args: Record<string, unknown>, access = token): Promise<unknown> => {
     if (typeof key !== "string" || key === "") throw new Error("KV key cannot be empty.");
     if (Buffer.byteLength(key) > MAX_KEY_BYTES) throw new Error("KV key exceeds 1 KiB.");
     const env = internalSocketFromEnv();
     if (!env) throw new Error("tako.kv requires a Tako runtime with an internal socket.");
-    return callInternal(env.socketPath, { command: "kv", app: env.app, token, key, ...args });
+    return callInternal(env.socketPath, { command: "kv", app: env.app, token: access, key, ...args });
   };
-  const store: TakoKvStore = {
-    async get<T>(key: string): Promise<T | undefined> {
-      const json = await request(key, { operation: "get" });
-      return json === null ? undefined : (JSON.parse(json as string) as T);
+  const get = async <T>(key: string, access: string): Promise<T | undefined> => {
+    const json = await request(key, { operation: "get" }, access);
+    return json === null ? undefined : (JSON.parse(json as string) as T);
+  };
+  const replica = Object.freeze({
+    get<T>(key: string) {
+      if (typeof replicaToken !== "string" || !replicaToken) {
+        throw new Error(`Tako: runtime did not provide a read replica for "${name}"`);
+      }
+      return get<T>(key, replicaToken);
     },
+  });
+  const store: TakoKvStore = {
+    readReplica: replica,
+    get: <T>(key: string) => get<T>(key, token),
     async put<T>(key: string, value: T, options?: KvPutOptions): Promise<void> {
       const ttl = options?.ttl;
       if (ttl !== undefined && (!Number.isFinite(ttl) || ttl <= 0)) {

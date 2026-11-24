@@ -121,7 +121,7 @@ pub(crate) async fn connect(
             _ => tako_db::generate_token(),
         };
         host_bindings.push(Binding {
-            token_hash: tako_db::hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: id,
             home: Home::Local,
         });
@@ -135,6 +135,7 @@ pub(crate) async fn connect(
                 binding.clone(),
                 DatabaseConnection {
                     url: server.url.clone(),
+                    replica_auth_token: Some(tako_core::replica_token(token)),
                     auth_token: token.clone(),
                 },
             )

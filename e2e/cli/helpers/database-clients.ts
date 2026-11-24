@@ -6,15 +6,27 @@
 import { createClient, LibsqlError } from "@libsql/client";
 import { connect } from "@tursodatabase/serverless";
 
+import { createDbBag } from "../../../sdk/javascript/src/db";
+import { createKvBag } from "../../../sdk/javascript/src/kv";
+
 type Connection = { url: string; authToken: string };
 
 const envelope = JSON.parse(process.env["TAKO_BOOTSTRAP_DATA"] ?? "{}") as {
   databases?: Record<string, Connection>;
+  kv?: Record<string, unknown>;
 };
 const main = envelope.databases?.["main"];
 if (!main) throw new Error("no database is bound as main");
 
 const report: Record<string, unknown> = { url: main.url };
+
+const replica = createClient(createDbBag<{main: unknown}>(() => envelope.databases ?? {}).main.readReplica);
+report["replicaRead"] = (await replica.execute("SELECT 42 AS n")).rows[0]?.["n"];
+report["replicaWrite"] = await code(() => replica.execute("CREATE TABLE forbidden(id)"));
+replica.close();
+const sessions = createKvBag<{sessions: unknown}>(() => envelope.kv ?? {}).sessions;
+await sessions.put("local-read", "example");
+report["replicaKV"] = await sessions.readReplica.get("local-read");
 
 async function code(run: () => Promise<unknown>): Promise<string> {
   try {

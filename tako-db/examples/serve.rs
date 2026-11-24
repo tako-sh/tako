@@ -6,7 +6,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token};
 
 #[tokio::main]
 async fn main() {
@@ -26,7 +26,7 @@ async fn main() {
     host.set_bindings(
         "conformance/test",
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: id,
             home: Home::Local,
         }],

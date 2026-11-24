@@ -368,7 +368,7 @@ impl Databases {
                             _ => &mut bindings,
                         };
                         target.push(Binding {
-                            token_hash: tako_db::hash_token(&binding.token),
+                            tokens: tako_core::BindingTokenHashes::new(&binding.token),
                             database,
                             home,
                         });
@@ -378,7 +378,7 @@ impl Databases {
                             continue;
                         };
                         kv.push(tako_kv::Binding {
-                            token_hash: tako_kv::hash_token(&binding.token),
+                            tokens: tako_core::BindingTokenHashes::new(&binding.token),
                             store,
                             home: match home {
                                 Home::Local => tako_kv::Home::Local,
@@ -589,6 +589,7 @@ pub(crate) fn workflow_store(
 pub(crate) fn connection(binding: &AppDatabase) -> DatabaseConnection {
     DatabaseConnection {
         url: format!("http://127.0.0.1:{}", app_port()),
+        replica_auth_token: Some(tako_core::replica_token(&binding.token)),
         auth_token: binding.token.clone(),
     }
 }

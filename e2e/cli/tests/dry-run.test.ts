@@ -92,10 +92,10 @@ describe("application lifecycle", () => {
 });
 
 describe("deploy --dry-run", () => {
-  test("previews replay and SQL creation from offline membership without editing the config", async () => {
+  test("previews replay, SQL and KV creation from offline membership without editing the config", async () => {
     await setupProject({ servers: { solo: { host: "10.0.0.1" } } });
     const configPath = join(tempDir, "tako.toml");
-    await appendFile(configPath, 'db = { main = "orders" }\n');
+    await appendFile(configPath, 'db = { main = "orders" }\nkv = { auth = "sessions", shared = "sessions" }\n');
     const config = await readFile(configPath, "utf8");
     await mkdir(join(tempDir, "src/channels"), { recursive: true });
     await writeFile(join(tempDir, "src/channels/chat.ts"), 'export default defineChannel("chat");');
@@ -117,6 +117,7 @@ describe("deploy --dry-run", () => {
     expect(result.create_databases).toEqual([
       { name: result.channel_database.name, server: "solo" },
       { name: "orders", server: "solo" },
+      { name: "sessions", server: "solo", engine: "kv" },
     ]);
     expect(await readFile(configPath, "utf8")).toBe(config);
   });

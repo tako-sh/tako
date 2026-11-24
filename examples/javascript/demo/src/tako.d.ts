@@ -66,7 +66,7 @@ declare module "tako.sh" {
    */
   export interface TakoDb {
     /** Database binding `mission`. Read it with `tako.db.mission`. */
-    readonly mission: import("tako.sh").TakoDbConnection;
+    readonly mission: import("tako.sh").TakoDbBinding;
   }
 
   /**

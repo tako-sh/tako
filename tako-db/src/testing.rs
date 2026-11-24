@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use parking_lot::Mutex;
 
 use crate::http::{Access, serve};
-use crate::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
+use crate::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token};
 
 pub struct TestServer {
     /// The endpoint, `http://127.0.0.1:<port>`.
@@ -84,7 +84,7 @@ impl TestServer {
         let mut bindings = self.bindings.lock();
         let scoped = bindings.entry(scope.to_string()).or_default();
         scoped.push(Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: database.clone(),
             home: Home::Local,
         });

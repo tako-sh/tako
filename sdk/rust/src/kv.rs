@@ -43,6 +43,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct Kv {
     token: String,
+    #[serde(rename = "replicaToken", default)]
+    replica_token: Option<String>,
 }
 
 impl fmt::Debug for Kv {
@@ -80,11 +82,33 @@ impl Endpoint {
     }
 }
 
+/// A read-only local KV connection. Its reads may lag the writable binding.
+#[derive(Clone, Debug)]
+pub struct KvReplica(Kv);
+
+impl KvReplica {
+    pub fn get_blocking<T: DeserializeOwned>(&self, key: &str) -> io::Result<Option<T>> {
+        self.0.get_blocking(key)
+    }
+    #[cfg(all(unix, feature = "tokio"))]
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> io::Result<Option<T>> {
+        self.0.get(key).await
+    }
+}
+
 impl Kv {
+    /// The local read-only view, when the runtime supplies replica credentials.
+    pub fn read_replica(&self) -> Option<KvReplica> {
+        Some(KvReplica(Kv {
+            token: self.replica_token.clone()?,
+            replica_token: None,
+        }))
+    }
     #[cfg(test)]
     pub(crate) fn new(token: &str) -> Self {
         Self {
             token: token.into(),
+            replica_token: None,
         }
     }
 

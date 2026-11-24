@@ -139,9 +139,11 @@ db, err := sql.Open("libsql", main.DSN())
 
 Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
 
+Use `db.ReadReplica()` and `store.ReadReplica()` for read-only access on the resource’s home or in local development. Each returns the handle and whether the runtime supplied credentials. A request on a server without a local copy returns unavailable.
+
 ## KV stores
 
-Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. A full-access deploy creates a missing store on a single-server network. With multiple servers, place it first with `tako kv create <name> --server <server>`. Bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
 
 ```go
 import (

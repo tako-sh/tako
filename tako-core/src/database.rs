@@ -153,18 +153,53 @@ impl std::fmt::Debug for DatabaseBinding {
     }
 }
 
+/// Bearer credentials for the writable route and the local read-only route.
+/// Binding registration stores only their hashes. Knowing the replica token
+/// does not give access to the writable route.
+pub fn replica_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(b"tako.read-replica.v1\0")
+        .chain_update(token)
+        .finalize();
+    hex::encode(digest)
+}
+
+#[derive(Clone, Debug)]
+pub struct BindingTokenHashes {
+    pub primary: [u8; 32],
+    pub replica: [u8; 32],
+}
+
+impl BindingTokenHashes {
+    pub fn new(token: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        Self {
+            primary: Sha256::digest(token.as_bytes()).into(),
+            replica: Sha256::digest(replica_token(token).as_bytes()).into(),
+        }
+    }
+}
+
 /// What an app process receives for each KV binding in its bootstrap
 /// envelope: the binding's token, which its SDK sends with each call over
 /// the internal socket.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KvConnection {
     pub token: String,
+    #[serde(
+        rename = "replicaToken",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_token: Option<String>,
 }
 
 impl KvConnection {
     pub fn new(token: &str) -> Self {
         Self {
             token: token.to_owned(),
+            replica_token: Some(replica_token(token)),
         }
     }
 }
@@ -186,6 +221,12 @@ pub struct DatabaseConnection {
     pub url: String,
     #[serde(rename = "authToken")]
     pub auth_token: String,
+    #[serde(
+        rename = "replicaAuthToken",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_auth_token: Option<String>,
 }
 
 /// The token authorizes SQL as the app, so it is never printed.
@@ -410,6 +451,7 @@ mod tests {
     fn connections_never_print_their_token() {
         let connection = DatabaseConnection {
             url: "http://127.0.0.1:9845".into(),
+            replica_auth_token: None,
             auth_token: "secret-token".into(),
         };
         let printed = format!("{connection:?}");
@@ -421,6 +463,7 @@ mod tests {
     fn connections_use_libsql_field_names() {
         let value = serde_json::to_value(DatabaseConnection {
             url: "http://127.0.0.1:9845".into(),
+            replica_auth_token: None,
             auth_token: "t".into(),
         })
         .unwrap();

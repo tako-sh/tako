@@ -134,7 +134,7 @@ impl std::fmt::Debug for Home {
 /// A binding of one app environment on this server.
 #[derive(Clone, Debug)]
 pub struct Binding {
-    pub token_hash: TokenHash,
+    pub tokens: tako_core::BindingTokenHashes,
     pub store: StoreId,
     pub home: Home,
 }
@@ -346,12 +346,15 @@ impl KvHost {
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
             for binding in previous {
-                by_token.remove(&binding.token_hash);
+                by_token.remove(&binding.tokens.primary);
+                by_token.remove(&binding.tokens.replica);
             }
         }
         if !bindings.is_empty() {
             for binding in &bindings {
-                by_token.insert(binding.token_hash, (scope.to_owned(), binding.clone()));
+                for hash in [binding.tokens.primary, binding.tokens.replica] {
+                    by_token.insert(hash, (scope.to_owned(), binding.clone()));
+                }
             }
             all.insert(scope.to_owned(), bindings);
         }
@@ -399,18 +402,26 @@ impl KvHost {
         request: KvRequest,
     ) -> Result<serde_json::Value, KvError> {
         request.validate().map_err(KvError::invalid)?;
+        let hash = hash_token(token);
         let (scope, binding) = self
             .inner
             .by_token
             .read()
-            .get(&hash_token(token))
+            .get(&hash)
             .cloned()
             .ok_or_else(|| KvError::unavailable(REBOUND))?;
         // A token is only good for the app environment it was issued to.
         if environment_scope(&scope) != app {
             return Err(KvError::unavailable(REBOUND));
         }
+        let replica = hash == binding.tokens.replica;
+        if replica && request.writes() {
+            return Err(KvError::invalid("the local replica is read-only"));
+        }
         match binding.home {
+            Home::Remote { .. } if replica => {
+                Err(KvError::unavailable("this server has no ready KV replica"))
+            }
             Home::Local => self.serve(&binding.store, request),
             Home::Remote { upstream, key } => self.inner.peers.request(
                 upstream,
