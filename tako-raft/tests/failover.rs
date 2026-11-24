@@ -162,6 +162,7 @@ async fn cluster() {
                 .unwrap();
         }
     }
+    follower_read_only_sql(&second, &value).await;
     let addr = first.addr;
     first.stop().await;
     let db_leader = await_leader(&second.db.0).await;
@@ -215,6 +216,67 @@ async fn cluster() {
     first.stop().await;
     second.stop().await;
     third.stop().await;
+}
+
+async fn follower_read_only_sql(follower: &Server, expected: &str) {
+    let host = tako_db::DatabaseHost::new(Default::default());
+    let database = tako_db::DatabaseId::parse("orders").unwrap();
+    let path = follower.dir.join("orders.sqlite");
+    tako_db::DatabaseHost::create_file(&path).unwrap();
+    host.register_replicated(
+        database.clone(),
+        path,
+        tako_raft::Resource::new(follower.db.0.clone(), follower.db.1.clone(), &follower.dir),
+    )
+    .unwrap();
+    let tokens = tako_core::BindingTokenHashes::new("follower-sql");
+    let replicas = [tokens.replica].into();
+    host.set_bindings_with_replicas(
+        "app/production",
+        vec![tako_db::Binding {
+            database,
+            tokens,
+            home: tako_db::Home::Unavailable {
+                reason: "no route to leader".into(),
+            },
+        }],
+        &replicas,
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v2/pipeline", listener.local_addr().unwrap());
+    let task = tokio::spawn(tako_db::http::serve(
+        host,
+        listener,
+        tako_db::http::Access::Apps,
+    ));
+    let body: serde_json::Value = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(url)
+        .bearer_auth(tako_core::replica_token("follower-sql"))
+        .json(&serde_json::json!({"requests":[
+            {"type":"execute","stmt":{"sql":"SELECT item FROM orders"}},
+            {"type":"execute","stmt":{"sql":"DELETE FROM orders"}},
+            {"type":"close"}
+        ]}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        body["results"][0]["response"]["result"]["rows"][0][0]["value"], expected,
+        "{body}"
+    );
+    assert_eq!(
+        body["results"][1]["error"]["code"], "SQLITE_READONLY",
+        "{body}"
+    );
+    task.abort();
 }
 
 async fn await_leader(raft: &Node) -> u128 {
@@ -559,6 +621,7 @@ async fn two_voters_require_both_and_a_large_commit_is_atomic() {
             .enumerate()
             .all(|(i, p)| p.iter().all(|b| *b == (i % 251) as u8))
     );
+    follower_read_only_kv(&one, &two).await;
     two.stop().await;
     let pending = one
         .db
@@ -576,4 +639,104 @@ async fn two_voters_require_both_and_a_large_commit_is_atomic() {
     }
     assert_eq!(one.db.1.revision().await.unwrap(), rev);
     one.stop().await;
+}
+
+async fn follower_read_only_kv(leader: &Server, follower: &Server) {
+    const APP: &str = "app/production";
+    use tako_core::KvRequest;
+    use tako_kv::{Binding, Home, KvHost, StoreId};
+    leader
+        .kv
+        .0
+        .initialize(BTreeMap::from([(1, leader.addr)]))
+        .await
+        .unwrap();
+    leader
+        .kv
+        .0
+        .wait(Some(Duration::from_secs(5)))
+        .current_leader(1, "KV boot")
+        .await
+        .unwrap();
+    tako_raft::add_members(
+        &leader.kv.0,
+        BTreeMap::from([(1, leader.addr), (2, follower.addr)]),
+    )
+    .await
+    .unwrap();
+    let register = |node: &Server, home: Home| {
+        let host = KvHost::new(Default::default());
+        let store = StoreId::parse("sessions").unwrap();
+        host.register_replicated(
+            store.clone(),
+            node.dir.join("sessions.redb"),
+            tako_raft::Resource::new(node.kv.0.clone(), node.kv.1.clone(), &node.dir),
+        )
+        .unwrap();
+        let tokens = tako_core::BindingTokenHashes::new("access");
+        let replicas = [tokens.replica].into();
+        host.set_bindings_with_replicas(
+            APP,
+            vec![Binding {
+                tokens,
+                store,
+                home,
+            }],
+            &replicas,
+        );
+        host
+    };
+    let primary = register(leader, Home::Local);
+    let local = register(
+        follower,
+        Home::Unavailable {
+            reason: "no route to leader".into(),
+        },
+    );
+    tokio::task::spawn_blocking(move || {
+        primary
+            .call(
+                APP,
+                "access",
+                KvRequest::Put {
+                    key: "session".into(),
+                    json: "42".into(),
+                    ttl_ms: None,
+                },
+            )
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    leader
+        .peer
+        .wait_ready("sessions", follower.addr, |_| {})
+        .await
+        .unwrap();
+    tokio::task::spawn_blocking(move || {
+        let token = tako_core::replica_token("access");
+        let result = local
+            .call(
+                APP,
+                &token,
+                KvRequest::Get {
+                    key: "session".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(result, "42");
+        assert!(
+            local
+                .call(
+                    APP,
+                    &token,
+                    KvRequest::Delete {
+                        key: "session".into()
+                    }
+                )
+                .is_err()
+        );
+    })
+    .await
+    .unwrap();
 }
