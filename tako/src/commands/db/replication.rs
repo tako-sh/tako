@@ -14,18 +14,24 @@ pub(crate) async fn command<T: serde::de::DeserializeOwned>(home: &Home, request
 }
 
 pub(crate) async fn leader(homes: &[Home], group: &str) -> Result<Home> {
+    discover(homes, group, None).await
+}
+pub(crate) async fn discover(homes: &[Home], group: &str, app: Option<&str>) -> Result<Home> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let mut replies: FuturesUnordered<_> = homes
             .iter()
             .map(|home| async move {
-                let reply = command::<serde_json::Value>(
-                    home,
-                    Op::Progress {
+                let request = match app {
+                    Some(app) => Op::DeploymentLeader {
+                        app: app.to_owned(),
                         group: group.to_owned(),
                     },
-                )
-                .await;
+                    None => Op::Progress {
+                        group: group.to_owned(),
+                    },
+                };
+                let reply = command::<serde_json::Value>(home, request).await;
                 (home, reply)
             })
             .collect();
@@ -49,34 +55,37 @@ pub(crate) async fn leader(homes: &[Home], group: &str) -> Result<Home> {
     }
 }
 
-pub(crate) async fn catalog(homes: &[Home]) -> Result<Home> {
-    let replies = join_all(
-        homes
-            .iter()
-            .map(|home| command::<serde_json::Value>(home, Op::OpenCatalog { key: None })),
+async fn open_catalog(home: &Home, key: Option<&str>) -> Result<serde_json::Value> {
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        command(
+            home,
+            Op::OpenCatalog {
+                key: key.map(str::to_owned),
+            },
+        ),
     )
-    .await;
-    let key=replies.iter().filter_map(|r|r.as_ref().ok()).find_map(|r|r["key"].as_str()).ok_or("Cannot establish the storage catalog. The first enrollment or an existing catalog member must be reachable.")?;
-    let mut opened = Vec::new();
-    for (home, reply) in homes.iter().zip(&replies) {
-        if let Ok(result) = reply
-            && result["key"].as_str() != Some(key)
-        {
-            return Err("Servers disagree about the network storage catalog.".into());
-        }
-        if reply.is_ok()
-            || command::<serde_json::Value>(
-                home,
-                Op::OpenCatalog {
-                    key: Some(key.to_owned()),
-                },
-            )
-            .await
-            .is_ok()
-        {
-            opened.push(home.clone());
-        }
+    .await?
+}
+
+pub(crate) async fn catalog(homes: &[Home]) -> Result<Home> {
+    let replies = join_all(homes.iter().map(|home| open_catalog(home, None))).await;
+    let key=replies.iter().filter_map(|r| r.as_ref().ok()).find_map(|r| r["key"].as_str())
+        .ok_or("Cannot establish the storage catalog. The first enrollment or an existing catalog member must be reachable.")?;
+    if replies
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .any(|r| r["key"].as_str() != Some(key))
+    {
+        return Err("Servers disagree about the network storage catalog.".into());
     }
+    let opened = join_all(homes.iter().zip(&replies).map(|(home, reply)| async move {
+        (reply.is_ok() || open_catalog(home, Some(key)).await.is_ok()).then(|| home.clone())
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     let home = leader(&opened, "catalog").await?;
     command::<serde_json::Value>(
         &home,

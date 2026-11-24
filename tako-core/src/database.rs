@@ -532,12 +532,21 @@ pub enum PlacementChange {
     Removed {
         server: String,
     },
+    RetireUnused {
+        revision: u64,
+        founders: std::collections::BTreeSet<String>,
+    },
 }
 
 /// Full-client storage coordination on the network management channel.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum StorageOperation {
+    /// Read-only leader discovery for an already provisioned app environment.
+    DeploymentLeader {
+        app: String,
+        group: String,
+    },
     /// The first enrolled server can mint the catalog credential. Other
     /// participants receive the same credential through their management channel.
     Placement {
@@ -624,6 +633,11 @@ impl std::fmt::Debug for StorageOperation {
                 .debug_tuple("AddMembers")
                 .field(group)
                 .field(targets)
+                .finish(),
+            Self::DeploymentLeader { app, group } => f
+                .debug_tuple("DeploymentLeader")
+                .field(app)
+                .field(group)
                 .finish(),
             Self::Progress { group } => f.debug_tuple("Progress").field(group).finish(),
         }

@@ -42,7 +42,24 @@ struct Group {
     directory: PathBuf,
     secret: [u8; 32],
     received: Arc<std::sync::atomic::AtomicU64>,
-    transfer: Arc<parking_lot::Mutex<Option<(u64, u64)>>>,
+    transfer: Arc<parking_lot::Mutex<Option<Arc<Transfer>>>>,
+}
+
+struct Transfer {
+    received: std::sync::atomic::AtomicU64,
+    length: u64,
+}
+
+// Dropping a canceled transfer clears only its own progress, even if a
+// newer leader is already streaming a different snapshot for this group.
+struct TransferGuard<'a>(&'a Group, Arc<Transfer>);
+impl Drop for TransferGuard<'_> {
+    fn drop(&mut self) {
+        let mut current = self.0.transfer.lock();
+        if current.as_ref().is_some_and(|t| Arc::ptr_eq(t, &self.1)) {
+            *current = None;
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -61,7 +78,12 @@ impl Group {
                 .borrow_watched()
                 .last_applied
                 .map(|id| id.index()),
-            snapshot_bytes: *self.transfer.lock(),
+            snapshot_bytes: self.transfer.lock().as_ref().map(|t| {
+                (
+                    t.received.load(std::sync::atomic::Ordering::Relaxed),
+                    t.length,
+                )
+            }),
             received: self.received.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
@@ -276,7 +298,12 @@ impl Peer {
                 let mut buffer = vec![0; 128 * 1024];
                 // The counter is per received snapshot, including a retry that
                 // follows a partial transfer. Keep the final size until apply.
-                *group.transfer.lock() = Some((0, length));
+                let transfer = Arc::new(Transfer {
+                    received: Default::default(),
+                    length,
+                });
+                *group.transfer.lock() = Some(transfer.clone());
+                let _guard = TransferGuard(&group, transfer.clone());
                 let mut remaining = length;
                 while remaining != 0 {
                     let len = remaining.min(buffer.len() as u64) as usize;
@@ -288,7 +315,12 @@ impl Peer {
                     .map_err(error)??;
                     dest.write_all(&buffer[..len]).await?;
                     remaining -= len as u64;
-                    *group.transfer.lock() = Some((length - remaining, length));
+                    transfer
+                        .received
+                        .store(length - remaining, std::sync::atomic::Ordering::Relaxed);
+                    group
+                        .received
+                        .fetch_add(len as u64, std::sync::atomic::Ordering::Relaxed);
                 }
                 dest.flush().await?;
                 let snapshot = openraft::Snapshot {
@@ -300,7 +332,6 @@ impl Peer {
                     .install_full_snapshot(vote, snapshot)
                     .await
                     .map_err(error)?;
-                *group.transfer.lock() = None;
                 write_frame(&mut stream, &reply).await
             }
         }
@@ -438,7 +469,7 @@ impl RaftNetworkV2<Types> for Client {
         for (index, entry) in req.entries.iter().enumerate() {
             let size = postcard::experimental::serialized_size(entry)
                 .map_err(|e| NetworkError::new(&e))?;
-            if size > remaining {
+            if size > remaining || (index > 0 && FRAME_LIMIT - remaining + size > 2 * 1024 * 1024) {
                 if index == 0 {
                     return Err(NetworkError::new(&error("Raft entry exceeds frame limit")).into());
                 }

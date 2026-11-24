@@ -806,6 +806,26 @@ impl ServerState {
     /// Starts what needs the network: other servers' addresses, grants for
     /// apps on other servers, the peer listener, and snapshots. A promoted
     /// standby runs this, with [`Self::open_databases`], on promotion.
+    pub(crate) async fn start_databases_after_handoff(
+        self: &Arc<Self>,
+        native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
+    ) {
+        if let Err(error) = self.start_databases(native.clone()).await {
+            tracing::warn!(%error,"Hosted storage is waiting to acquire its persistent state");
+            let state = Arc::downgrade(self);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let Some(state) = state.upgrade() else { return };
+                    match state.start_databases(native.clone()).await {
+                        Ok(()) => return,
+                        Err(error) => tracing::debug!(%error,"Retrying hosted storage startup"),
+                    }
+                }
+            });
+        }
+    }
+
     pub(crate) async fn start_databases(
         self: &Arc<Self>,
         native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
@@ -858,6 +878,12 @@ impl ServerState {
         let kv = self.databases.kv.clone();
         let _ = tokio::task::spawn_blocking(move || kv.close_all()).await;
         self.databases.raft.shutdown().await;
+        self.databases
+            .opened
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.databases
+            .started
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Re-resolves where each applied binding's database lives, since other
@@ -1569,6 +1595,11 @@ impl ServerState {
     fn app_uses_database(&self, app: &str, id: &str) -> bool {
         if app.parse::<tako_network::AppEnv>().is_err() {
             return false;
+        }
+        if let Ok(Some(stored)) = self.state_store.get_database(id)
+            && let Some(resource) = self.databases.raft.resource(&stored.generation)
+        {
+            return resource.has_grant(app);
         }
         let bound = self
             .state_store

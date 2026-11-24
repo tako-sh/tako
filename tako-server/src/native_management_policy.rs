@@ -25,6 +25,9 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
     match command {
         Command::Hello { .. } | Command::ServerInfo => CommandClass::AuthenticatedProbe,
         Command::CheckDeploySpace { .. } => CommandClass::DeploymentPreflight,
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::DeploymentLeader { app, .. },
+        } => CommandClass::Application { app },
         Command::List
         | Command::Routes
         | Command::DrainServer { .. }
@@ -330,7 +333,10 @@ pub(crate) fn authorize_command(
                 return Err(PATH_DENIED);
             }
         }
-        Command::Scale { .. }
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::DeploymentLeader { .. },
+        }
+        | Command::Scale { .. }
         | Command::Start { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
@@ -418,6 +424,9 @@ fn deploy_client_command(command: &Command) -> bool {
             | Command::FinalizeRelease { .. }
             | Command::CleanupPreparedDeploy { .. }
             | Command::CleanupRelease { .. }
+            | Command::CoordinateStorage {
+                request: tako_core::StorageOperation::DeploymentLeader { .. }
+            }
             | Command::SnapshotDatabase { .. }
             | Command::MigrateDatabase { .. }
             | Command::SecretsDigest { .. }

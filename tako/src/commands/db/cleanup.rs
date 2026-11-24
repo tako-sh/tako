@@ -244,6 +244,91 @@ async fn one(
     Ok(())
 }
 
+/// Manual deletion uses the same permanent retirement fence as the last
+/// release. A concurrent deploy alters the placement revision first.
+pub(super) async fn delete_unused(
+    network: &LocalNetwork,
+    homes: &[Home],
+    r: &DatabaseRecord,
+) -> Result<()> {
+    let registry = catalog(homes).await?;
+    let group = &r.generation;
+    let recorded: Option<BTreeSet<String>> = command(
+        &registry,
+        Op::Retirement {
+            generation: group.clone(),
+            targets: None,
+        },
+    )
+    .await?;
+    if let Some(targets) = recorded {
+        return finish(network, homes, r, &registry, &targets).await;
+    }
+    let home = leader(homes, group).await?;
+    let mut placement = change(&home, group, None).await?;
+    if !placement.retired {
+        if !placement.uses.is_empty() {
+            return Err(format!(
+                "{} is reserved by an application or a retained release.",
+                r.name
+            )
+            .into());
+        }
+        let targets = if placement.known.is_empty() {
+            &r.founders
+        } else {
+            &placement.known
+        };
+        for id in targets {
+            let target = homes
+                .iter()
+                .find(|h| &h.device_id == id)
+                .ok_or("storage member is unavailable")?;
+            let status: serde_json::Value = super::send(
+                target,
+                Command::DatabaseStatus {
+                    name: Some(r.name.clone()),
+                },
+            )
+            .await?;
+            let info = status["databases"]
+                .as_array()
+                .and_then(|items| items.first())
+                .ok_or("missing resource status")?;
+            if info["generation"].as_str() != Some(group.as_str())
+                || !info["bindings"].as_array().is_some_and(|b| b.is_empty())
+            {
+                return Err(format!(
+                    "{} still has release bindings or changed generation on {}.",
+                    r.name, target.name
+                )
+                .into());
+            }
+        }
+        placement = change(
+            &home,
+            group,
+            Some(Change::RetireUnused {
+                revision: placement.revision,
+                founders: r.founders.clone(),
+            }),
+        )
+        .await?;
+    }
+    for id in &placement.removing {
+        at_barrier(&home, group, id).await?;
+    }
+    let _: serde_json::Value = command(
+        &registry,
+        Op::Retirement {
+            generation: group.clone(),
+            targets: Some(placement.removing.clone()),
+        },
+    )
+    .await?;
+    finish(network, homes, r, &registry, &placement.removing).await
+}
+
 async fn finish(
     network: &LocalNetwork,
     homes: &[Home],

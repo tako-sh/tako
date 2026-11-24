@@ -210,6 +210,7 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
         );
 
         CREATE TABLE IF NOT EXISTS storage_bootstraps (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS storage_replica_presence (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS storage_withdrawals (id TEXT PRIMARY KEY, pending INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS replication_groups (
             app TEXT PRIMARY KEY,

@@ -690,6 +690,15 @@ async fn run_async(
             &mut database_records,
         )
         .await?;
+    } else {
+        databases::scoped_homes(
+            &mut database_plan,
+            &servers,
+            &network.id,
+            &env,
+            &deployment_app_name,
+        )
+        .await?;
     }
     // An administrator's deploy also revokes the grants of an environment
     // that no longer binds the network's databases.
@@ -879,10 +888,12 @@ async fn run_async(
         results
     };
 
+    let mut successful_targets = Vec::new();
     for result in deploy_results {
         match result {
             Ok((server_name, server, result)) => match result {
                 Ok(()) => {
+                    successful_targets.push(server_name.clone());
                     tracing::debug!("{server_name} deploy succeeded");
                     if deploy_task_tree.is_none() {
                         output::bullet(&format_server_deploy_success(&server_name, &server));
@@ -908,25 +919,26 @@ async fn run_async(
         }
     }
 
+    if !successful_targets.is_empty()
+        && configure_bindings
+        && database_records.iter().any(|r| !r.founders.is_empty())
+        && let Err(e) = crate::commands::db::cleanup::collect(
+            &network,
+            &servers,
+            &deployment_app_name,
+            &successful_targets,
+            &database_plan.reservations,
+        )
+        .await
+    {
+        output::warning(&format!("Storage cleanup is pending: {e}"));
+    }
     // ===== Summary =====
     if errors.is_empty() {
         // Every server runs the new release; grants only the old one used
         // can go.
         if let Some(granted) = granted {
             databases::narrow_grants(granted).await;
-        }
-        if configure_bindings
-            && database_records.iter().any(|r| !r.founders.is_empty())
-            && let Err(e) = crate::commands::db::cleanup::collect(
-                &network,
-                &servers,
-                &deployment_app_name,
-                &server_names,
-                &database_plan.reservations,
-            )
-            .await
-        {
-            output::warning(&format!("Storage cleanup is pending: {e}"));
         }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);

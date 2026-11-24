@@ -113,6 +113,43 @@ pub(super) async fn provision(
     .await
 }
 
+/// Resolve leadership with the caller's existing application permission.
+pub(super) async fn scoped_homes(
+    plan: &mut Plan,
+    inventory: &ServerInventory,
+    network: &str,
+    env: &str,
+    app: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let entries = plan
+        .sql
+        .values_mut()
+        .chain(plan.kv.values_mut())
+        .chain(plan.replay.binding.iter_mut())
+        .chain(plan.workflows.binding.iter_mut());
+    let mut homes = Vec::new();
+    let mut leaders = HashMap::new();
+    for binding in entries {
+        let Some(group) = binding.binding.generation.as_ref() else {
+            continue;
+        };
+        if homes.is_empty() {
+            homes =
+                crate::commands::helpers::resolve_network_servers(inventory, network, &[], env)?
+                    .iter()
+                    .map(|key| crate::commands::db::target::inventory_home(inventory, key))
+                    .collect::<Result<Vec<_>, _>>()?;
+        }
+        if !leaders.contains_key(group) {
+            let elected =
+                crate::commands::db::replication::discover(&homes, group, Some(app)).await?;
+            leaders.insert(group.clone(), elected);
+        }
+        binding.home = leaders[group].clone();
+    }
+    Ok(())
+}
+
 pub(super) struct Preparation<'a> {
     pub plan: &'a Plan,
     /// The network's database records.

@@ -213,7 +213,7 @@ The ordinary binding routes requests to the elected leader. A successful write i
 tako kv delete sessions
 ```
 
-`delete` (alias `rm`) removes the store, every key in it, and its snapshots from its server, its record in the network state, and the store's bindings and `[kv.<name>]` table from `tako.toml`. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails. When the store's server is no longer a member of the network, `delete` removes only its record and bindings, so the name can be created again; restore it onto another server instead when it has snapshots.
+For replicated resources, `delete` waits for the generation to have no active or retained release bindings. It then retires the generation and removes its replicas. Objects already uploaded to backup storage keep their original generation and recovery key. A later deployment that reuses the name creates a fresh generation. Use `tako delete --server <server>` to remove an application from a particular server and reconcile its storage there.
 
 ## Limits and security
 

@@ -129,11 +129,10 @@ impl ServerState {
         if withdrawn == Some(true) {
             return Err(format!("Storage replica {id} is being removed"));
         }
-        if withdrawn.is_none()
-            && self
-                .state_store
-                .storage_initialized(id)
-                .map_err(|e| e.to_string())?
+        if self
+            .state_store
+            .storage_initialized(id)
+            .map_err(|e| e.to_string())?
             && (!dir.join("raft.sqlite").is_file() || !dir.join("replica.sqlite").is_file())
         {
             return Err(format!(
@@ -166,6 +165,9 @@ impl ServerState {
             resource,
         };
         let result = async {
+            self.state_store
+                .mark_storage_present(id)
+                .map_err(|e| e.to_string())?;
             if withdrawn.is_none()
                 && config
                     .founders
@@ -373,6 +375,32 @@ impl ServerState {
             StorageOperation::PurgeReplica { name, generation } => {
                 let _lock = storage.opening.lock().await;
                 tako_core::validate_database_generation(&generation)?;
+                let configs = self
+                    .state_store
+                    .replication_groups()
+                    .map_err(|e| e.to_string())?;
+                let withdrawal = self
+                    .state_store
+                    .withdrawal(&generation)
+                    .map_err(|e| e.to_string())?;
+                if let Some(config) = configs.get(&generation) {
+                    if config.name.as_deref() != Some(&name) {
+                        return Err("retirement name and generation disagree".into());
+                    }
+                    if withdrawal != Some(true)
+                        && self
+                            .state_store
+                            .get_database(&name)
+                            .map_err(|e| e.to_string())?
+                            .is_none_or(|r| r.generation != generation)
+                    {
+                        return Err(
+                            "refusing to purge a generation without its retirement receipt".into(),
+                        );
+                    }
+                } else if withdrawal.is_none() {
+                    return Err("unknown storage generation".into());
+                }
                 if let Some(stored) = self
                     .state_store
                     .get_database(&name)
@@ -486,16 +514,18 @@ impl ServerState {
                     }
                     config
                 } else {
-                    let founder = proxy
-                        .catalog_founder
-                        .clone()
-                        .ok_or("network has no unique catalog founder")?;
+                    let founder = proxy.catalog_founder.as_deref();
+                    let is_founder = self
+                        .databases
+                        .server_id()
+                        .as_deref()
+                        .is_some_and(|id| Some(id) == founder);
                     let secret = match key {
                         Some(key) => {
                             decode_backup_key(&key)?;
                             key
                         }
-                        None if self.databases.server_id().as_deref() == Some(&founder) => {
+                        None if is_founder => {
                             let mut bytes = [0; 32];
                             getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
                             BASE64.encode(bytes)
@@ -506,7 +536,11 @@ impl ServerState {
                             );
                         }
                     };
-                    let founders = self.storage_addresses(std::iter::once(founder))?;
+                    let founders = if is_founder {
+                        self.storage_addresses(founder.into_iter().map(str::to_owned))?
+                    } else {
+                        BTreeMap::new()
+                    };
                     let config = GroupConfig {
                         name: None,
                         key: secret,
@@ -681,6 +715,21 @@ impl ServerState {
                 }
                 Ok(serde_json::json!({}))
             }
+            StorageOperation::DeploymentLeader { app, group } => {
+                let g = storage.group(&group)?;
+                if ![
+                    app.clone(),
+                    tako_core::channel_replay_grant_scope(&app),
+                    tako_core::workflows_grant_scope(&app),
+                ]
+                .iter()
+                .any(|scope| g.resource.has_grant(scope))
+                {
+                    return Err("storage is not provisioned for this app".into());
+                }
+                let leader = g.node.current_leader().await.map(std::net::Ipv6Addr::from);
+                Ok(serde_json::json!({"leader":leader,"here":proxy.address}))
+            }
             StorageOperation::Progress { group } => {
                 let group = storage.group(&group)?;
                 let placement = group.replica.placement().await.map_err(|e| e.to_string())?;
@@ -738,5 +787,25 @@ impl Storage {
             .get(id)
             .cloned()
             .ok_or_else(|| "storage group is not open here".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn persisted_group_round_trips_private_ipv6_node_ids() {
+        let addr: std::net::Ipv6Addr = "fd33:a91f:72b1:7231::efdc".parse().unwrap();
+        let local = u128::from(addr);
+        let config = GroupConfig {
+            name: Some("main".into()),
+            key: "test".into(),
+            local,
+            founders: BTreeMap::from([(local, SocketAddr::new(addr.into(), PORT))]),
+        };
+        let restored: GroupConfig =
+            serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert_eq!(restored.local, local);
+        assert_eq!(restored.founders, config.founders);
     }
 }

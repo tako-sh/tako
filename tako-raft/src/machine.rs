@@ -60,7 +60,7 @@ impl Replica {
         let disk = Disk::open(
             &directory.join("replica.sqlite"),
             &format!(
-                "CREATE TABLE IF NOT EXISTS staged_parts(part INTEGER PRIMARY KEY, nonce BLOB NOT NULL, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS backup_changes(txid INTEGER PRIMARY KEY,captured INTEGER NOT NULL,change BLOB NOT NULL); CREATE INDEX IF NOT EXISTS backup_expiry ON backup_changes(captured); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
+                "CREATE TABLE IF NOT EXISTS staged_parts(part INTEGER PRIMARY KEY, nonce BLOB NOT NULL, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pages(page INTEGER PRIMARY KEY, bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS backup_changes(txid INTEGER NOT NULL,part INTEGER NOT NULL,captured INTEGER NOT NULL,change BLOB NOT NULL,PRIMARY KEY(txid,part)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS backup_expiry ON backup_changes(captured); CREATE TABLE IF NOT EXISTS resource_grants(scope TEXT PRIMARY KEY,key_hash BLOB NOT NULL) WITHOUT ROWID; {}",
                 crate::catalog::SCHEMA
             ),
         )?;
@@ -75,6 +75,10 @@ impl Replica {
             dir: Arc::new(directory.to_owned()),
             snapshot: Default::default(),
         })
+    }
+
+    pub(crate) fn has_grant(&self, scope: &str) -> bool {
+        self.grants.read().contains_key(scope)
     }
 
     pub(crate) fn grant_matches(&self, scope: &str, hash: &[u8; 32]) -> bool {
@@ -120,16 +124,23 @@ impl Replica {
     pub(crate) async fn backup_delta(&self, txid: u64) -> io::Result<Option<Commit>> {
         self.disk
             .run(move |db| {
-                use rusqlite::OptionalExtension;
-                let data: Option<Vec<u8>> = db
-                    .query_row(
-                        "SELECT change FROM backup_changes WHERE txid=?1",
-                        [i64::try_from(txid).map_err(error)?],
-                        |r| r.get(0),
-                    )
-                    .optional()
+                let mut encoded = Vec::new();
+                let mut statement = db
+                    .prepare("SELECT change FROM backup_changes WHERE txid=?1 ORDER BY part")
                     .map_err(error)?;
-                data.map(|d| decode(&d)).transpose()
+                let mut rows = statement
+                    .query([i64::try_from(txid).map_err(error)?])
+                    .map_err(error)?;
+                while let Some(row) = rows.next().map_err(error)? {
+                    encoded.extend_from_slice(
+                        row.get_ref(0).map_err(error)?.as_blob().map_err(error)?,
+                    );
+                }
+                if encoded.is_empty() {
+                    Ok(None)
+                } else {
+                    decode(&encoded).map(Some)
+                }
             })
             .await
     }
@@ -271,15 +282,15 @@ fn apply_commit(db: &Connection, mut commit: Commit, revision: u64) -> io::Resul
     set(db, "txid", &txid)?;
     set(db, "captured_at_ms", &commit.captured_at_ms)?;
     if get::<bool>(db, "track_backups")?.unwrap_or(false) {
-        db.execute(
-            "INSERT INTO backup_changes VALUES (?1,?2,?3)",
-            (
-                i64::try_from(txid).map_err(error)?,
-                commit.captured_at_ms,
-                encode(&commit)?,
-            ),
-        )
-        .map_err(error)?;
+        let txid = i64::try_from(txid).map_err(error)?;
+        let encoded = encode(&commit)?;
+        let mut save = db
+            .prepare_cached("INSERT INTO backup_changes VALUES (?1,?2,?3,?4)")
+            .map_err(error)?;
+        for (part, bytes) in encoded.chunks(8 * 1024 * 1024).enumerate() {
+            save.execute((txid, part as i64, commit.captured_at_ms, bytes))
+                .map_err(error)?;
+        }
         let expiry = commit
             .captured_at_ms
             .saturating_sub(7 * 24 * 60 * 60 * 1000);
@@ -502,21 +513,25 @@ impl RaftSnapshotBuilder<Types> for Replica {
     async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<Types, SnapshotFile>> {
         let file = Arc::new(NamedTempFile::new_in(self.dir.as_ref())?);
         let target = file.clone();
-        let meta = self
-            .disk
-            .run(move |db| {
-                let path = target
-                    .path()
-                    .to_str()
-                    .ok_or_else(|| error("non UTF-8 snapshot path"))?;
-                db.execute("VACUUM INTO ?1", [path]).map_err(error)?;
-                let (last_log_id, last_membership) = applied(db)?;
-                Ok(Meta {
-                    last_log_id,
-                    last_membership,
-                })
+        let source = self.dir.join("replica.sqlite");
+        let meta = tokio::task::spawn_blocking(move || {
+            let mut reader =
+                Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(error)?;
+            let tx = reader.transaction().map_err(error)?;
+            let (last_log_id, last_membership) = applied(&tx)?;
+            let mut dest = Connection::open(target.path()).map_err(error)?;
+            let backup = Backup::new(&tx, &mut dest).map_err(error)?;
+            backup
+                .run_to_completion(128, std::time::Duration::ZERO, None)
+                .map_err(error)?;
+            Ok::<_, io::Error>(Meta {
+                last_log_id,
+                last_membership,
             })
-            .await?;
+        })
+        .await
+        .map_err(error)??;
         *self.snapshot.lock() = Some((meta.clone(), file.clone()));
         Ok(openraft::Snapshot {
             meta,

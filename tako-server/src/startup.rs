@@ -296,14 +296,12 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_idle_monitoring(&rt, state.clone());
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
+    let database_network = native_config
+        .as_ref()
+        .zip(native_services.as_ref())
+        .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
     if !standby {
-        let database_network = native_config
-            .as_ref()
-            .zip(native_services.as_ref())
-            .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
-        if let Err(error) = rt.block_on(state.start_databases(database_network)) {
-            tracing::error!(%error, "Failed to start hosted databases");
-        }
+        rt.block_on(state.start_databases_after_handoff(database_network.clone()));
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
         #[cfg(target_os = "linux")]
         if let Some(handoff) = native_handoff {
@@ -324,6 +322,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         spawn_standby_monitor(
             &rt,
             StandbyPromotionConfig {
+                database_network,
                 socket_path: socket.clone(),
                 state: state.clone(),
                 cert_manager: cert_manager.clone(),

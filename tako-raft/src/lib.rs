@@ -70,6 +70,7 @@ pub enum Proposal {
         nonce: [u8; 16],
         index: u64,
         last: bool,
+        #[serde(with = "serde_bytes")]
         bytes: Vec<u8>,
     },
 }

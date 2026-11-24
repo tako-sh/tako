@@ -86,6 +86,19 @@ pub(crate) fn apply(
                 placement.removing = placement.known.clone();
             }
         }
+        PlacementChange::RetireUnused { revision, founders } => {
+            if placement.revision != revision || !placement.uses.is_empty() {
+                return Ok(Applied::Invalid);
+            }
+            if placement.known.is_empty() {
+                placement.known.extend(founders);
+            }
+            if placement.known.is_empty() {
+                return Ok(Applied::Invalid);
+            }
+            placement.removing = placement.known.clone();
+            placement.retired = true;
+        }
         PlacementChange::Removed { server } => {
             if placement.retired {
                 return Ok(Applied::Invalid);

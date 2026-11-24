@@ -199,6 +199,218 @@ async fn replicated_sql_reopens_and_restores_a_committed_snapshot() {
     assert_eq!(count(&reopened, ID).await, 1);
     reopened.stop_databases().await;
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replicated_storage_retirement_fences_both_engines_and_allows_name_reuse() {
+    use tako_core::{
+        DatabaseEngine, PlacementChange as Change, StorageClaim, StorageOperation as Op,
+    };
+    let tmp = TempDir::new().unwrap();
+    let server = state(&tmp);
+    let member = "a".repeat(64);
+    let founders = std::collections::BTreeSet::from([member.clone()]);
+    let proxy = crate::native_proxy::NativeProxy::loopback_storage(tmp.path(), member.clone());
+    server
+        .start_databases(Some((member.clone(), proxy)))
+        .await
+        .unwrap();
+    let call = |request| ok(&server, Command::CoordinateStorage { request });
+    call(Op::OpenCatalog { key: None }).await;
+    wait_storage_leader(&server, "catalog").await;
+    for (index, engine) in [DatabaseEngine::Sqlite, DatabaseEngine::Kv]
+        .into_iter()
+        .enumerate()
+    {
+        let id = (index + 1).to_string().repeat(32);
+        let claim = StorageClaim {
+            name: ID.into(),
+            engine,
+            generation: id.clone(),
+            founders: founders.clone(),
+            created_at_unix_secs: 1,
+            channel_owner: None,
+            workflows_owner: None,
+        };
+        let winner: StorageClaim = serde_json::from_value(
+            call(Op::Claim {
+                candidate: claim.clone(),
+            })
+            .await,
+        )
+        .unwrap();
+        assert_eq!(winner, claim);
+        call(Op::OpenReplica {
+            claim,
+            backup_key: key(),
+        })
+        .await;
+        wait_storage_leader(&server, &id).await;
+        call(Op::SeedReplica {
+            name: ID.into(),
+            generation: id.clone(),
+        })
+        .await;
+        if engine == DatabaseEngine::Kv {
+            ok(
+                &server,
+                Command::ConfigureDatabaseBackup {
+                    name: ID.into(),
+                    backup: Some(backup("raft-kv")),
+                },
+            )
+            .await;
+            let change = |json: &str| Command::QueryKv {
+                name: ID.into(),
+                request: tako_core::KvRequest::Put {
+                    key: "session".into(),
+                    json: json.into(),
+                    ttl_ms: None,
+                },
+            };
+            ok(&server, change("1")).await;
+            let saved = ok(
+                &server,
+                Command::SnapshotDatabase {
+                    name: ID.into(),
+                    reason: SnapshotReason::Manual,
+                    app: None,
+                },
+            )
+            .await;
+            ok(&server, change("2")).await;
+            ok(
+                &server,
+                Command::RestoreDatabase {
+                    name: ID.into(),
+                    snapshot: Some(saved["snapshot"]["id"].as_str().unwrap().to_owned()),
+                    at_unix_ms: None,
+                    backup_key_base64: None,
+                },
+            )
+            .await;
+            let restored = ok(
+                &server,
+                Command::QueryKv {
+                    name: ID.into(),
+                    request: tako_core::KvRequest::Get {
+                        key: "session".into(),
+                    },
+                },
+            )
+            .await;
+            assert_eq!(restored, "1");
+        }
+        let discovery = || Op::DeploymentLeader {
+            app: "web/production".into(),
+            group: id.clone(),
+        };
+        assert!(
+            !error(
+                &server,
+                Command::CoordinateStorage {
+                    request: discovery()
+                }
+            )
+            .await
+            .is_empty()
+        );
+        call(Op::SetGrant {
+            generation: id.clone(),
+            scope: "web/production".into(),
+            enabled: true,
+        })
+        .await;
+        let route = call(discovery()).await;
+        assert_eq!(route["here"], route["leader"]);
+        assert!(
+            !error(
+                &server,
+                Command::CoordinateStorage {
+                    request: Op::PurgeReplica {
+                        name: "another".into(),
+                        generation: id.clone()
+                    }
+                }
+            )
+            .await
+            .is_empty()
+        );
+        let placement = |change| Op::Placement {
+            group: id.clone(),
+            change: Some(change),
+        };
+        call(placement(Change::Reserve {
+            app: "web/production".into(),
+            servers: vec![member.clone()],
+            founders: founders.clone(),
+            ticket: "ticket".into(),
+        }))
+        .await;
+        let release = || {
+            placement(Change::Release {
+                app: "web/production".into(),
+                server: member.clone(),
+                ticket: "ticket".into(),
+            })
+        };
+        assert!(
+            !error(&server, Command::CoordinateStorage { request: release() })
+                .await
+                .is_empty()
+        );
+        call(placement(Change::Confirm {
+            app: "web/production".into(),
+            server: member.clone(),
+            ticket: "ticket".into(),
+        }))
+        .await;
+        let result = call(release()).await;
+        assert_eq!(result["retired"], true);
+        assert!(
+            !error(
+                &server,
+                Command::CoordinateStorage {
+                    request: Op::SetGrant {
+                        generation: id.clone(),
+                        scope: "web/production".into(),
+                        enabled: true
+                    }
+                }
+            )
+            .await
+            .is_empty()
+        );
+        call(Op::Retirement {
+            generation: id.clone(),
+            targets: Some(founders.clone()),
+        })
+        .await;
+        call(Op::PurgeReplica {
+            name: ID.into(),
+            generation: id.clone(),
+        })
+        .await;
+        call(Op::RetireName {
+            name: ID.into(),
+            generation: id.clone(),
+        })
+        .await;
+        call(Op::PurgeReplica {
+            name: ID.into(),
+            generation: id.clone(),
+        })
+        .await;
+        assert!(
+            !server
+                .state_store
+                .replication_groups()
+                .unwrap()
+                .contains_key(&id)
+        );
+        assert!(server.state_store.get_database(ID).unwrap().is_none());
+    }
+    server.stop_databases().await;
+}
+
 #[tokio::test]
 async fn snapshots_restore_the_contents_they_captured() {
     let temp = TempDir::new().unwrap();

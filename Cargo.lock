@@ -6959,6 +6959,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde",
+ "serde_bytes",
  "serde_json",
  "subtle",
  "tako-core",

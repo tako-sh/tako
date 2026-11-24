@@ -514,3 +514,66 @@ async fn concurrent_first_deploys_reuse_the_winning_bootstrap() {
     node.peer.close("catalog").await.unwrap();
     node.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_voters_require_both_and_a_large_commit_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let any = "127.0.0.1:0".parse().unwrap();
+    // Use the server's election and RPC timeouts while sending real page images.
+    let config = Config {
+        heartbeat_interval: 450,
+        election_timeout_min: 1600,
+        election_timeout_max: 3000,
+        ..Default::default()
+    };
+    let one = server_with_config(1, &dir.path().join("one"), any, config.clone()).await;
+    let two = server_with_config(2, &dir.path().join("two"), any, config).await;
+    let mut members = BTreeMap::from([(1, one.addr)]);
+    one.db.0.initialize(members.clone()).await.unwrap();
+    one.db
+        .0
+        .wait(Some(Duration::from_secs(5)))
+        .current_leader(1, "initial election")
+        .await
+        .unwrap();
+    members.insert(2, two.addr);
+    tako_raft::add_members(&one.db.0, members).await.unwrap();
+    let mut w = writer(&one.db, &one.dir).await;
+    tokio::task::spawn_blocking(move || {
+        let pages = (0..2304)
+            .map(|i| (i, vec![(i % 251) as u8; 4096]))
+            .collect();
+        w.publish(4096, 2304 * 4096, pages).unwrap();
+    })
+    .await
+    .unwrap();
+    one.peer
+        .wait_ready("orders", two.addr, |_| {})
+        .await
+        .unwrap();
+    let (file, rev) = two.db.1.checkout(&two.dir).await.unwrap();
+    let data = std::fs::read(file.path()).unwrap();
+    assert_eq!(data.len(), 2304 * 4096);
+    assert!(
+        data.chunks_exact(4096)
+            .enumerate()
+            .all(|(i, p)| p.iter().all(|b| *b == (i % 251) as u8))
+    );
+    two.stop().await;
+    let pending = one
+        .db
+        .0
+        .client_write(tako_raft::Proposal::Pages(tako_raft::Commit {
+            replace: false,
+            base_revision: rev,
+            captured_at_ms: 1,
+            page_size: 4096,
+            file_size: data.len() as u64,
+            pages: BTreeMap::from([(0, vec![253; 4096])]),
+        }));
+    if let Ok(Ok(reply)) = tokio::time::timeout(Duration::from_millis(500), pending).await {
+        panic!("a single surviving voter acknowledged {reply:?}");
+    }
+    assert_eq!(one.db.1.revision().await.unwrap(), rev);
+    one.stop().await;
+}

@@ -36,7 +36,27 @@ pub(super) async fn prepare_replicas(
         .chain(plan.service_bindings().map(|(_, p)| p))
         .map(|p| p.database_name.clone())
         .collect();
-    let mut registry = None;
+    // Grow the name catalog as the network grows, including when every
+    // requested resource already exists. Existing data groups can deploy
+    // independently while the catalog is temporarily unavailable.
+    let mut registry = if !names.is_empty() && homes.len() > 1 {
+        match catalog(&homes).await {
+            Ok(home) => Some(home),
+            Err(e)
+                if names
+                    .iter()
+                    .all(|name| records.iter().any(|r| &r.name == name)) =>
+            {
+                crate::output::warning(&format!(
+                    "Storage catalog membership could not be updated: {e}"
+                ));
+                None
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
     for name in names {
         let record = if let Some(record) = records.iter().find(|r| r.name == name) {
             if record.founders.is_empty() {
@@ -96,18 +116,21 @@ pub(super) async fn prepare_replicas(
         // Members in a winning simultaneous first deploy can be outside our targets.
         // An already functioning group only needs the new deployment targets.
         let active = join_all(homes.iter().map(|h| {
-            command::<serde_json::Value>(
-                h,
-                Op::Progress {
-                    group: generation.clone(),
-                },
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                command::<serde_json::Value>(
+                    h,
+                    Op::Progress {
+                        group: generation.clone(),
+                    },
+                ),
             )
         }))
         .await;
         let mut participants = targets.clone();
         if !active
             .iter()
-            .any(|r| r.as_ref().is_ok_and(|p| p["leader"].is_string()))
+            .any(|r| matches!(r,Ok(Ok(p)) if p["leader"].is_string()))
         {
             for founder in &record.founders {
                 if !participants.iter().any(|h| &h.device_id == founder) {
@@ -166,12 +189,15 @@ pub(super) async fn prepare_replicas(
                 targets: participants.iter().map(|h| h.device_id.clone()).collect(),
             },
         );
-        let ready = async {
-            for home in &targets {
+        let ready = futures_util::future::try_join_all(targets.iter().map(|home| {
+            let aliases = &aliases;
+            let initial_bytes = &initial_bytes;
+            let elected = &elected;
+            async move {
                 let mut barrier = None;
                 loop {
                     let progress: serde_json::Value = command(
-                        &elected,
+                        elected,
                         Op::Readiness {
                             group: generation.clone(),
                             target: home.device_id.clone(),
@@ -188,7 +214,7 @@ pub(super) async fn prepare_replicas(
                         progress["snapshot_bytes"].clone(),
                     )?;
                     if let Some(tree) = tree {
-                        for alias in &aliases {
+                        for alias in aliases {
                             tree.storage_step(
                                 &home.key,
                                 alias,
@@ -206,9 +232,9 @@ pub(super) async fn prepare_replicas(
                     }
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
+                Ok::<_, Box<dyn std::error::Error>>(())
             }
-            Ok::<_, Box<dyn std::error::Error>>(())
-        };
+        }));
         tokio::try_join!(join, ready)?;
         for (scope, uses) in [
             (

@@ -257,9 +257,9 @@ tako db import main ./main.sqlite
 
 To move an app from a SQLite file in its data directory, create a hosted database, copy the file to your machine during a write freeze, import it, bind the database, and deploy the code that uses `tako.db`.
 
-### Recover a legacy single-home database on another server
+### Recover on another server
 
-For a replicated database, restore through the elected leader. The replacement is committed through Raft. A new deployment target joins the group during a full-access deploy.
+For a replicated database, restore through the elected leader. The replacement commits through Raft. A new deployment target joins the group during a full-access deploy. For a legacy single-home database, use the following recovery procedure.
 
 ```bash
 tako db restore main --latest --server edge-b
@@ -291,7 +291,7 @@ tako db reset main --local
 tako db delete main
 ```
 
-`delete` (alias `rm`) removes the file from its server, its backups from its current backup storage, its records in the network state, and the database's bindings and `[db.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. A small `holder` marker stays under the database's prefix, so that a copy on a server the delete could not reach uploads nothing when it comes back. When backup storage cannot be reached the database is still deleted, and a warning names the prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm. Imports and exports of the database still in progress end with it.
+For replicated resources, `delete` waits for the generation to have no active or retained release bindings. It then retires the generation and removes its replicas. Objects already uploaded to backup storage keep their original generation and recovery key. A later deployment that reuses the name creates a fresh generation. Use `tako delete --server <server>` to remove an application from a particular server and reconcile its storage there.
 
 ## Apps on other servers
 

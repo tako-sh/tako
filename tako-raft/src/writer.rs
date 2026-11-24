@@ -155,7 +155,7 @@ impl Writer {
             file_size,
             pages,
         };
-        const PART_SIZE: usize = 8 * 1024 * 1024;
+        const PART_SIZE: usize = 512 * 1024;
         let submit = |proposal| {
             self.runtime.block_on(async {
                 let reply = timeout(Duration::from_secs(10), self.raft.client_write(proposal))
@@ -223,12 +223,16 @@ impl Resource {
             cache: Default::default(),
         }
     }
+    pub fn has_grant(&self, scope: &str) -> bool {
+        self.replica.has_grant(scope)
+    }
+
     pub fn grant_matches(&self, scope: &str, hash: &[u8; 32]) -> bool {
         self.replica.grant_matches(scope, hash)
     }
 
     pub async fn set_backup_settings(&self, track: bool, sealed: Vec<u8>) -> io::Result<()> {
-        timeout(
+        let reply = timeout(
             Duration::from_secs(10),
             self.raft
                 .client_write(crate::Proposal::BackupSettings { track, sealed }),
@@ -236,6 +240,9 @@ impl Resource {
         .await
         .map_err(error)?
         .map_err(error)?;
+        if reply.data != Applied::NoChange {
+            return Err(error("backup settings were not committed"));
+        }
         Ok(())
     }
 

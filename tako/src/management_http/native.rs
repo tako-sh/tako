@@ -152,6 +152,9 @@ pub(super) fn rpc_action(
         | Command::FinalizeRelease { app, .. }
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
+        | Command::CoordinateStorage {
+            request: tako_core::StorageOperation::DeploymentLeader { app, .. },
+        }
         | Command::SnapshotDatabase { app: Some(app), .. }
         | Command::MigrateDatabase { app: Some(app), .. }
         | Command::Scale { app, .. }

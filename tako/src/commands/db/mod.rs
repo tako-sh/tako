@@ -1581,10 +1581,42 @@ pub(crate) async fn delete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let noun = engine.noun();
+    let record = ctx.record_of(name, engine)?;
+    if !record.founders.is_empty() {
+        if engine.is_sqlite() {
+            check_service_delete(
+                &ctx.config,
+                &ctx.network,
+                &record,
+                ctx.needs_replay,
+                ctx.needs_workflows,
+            )?;
+        }
+        confirm(
+            &format!("Delete replicated {noun} {name}?"),
+            "All replicas are retired once no active or retained release uses them. Existing backup objects are preserved.",
+            yes,
+        )?;
+        if output::is_dry_run() {
+            return dry_run(
+                &format!("Delete {noun} {name}"),
+                serde_json::json!({"database":name,"engine":engine}),
+            );
+        }
+        cleanup::delete_unused(&ctx.alias()?, &ctx.network_homes()?, &record).await?;
+        if engine.is_sqlite() {
+            TakoToml::remove_database_from_file(&ctx.config_path, name, &ctx.network)?;
+        } else {
+            TakoToml::remove_kv_from_file(&ctx.config_path, name, &ctx.network)?;
+        }
+        if output::is_json() {
+            return output::json_success(command_name(engine));
+        }
+        return Ok(());
+    }
     // A KV store whose server left the network can be forgotten: without
     // backups to restore it from, its record would hold the name forever.
     if engine == DatabaseEngine::Kv {
-        let record = ctx.record_of(name, engine)?;
         let member = ctx.servers.servers.values().any(|entry| {
             entry.native.as_ref().is_some_and(|native| {
                 native.network.id == ctx.network && native.server_id.to_string() == record.server
