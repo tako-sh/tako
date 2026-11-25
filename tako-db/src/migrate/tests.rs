@@ -13,16 +13,32 @@ fn database() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+fn query(path: &Path, sql: &str) -> Vec<Vec<Value>> {
+    let mut conn = Connection::development(
+        path,
+        &Default::default(),
+        false,
+        std::sync::Arc::new(tokio::sync::Semaphore::new(1 << 20)),
+    )
+    .unwrap();
+    conn.execute(sql, &Args::Positional(&[]), true, &mut Budget::new(1 << 20))
+        .unwrap()
+        .rows
+}
+
 fn tables(path: &Path) -> Vec<String> {
-    let conn = rusqlite::Connection::open(path).unwrap();
-    let mut statement = conn
-        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
-        .unwrap();
-    statement
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+    query(
+        path,
+        "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
+    )
+    .into_iter()
+    .map(|row| {
+        let [Value::Text(name)] = row.as_slice() else {
+            panic!("invalid table name {row:?}")
+        };
+        name.clone()
+    })
+    .collect()
 }
 
 #[test]
@@ -75,11 +91,10 @@ fn applies_pending_migrations_in_order_once() {
     assert_eq!(report.applied, ["0001_users.sql", "0002_items.sql"]);
     let again = migrate_file(&path, "shop", &migrations, false).unwrap();
     assert!(again.applied.is_empty(), "each migration runs once");
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    let users: i64 = conn
-        .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(users, 1);
+    assert_eq!(
+        query(&path, "SELECT count(*) FROM users"),
+        [[Value::Integer(1)]]
+    );
 }
 
 #[test]
@@ -266,9 +281,9 @@ fn migrations_can_rebuild_referenced_tables_but_not_break_references() {
     let error = migrate_file(&path, "shop", &[initial, rebuild, broken], false).unwrap_err();
     assert!(error.contains("break foreign keys"), "{error}");
     assert!(error.contains("`posts`"), "{error}");
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    let users: i64 = conn
-        .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(users, 1, "the breaking migration rolled back");
+    assert_eq!(
+        query(&path, "SELECT count(*) FROM users"),
+        [[Value::Integer(1)]],
+        "the breaking migration rolled back"
+    );
 }

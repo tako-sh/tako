@@ -362,20 +362,9 @@ pub fn migrate_file(
             warnings: Vec::new(),
         });
     }
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
-        // Another process may create it first.
-        if let Err(error) = crate::engine::create_database(path)
-            && !path.exists()
-        {
-            return Err(error);
-        }
-    }
-    let mut conn =
-        Connection::open(path, &config(&EngineConfig::default())).map_err(engine_error)?;
+    let config = config(&EngineConfig::default());
+    let buffered = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_value_bytes));
+    let mut conn = Connection::development(path, &config, false, buffered).map_err(engine_error)?;
     run(&mut conn, app, migrations, dry_run)
 }
 
@@ -392,6 +381,30 @@ pub(crate) fn config(base: &EngineConfig) -> EngineConfig {
 
 const MIGRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const MIGRATION_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Build a replacement in isolation. Publish one portable file including all
+/// migration writes, even when native MVCC kept them in a journal sidecar.
+pub fn prepare_reset(
+    path: &Path,
+    app: Option<&str>,
+    migrations: &[Migration],
+) -> Result<Option<MigrationReport>, String> {
+    let parent = path.parent().ok_or("database has no parent directory")?;
+    let directory = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
+    let db = directory.path().join("data.db");
+    let config = config(&EngineConfig::default());
+    let owner = crate::mvcc::Owner::local(&db, config.busy_timeout).map_err(|e| e.to_string())?;
+    let report = if let Some(app) = app.filter(|_| !migrations.is_empty()) {
+        let buffered = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_value_bytes));
+        let mut conn =
+            Connection::hosted(owner.clone(), &config, false, buffered).map_err(engine_error)?;
+        Some(run(&mut conn, app, migrations, false)?)
+    } else {
+        None
+    };
+    crate::mvcc::export_copy(&owner, path).map_err(|e| e.to_string())?;
+    Ok(report)
+}
 
 #[cfg(test)]
 mod tests;

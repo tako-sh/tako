@@ -1769,16 +1769,9 @@ impl ServerState {
         // The schema goes into the new file before it replaces the old one.
         let name = id.to_owned();
         let report = tokio::task::spawn_blocking(move || {
-            DatabaseHost::create_file(&create)
-                .map_err(|e| format!("create an empty database: {e}"))?;
-            match owner {
-                Some(owner) if !migrations.is_empty() => {
-                    tako_db::migrate::migrate_file(&create, &owner, &migrations, false)
-                        .map(Some)
-                        .map_err(|e| format!("The migrations failed; {name} was not reset: {e}"))
-                }
-                _ => Ok(None),
-            }
+            tako_db::migrate::prepare_reset(&create, owner.as_deref(), &migrations).map_err(|e| {
+                format!("The replacement database could not be prepared; {name} was not reset: {e}")
+            })
         })
         .await
         .map_err(|e| e.to_string())??;

@@ -219,7 +219,7 @@ pub(crate) struct Database {
     engine: EngineConfig,
     pool_size: usize,
     buffered: Arc<Semaphore>,
-    resource: Option<tako_raft::Resource>,
+    storage: Storage,
     primary: Mutex<Option<Arc<crate::mvcc::Owner>>>,
     replica: Mutex<Option<(Arc<tempfile::NamedTempFile>, Arc<crate::mvcc::Owner>)>>,
     state: Mutex<DatabaseState>,
@@ -232,6 +232,13 @@ pub(crate) struct Database {
     lock: Mutex<Option<File>>,
 }
 
+#[derive(Clone)]
+enum Storage {
+    Sqlite,
+    Development,
+    Replicated(tako_raft::Resource),
+}
+
 struct DatabaseState {
     paused: Option<String>,
     /// This process stopped serving the database; nothing enters again.
@@ -242,8 +249,19 @@ struct DatabaseState {
 
 impl Database {
     pub(crate) fn acquire(&self, read_only: bool) -> Result<engine::Connection, Error> {
-        if let Some(resource) = &self.resource {
-            return self.replicated_connection(resource, read_only, &self.engine);
+        match &self.storage {
+            Storage::Replicated(resource) => {
+                return self.replicated_connection(resource, read_only, &self.engine);
+            }
+            Storage::Development => {
+                return engine::Connection::development(
+                    &self.path,
+                    &self.engine,
+                    read_only,
+                    self.buffered.clone(),
+                );
+            }
+            Storage::Sqlite => {}
         }
         {
             let mut pool = self.pool.lock();
@@ -290,7 +308,7 @@ impl Database {
     /// Returns a connection for reuse when it carries no stream state.
     pub(crate) fn release(&self, mut conn: engine::Connection) {
         conn.rollback();
-        if self.resource.is_some() || conn.is_dirty() || !conn.is_autocommit() {
+        if !matches!(self.storage, Storage::Sqlite) || conn.is_dirty() || !conn.is_autocommit() {
             return;
         }
         let mut pool = self.pool.lock();
@@ -563,23 +581,30 @@ impl DatabaseHost {
     /// Serves an existing database file. Takes a shared lock on
     /// `<path>.lock` so a swap in another process waits for this one.
     pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
-        self.register_inner(id, path, None)
+        self.register_inner(id, path, Storage::Sqlite)
     }
 
+    /// Register a persistent, local Turso binding without keeping an idle owner.
+    pub fn register_development(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
+        if !path.try_exists()? {
+            crate::mvcc::Owner::local(&path, self.inner.config.engine.busy_timeout)?;
+        }
+        self.register_inner(id, path, Storage::Development)
+    }
     pub fn register_replicated(
         &self,
         id: DatabaseId,
         path: PathBuf,
         resource: tako_raft::Resource,
     ) -> Result<(), HostError> {
-        self.register_inner(id, path, Some(resource))
+        self.register_inner(id, path, Storage::Replicated(resource))
     }
 
     fn register_inner(
         &self,
         id: DatabaseId,
         path: PathBuf,
-        resource: Option<tako_raft::Resource>,
+        storage: Storage,
     ) -> Result<(), HostError> {
         let mut databases = self.inner.databases.write();
         if databases.contains_key(&id) {
@@ -596,7 +621,7 @@ impl DatabaseHost {
                 engine: config.engine.clone(),
                 pool_size: config.pool_size,
                 buffered: self.inner.buffered.clone(),
-                resource,
+                storage,
                 primary: Mutex::new(None),
                 replica: Mutex::new(None),
                 state: Mutex::new(DatabaseState {
@@ -729,18 +754,21 @@ impl DatabaseHost {
         let database = self.database(id)?;
         let was_changed = database.changed.swap(false, Ordering::Relaxed);
         let path = database.path.clone();
-        let resource = database.resource.clone();
+        let storage = database.storage.clone();
         let dest = dest.to_path_buf();
         let busy = self.inner.config.engine.busy_timeout;
         let result = tokio::task::spawn_blocking(move || {
-            let image = resource
-                .as_ref()
-                .map(|r| {
-                    r.leader_barrier()?;
-                    r.local_file()
-                })
-                .transpose()
-                .map_err(|e| e.to_string())?;
+            let image = match storage {
+                Storage::Development => {
+                    return crate::mvcc::Owner::snapshot_local(&path, &dest, busy)
+                        .map_err(|e| e.to_string());
+                }
+                Storage::Sqlite => None,
+                Storage::Replicated(resource) => {
+                    resource.leader_barrier().map_err(|e| e.to_string())?;
+                    Some(resource.local_file().map_err(|e| e.to_string())?)
+                }
+            };
             let source = image.as_ref().map_or(path.as_path(), |image| image.path());
             if image.is_some() && crate::mvcc::export(source, &dest).map_err(|e| e.to_string())? {
                 return Ok(());
@@ -1011,9 +1039,17 @@ impl DatabaseHost {
             // A connection of its own, with migrations' longer limits; it is
             // not returned to the pool.
             let config = crate::migrate::config(&database.engine);
-            let mut conn = match &database.resource {
-                Some(resource) => database.replicated_connection(resource, false, &config),
-                None => engine::Connection::open(&database.path, &config),
+            let mut conn = match &database.storage {
+                Storage::Replicated(resource) => {
+                    database.replicated_connection(resource, false, &config)
+                }
+                Storage::Development => engine::Connection::development(
+                    &database.path,
+                    &config,
+                    false,
+                    database.buffered.clone(),
+                ),
+                Storage::Sqlite => engine::Connection::open(&database.path, &config),
             }
             .map_err(|e| HostError::Engine(e.message))?;
             let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
@@ -1030,14 +1066,19 @@ impl DatabaseHost {
     /// Size of a database's files (database and write-ahead log) in bytes.
     pub fn size_bytes(&self, id: &DatabaseId) -> Option<u64> {
         let db = self.database(id).ok()?;
-        if let Some(resource) = &db.resource {
+        if let Storage::Replicated(resource) = &db.storage {
             return resource.file_size().ok();
         }
         let path = db.path.clone();
         let mut wal = path.clone().into_os_string();
         wal.push("-wal");
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        Some(size(&path) + size(Path::new(&wal)))
+        let log = if matches!(db.storage, Storage::Development) {
+            size(&path.with_extension("db-log"))
+        } else {
+            0
+        };
+        Some(size(&path) + size(Path::new(&wal)) + log)
     }
 
     pub fn open_streams(&self) -> usize {
@@ -1130,7 +1171,10 @@ impl DatabaseHost {
         let resource = self
             .database(database)
             .ok()
-            .and_then(|db| db.resource.clone());
+            .and_then(|db| match &db.storage {
+                Storage::Replicated(resource) => Some(resource.clone()),
+                _ => None,
+            });
         let allowed = if let Some(resource) = resource {
             resource.grant_matches(scope, &presented)
         } else {

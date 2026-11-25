@@ -40,6 +40,7 @@ async function code(run: () => Promise<unknown>): Promise<string> {
 
 // @libsql/client
 const libsql = createClient(main);
+await libsql.executeMultiple("BEGIN CONCURRENT; SELECT 1; COMMIT;");
 report["previousRows"] =
   Number(
     (

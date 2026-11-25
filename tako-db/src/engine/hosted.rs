@@ -5,8 +5,7 @@ use turso_core::{Dialect, LimboError, Numeric, Statement};
 use turso_parser::ast::{Cmd, Stmt};
 use turso_sqlite::SqliteDialect;
 
-/// Local development and portable-file operations use SQLite. Hosted
-/// generations execute SQL through the private Turso owner.
+/// Development and replicated bindings share the native Turso execution path.
 pub struct Connection {
     backend: Backend,
     pub(crate) read_only: bool,
@@ -34,6 +33,21 @@ impl Connection {
             backend: Backend::Local(SqliteConnection::open_mode(path, c, read_only)?),
             read_only,
         })
+    }
+    pub(crate) fn development(
+        path: &Path,
+        config: &EngineConfig,
+        read_only: bool,
+        buffered: Arc<tokio::sync::Semaphore>,
+    ) -> Result<Self, Error> {
+        let owner = Owner::local(path, config.busy_timeout).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::new("SQLITE_BUSY", e.to_string())
+            } else {
+                Error::new("SQLITE_CANTOPEN", e.to_string())
+            }
+        })?;
+        Self::hosted(owner, config, read_only, buffered)
     }
     pub(crate) fn hosted(
         owner: Arc<Owner>,
@@ -236,6 +250,9 @@ fn too_large() -> Error {
     )
 }
 fn map_native(e: LimboError) -> Error {
+    if matches!(e, LimboError::LexerError(_)) {
+        return Error::new("SQL_PARSE_ERROR", e.to_string());
+    }
     Error {
         code: primary_code_name(e.sqlite_result_code()).into(),
         extended_code: extended_code_name(e.sqlite_extended_result_code()).map(str::to_owned),

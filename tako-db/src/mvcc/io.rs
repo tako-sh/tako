@@ -1,4 +1,4 @@
-//! The SQL engine may open only the files of its private generation.
+//! Restrict native I/O to one database and its journaling files.
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -11,26 +11,32 @@ use turso_core::{
     },
 };
 
+pub(super) fn with_suffix(database: &Path, suffix: &str) -> PathBuf {
+    let mut path = database.as_os_str().to_owned();
+    path.push(suffix);
+    path.into()
+}
+
 pub(super) struct DirectoryIo {
     platform: PlatformIO,
-    directory: PathBuf,
+    files: [PathBuf; 4],
 }
 impl DirectoryIo {
-    pub fn new(directory: &Path) -> Result<Self> {
+    pub fn new(database: &Path) -> Result<Self> {
         Ok(Self {
             platform: PlatformIO::new()?,
-            directory: directory.to_owned(),
+            files: [
+                database.to_owned(),
+                database.with_extension("db-log"),
+                with_suffix(database, "-wal"),
+                with_suffix(database, "-shm"),
+            ],
         })
     }
 
     fn check(&self, name: &str) -> Result<()> {
         let path = Path::new(name);
-        if path.parent() == Some(&self.directory)
-            && matches!(
-                path.file_name().and_then(|s| s.to_str()),
-                Some("data.db" | "data.db-log" | "data.db-wal" | "data.db-shm")
-            )
-        {
+        if self.files.iter().any(|file| file == path) {
             Ok(())
         } else {
             Err(LimboError::ReadOnly)

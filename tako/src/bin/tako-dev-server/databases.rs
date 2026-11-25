@@ -65,7 +65,7 @@ fn local_id(path: &Path) -> DatabaseId {
         .expect("a hex digest makes a valid name")
 }
 
-/// Serves `bindings` (binding name → SQLite file) for the app registered at
+/// Serves `bindings` (binding name → Turso database file) for the app registered at
 /// `config_path`, replacing its previous bindings, and returns the
 /// connections its processes receive.
 pub(crate) async fn connect(
@@ -104,10 +104,7 @@ pub(crate) async fn connect(
                 let register_id = id.clone();
                 // Creating and locking the file blocks.
                 tokio::task::spawn_blocking(move || {
-                    if !register_path.exists() {
-                        DatabaseHost::create_file(&register_path)?;
-                    }
-                    host.register(register_id, register_path)
+                    host.register_development(register_id, register_path)
                 })
                 .await
                 .map_err(|e| e.to_string())?

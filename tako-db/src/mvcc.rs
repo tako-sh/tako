@@ -2,6 +2,8 @@
 #[path = "mvcc/io.rs"]
 mod directory_io;
 mod image;
+mod local;
+pub use local::reset_database_file;
 mod storage;
 
 use image::Layout;
@@ -22,7 +24,8 @@ use turso_sqlite::SqliteDialect;
 pub(crate) struct Owner {
     db: Arc<Database>,
     log: Option<Arc<ReplicatedLog>>,
-    _directory: TempDir,
+    _directory: Option<TempDir>,
+    _owner_lock: Option<File>,
     slots: Arc<tokio::sync::Semaphore>,
 }
 fn other(error: impl std::fmt::Display) -> io::Error {
@@ -47,22 +50,32 @@ impl Owner {
         } else if file.metadata()?.len() > 0 {
             fs::copy(source, &path)?;
         }
-        let io: Arc<dyn IO> =
-            Arc::new(directory_io::DirectoryIo::new(directory.path()).map_err(other)?);
+        Self::open_database(&path, Some(directory), None, writer, layout)
+    }
+    fn open_database(
+        path: &Path,
+        directory: Option<TempDir>,
+        owner_lock: Option<File>,
+        writer: Option<tako_raft::Writer>,
+        layout: Option<Layout>,
+    ) -> io::Result<Self> {
+        let io: Arc<dyn IO> = Arc::new(directory_io::DirectoryIo::new(path).map_err(other)?);
         let mut opts = OpenOptions::new(Arc::new(SqliteDialect))
             .flags(OpenFlags::Create)
             .db_opts(DatabaseOpts::new().with_views(true).with_mvcc(true));
         let log = if let Some(writer) = writer {
             let file = io
                 .open_file(
-                    text(&directory.path().join("data.db-log"))?,
+                    text(&path.with_file_name("data.db-log"))?,
                     OpenFlags::Create,
                     false,
                 )
                 .map_err(other)?;
             let log = Arc::new(ReplicatedLog::new(
                 Storage::new(file, io.clone(), None),
-                directory.path().to_owned(),
+                path.parent()
+                    .expect("private database directory")
+                    .to_owned(),
                 writer,
                 layout,
             ));
@@ -71,11 +84,12 @@ impl Owner {
         } else {
             None
         };
-        let db = Database::open(io, text(&path)?, opts).map_err(other)?;
+        let db = Database::open(io, text(path)?, opts).map_err(other)?;
         Ok(Self {
             db,
             log,
             _directory: directory,
+            _owner_lock: owner_lock,
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
         })
     }
@@ -152,16 +166,23 @@ pub(crate) fn export(source: &Path, dest: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let owner = Owner::replica(source)?;
+    export_copy(&owner, dest)?;
+    Ok(true)
+}
+
+pub(crate) fn export_copy(owner: &Owner, dest: &Path) -> io::Result<()> {
     let conn = owner.connect()?;
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         .map_err(other)?;
     conn.execute("PRAGMA journal_mode=WAL").map_err(other)?;
     conn.close().map_err(other)?;
     drop(conn);
-    let path = owner._directory.path().join("data.db");
-    super::engine::snapshot_database(&path, dest, std::time::Duration::from_secs(5))
-        .map_err(other)?;
-    Ok(true)
+    super::engine::snapshot_database(
+        Path::new(&owner.db.path),
+        dest,
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(other)
 }
 
 /// A freshly downloaded recovery image or private Raft checkout can be

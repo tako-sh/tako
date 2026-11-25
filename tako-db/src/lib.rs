@@ -18,13 +18,11 @@ pub mod proto;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use engine::{
-    EngineConfig, Synchronous, replace_database, reset_database_file, verify_database,
-};
+pub use engine::{EngineConfig, Synchronous, replace_database, verify_database};
 pub use host::{
     AdminQuery, Binding, DatabaseHost, DatabaseId, Home, HostConfig, HostError, PauseGuard,
     TokenHash, generate_token, hash_token,
 };
 pub use migrate::{Migration, MigrationReport};
-pub use mvcc::{materialize_recovery_image, verify_hosted_import};
+pub use mvcc::{materialize_recovery_image, reset_database_file, verify_hosted_import};
 pub use proto::Value;

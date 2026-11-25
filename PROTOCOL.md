@@ -414,7 +414,7 @@ Backups are continuous, with the vendored `terse-litestream` port of Litestream 
 
 A server opens its databases and serves 127.0.0.1:9845 before it restores apps, applying each app's bindings before its processes start; resolving other servers' addresses, grants, the peer listener, and backups start once the private network is up. A process that exits stops serving databases (releasing their file locks) before its apps when a reloaded successor is ready, and after them otherwise.
 
-`tako dev` and `tako run` serve bindings from `.tako/data/databases/<name>.sqlite` over the same protocol on a random loopback port, without consulting the network state. Dev registration carries `databases` as binding name → absolute file path; the daemon serves them for the registration and keeps their tokens across re-registration.
+`tako dev` and `tako run` serve Turso bindings from `.tako/data/databases/<name>.sqlite` with the hosted dialect and permissions over the same protocol on a random loopback port, without consulting the network state. Dev registration carries `databases` as binding name → absolute file path; the daemon serves them for the registration and keeps their tokens across re-registration.
 
 ## Hosted KV stores
 

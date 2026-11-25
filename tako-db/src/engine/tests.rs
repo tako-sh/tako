@@ -669,8 +669,15 @@ fn response_budget_counts_text_as_json_encodes_it() {
 
 #[test]
 fn reset_empties_a_database_that_others_hold_open() {
-    let fixture = fixture();
-    let mut conn = open(&fixture);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db.sqlite");
+    let mut conn = Connection::development(
+        &path,
+        &Default::default(),
+        false,
+        Arc::new(tokio::sync::Semaphore::new(1 << 20)),
+    )
+    .unwrap();
     run(&mut conn, "CREATE TABLE t (x)").unwrap();
     run(&mut conn, "INSERT INTO t VALUES (1)").unwrap();
     run(
@@ -679,30 +686,31 @@ fn reset_empties_a_database_that_others_hold_open() {
     )
     .unwrap();
     run(&mut conn, "CREATE VIEW v AS SELECT x FROM t").unwrap();
-    run(&mut conn, "CREATE VIRTUAL TABLE docs USING fts5(body)").unwrap();
+    run(
+        &mut conn,
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END",
+    )
+    .unwrap();
     run(&mut conn, "PRAGMA user_version = 7").unwrap();
-    super::reset_database_file(&fixture.path).unwrap();
+    crate::reset_database_file(&path).unwrap();
     let error = run(&mut conn, "SELECT * FROM t").unwrap_err();
     assert!(error.message.contains("no such table"), "{}", error.message);
     run(&mut conn, "CREATE TABLE t (x)").unwrap();
-    let raw = rusqlite::Connection::open(&fixture.path).unwrap();
-    let left: i64 = raw
-        .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name <> 't'",
-            [],
-            |row| row.get(0),
+    assert_eq!(
+        run(
+            &mut conn,
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '__turso_internal_*' AND name <> 't'"
         )
-        .unwrap();
-    assert_eq!(left, 0);
-    let version: i64 = raw
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 0);
-    let mode: String = rusqlite::Connection::open(&fixture.path)
         .unwrap()
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
+        .rows,
+        [[Value::Integer(0)]]
+    );
+    assert_eq!(
+        run(&mut conn, "PRAGMA user_version").unwrap().rows,
+        [[Value::Integer(0)]]
+    );
+    run(&mut conn, "BEGIN CONCURRENT").unwrap();
+    run(&mut conn, "ROLLBACK").unwrap();
 }
 
 #[test]

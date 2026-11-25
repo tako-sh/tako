@@ -1,11 +1,11 @@
 ---
 title: Databases
-description: "Create Tako-hosted SQLite databases on a network server, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
+description: "Deploy Turso databases on Tako servers, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
 ---
 
 Tako runs the Turso SQL engine on the servers selected by an environment’s deploy. Applications use a libSQL-compatible HTTP driver through the Tako binding. Each database has one elected writer. On that server, independent `BEGIN CONCURRENT` transactions can update different rows. Conflicting transactions can return `SQLITE_BUSY` and require a retry of the whole transaction.
 
-Hosted databases use ordinary rowid tables. Use a primary key or a unique constraint for composite keys and omit `WITHOUT ROWID` from hosted migrations. Local development and portable SQLite imports and exports use SQLite.
+Hosted databases use ordinary rowid tables. Use a primary key or a unique constraint for composite keys and omit `WITHOUT ROWID` from hosted migrations. Local bindings and migrations use the same Turso engine. Imports and exports use the portable SQLite file format.
 
 Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR` remain plain file directories; Tako does not discover, capture, or back up SQLite files placed there.
 
@@ -38,7 +38,7 @@ Each environment can bind a different database under the same name, such as `mai
 
 #### Read from the local database
 
-Pass `tako.db.main.readReplica` to the same libSQL client as `tako.db.main`. SQLite opens the local file read-only and rejects writes to it with `SQLITE_READONLY`. Interactive read transactions use the same connection for their lifetime. Go exposes `db.ReadReplica()` and Rust exposes `db.read_replica()`.
+Pass `tako.db.main.readReplica` to the same libSQL client as `tako.db.main`. Tako grants the replica connection read-only access. Writes return `SQLITE_READONLY`. Interactive read transactions use the same connection for their lifetime. Go exposes `db.ReadReplica()` and Rust exposes `db.read_replica()`.
 
 The ordinary binding sends reads and writes to the elected leader. A successful write is durable on a voting majority. One voter commits locally, two require both, and three require two. With one voter in each of three regions, a healthy write pays the round trip to the fastest acknowledging follower, plus a round trip from the app to the leader if they run apart. An election or loss of quorum can delay requests. The read replica serves the last locally applied transaction. It can lag a successful write. Use the ordinary binding for read-after-write consistency.
 
@@ -152,7 +152,7 @@ History is kept per app: apps that share a database each track their own migrati
 
 ## Develop locally
 
-`tako dev` and `tako run` serve bound databases from local files with the same protocol and SDK surface, so code does not change between development and production:
+`tako dev` and `tako run` serve bound databases with the same Turso engine, SQL permissions, and SDK as a deployment. Each binding has a local file.
 
 ```text
 .tako/data/databases/<database-name>.sqlite
