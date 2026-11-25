@@ -546,9 +546,9 @@ route = "empty.test"
         )
         .unwrap();
         migrate_environment(&project, &cfg, "development").unwrap();
-        let dev_file = &dev_files(&project, &cfg, "development")["main"];
+        let dev_file = PathBuf::from(&dev_files(&project, &cfg, "development")["main"]);
         let host = DatabaseHost::new(HostConfig::default());
-        let dev = local_id(dev_file);
+        let dev = local_id(&dev_file);
         host.register_development(dev.clone(), dev_file.clone())
             .unwrap();
         host.admin_query(&dev, "INSERT INTO items VALUES ('keep')".into(), 1)
@@ -557,10 +557,10 @@ route = "empty.test"
         migrate_environment(&project, &cfg, "test-e2e").unwrap();
         let test_files = dev_files(&project, &cfg, "test-e2e");
         assert_eq!(test_files.len(), 1);
-        assert_ne!(&test_files["main"], dev_file);
-        let test = local_id(&test_files["main"]);
-        host.register_development(test.clone(), test_files["main"].clone())
-            .unwrap();
+        let test_file = PathBuf::from(&test_files["main"]);
+        assert_ne!(test_file, dev_file);
+        let test = local_id(&test_file);
+        host.register_development(test.clone(), test_file).unwrap();
         assert_eq!(
             host.admin_query(&test, "SELECT count(*) FROM items".into(), 1)
                 .await
