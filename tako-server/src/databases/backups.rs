@@ -110,10 +110,6 @@ fn slot(state: &ServerState, name: &str) -> Arc<tokio::sync::Mutex<Slot>> {
 /// A database's prefix in its backup storage. The generation keeps a
 /// database created again under an earlier one's name from seeing its
 /// backups.
-fn prefix(stored: &StoredDatabase) -> String {
-    format!("_tako/databases/{}/{}", stored.name, stored.generation)
-}
-
 fn spool_dir(state: &ServerState, name: &str) -> PathBuf {
     state.databases.database_dir(name).join("replica")
 }
@@ -260,9 +256,7 @@ fn replica(
 ) -> Result<Replica, String> {
     let remote = store(backup)?;
     let key = super::decode_backup_key(key_override.unwrap_or(&stored.secrets.backup_key_base64))?;
-    let key = tako_backup::encryption::Key::new(format!("database-{}", stored.generation), key)
-        .map_err(|e| e.to_string())?;
-    Replica::new(remote, &prefix(stored), key).map_err(|e| e.to_string())
+    Replica::database(remote, &stored.name, &stored.generation, key).map_err(|e| e.to_string())
 }
 
 fn now_unix_ms() -> i64 {

@@ -21,6 +21,7 @@ use crate::network::databases::DatabaseRecord;
 use crate::output;
 
 pub(crate) mod cleanup;
+mod local_restore;
 pub(crate) mod replication;
 mod shell;
 pub(crate) mod target;
@@ -81,7 +82,7 @@ pub enum DbCommands {
         name: String,
     },
 
-    /// Replace a database with its backed-up state
+    /// Restore a database from backup, in place or to a new local file
     #[command(group(
         clap::ArgGroup::new("point")
             .required(true)
@@ -99,6 +100,15 @@ pub enum DbCommands {
         /// Restore the state at this time: `2026-11-23 10:15` (local time), RFC 3339, or an age such as `15m`, `2h` or `1d`
         #[arg(long, value_name = "TIME")]
         at: Option<String>,
+        /// Recover to a new local file using the configured backup storage
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Environment supplying backup credentials for local recovery (defaults to production)
+        #[arg(long, requires = "output")]
+        env: Option<String>,
+        /// Recover an earlier generation of this name using its retained backup key
+        #[arg(long, requires = "output")]
+        generation: Option<String>,
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -614,10 +624,24 @@ async fn run_async(
             snapshot,
             at,
             yes,
+            output,
+            env,
+            generation,
         } => {
             let at = at
                 .map(|at| at::parse_at(&at, chrono::Utc::now(), &chrono::Local))
                 .transpose()?;
+            if let Some(path) = output {
+                return local_restore::run(
+                    config_path,
+                    &name,
+                    env.as_deref().unwrap_or("production"),
+                    generation,
+                    tako_backup::Target::from_restore_point(snapshot.as_deref(), at)?,
+                    &path,
+                )
+                .await;
+            }
             let ctx = Context::load(config_path, network).await?;
             restore(&ctx, &name, snapshot, at, yes, DatabaseEngine::Sqlite).await
         }

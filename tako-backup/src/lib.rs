@@ -201,6 +201,28 @@ pub enum Target {
     Time(i64),
 }
 
+impl Target {
+    /// A restore point ID is the decimal transaction shown by the backup listing.
+    pub fn from_restore_point(
+        snapshot: Option<&str>,
+        at_unix_ms: Option<i64>,
+    ) -> std::result::Result<Self, String> {
+        match (snapshot, at_unix_ms) {
+            (Some(_), Some(_)) => Err("Restore either a restore point or a time, not both.".into()),
+            (Some(snapshot), None) => snapshot
+                .parse::<u64>()
+                .ok()
+                .filter(|txid| *txid > 0)
+                .map(Self::Txid)
+                .ok_or_else(|| {
+                    format!("Restore point {snapshot} is not one `tako db backups` lists.")
+                }),
+            (None, Some(at)) => Ok(Self::Time(at)),
+            (None, None) => Ok(Self::Latest),
+        }
+    }
+}
+
 /// What retention removed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
@@ -220,6 +242,17 @@ pub struct Replica {
 }
 
 impl Replica {
+    /// Opens the authenticated storage prefix of one SQL generation.
+    pub fn database(
+        raw: Arc<dyn ObjectStore>,
+        name: &str,
+        generation: &str,
+        key: [u8; 32],
+    ) -> Result<Self> {
+        let key = encryption::Key::new(format!("database-{generation}"), key)?;
+        Self::new(raw, &format!("_tako/databases/{name}/{generation}"), key)
+    }
+
     /// `prefix` is the database's own prefix; it is also authenticated with
     /// every segment, so a segment cannot be substituted from elsewhere.
     pub fn new(raw: Arc<dyn ObjectStore>, prefix: &str, key: encryption::Key) -> Result<Self> {

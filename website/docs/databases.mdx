@@ -248,6 +248,8 @@ A restore checks that the server has room, downloads only what it needs (the new
 
 Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no backup. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
 
+For local inspection or disaster recovery, `tako db restore main --latest --output ./recovered.sqlite` creates a portable file directly from uploaded history. A synchronized full-access workstation can do this while the database group is offline. See [local recovery](/backups/#recover-sql-to-a-local-file).
+
 ### Import and export
 
 ```bash

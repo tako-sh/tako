@@ -947,7 +947,8 @@ impl ServerState {
                 (Some(DatabaseEngine::Kv), None) => {
                     snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await
                 }
-                _ => match restore_target(snapshot.as_deref(), at_unix_ms) {
+                _ => match tako_backup::Target::from_restore_point(snapshot.as_deref(), at_unix_ms)
+                {
                     Ok(target) => backups::restore(self, &name, target, backup_key_base64).await,
                     Err(error) => Err(error),
                 },
@@ -1672,23 +1673,6 @@ fn json_value(value: tako_db::Value) -> serde_json::Value {
 }
 
 /// What a `RestoreDatabase` command selects.
-fn restore_target(
-    snapshot: Option<&str>,
-    at_unix_ms: Option<i64>,
-) -> Result<tako_backup::Target, String> {
-    match (snapshot, at_unix_ms) {
-        (Some(_), Some(_)) => Err("Restore either a restore point or a time, not both.".into()),
-        (Some(snapshot), None) => snapshot
-            .parse::<u64>()
-            .ok()
-            .filter(|txid| *txid > 0)
-            .map(tako_backup::Target::Txid)
-            .ok_or_else(|| format!("Restore point {snapshot} is not one `tako db backups` lists.")),
-        (None, Some(at)) => Ok(tako_backup::Target::Time(at)),
-        (None, None) => Ok(tako_backup::Target::Latest),
-    }
-}
-
 pub(crate) fn decode_backup_key(value: &str) -> Result<[u8; 32], String> {
     let bytes = BASE64
         .decode(value)

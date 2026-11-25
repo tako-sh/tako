@@ -7275,6 +7275,7 @@ dependencies = [
  "smoltcp",
  "ssh-key 0.6.7",
  "sysinfo",
+ "tako-backup",
  "tako-cache",
  "tako-channels",
  "tako-compose",

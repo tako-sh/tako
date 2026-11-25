@@ -66,6 +66,18 @@ Apps retain separate Unix users. Tako grants shared-directory access through the
 
 When a voting majority survives, add the replacement server to the environment's deploy targets and deploy. Preparing waits for each selected database and KV store to catch up before that app starts. Use `tako db restore` or `tako kv restore` to roll back the whole resource to an uploaded recovery point. Restoring to the group requires a working quorum.
 
+## Recover SQL to a local file
+
+On a full-access workstation that has synchronized the network, recover an uploaded point directly from backup storage. The database servers can all be offline.
+
+```bash
+tako db restore orders --at 15m --output ./orders-recovered.sqlite
+```
+
+Tako uses the cached generation and recovery key, the project’s configured backup storage, and the storage credentials for `production`. Select another environment with `--env staging`. Use `--latest` or `--snapshot <id>` in place of `--at`. To recover a retired generation, pass its ID with `--generation <id>` and configure the storage that holds its backups.
+
+The command writes a verified, portable database to a new file. An existing destination is preserved. The hosted database keeps serving its current state.
+
 ## Know the limits
 
 Each database is backed up on its own: backups of several databases are not a transactionally consistent snapshot across them. Coordinate app writes when that consistency is required.

@@ -132,14 +132,20 @@ pub(crate) fn backup_key(
     alias: &LocalNetwork,
     record: &DatabaseRecord,
 ) -> Result<Zeroizing<String>> {
-    read(alias, RecordKind::DatabaseKey, false)?
-        .remove(&key_name(record))
+    generation_key(alias, &record.name, &record.generation, false)
+}
+
+/// A local restore can use a previously synchronized key even after retirement.
+pub(crate) fn generation_key(
+    alias: &LocalNetwork,
+    name: &str,
+    generation: &str,
+    cached: bool,
+) -> Result<Zeroizing<String>> {
+    read(alias, RecordKind::DatabaseKey, cached)?
+        .remove(&format!("{name}.{generation}"))
         .ok_or_else(|| {
-            format!(
-                "The snapshot key of database '{}' is not available to this device; it needs full access.",
-                record.name
-            )
-            .into()
+            format!("The recovery key for '{name}' generation {generation} is unavailable. Use a full-access workstation that has synchronized this network.").into()
         })
 }
 

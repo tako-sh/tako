@@ -50,6 +50,47 @@ async function setupProject(
   await writeFile(join(tempDir, "tako.toml"), takoToml);
 }
 
+test("local SQL restore can select a retired generation while every server is offline", async () => {
+  await setupProject({ env: "staging", servers: { offline: { host: "192.0.2.75" } } });
+  const generation = "a".repeat(32);
+  const file = join(tempDir, "recovered.sqlite");
+  const args = [
+    TAKO_BIN,
+    "--dry-run",
+    "--json",
+    "db",
+    "restore",
+    "orders",
+    "--at",
+    "15m",
+    "--output",
+    file,
+    "--env",
+    "staging",
+    "--generation",
+    generation,
+  ];
+  const child = Bun.spawn(args, {
+    cwd: tempDir,
+    env: { ...process.env, TAKO_HOME: takoHome },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (code !== 0) throw new Error(stderr);
+  expect(JSON.parse(stdout)).toMatchObject({
+    dry_run: true,
+    database: "orders",
+    generation,
+    path: file,
+  });
+  expect(await Bun.file(file).exists()).toBe(false);
+});
+
 describe("--dry-run appears in help", () => {
   test("shows --dry-run in global options", async () => {
     const { term } = await run(["--help"], { rows: 40 });
@@ -95,7 +136,10 @@ describe("deploy --dry-run", () => {
   test("previews replay, SQL and KV creation from offline membership without editing the config", async () => {
     await setupProject({ servers: { solo: { host: "10.0.0.1" } } });
     const configPath = join(tempDir, "tako.toml");
-    await appendFile(configPath, 'db = { main = "orders" }\nkv = { auth = "sessions", shared = "sessions" }\n');
+    await appendFile(
+      configPath,
+      'db = { main = "orders" }\nkv = { auth = "sessions", shared = "sessions" }\n',
+    );
     const config = await readFile(configPath, "utf8");
     await mkdir(join(tempDir, "src/channels"), { recursive: true });
     await writeFile(join(tempDir, "src/channels/chat.ts"), 'export default defineChannel("chat");');
