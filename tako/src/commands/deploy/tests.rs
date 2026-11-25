@@ -16,16 +16,14 @@ fn release_command_payload_pins_the_secret_snapshot() {
             "main".into(),
             tako_core::DatabaseBinding {
                 name: "orders".into(),
-                generation: None,
-                server: "s1".into(),
+                generation: "0123456789abcdef0123456789abcdef".into(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Turso,
             },
         )]),
         channel_database: Some(tako_core::DatabaseBinding {
             name: "replay".into(),
-            generation: None,
-            server: "s2".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
             peer_key: None,
             engine: tako_core::DatabaseEngine::Turso,
         }),

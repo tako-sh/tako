@@ -13,7 +13,7 @@ use tako_core::{SnapshotReason, StorageBinding, StorageProvider};
 const ID: &str = "shop";
 const GENERATION: &str = "0123456789abcdef0123456789abcdef";
 
-fn state(temp: &TempDir) -> Arc<ServerState> {
+pub(crate) fn state(temp: &TempDir) -> Arc<ServerState> {
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
         cert_dir: temp.path().join("certs"),
         ..Default::default()
@@ -81,7 +81,7 @@ async fn count(state: &ServerState, id: &str) -> i64 {
         .unwrap()
 }
 
-async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
+pub(crate) async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
     state
         .create_test_database(
             id.into(),
@@ -736,8 +736,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         CHANNEL_REPLAY_BINDING.into(),
         DatabaseBinding {
             name: ID.into(),
-            generation: Some(GENERATION.into()),
-            server: "test-founder".into(),
+            generation: GENERATION.into(),
             peer_key: Some(key.clone()),
             engine: tako_core::DatabaseEngine::Turso,
         },
@@ -1907,71 +1906,50 @@ async fn opening_databases_again_after_a_failure_retries() {
 }
 
 #[tokio::test]
-async fn only_bindings_to_this_server_count_for_its_copy() {
-    let temp = TempDir::new().unwrap();
-    let state = state(&temp);
-    state.open_databases(Some("server-a".into())).await.unwrap();
-    create(&state, ID, None).await;
-    let binding = |server: &str| tako_core::DatabaseBinding {
-        name: ID.into(),
-        generation: None,
-        server: server.into(),
-        peer_key: None,
-        engine: tako_core::DatabaseEngine::Turso,
-    };
-    assert!(state.databases.binds_here(&binding("server-a"), ID));
-    // The database moved: a binding to it on server-b leaves the copy here
-    // unbound, so it can be removed and an app's deployer cannot migrate it.
-    assert!(!state.databases.binds_here(&binding("server-b"), ID));
-    assert!(!state.databases.binds_here(&binding("server-a"), "other"));
-}
-
-#[tokio::test]
-async fn bindings_keep_their_token_only_for_the_same_home() {
+async fn bindings_keep_tokens_only_for_their_resource_generation() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
-    let binding = |server: &str| tako_core::DatabaseBinding {
+    let live = tako_core::DatabaseBinding {
         name: ID.into(),
-        generation: None,
-        server: server.into(),
+        generation: GENERATION.into(),
         peer_key: None,
         engine: tako_core::DatabaseEngine::Turso,
     };
-    let previous = HashMap::from([(
-        "main".to_owned(),
-        crate::state_store::AppDatabase {
-            binding: tako_core::DatabaseBinding {
-                peer_key: Some("old-key".into()),
-                ..binding("edge-a")
+    let previous = |generation: &str| {
+        HashMap::from([(
+            "main".into(),
+            crate::state_store::AppDatabase {
+                binding: tako_core::DatabaseBinding {
+                    generation: generation.into(),
+                    peer_key: Some("old-key".into()),
+                    ..live.clone()
+                },
+                token: "old-token".into(),
             },
-            token: "old-token".into(),
-        },
-    )]);
-    let config = crate::instances::AppConfig::default();
-    let prepare = |server: &str| {
-        state
-            .databases
-            .prepare_bindings(
-                &previous,
-                HashMap::from([("main".to_owned(), binding(server))]),
-                &config,
-            )
-            .unwrap()
-            .remove("main")
-            .unwrap()
+        )])
     };
-    let same = prepare("edge-a");
-    assert_eq!(same.token, "old-token");
-    assert_eq!(same.binding.peer_key.as_deref(), Some("old-key"));
-    // After the database moved, old and new instances need different tokens
-    // so each reaches its own home during the rollout.
-    let moved = prepare("edge-b");
-    assert_ne!(moved.token, "old-token");
-    assert_eq!(
-        moved.binding.peer_key, None,
-        "the old home's key is not reused"
+    let prepare = |previous, requested| {
+        state.databases.prepare_bindings(
+            &previous,
+            HashMap::from([("main".into(), requested)]),
+            &crate::instances::AppConfig::default(),
+        )
+    };
+    let other = "fedcba9876543210fedcba9876543210";
+    assert!(
+        prepare(
+            previous(GENERATION),
+            previous(other)["main"].binding.clone()
+        )
+        .is_err()
     );
+    let same = prepare(previous(GENERATION), live.clone()).unwrap();
+    assert_eq!(same["main"].token, "old-token");
+    assert_eq!(same["main"].binding.peer_key.as_deref(), Some("old-key"));
+    let recreated = prepare(previous(other), live).unwrap();
+    assert_ne!(recreated["main"].token, "old-token");
+    assert!(recreated["main"].binding.peer_key.is_none());
 }
 
 #[tokio::test]
@@ -2274,8 +2252,7 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
         crate::state_store::AppDatabase {
             binding: tako_core::DatabaseBinding {
                 name: ID.into(),
-                generation: None,
-                server: String::new(),
+                generation: GENERATION.into(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Turso,
             },

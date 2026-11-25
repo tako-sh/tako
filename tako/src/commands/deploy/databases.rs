@@ -54,7 +54,7 @@ pub(super) async fn provision(
                             .as_ref()
                             .is_some_and(|p| &p.database_name == name)
                 };
-                if record.engine != entry.binding.engine
+                if record.engine != entry.engine
                     || record.channel_owner.as_deref()
                         != expected_owner(&plan.replay).then_some(app)
                     || record.workflows_owner.as_deref()
@@ -103,7 +103,7 @@ pub(super) async fn scoped_homes(
     let mut homes = Vec::new();
     let mut leaders = HashMap::new();
     for binding in entries {
-        let Some(group) = binding.binding.generation.as_ref() else {
+        let Some(group) = binding.generation.as_ref() else {
             continue;
         };
         if homes.is_empty() {

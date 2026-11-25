@@ -291,7 +291,7 @@ impl TakoToml {
                 })?;
                 if env_config.kv.values().any(|store| *store == channels.db) {
                     return Err(ConfigError::Validation(format!(
-                        "[envs.{env_name}.channels].db names '{}', which this environment binds as a KV store; channel replay needs a SQLite database",
+                        "[envs.{env_name}.channels].db names '{}', which this environment binds as a KV store; channel replay needs a SQL database",
                         channels.db
                     )));
                 }
@@ -302,7 +302,7 @@ impl TakoToml {
                 })?;
                 if env_config.kv.values().any(|store| *store == workflows.db) {
                     return Err(ConfigError::Validation(format!(
-                        "[envs.{env_name}.workflows].db names '{}', which this environment binds as a KV store; workflow runs need a SQLite database",
+                        "[envs.{env_name}.workflows].db names '{}', which this environment binds as a KV store; workflow runs need a SQL database",
                         workflows.db
                     )));
                 }

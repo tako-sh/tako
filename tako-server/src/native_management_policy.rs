@@ -621,6 +621,9 @@ mod tests {
         }
     }
 
+    const GENERATION: &str = "0123456789abcdef0123456789abcdef";
+    const OTHER_GENERATION: &str = "fedcba9876543210fedcba9876543210";
+
     const APP_COMMANDS: &[&str] = &[
         "prepare_release",
         "prepare_release_upload",
@@ -650,7 +653,7 @@ mod tests {
     #[test]
     fn database_administration_requires_server_administrator_permission() {
         let id = "shop";
-        let generation = "0123456789abcdef0123456789abcdef";
+        let generation = GENERATION;
         for command in [
             json!({"command":"coordinate_storage","request":{"operation":"claim","candidate":{
                 "name":id, "engine":"turso", "generation":generation, "created_at_unix_secs":1,
@@ -701,7 +704,7 @@ mod tests {
     #[test]
     fn scoped_deploys_cannot_change_database_bindings() {
         let f = Fixture::new();
-        let binding = json!({"main": {"name": "shop", "server": "edge"}});
+        let binding = json!({"main": {"name": "shop", "generation": GENERATION}});
         let deploy = f.decode_command(json!({"command":"deploy","databases":binding}));
         assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
         let release = f.decode_command(json!({"command":"run_release","databases":binding}));
@@ -715,8 +718,7 @@ mod tests {
         let mut f = Fixture::new();
         let binding = |name: &str| DatabaseBinding {
             name: name.into(),
-            generation: None,
-            server: "edge".into(),
+            generation: GENERATION.into(),
             peer_key: None,
             engine: tako_core::DatabaseEngine::Turso,
         };
@@ -730,12 +732,12 @@ mod tests {
         };
         let runtime = |workflows: &str| {
             json!({
-                "@channels": {"name": "replay", "server": "edge"},
-                "@workflows": {"name": workflows, "server": "edge"},
+                "@channels": {"name": "replay", "generation": GENERATION},
+                "@workflows": {"name": workflows, "generation": GENERATION},
             })
         };
         assert_eq!(f.authorize(&deploy(&f, runtime("runs"))), Ok(()));
-        let workflows = json!({"@workflows": {"name": "runs", "server": "edge"}});
+        let workflows = json!({"@workflows": {"name": "runs", "generation": GENERATION}});
         assert_eq!(f.authorize(&deploy(&f, workflows)), Ok(()));
         // A different target, or a binding never committed, needs a full client.
         assert_eq!(
@@ -756,8 +758,7 @@ mod tests {
             "main".into(),
             DatabaseBinding {
                 name: "shop".into(),
-                generation: None,
-                server: "edge".into(),
+                generation: GENERATION.into(),
                 peer_key: None,
                 engine: tako_core::DatabaseEngine::Turso,
             },
@@ -773,7 +774,7 @@ mod tests {
         assert_eq!(f.authorize(&empty), Ok(()));
 
         // A different, non-empty set is still refused.
-        let other = json!({"main": {"name": "shop", "server": "other"}});
+        let other = json!({"main": {"name": "shop", "generation": OTHER_GENERATION}});
         let moved = f.decode_command(json!({"command":"deploy","databases":other}));
         assert_eq!(f.authorize(&moved), Err(DATABASES_DENIED));
 
@@ -790,28 +791,27 @@ mod tests {
             "main".into(),
             DatabaseBinding {
                 name: "shop".into(),
-                generation: None,
-                server: "edge".into(),
+                generation: GENERATION.into(),
                 peer_key: Some("issued-by-edge".into()),
                 engine: tako_core::DatabaseEngine::Turso,
             },
         );
         // Deployers without administration never see peer keys.
-        let same = json!({"main": {"name": "shop", "server": "edge"}});
+        let same = json!({"main": {"name": "shop", "generation": GENERATION}});
         let release = f.decode_command(json!({"command":"run_release","databases":same}));
         assert_eq!(f.authorize(&release), Ok(()));
-        let moved = json!({"main": {"name": "shop", "server": "other"}});
+        let moved = json!({"main": {"name": "shop", "generation": OTHER_GENERATION}});
         let release = f.decode_command(json!({"command":"run_release","databases":moved}));
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
         // Nor can they replace the issued key, on a release or a deploy.
-        let rekeyed = json!({"main": {"name": "shop", "server": "edge", "peer_key": "guessed"}});
+        let rekeyed =
+            json!({"main": {"name": "shop", "generation": GENERATION, "peer_key": "guessed"}});
         let release = f.decode_command(json!({"command":"run_release","databases":rekeyed}));
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
         let deploy = f.decode_command(json!({"command":"deploy","databases":rekeyed}));
         assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
         // The issued key itself is accepted.
-        let issued =
-            json!({"main": {"name": "shop", "server": "edge", "peer_key": "issued-by-edge"}});
+        let issued = json!({"main": {"name": "shop", "generation": GENERATION, "peer_key": "issued-by-edge"}});
         let deploy = f.decode_command(json!({"command":"deploy","databases":issued}));
         assert_eq!(f.authorize(&deploy), Ok(()));
     }
@@ -819,12 +819,12 @@ mod tests {
     #[test]
     fn scoped_replay_assertions_require_a_provisioned_target_and_never_deliver_it_to_releases() {
         let mut f = Fixture::new();
-        let replay = json!({"@channels":{"name":"streams","server":"edge"}});
+        let replay = json!({"@channels":{"name":"streams","generation": GENERATION}});
         let mut deploy = f.decode_command(json!({"command":"deploy","databases": replay}));
         assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
         f.databases = serde_json::from_value(json!({
-            "@channels":{"name":"streams","server":"edge","peer_key":"service-key"},
-            "main":{"name":"orders","server":"edge","peer_key":"app-key"}
+            "@channels":{"name":"streams","generation": GENERATION,"peer_key":"service-key"},
+            "main":{"name":"orders","generation": GENERATION,"peer_key":"app-key"}
         }))
         .unwrap();
         assert_eq!(f.authorize(&deploy), Ok(()));
@@ -837,10 +837,10 @@ mod tests {
             }
         ));
         for altered in [
-            json!({"@channels":{"name":"other","server":"edge"}}),
-            json!({"@channels":{"name":"streams","server":"edge2"}}),
-            json!({"@channels":{"name":"streams","server":"edge","peer_key":"app-key"}}),
-            json!({"main":{"name":"streams","server":"edge"}}),
+            json!({"@channels":{"name":"other","generation": GENERATION}}),
+            json!({"@channels":{"name":"streams","generation": OTHER_GENERATION}}),
+            json!({"@channels":{"name":"streams","generation": GENERATION,"peer_key":"app-key"}}),
+            json!({"main":{"name":"streams","generation": GENERATION}}),
         ] {
             for command in ["deploy", "run_release"] {
                 assert_eq!(
@@ -1087,7 +1087,7 @@ mod tests {
         }
         // Database bindings need grants, which only full clients make.
         let bound = f.decode_command(
-            json!({"command":"deploy","databases":{"main":{"name":"shop","server":"edge"}}}),
+            json!({"command":"deploy","databases":{"main":{"name":"shop","generation": GENERATION}}}),
         );
         assert_eq!(
             authorize_command(&f.permissions, Some(&f.scope), &bound, &missing),

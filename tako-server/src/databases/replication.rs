@@ -96,17 +96,9 @@ impl ServerState {
             .replication_groups()
             .map_err(|e| e.to_string())?;
         let mut required = BTreeMap::new();
-        for bindings in self
-            .state_store
-            .all_app_databases()
-            .map_err(|e| e.to_string())?
-            .values()
-        {
+        self.visit_persisted_database_bindings(|_, bindings| {
             for binding in bindings.values().map(|entry| &entry.binding) {
-                let generation = binding
-                    .generation
-                    .as_ref()
-                    .ok_or_else(|| format!("Missing generation for {}", binding.name))?;
+                let generation = &binding.generation;
                 let config = groups
                     .get(generation)
                     .ok_or_else(|| format!("Missing local replica for {}", binding.name))?;
@@ -118,7 +110,8 @@ impl ServerState {
                 }
                 required.insert(generation.clone(), binding.name.clone());
             }
-        }
+            Ok(())
+        })?;
         let peer = &self.databases.raft.peer;
         let local = SocketAddr::new(
             proxy.address.into(),
@@ -821,15 +814,6 @@ impl Storage {
             .get(id)
             .is_some_and(|group| group.name == name)
     }
-    pub(super) fn leader(&self, id: &str) -> Option<std::net::Ipv6Addr> {
-        let groups = self.groups.read();
-        groups
-            .get(id)?
-            .resource
-            .current_leader()
-            .map(std::net::Ipv6Addr::from)
-    }
-
     pub(super) async fn shutdown(&self) {
         let groups = std::mem::take(&mut *self.groups.write());
         for (id, group) in groups {

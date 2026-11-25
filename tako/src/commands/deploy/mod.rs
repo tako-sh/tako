@@ -54,8 +54,8 @@ pub(crate) use manifest::resolve_deploy_main;
 fn creation_json(creation: &crate::commands::db::target::PlannedBinding) -> serde_json::Value {
     let mut value =
         serde_json::json!({"name": creation.database_name, "server": creation.home.name});
-    if !creation.binding.engine.is_sql() {
-        value["engine"] = serde_json::json!(creation.binding.engine);
+    if !creation.engine.is_sql() {
+        value["engine"] = serde_json::json!(creation.engine);
     }
     value
 }
@@ -423,7 +423,7 @@ async fn run_async(
         for (name, creation) in &database_plan.create {
             output::dry_run_skip(&format!(
                 "Create {} {name} on {} (cached network plan)",
-                creation.binding.engine.noun(),
+                creation.engine.noun(),
                 creation.home.name
             ));
         }
@@ -741,17 +741,22 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         // Binding names are unique across databases and KV stores.
-        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)
+        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)?
             .into_iter()
             .chain(crate::commands::db::target::wire_bindings(
                 &database_plan.kv,
-            ))
+            )?)
             .collect(),
-        channel_database: database_plan.replay.binding.map(|replay| replay.binding),
+        channel_database: database_plan
+            .replay
+            .binding
+            .map(|replay| replay.wire())
+            .transpose()?,
         workflows_database: database_plan
             .workflows
             .binding
-            .map(|workflows| workflows.binding),
+            .map(|workflows| workflows.wire())
+            .transpose()?,
         force,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

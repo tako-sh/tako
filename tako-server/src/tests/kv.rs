@@ -83,11 +83,15 @@ async fn put(state: &ServerState, name: &str, key: &str, json: &str, ttl_ms: Opt
     }
 }
 
-fn binding(name: &str, engine: DatabaseEngine) -> DatabaseBinding {
+fn binding(state: &ServerState, name: &str, engine: DatabaseEngine) -> DatabaseBinding {
     DatabaseBinding {
         name: name.into(),
-        generation: None,
-        server: String::new(),
+        generation: state
+            .state_store
+            .get_database(name)
+            .unwrap()
+            .unwrap()
+            .generation,
         peer_key: None,
         engine,
     }
@@ -466,8 +470,14 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         .prepare_bindings(
             &HashMap::new(),
             HashMap::from([
-                ("auth".to_owned(), binding("sessions", DatabaseEngine::Kv)),
-                ("main".to_owned(), binding("main", DatabaseEngine::Turso)),
+                (
+                    "auth".to_owned(),
+                    binding(&state, "sessions", DatabaseEngine::Kv),
+                ),
+                (
+                    "main".to_owned(),
+                    binding(&state, "main", DatabaseEngine::Turso),
+                ),
             ]),
             &config,
         )
@@ -477,7 +487,10 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         .databases
         .prepare_bindings(
             &HashMap::new(),
-            HashMap::from([("auth".to_owned(), binding("main", DatabaseEngine::Kv))]),
+            HashMap::from([(
+                "auth".to_owned(),
+                binding(&state, "main", DatabaseEngine::Kv),
+            )]),
             &config,
         )
         .unwrap_err();
@@ -711,7 +724,7 @@ i=0; while [ ! -f done ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i+1)); done"#;
                     secrets_digest: None,
                     databases: HashMap::from([(
                         "auth".to_owned(),
-                        binding("sessions", DatabaseEngine::Kv),
+                        binding(&state, "sessions", DatabaseEngine::Kv),
                     )]),
                     force: false,
                 })

@@ -1,4 +1,4 @@
-//! `tako db`: Tako-hosted SQLite databases.
+//! `tako db`: Tako-hosted Turso databases.
 //!
 //! A database belongs to the network, not to an environment: commands find
 //! the network from the project's environments, and environments bind
@@ -450,7 +450,7 @@ impl Context {
         )?)
     }
 
-    /// A SQLite database of the network and its home server.
+    /// A network SQL database and its elected leader.
     async fn database(
         &self,
         name: &str,
@@ -1016,7 +1016,7 @@ pub(crate) async fn status(
     Ok(())
 }
 
-/// How `status` describes backups: continuous for SQLite databases,
+/// How `status` describes backups: continuous for SQL databases,
 /// snapshots for KV stores.
 fn backup_status_line(engine: DatabaseEngine, backup: &tako_core::DatabaseBackupStatus) -> String {
     let snapshot = backup

@@ -247,7 +247,7 @@ fn pick_free_port() -> Option<u16> {
 mod archive_boot;
 mod compose_scaling;
 mod compose_sdk;
-mod databases;
+pub(crate) mod databases;
 mod delete_upgrade;
 mod deploy;
 mod kv;

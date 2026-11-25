@@ -1,7 +1,7 @@
 //! Tako-hosted databases: the wire types shared by the CLI, the server, and
 //! app SDKs.
 //!
-//! A database is a file owned by the server that hosts it (its home server):
+//! Each binding names a replicated resource with an elected leader:
 //! a Turso SQL database, or a key-value store of JSON values with optional
 //! expiry. Its name identifies it: names are unique within a network, across
 //! both engines. Apps reach it through a binding: the server gives each bound
@@ -126,12 +126,9 @@ impl DatabaseEngine {
 pub struct DatabaseBinding {
     /// The database's name, unique within the network.
     pub name: String,
-    /// Device ID of the database's server.
-    pub server: String,
-    /// An immutable resource generation when this binding uses Raft.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<String>,
-    /// Key the database's server issued with its grant to this app
+    /// Immutable generation claimed by the network catalog for this resource.
+    pub generation: String,
+    /// Key the resource group issued with its grant to this app
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_key: Option<String>,
@@ -146,7 +143,6 @@ impl DatabaseBinding {
         self.name == other.name
             && self.engine == other.engine
             && self.generation == other.generation
-            && (self.generation.is_some() || self.server == other.server)
     }
 }
 
@@ -154,7 +150,6 @@ impl std::fmt::Debug for DatabaseBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseBinding")
             .field("name", &self.name)
-            .field("server", &self.server)
             .field("generation", &self.generation)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
             .field("engine", &self.engine)
@@ -407,16 +402,21 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_bindings_serialize_without_an_engine() {
+    fn sql_bindings_require_a_generation_and_serialize_without_an_engine() {
         let binding = DatabaseBinding {
             name: "main".into(),
-            generation: None,
-            server: "s".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
             peer_key: None,
             engine: DatabaseEngine::Turso,
         };
         let json = serde_json::to_value(&binding).unwrap();
-        assert_eq!(json, serde_json::json!({"name": "main", "server": "s"}));
+        assert_eq!(
+            json,
+            serde_json::json!({"name": "main", "generation": binding.generation})
+        );
+        assert!(
+            serde_json::from_value::<DatabaseBinding>(serde_json::json!({"name": "main"})).is_err()
+        );
         let kv = DatabaseBinding {
             engine: DatabaseEngine::Kv,
             ..binding.clone()

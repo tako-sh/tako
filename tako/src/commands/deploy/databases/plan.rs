@@ -158,12 +158,12 @@ pub(in crate::commands::deploy) fn plan(
             if record.engine != engine {
                 if engine == DatabaseEngine::Kv {
                     return Err(format!(
-                        "'{name}' is a SQLite database. Bind it under [envs.{env}].db instead of kv."
+                        "'{name}' is a SQL database. Bind it under [envs.{env}].db instead of kv."
                     ));
                 }
                 return Err(match usage {
                     Some((service, _)) => format!(
-                        "'{name}' is a KV store, so it cannot hold {}. Select a SQLite database with [envs.{env}.{}].db.",
+                        "'{name}' is a KV store, so it cannot hold {}. Select a SQL database with [envs.{env}.{}].db.",
                         service.noun(),
                         service.table()
                     ),
@@ -192,8 +192,7 @@ pub(in crate::commands::deploy) fn plan(
                 }
                 _ => {}
             }
-            planned.binding.generation = Some(record.generation.clone());
-            planned.binding.server = record.server.clone();
+            planned.generation = Some(record.generation.clone());
         } else if administrator {
             plan.create
                 .entry(name.to_owned())
@@ -242,7 +241,7 @@ pub(in crate::commands::deploy) fn plan(
     for (binding, name) in &environment.databases {
         if environment.kv.values().any(|store| store == name) {
             return Err(format!(
-                "'{name}' is bound as both a SQLite database and a KV store in {env}. Use separate resource names."
+                "'{name}' is bound as both a SQL database and a KV store in {env}. Use separate resource names."
             ));
         }
         plan.sql
@@ -388,10 +387,7 @@ mod tests {
         let planned = placement(&moved).unwrap();
         let replay = planned.replay.binding.unwrap();
         assert_eq!(replay.home.name, "west");
-        assert_eq!(
-            replay.binding.generation.as_ref(),
-            Some(&moved[0].generation)
-        );
+        assert_eq!(replay.generation.as_ref(), Some(&moved[0].generation));
     }
 
     #[test]
@@ -457,7 +453,7 @@ mod tests {
             &[record(&name, None)],
         )
         .unwrap();
-        assert!(explicit.replay.binding.unwrap().binding.peer_key.is_none());
+        assert!(explicit.replay.binding.unwrap().peer_key.is_none());
         for settings in [
             "db={main='orders'}",
             "kv={auth='sessions'}",
@@ -492,15 +488,12 @@ mod tests {
         };
         // A KV binding names an existing store and is planned apart from SQL.
         let planned = place("kv={auth='sessions'}", &[kv("sessions")]).unwrap();
-        assert_eq!(
-            planned.kv["auth"].binding.engine,
-            tako_core::DatabaseEngine::Kv
-        );
+        assert_eq!(planned.kv["auth"].engine, tako_core::DatabaseEngine::Kv);
         assert!(planned.sql.is_empty() && planned.create.is_empty());
         let first = place("kv={auth='sessions', shared='sessions'}", &[]).unwrap();
         assert_eq!(first.create.len(), 1);
         assert_eq!(first.kv.len(), 2);
-        assert_eq!(first.create["sessions"].binding.engine, DatabaseEngine::Kv);
+        assert_eq!(first.create["sessions"].engine, DatabaseEngine::Kv);
         assert_eq!(first.create["sessions"].home.name, "west");
         assert!(
             place("db={main='sessions'}\nkv={auth='sessions'}", &[])
@@ -513,7 +506,7 @@ mod tests {
             place("kv={auth='main'}", &[record("main", None)])
                 .err()
                 .unwrap()
-                .contains("is a SQLite database")
+                .contains("is a SQL database")
         );
         assert!(
             place("db={main='sessions'}", &[kv("sessions")])
@@ -521,7 +514,7 @@ mod tests {
                 .unwrap()
                 .contains("is a KV store")
         );
-        // Channel replay needs a SQLite database.
+        // Channel replay needs a SQL database.
         assert!(
             place("channels.db='sessions'", &[kv("sessions")])
                 .err()

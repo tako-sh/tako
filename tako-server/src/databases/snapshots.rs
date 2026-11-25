@@ -1,4 +1,4 @@
-//! Snapshot backups of KV stores. SQLite databases are backed up
+//! Snapshot backups of KV stores. SQL databases are backed up
 //! continuously instead (see [`super::backups`]), which also owns the
 //! scheduler, disk-space reservations and work directories these use.
 //!

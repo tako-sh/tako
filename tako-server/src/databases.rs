@@ -268,15 +268,8 @@ impl Databases {
         self.server_id.read().clone()
     }
 
-    /// Whether `binding` reaches this server's copy of database `name`. A
-    /// binding to the same name on another server (where a move took the
-    /// database) does not: that copy is someone else's.
     pub(crate) fn binds_here(&self, binding: &DatabaseBinding, name: &str) -> bool {
-        binding.name == name
-            && match &binding.generation {
-                Some(id) => self.raft.hosts(id, name),
-                None => self.server_id().is_none_or(|own| own == binding.server),
-            }
+        binding.name == name && self.raft.hosts(&binding.generation, name)
     }
 
     /// The connections app processes receive for their bindings.
@@ -288,68 +281,39 @@ impl Databases {
     }
 
     fn home(&self, binding: &DatabaseBinding) -> Home {
-        let server_id = self.server_id();
-        let peer_port = match binding.engine {
-            DatabaseEngine::Turso => self.peer_port,
-            DatabaseEngine::Kv => self.kv_peer_port,
+        let unavailable = || Home::Unavailable {
+            reason: format!("waiting for the leader of {}", binding.name),
         };
-        if let Some(id) = &binding.generation {
-            let unavailable = || Home::Unavailable {
-                reason: format!("waiting for the leader of {}", binding.name),
-            };
-            if !self.raft.hosts(id, &binding.name) {
-                return unavailable();
-            }
-            let Some(leader) = self.raft.leader(id) else {
-                return unavailable();
-            };
-            let proxy = self.proxy.read();
-            let Some(proxy) = proxy.as_ref() else {
-                return unavailable();
-            };
-            if proxy.address == leader {
-                return Home::Local;
-            }
-            let address = IpAddr::V6(leader);
-            if proxy.is_server_address(address)
-                && let Some(key) = &binding.peer_key
-            {
-                return Home::Remote {
-                    upstream: SocketAddr::new(address, peer_port),
-                    key: key.clone(),
-                };
-            }
+        if !self.binds_here(binding, &binding.name) {
             return unavailable();
         }
-        match server_id {
-            Some(own) if own == binding.server => Home::Local,
-            Some(_) => match (
-                self.proxy
-                    .read()
-                    .as_ref()
-                    .and_then(|proxy| proxy.server_address(&binding.server)),
-                &binding.peer_key,
-            ) {
-                (Some(address), Some(key)) => Home::Remote {
-                    upstream: SocketAddr::new(address, peer_port),
-                    key: key.clone(),
-                },
-                (_, None) => Home::Unavailable {
-                    reason: format!(
-                        "the {}'s server has not granted this app access; deploy it again from a full client",
-                        binding.engine.noun()
-                    ),
-                },
-                (None, _) => Home::Unavailable {
-                    reason: format!(
-                        "the server hosting this {} is not reachable right now",
-                        binding.engine.noun()
-                    ),
-                },
-            },
-            // Outside a native network every database is local.
-            None => Home::Local,
+        let Some(resource) = self.raft.resource(&binding.generation) else {
+            return unavailable();
+        };
+        if resource.leads() {
+            return Home::Local;
         }
+        let Some(leader) = resource.current_leader() else {
+            return unavailable();
+        };
+        let address = IpAddr::V6(leader.into());
+        if self
+            .proxy
+            .read()
+            .as_ref()
+            .is_some_and(|proxy| proxy.is_server_address(address))
+            && let Some(key) = &binding.peer_key
+        {
+            let port = match binding.engine {
+                DatabaseEngine::Turso => self.peer_port,
+                DatabaseEngine::Kv => self.kv_peer_port,
+            };
+            return Home::Remote {
+                upstream: SocketAddr::new(address, port),
+                key: key.clone(),
+            };
+        }
+        unavailable()
     }
 
     /// Points the tokens of an app environment at their databases. Several
@@ -389,12 +353,7 @@ impl Databases {
                     continue;
                 }
                 let home = self.home(&binding.binding);
-                if binding
-                    .binding
-                    .generation
-                    .as_ref()
-                    .is_some_and(|id| self.raft.hosts(id, &binding.binding.name))
-                {
+                if self.binds_here(&binding.binding, &binding.binding.name) {
                     local_replicas
                         .insert(tako_core::BindingTokenHashes::new(&binding.token).replica);
                 }
@@ -470,7 +429,6 @@ impl Databases {
         if requested.is_empty() {
             return Ok(HashMap::new());
         }
-        let own = self.server_id();
         let mut prepared = HashMap::new();
         for (name, binding) in requested {
             if tako_core::is_runtime_binding(&name) {
@@ -493,7 +451,7 @@ impl Databases {
                 }
                 if binding.engine != DatabaseEngine::Turso {
                     return Err(format!(
-                        "{needs} needs a SQLite database; {} is a KV store.",
+                        "{needs} needs a SQL database; {} is a KV store.",
                         binding.name
                     ));
                 }
@@ -507,30 +465,21 @@ impl Databases {
                 }
             }
             tako_core::validate_database_name(&binding.name)?;
-            if let Some(id) = &binding.generation {
-                tako_core::validate_database_generation(id)?;
-                if !self.raft.hosts(id, &binding.name) {
-                    return Err(format!(
-                        "Replica of {} is not ready on this server.",
-                        binding.name
-                    ));
-                }
+            tako_core::validate_database_generation(&binding.generation)?;
+            if !self.binds_here(&binding, &binding.name) {
+                return Err(format!(
+                    "Replica of {} is not ready on this server.",
+                    binding.name
+                ));
             }
-            let local = binding.generation.is_some()
-                || match &own {
-                    Some(own) => own == &binding.server,
-                    None => true,
-                };
-            if local && !self.is_registered(&binding.name, binding.engine) {
+            if !self.is_registered(&binding.name, binding.engine) {
                 return Err(format!(
                     "Database binding `{name}` names {} {} that is not hosted on this server.",
                     binding.engine.noun(),
                     binding.name
                 ));
             }
-            // A binding keeps its token only while it reaches the same copy:
-            // after a database moves to another server, old and new
-            // instances must route to their own homes during the rollout.
+            // A recreated name belongs to a new generation and gets fresh credentials.
             let existing = previous
                 .get(&name)
                 .filter(|existing| existing.binding.same_target(&binding));
@@ -540,16 +489,6 @@ impl Databases {
             let mut binding = binding;
             if binding.peer_key.is_none() {
                 binding.peer_key = existing.and_then(|existing| existing.binding.peer_key.clone());
-            }
-            if tako_core::is_runtime_binding(&name)
-                && !local
-                && binding.peer_key.as_deref().is_none_or(str::is_empty)
-            {
-                return Err(if name == CHANNEL_REPLAY_BINDING {
-                    "Remote channel replay requires a database grant from a full client.".into()
-                } else {
-                    "Remote workflow storage requires a database grant from a full client.".into()
-                });
             }
             prepared.insert(name, AppDatabase { binding, token });
         }
@@ -951,7 +890,7 @@ impl ServerState {
                 // KV stores keep snapshot backups, without a history to
                 // restore a moment of.
                 (Some(DatabaseEngine::Kv), Some(_)) => Err(format!(
-                    "{name} is a KV store, which restores from its snapshots; a time works only on SQLite databases."
+                    "{name} is a KV store, which restores from its snapshots; a time works only on SQL databases."
                 )),
                 (Some(DatabaseEngine::Kv), None) => {
                     snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await
@@ -1230,28 +1169,16 @@ impl ServerState {
         Ok(serde_json::json!({ "databases": infos }))
     }
 
-    fn database_info(&self, stored: &StoredDatabase) -> Result<DatabaseInfo, String> {
-        let mut bindings = BTreeSet::new();
-        let mut record = |scope: &str, set: &HashMap<String, AppDatabase>| {
-            for (alias, binding) in set {
-                let matches = match binding.binding.generation.as_ref() {
-                    Some(id) => id == &stored.generation && binding.binding.name == stored.name,
-                    None => self.databases.binds_here(&binding.binding, &stored.name),
-                };
-                if matches {
-                    bindings.insert(
-                        tako_core::runtime_grant_scope(alias, scope)
-                            .unwrap_or_else(|| scope.to_owned()),
-                    );
-                }
-            }
-        };
+    fn visit_persisted_database_bindings(
+        &self,
+        mut visit: impl FnMut(&str, &HashMap<String, AppDatabase>) -> Result<(), String>,
+    ) -> Result<(), String> {
         for (scope, set) in self
             .state_store
             .all_app_databases()
             .map_err(|e| format!("read database bindings: {e}"))?
         {
-            record(&scope, &set);
+            visit(&scope, &set)?;
         }
         // A compacted release can still roll back from its archive. Only an
         // actual archive makes a historical binding reachable. An I/O error
@@ -1273,9 +1200,30 @@ impl ServerState {
                     .release_databases(&scope, &version)
                     .map_err(|e| e.to_string())?
             {
-                record(&scope, &bindings);
+                visit(&scope, &bindings)?;
             }
         }
+        Ok(())
+    }
+
+    fn database_info(&self, stored: &StoredDatabase) -> Result<DatabaseInfo, String> {
+        let mut bindings = BTreeSet::new();
+        let mut record = |scope: &str, set: &HashMap<String, AppDatabase>| {
+            for (alias, binding) in set {
+                if binding.binding.generation == stored.generation
+                    && binding.binding.name == stored.name
+                {
+                    bindings.insert(
+                        tako_core::runtime_grant_scope(alias, scope)
+                            .unwrap_or_else(|| scope.to_owned()),
+                    );
+                }
+            }
+        };
+        self.visit_persisted_database_bindings(|scope, set| {
+            record(scope, set);
+            Ok(())
+        })?;
         // The binding sets in use, also the previous one a rollout keeps
         // until old instances drain, and a release command's.
         for (scope, sets) in self.databases.applied.lock().iter() {
@@ -1654,7 +1602,7 @@ impl ServerState {
             Err(message) => return Response::error(message),
         };
         if stored.engine != DatabaseEngine::Kv {
-            return Response::error(format!("{id} is a SQLite database; use `tako db shell`."));
+            return Response::error(format!("{id} is a SQL database; use `tako db shell`."));
         }
         let store = match tako_kv::StoreId::parse(id) {
             Ok(store) => store,
@@ -1755,47 +1703,99 @@ pub(crate) fn now_unix_secs() -> u64 {
 mod tests {
     use super::*;
 
-    fn binding(server: &str, key: Option<&str>) -> DatabaseBinding {
+    const GENERATION: &str = "0123456789abcdef0123456789abcdef";
+
+    fn binding(key: Option<&str>) -> DatabaseBinding {
         DatabaseBinding {
             name: "shop".into(),
-            generation: None,
-            server: server.into(),
+            generation: GENERATION.into(),
             peer_key: key.map(str::to_owned),
-            engine: tako_core::DatabaseEngine::Turso,
+            engine: DatabaseEngine::Turso,
         }
     }
 
-    #[test]
-    fn remote_bindings_need_their_grant_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::new(dir.path());
-        *databases.server_id.write() = Some("this".into());
-        assert_eq!(databases.home(&binding("this", None)), Home::Local);
-        let Home::Unavailable { reason } = databases.home(&binding("other", None)) else {
-            panic!("a remote binding without a key is unavailable");
+    #[tokio::test]
+    async fn recovery_requires_a_rollback_generation_until_its_archive_is_removed() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = crate::tests::databases::state(&dir);
+        let mut config = AppConfig {
+            name: "shop".into(),
+            environment: "production".into(),
+            version: "v1".into(),
+            ..Default::default()
         };
-        assert!(reason.contains("full client"));
-        // Without the network, other servers' addresses are unknown.
-        let Home::Unavailable { reason } = databases.home(&binding("other", Some("key"))) else {
-            panic!("an unknown address is unavailable");
-        };
-        assert!(reason.contains("not reachable"));
+        config.databases.insert(
+            "main".into(),
+            AppDatabase {
+                binding: binding(None),
+                token: "token".into(),
+            },
+        );
+        state
+            .state_store
+            .commit_deployment(&config, &[], None, None)
+            .unwrap();
+        let archive = crate::release::app_root(dir.path(), &config.deployment_id())
+            .join("archives/v1/release.tar.zst");
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, []).unwrap();
+        config.version = "v2".into();
+        config.databases.clear();
+        state
+            .state_store
+            .commit_deployment(&config, &[], None, None)
+            .unwrap();
+        let proxy =
+            crate::native_proxy::NativeProxy::loopback_storage(dir.path(), "test-founder".into());
+        let error = state
+            .recover_assigned_storage(&proxy, "test-founder", false)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Missing local replica for shop");
+        std::fs::remove_file(archive).unwrap();
+        state
+            .visit_persisted_database_bindings(|_, bindings| {
+                assert!(bindings.is_empty());
+                Ok(())
+            })
+            .unwrap();
     }
 
-    #[test]
-    fn release_bindings_take_the_environment_peer_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::new(dir.path());
-        *databases.server_id.write() = Some("this".into());
+    #[tokio::test]
+    async fn routes_require_the_elected_leader_of_the_bound_generation() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = crate::tests::databases::state(&dir);
+        assert!(matches!(
+            state.databases.home(&binding(None)),
+            Home::Unavailable { .. }
+        ));
+        crate::tests::databases::create(&state, "shop", None).await;
+        assert_eq!(state.databases.home(&binding(None)), Home::Local);
+        let retired = DatabaseBinding {
+            generation: "fedcba9876543210fedcba9876543210".into(),
+            ..binding(None)
+        };
+        assert!(matches!(
+            state.databases.home(&retired),
+            Home::Unavailable { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_bindings_take_the_environment_peer_key() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = crate::tests::databases::state(&dir);
+        crate::tests::databases::create(&state, "shop", None).await;
+        let databases = &state.databases;
         let mut config = AppConfig::default();
         config.databases.insert(
             "main".into(),
             AppDatabase {
-                binding: binding("other", Some("issued")),
+                binding: binding(Some("issued")),
                 token: "app-token".into(),
             },
         );
-        let requested = HashMap::from([("main".to_owned(), binding("other", None))]);
+        let requested = HashMap::from([("main".to_owned(), binding(None))]);
         let (connections, _) = databases
             .begin_release("demo/production", &config, requested)
             .unwrap();
@@ -1814,15 +1814,16 @@ mod tests {
         assert!(databases.start_deleting("shop").is_ok());
     }
 
-    #[test]
-    fn only_sdk_releases_can_bind_hosted_replay_and_only_native_releases_can_bind_app_sql() {
-        let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::new(dir.path());
-        *databases.server_id.write() = Some("edge".into());
+    #[tokio::test]
+    async fn only_sdk_releases_can_bind_hosted_replay_and_only_native_releases_can_bind_app_sql() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = crate::tests::databases::state(&dir);
+        crate::tests::databases::create(&state, "shop", None).await;
+        let databases = &state.databases;
         let prepare = |alias: &str, config: &AppConfig| {
             databases.prepare_bindings(
                 &HashMap::new(),
-                HashMap::from([(alias.to_owned(), binding("other", Some("issued")))]),
+                HashMap::from([(alias.to_owned(), binding(Some("issued")))]),
                 config,
             )
         };

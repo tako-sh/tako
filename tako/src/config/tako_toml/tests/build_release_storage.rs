@@ -643,7 +643,7 @@ fn kv_bindings_parse_and_share_names_with_databases() {
     .unwrap_err()
     .to_string();
     assert!(
-        replay.contains("channel replay needs a SQLite database"),
+        replay.contains("channel replay needs a SQL database"),
         "{replay}"
     );
 }

@@ -78,7 +78,6 @@ pub(super) async fn prepare_replicas(
                 plan.create
                     .get(&name)
                     .ok_or("Missing storage creation plan")?
-                    .binding
                     .engine,
                 (
                     is_owner(&plan.replay).then(|| app.to_owned()),
@@ -277,12 +276,12 @@ pub(super) async fn prepare_replicas(
                     .chain(plan.kv.values_mut())
                     .filter(|p| p.database_name == name)
                 {
-                    p.binding.peer_key = Some(key.to_owned());
+                    p.peer_key = Some(key.to_owned());
                 }
             } else if scope == tako_core::channel_replay_grant_scope(app) {
-                plan.replay.binding.as_mut().unwrap().binding.peer_key = Some(key.to_owned());
+                plan.replay.binding.as_mut().unwrap().peer_key = Some(key.to_owned());
             } else {
-                plan.workflows.binding.as_mut().unwrap().binding.peer_key = Some(key.to_owned());
+                plan.workflows.binding.as_mut().unwrap().peer_key = Some(key.to_owned());
             }
         }
         for planned in plan
@@ -293,8 +292,7 @@ pub(super) async fn prepare_replicas(
             .chain(plan.workflows.binding.iter_mut())
             .filter(|p| p.database_name == name)
         {
-            planned.binding.generation = Some(generation.clone());
-            planned.binding.server = record.server.clone();
+            planned.generation = Some(generation.clone());
             planned.home = elected.clone();
         }
     }

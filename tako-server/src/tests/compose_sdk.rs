@@ -117,7 +117,7 @@ async fn deploy(state: &ServerState, dir: &Path, secret: &str) {
                 "command":"deploy", "app":APP, "version":"v1",
                 "path":crate::release::app_release_root(dir, APP, "v1"),
                 "routes":["sdk.localhost"], "secrets_digest":digest,
-                "databases": {"@workflows": {"name": WORKFLOWS, "server": "local"}}
+                "databases": {"@workflows": {"name": WORKFLOWS, "generation": "0123456789abcdef0123456789abcdef"}}
             }))
             .unwrap(),
         )
