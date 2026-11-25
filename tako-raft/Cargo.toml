@@ -12,7 +12,6 @@ getrandom = "0.4"
 openraft = { version = "=0.10.1", default-features = false, features = ["tokio-rt", "serde", "type-alias"] }
 parking_lot = "0.13"
 postcard = { version = "1", features = ["alloc"] }
-rusqlite = { workspace = true, features = ["backup", "hooks"] }
 serde.workspace = true
 serde_bytes = "0.11"
 tempfile = "=3.27.0"
@@ -21,6 +20,7 @@ tokio.workspace = true
 redb = "5"
 
 [dev-dependencies]
+rusqlite.workspace = true
 tako-db = { path = "../tako-db" }
 tako-kv = { path = "../tako-kv" }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

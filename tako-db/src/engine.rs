@@ -200,26 +200,7 @@ impl Shared {
 
 /// Creates an empty database in WAL mode. Fails if the file already exists.
 pub fn create_database(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        return Err(format!("{} already exists", path.display()));
-    }
-    let conn = rusqlite::Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_EXRESCODE,
-    )
-    .map_err(|e| e.to_string())?;
-    let mode: String = conn
-        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    if !mode.eq_ignore_ascii_case("wal") {
-        return Err(format!("database refused WAL mode ({mode})"));
-    }
-    conn.execute_batch("PRAGMA user_version = 0")
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::mvcc::create_empty_portable(path).map_err(|e| e.to_string())
 }
 
 /// Checks that a file is a SQLite database that passes `PRAGMA integrity_check`,

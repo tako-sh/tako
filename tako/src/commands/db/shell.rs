@@ -88,13 +88,34 @@ fn report(result: Result<(), Box<dyn std::error::Error>>) {
     }
 }
 
-/// Whether `sql` ends with a complete statement, by SQLite's own rules.
+/// Submit a terminated statement, including an entire CREATE TRIGGER body.
+/// Let the server report syntax errors as soon as the user terminates the line.
 fn is_complete(sql: &str) -> bool {
-    let Ok(text) = std::ffi::CString::new(sql) else {
-        return true;
-    };
-    // SAFETY: `text` is a valid NUL-terminated string for the call.
-    unsafe { rusqlite::ffi::sqlite3_complete(text.as_ptr()) != 0 }
+    use turso_parser::{error::Error, lexer::Lexer, parser::Parser, token::TokenType};
+    let mut terminated = false;
+    for token in Lexer::new(sql.as_bytes()) {
+        match token {
+            Ok(token) if token.token_type == TokenType::TK_NONE => continue,
+            Ok(token) => terminated = token.token_type == TokenType::TK_SEMI,
+            Err(
+                Error::UnterminatedLiteral { .. }
+                | Error::UnterminatedBracket { .. }
+                | Error::UnterminatedBlockComment { .. },
+            ) => return false,
+            Err(_) => return sql.trim_end().ends_with(';'),
+        }
+    }
+    if !terminated {
+        return false;
+    }
+    let mut parser = Parser::new(sql.as_bytes());
+    loop {
+        match parser.next_cmd() {
+            Ok(Some(_)) => continue,
+            Err(Error::ParseUnexpectedEOF) => return false,
+            Ok(None) | Err(_) => return true,
+        }
+    }
 }
 
 async fn execute(home: &Home, name: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -183,9 +204,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn statements_complete_by_sqlite_rules() {
+    fn statement_completion_uses_turso_grammar() {
         assert!(is_complete("SELECT 1;"));
         assert!(!is_complete("SELECT 1"));
+        assert!(is_complete("SELECT 1; -- trailing comment"));
+        assert!(!is_complete("SELECT 1; SELECT 2"));
+        assert!(is_complete("SELECT FROM;"));
         assert!(!is_complete("SELECT ';"));
         assert!(is_complete(
             "CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END;"

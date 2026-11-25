@@ -7300,6 +7300,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "turso_parser",
  "unicode-width 0.2.2",
  "x509-parser",
  "zeroize",

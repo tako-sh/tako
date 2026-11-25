@@ -97,7 +97,7 @@ impl Owner {
         }
         drop(lock);
         let owner = Self::open_database(&copy, Some(directory), None, None, None)?;
-        export_copy(&owner, dest)
+        export_copy(owner, dest)
     }
 }
 

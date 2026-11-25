@@ -2,14 +2,17 @@
 //! original bootstrap, even when the two deploys selected disjoint servers.
 use crate::{
     Applied,
-    disk::{decode, encode, error},
+    disk::{RecordReader, Records, error, lookup, put},
 };
-use rusqlite::{Connection, OptionalExtension};
+use redb::{TableDefinition, WriteTransaction};
+pub(crate) const NAMES: Records = TableDefinition::new("resource_names");
+pub(crate) const GENERATIONS: Records = TableDefinition::new("used_generations");
+pub(crate) const RETIREMENTS: Records = TableDefinition::new("retirements");
 use std::io;
 
 pub use tako_core::StorageClaim as Claim;
 
-pub(crate) fn claim(db: &Connection, candidate: Claim) -> io::Result<Applied> {
+pub(crate) fn claim(db: &WriteTransaction, candidate: Claim) -> io::Result<Applied> {
     if tako_core::validate_database_name(&candidate.name).is_err()
         || tako_core::validate_database_generation(&candidate.generation).is_err()
         || candidate.founders.is_empty()
@@ -21,16 +24,7 @@ pub(crate) fn claim(db: &Connection, candidate: Claim) -> io::Result<Applied> {
     {
         return Ok(Applied::Invalid);
     }
-    let stored: Option<Vec<u8>> = db
-        .query_row(
-            "SELECT claim FROM resource_names WHERE name=?1",
-            [&candidate.name],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(error)?;
-    if let Some(stored) = stored {
-        let owner: Claim = decode(&stored)?;
+    if let Some(owner) = lookup::<Claim>(db, NAMES, &candidate.name)? {
         if retirement(db, &owner.generation)?.is_some() {
             return Ok(Applied::Invalid);
         }
@@ -39,71 +33,35 @@ pub(crate) fn claim(db: &Connection, candidate: Claim) -> io::Result<Applied> {
         }
         return Ok(Applied::Claimed(owner));
     }
-    let used: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM used_generations WHERE id=?1)",
-            [&candidate.generation],
-            |row| row.get(0),
-        )
-        .map_err(error)?;
-    if used {
+    if lookup::<()>(db, GENERATIONS, &candidate.generation)?.is_some() {
         return Ok(Applied::Invalid);
     }
-    db.execute(
-        "INSERT INTO used_generations VALUES (?1)",
-        [&candidate.generation],
-    )
-    .map_err(error)?;
-    db.execute(
-        "INSERT INTO resource_names VALUES (?1,?2)",
-        (&candidate.name, encode(&candidate)?),
-    )
-    .map_err(error)?;
+    put(db, GENERATIONS, &candidate.generation, &())?;
+    put(db, NAMES, &candidate.name, &candidate)?;
     Ok(Applied::Claimed(candidate))
 }
 
-pub(crate) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS resource_names(name TEXT PRIMARY KEY,claim BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS retirements(id TEXT PRIMARY KEY,targets BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS used_generations(id TEXT PRIMARY KEY) WITHOUT ROWID;";
-
-pub(crate) fn retire(db: &Connection, name: &str, generation: &str) -> io::Result<Applied> {
-    let data: Option<Vec<u8>> = db
-        .query_row(
-            "SELECT claim FROM resource_names WHERE name=?1",
-            [name],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(error)?;
+pub(crate) fn retire(db: &WriteTransaction, name: &str, generation: &str) -> io::Result<Applied> {
     if retirement(db, generation)?.is_none() {
         return Ok(Applied::Invalid);
     }
-    if let Some(data) = data
-        && decode::<Claim>(&data)?.generation == generation
-    {
-        db.execute("DELETE FROM resource_names WHERE name=?1", [name])
+    if lookup::<Claim>(db, NAMES, name)?.is_some_and(|claim| claim.generation == generation) {
+        db.open_table(NAMES)
+            .map_err(error)?
+            .remove(name)
             .map_err(error)?;
     }
     Ok(Applied::NoChange)
 }
 
 pub(crate) fn retirement(
-    db: &Connection,
+    db: &impl RecordReader,
     generation: &str,
 ) -> io::Result<Option<std::collections::BTreeSet<String>>> {
-    let bytes: Option<Vec<u8>> = db
-        .query_row(
-            "SELECT targets FROM retirements WHERE id=?1",
-            [generation],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(error)?;
-    bytes.map(|d| decode(&d)).transpose()
+    lookup(db, RETIREMENTS, generation)
 }
 pub(crate) fn begin_retirement(
-    db: &Connection,
+    db: &WriteTransaction,
     generation: &str,
     targets: std::collections::BTreeSet<String>,
 ) -> io::Result<Applied> {
@@ -114,10 +72,6 @@ pub(crate) fn begin_retirement(
             Applied::Invalid
         });
     }
-    db.execute(
-        "INSERT INTO retirements VALUES(?1,?2)",
-        (generation, encode(&targets)?),
-    )
-    .map_err(error)?;
+    put(db, RETIREMENTS, generation, &targets)?;
     Ok(Applied::NoChange)
 }

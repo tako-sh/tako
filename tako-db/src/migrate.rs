@@ -398,13 +398,15 @@ pub fn prepare_reset(
     let directory = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
     let db = directory.path().join("data.db");
     let config = config(&EngineConfig::default());
-    let owner = crate::mvcc::Owner::local(&db, config.busy_timeout).map_err(|e| e.to_string())?;
+    let owner = std::sync::Arc::new(crate::mvcc::Owner::scratch(&db).map_err(|e| e.to_string())?);
     let buffered = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_value_bytes));
     let mut conn =
         Connection::hosted(owner.clone(), &config, false, buffered).map_err(engine_error)?;
     let report = run(&mut conn, app, migrations, false)?;
     drop(conn);
-    crate::mvcc::export_copy(&owner, path).map_err(|e| e.to_string())?;
+    let owner =
+        std::sync::Arc::try_unwrap(owner).map_err(|_| "migration database is still in use")?;
+    crate::mvcc::export_copy(owner, path).map_err(|e| e.to_string())?;
     Ok(Some(report))
 }
 

@@ -2,18 +2,18 @@
 //! can release only the reservation it inspected and only after confirmation.
 use crate::{
     Applied,
-    disk::{get, set},
+    disk::{RecordReader, get, set},
 };
-use rusqlite::Connection;
+use redb::WriteTransaction;
 use std::io;
 use tako_core::{PlacementChange, ResourcePlacement};
 
-pub(crate) fn load(db: &Connection) -> io::Result<ResourcePlacement> {
+pub(crate) fn load(db: &impl RecordReader) -> io::Result<ResourcePlacement> {
     Ok(get(db, "placement")?.unwrap_or_default())
 }
 
 pub(crate) fn apply(
-    db: &Connection,
+    db: &WriteTransaction,
     change: PlacementChange,
     revision: u64,
 ) -> io::Result<Applied> {

@@ -133,7 +133,7 @@ impl ServerState {
             .state_store
             .storage_initialized(id)
             .map_err(|e| e.to_string())?
-            && (!dir.join("raft.sqlite").is_file() || !dir.join("replica.sqlite").is_file())
+            && (!dir.join("raft.redb").is_file() || !dir.join("replica.redb").is_file())
         {
             return Err(format!(
                 "Persistent Raft state for {id} is missing. Recover the member from its group."

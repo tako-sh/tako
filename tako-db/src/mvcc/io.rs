@@ -19,18 +19,28 @@ pub(super) fn with_suffix(database: &Path, suffix: &str) -> PathBuf {
 
 pub(super) struct DirectoryIo {
     platform: PlatformIO,
-    files: [PathBuf; 4],
+    files: Vec<PathBuf>,
 }
 impl DirectoryIo {
     pub fn new(database: &Path) -> Result<Self> {
+        Self::for_databases(&[database])
+    }
+
+    pub(super) fn for_databases(databases: &[&Path]) -> Result<Self> {
+        let files = databases
+            .iter()
+            .flat_map(|database| {
+                [
+                    database.to_path_buf(),
+                    database.with_extension("db-log"),
+                    with_suffix(database, "-wal"),
+                    with_suffix(database, "-shm"),
+                ]
+            })
+            .collect();
         Ok(Self {
             platform: PlatformIO::new()?,
-            files: [
-                database.to_owned(),
-                database.with_extension("db-log"),
-                with_suffix(database, "-wal"),
-                with_suffix(database, "-shm"),
-            ],
+            files,
         })
     }
 

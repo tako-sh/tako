@@ -112,7 +112,7 @@ impl Peer {
         let (log, replica) = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&path)?;
             Ok::<_, io::Error>((
-                LogStore::open(&path.join("raft.sqlite"))?,
+                LogStore::open(&path.join("raft.redb"))?,
                 Replica::open(&path)?,
             ))
         })

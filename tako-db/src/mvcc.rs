@@ -93,6 +93,9 @@ impl Owner {
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
         })
     }
+    pub(crate) fn scratch(path: &Path) -> io::Result<Self> {
+        Self::open_database(path, None, None, None, None)
+    }
     pub fn primary(writer: tako_raft::Writer) -> io::Result<Self> {
         let source = writer.path().to_owned();
         Self::open(&source, Some(writer))
@@ -152,27 +155,22 @@ pub(crate) fn create_empty_portable(path: &Path) -> io::Result<()> {
 
 /// Check an import on a private native copy before publishing it to Raft.
 pub fn verify_hosted_import(path: &Path) -> Result<(), String> {
-    let sql =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| e.to_string())?;
-    let without_rowid: Option<String> = rusqlite::OptionalExtension::optional(sql.query_row(
-        "SELECT name FROM pragma_table_list WHERE wr = 1 LIMIT 1",
-        [],
-        |row| row.get(0),
-    ))
-    .map_err(|e| e.to_string())?;
-    if let Some(table) = without_rowid {
-        return Err(format!(
-            "Turso hosted imports require rowid tables. Recreate {table} with an ordinary primary key before importing."
-        ));
+    let owner =
+        Owner::replica(path).map_err(|e| format!("Turso cannot open the imported schema: {e}"))?;
+    let conn = owner.connect().map_err(|e| e.to_string())?;
+    let tables = conn
+        .prepare("PRAGMA main.table_list")
+        .and_then(|mut stmt| stmt.run_collect_rows())
+        .map_err(|e| format!("Turso cannot read the imported schema: {e}"))?;
+    for row in tables {
+        if row.get(4).and_then(|v| v.as_int()) == Some(1) {
+            let name = row.get(1).and_then(|v| v.to_text()).unwrap_or("the table");
+            return Err(format!(
+                "Turso hosted imports require rowid tables. Recreate {name} with an ordinary primary key before importing."
+            ));
+        }
     }
-    drop(sql);
-    let owner = Owner::replica(path).map_err(|e| e.to_string())?;
-    owner
-        .connect()
-        .map_err(|e| e.to_string())?
-        .execute("SELECT name FROM sqlite_schema")
-        .map_err(|e| format!("Turso cannot open the imported schema: {e}"))
+    Ok(())
 }
 
 /// Convert a restored, quorum-committed image into a portable SQLite file.
@@ -182,23 +180,63 @@ pub(crate) fn export(source: &Path, dest: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let owner = Owner::replica(source)?;
-    export_copy(&owner, dest)?;
+    export_copy(owner, dest)?;
     Ok(true)
 }
 
-pub(crate) fn export_copy(owner: &Owner, dest: &Path) -> io::Result<()> {
+pub(crate) fn export_copy(mut owner: Owner, dest: &Path) -> io::Result<()> {
+    let source = std::path::PathBuf::from(&owner.db.path);
+    // Keep the disposable directory and any lease alive through the WAL reopen.
+    let _directory = owner._directory.take();
+    let _lease = owner._owner_lock.take();
     let conn = owner.connect()?;
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         .map_err(other)?;
     conn.execute("PRAGMA journal_mode=WAL").map_err(other)?;
     conn.close().map_err(other)?;
     drop(conn);
-    super::engine::snapshot_database(
-        Path::new(&owner.db.path),
-        dest,
-        std::time::Duration::from_secs(5),
-    )
-    .map_err(other)
+    drop(owner);
+
+    let staging = tempfile::tempdir_in(
+        dest.parent()
+            .ok_or_else(|| other("snapshot has no parent"))?,
+    )?;
+    let output = staging.path().join("snapshot.db");
+    let io =
+        Arc::new(directory_io::DirectoryIo::for_databases(&[&source, &output]).map_err(other)?);
+    let options =
+        || OpenOptions::new(Arc::new(SqliteDialect)).db_opts(DatabaseOpts::new().with_views(true));
+    {
+        let db = Database::open(io.clone(), text(&source)?, options()).map_err(other)?;
+        let conn = db
+            .connect(ConnectOpts::new(SessionRole::Superuser))
+            .map_err(other)?;
+        let mut stmt = conn.prepare("VACUUM main INTO ?1").map_err(other)?;
+        stmt.bind_at(
+            std::num::NonZeroUsize::MIN,
+            turso_core::Value::from_text(text(&output)?.to_owned()),
+        )
+        .map_err(other)?;
+        stmt.run_collect_rows().map_err(other)?;
+        drop(stmt);
+        conn.close().map_err(other)?;
+    }
+    {
+        let db = Database::open(io, text(&output)?, options()).map_err(other)?;
+        let conn = db
+            .connect(ConnectOpts::new(SessionRole::Superuser))
+            .map_err(other)?;
+        let rows = conn
+            .prepare("PRAGMA integrity_check(1)")
+            .and_then(|mut stmt| stmt.run_collect_rows())
+            .map_err(other)?;
+        if rows.len() != 1 || rows[0].first().and_then(|v| v.to_text()) != Some("ok") {
+            return Err(other(format!("snapshot integrity check failed: {rows:?}")));
+        }
+        conn.close().map_err(other)?;
+    }
+    File::open(&output)?.sync_all()?;
+    fs::hard_link(output, dest)
 }
 
 /// A freshly downloaded recovery image or private Raft checkout can be
@@ -218,6 +256,57 @@ mod tests {
     use super::*;
     use std::{collections::BTreeMap, time::Duration};
     use tako_raft::{Config, Peer, Resource};
+    #[test]
+    fn portable_export_preserves_schema_and_refuses_to_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("data.db");
+        let output = dir.path().join("O'Brien.sqlite");
+        let owner = Owner::scratch(&db).unwrap();
+        let conn = owner.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE);
+            CREATE INDEX by_sku ON items(sku);
+            CREATE VIEW codes AS SELECT sku FROM items;
+            INSERT INTO items VALUES(1, 'abc'); PRAGMA user_version=12",
+        )
+        .unwrap();
+        conn.close().unwrap();
+        drop(conn);
+        export_copy(owner, &output).unwrap();
+        let oracle = rusqlite::Connection::open_with_flags(
+            &output,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            oracle
+                .query_row("SELECT sku FROM codes", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "abc"
+        );
+        assert_eq!(
+            oracle
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='by_sku'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            oracle
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            12
+        );
+        assert_eq!(
+            export_copy(Owner::scratch(&db).unwrap(), &output)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+    }
     #[test]
     fn hosted_import_checks_the_native_schema_before_replacement() {
         let dir = tempfile::tempdir().unwrap();
