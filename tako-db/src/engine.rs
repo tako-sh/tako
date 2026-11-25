@@ -401,11 +401,10 @@ pub fn snapshot_database(source: &Path, dest: &Path, busy_timeout: Duration) -> 
 }
 
 /// A client connection: one SQLite connection hardened for untrusted SQL.
-pub struct Connection {
-    pub(crate) read_only: bool,
-    primary: Option<tako_raft::SqliteWal>,
-    // Keep the committed snapshot alive while the SQLite connection uses it.
-    replica: Option<Arc<tempfile::NamedTempFile>>,
+mod hosted;
+pub use hosted::Connection;
+
+pub(crate) struct SqliteConnection {
     conn: rusqlite::Connection,
     epoch: Instant,
     /// Deadline in nanoseconds since `epoch`; zero means none.
@@ -444,11 +443,7 @@ struct RowidWatch {
     hit: AtomicBool,
 }
 
-impl Connection {
-    pub fn open(path: &Path, config: &EngineConfig) -> Result<Self, Error> {
-        Self::open_mode(path, config, false)
-    }
-
+impl SqliteConnection {
     pub(crate) fn open_mode(
         path: &Path,
         config: &EngineConfig,
@@ -547,9 +542,6 @@ impl Connection {
 
         Ok(Self {
             conn,
-            read_only,
-            primary: None,
-            replica: None,
             epoch,
             deadline,
             dirty,
@@ -559,27 +551,6 @@ impl Connection {
             statement_timeout: config.statement_timeout,
             rowids,
         })
-    }
-
-    pub(crate) fn primary(
-        primary: tako_raft::SqliteWal,
-        config: &EngineConfig,
-    ) -> Result<Self, Error> {
-        let mut connection = Self::open(primary.path(), config)?;
-        primary
-            .install(&mut connection.conn)
-            .map_err(replication_error)?;
-        connection.primary = Some(primary);
-        Ok(connection)
-    }
-
-    pub(crate) fn replica(
-        file: Arc<tempfile::NamedTempFile>,
-        config: &EngineConfig,
-    ) -> Result<Self, Error> {
-        let mut connection = Self::open_mode(file.path(), config, true)?;
-        connection.replica = Some(file);
-        Ok(connection)
     }
 
     pub fn is_autocommit(&self) -> bool {
@@ -605,83 +576,6 @@ impl Connection {
         }
     }
 
-    pub fn execute(
-        &mut self,
-        sql: &str,
-        args: &Args<'_>,
-        want_rows: bool,
-        budget: &mut Budget,
-    ) -> Result<StmtResult, Error> {
-        let started = Instant::now();
-        let mut rows = Vec::new();
-        let mut cols = Vec::new();
-        let primary = self.primary.clone();
-        let guarded = primary
-            .as_ref()
-            .map(|p| p.begin_buffered())
-            .transpose()
-            .map_err(replication_error)?;
-        let outcome = self.run(sql, args, want_rows, |event| match event {
-            // Charged before the names are copied, as rows are.
-            Event::Begin(columns) => {
-                if !budget.charge(columns.encoded_size()) {
-                    return Err(Error::new(
-                        "RESPONSE_TOO_LARGE",
-                        "the statement's columns exceed the response size limit",
-                    ));
-                }
-                cols = columns.to_cols();
-                Ok(())
-            }
-            Event::Row(row) => {
-                if want_rows {
-                    // Charged before the values are copied out of SQLite.
-                    if !budget.charge(row.encoded_size()) {
-                        return Err(Error::new(
-                            "RESPONSE_TOO_LARGE",
-                            "result exceeds the response size limit; use the cursor endpoint or LIMIT",
-                        ));
-                    }
-                    rows.push(row.to_values());
-                }
-                Ok(())
-            }
-        });
-        if let (Some(primary), Some((_, before))) = (&primary, &guarded) {
-            primary
-                .confirm_buffered(*before)
-                .map_err(replication_error)?;
-        }
-        let outcome = outcome?;
-        Ok(StmtResult {
-            cols,
-            rows,
-            affected_row_count: outcome.affected,
-            last_insert_rowid: outcome.last_insert_rowid,
-            rows_read: outcome.rows,
-            rows_written: outcome.affected,
-            query_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    /// Executes a statement, passing its columns and then its rows to `sink`
-    /// as they are produced. Returns `(affected_row_count, last_insert_rowid)`.
-    pub fn execute_streaming(
-        &mut self,
-        sql: &str,
-        args: &Args<'_>,
-        sink: impl FnMut(Event<'_>) -> Result<(), Error>,
-    ) -> Result<(u64, Option<i64>), Error> {
-        let primary = self.primary.clone();
-        let _guard = primary
-            .as_ref()
-            .map(|p| p.enter())
-            .transpose()
-            .map_err(replication_error)?;
-        let outcome = self.run(sql, args, true, sink)?;
-        Ok((outcome.affected, outcome.last_insert_rowid))
-    }
-
     /// Runs [`Connection::sequence`] inside the caller's open transaction,
     /// refusing `BEGIN`, `COMMIT`, `END`, and `ROLLBACK` when they are
     /// prepared, before they can end it. Returns `Ok(false)` when a statement
@@ -703,12 +597,6 @@ impl Connection {
     /// the first failure. The statements share one time limit, so a long
     /// script cannot hold the connection for the limit once per statement.
     pub fn sequence(&mut self, sql: &str) -> Result<(), Error> {
-        let primary = self.primary.clone();
-        let _guard = primary
-            .as_ref()
-            .map(|p| p.enter())
-            .transpose()
-            .map_err(replication_error)?;
         let mut wrote = false;
         let mut batch = rusqlite::Batch::new(&self.conn, sql);
         self.arm_deadline();
@@ -751,12 +639,6 @@ impl Connection {
     /// Describes a statement, charging its columns and parameters to
     /// `budget` before they are copied.
     pub fn describe(&mut self, sql: &str, budget: &mut Budget) -> Result<DescribeResult, Error> {
-        let primary = self.primary.clone();
-        let _guard = primary
-            .as_ref()
-            .map(|p| p.enter())
-            .transpose()
-            .map_err(replication_error)?;
         check_not_empty(sql)?;
         let (mut cached, mut fresh) = (None, None);
         // Preparing a large statement can take long too.
@@ -824,7 +706,7 @@ impl Connection {
         }
         let readonly = stmt.readonly();
         let inserts = !readonly && starts_with_insert(sql);
-        if let Err(error) = sink(Event::Begin(PendingColumns(stmt))) {
+        if let Err(error) = sink(Event::Begin(PendingColumns::Sqlite(stmt))) {
             self.disarm_deadline();
             return Err(error);
         }
@@ -954,16 +836,37 @@ pub enum Event<'a> {
 
 /// A statement's columns as SQLite holds them. Like a row's, their size is
 /// known before their names are copied.
-pub struct PendingColumns<'a>(&'a rusqlite::Statement<'a>);
+pub enum PendingColumns<'a> {
+    Sqlite(&'a rusqlite::Statement<'a>),
+    Turso(&'a turso_core::Statement),
+}
 
 impl PendingColumns<'_> {
     /// The columns' JSON size, used for the response budget.
     pub fn encoded_size(&self) -> usize {
-        columns_size(self.0)
+        match self {
+            Self::Sqlite(stmt) => columns_size(stmt),
+            Self::Turso(stmt) => (0..stmt.num_columns())
+                .map(|i| {
+                    col_size(
+                        Some(&stmt.get_column_name(i)),
+                        stmt.get_column_decltype(i).as_deref(),
+                    )
+                })
+                .sum(),
+        }
     }
 
     pub fn to_cols(&self) -> Vec<Col> {
-        columns(self.0)
+        match self {
+            Self::Sqlite(stmt) => columns(stmt),
+            Self::Turso(stmt) => (0..stmt.num_columns())
+                .map(|i| Col {
+                    name: Some(stmt.get_column_name(i).into_owned()),
+                    decltype: stmt.get_column_decltype(i),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -1339,15 +1242,18 @@ fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error
     Ok(())
 }
 
+fn as_value_ref(value: &Value) -> ValueRef<'_> {
+    match value {
+        Value::Null => ValueRef::Null,
+        Value::Integer(value) => ValueRef::Integer(*value),
+        Value::Float(value) => ValueRef::Real(*value),
+        Value::Text(value) => ValueRef::Text(value.as_bytes()),
+        Value::Blob(value) => ValueRef::Blob(value),
+    }
+}
 impl ToSql for Value {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(match self {
-            Value::Null => ToSqlOutput::Borrowed(ValueRef::Null),
-            Value::Integer(value) => ToSqlOutput::Borrowed(ValueRef::Integer(*value)),
-            Value::Float(value) => ToSqlOutput::Borrowed(ValueRef::Real(*value)),
-            Value::Text(value) => ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes())),
-            Value::Blob(value) => ToSqlOutput::Borrowed(ValueRef::Blob(value)),
-        })
+        Ok(ToSqlOutput::Borrowed(as_value_ref(self)))
     }
 }
 

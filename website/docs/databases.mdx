@@ -3,7 +3,9 @@ title: Databases
 description: "Create Tako-hosted SQLite databases on a network server, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
 ---
 
-Tako hosts SQLite on the servers selected by an environment’s deploy. Applications use a libSQL-compatible HTTP driver through the Tako binding. The server embeds SQLite through rusqlite.
+Tako runs the Turso SQL engine on the servers selected by an environment’s deploy. Applications use a libSQL-compatible HTTP driver through the Tako binding. Each database has one elected writer. On that server, independent `BEGIN CONCURRENT` transactions can update different rows. Conflicting transactions can return `SQLITE_BUSY` and require a retry of the whole transaction.
+
+Hosted databases use ordinary rowid tables. Use a primary key or a unique constraint for composite keys and omit `WITHOUT ROWID` from hosted migrations. Local development and portable SQLite imports and exports use SQLite.
 
 Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR` remain plain file directories; Tako does not discover, capture, or back up SQLite files placed there.
 
@@ -214,7 +216,7 @@ A deploy by a full client sends the destination and credentials to the database'
 
 ### Continuous backups
 
-The server backs the database up continuously, with an embedded port of [Litestream](https://litestream.io): the elected leader periodically uploads committed SQLite page changes in transaction order. An idle database makes no requests. Losing the server loses at most the writes of the last few seconds, plus anything storage did not accept while it was failing. Any moment of the last 7 days can be restored, as of the newest capture before it: captures are at most 10 seconds apart while the database changes.
+For replicated databases, the elected leader uploads committed Turso recovery images and changes to backup storage. A Raft majority commits each write before the client receives success. Uploads run separately. After losing the entire group, you can recover through the most recent uploaded transaction. The default retention window is seven days.
 
 - **Full snapshots** restore on their own. The server captures one when backups start (after the server starts, a restore, import, or reset, or a new destination), once a day while the database changes, and on demand with `tako db backup <name>`.
 - **Restore points** name a transaction: the state before a deploy's release command, before pending migrations, and before a restore, import, or reset replaces the database. Every full snapshot is a restore point too.
@@ -224,7 +226,7 @@ Uploads are encrypted with AES-256-GCM using the database's own key, which also 
 
 When storage fails, the server keeps capturing on its own disk and retries with backoff, at most 15 minutes apart, uploading everything once storage accepts it again; `tako db status` shows the last error. Stopping or upgrading the server uploads what is left first, for up to 20 seconds, and the rest when it starts again. A database that changes all the time makes about 8,600 uploads a day and one full snapshot a day.
 
-Capture keeps two small control tables in the database, `_litestream_seq` and `_litestream_lock`. Leave them alone, and expect schema tools to list them.
+A hosted export or restore materializes a portable SQLite file from the committed base and transaction log.
 
 ### Restore
 

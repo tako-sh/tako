@@ -1741,14 +1741,24 @@ async fn restore_from(
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         drop(downloads);
-        let space = reserve_restore(state, stored, &work, restored_bytes)?;
+        // Replaying a Turso image opens a private base and log, checkpoints
+        // them into a WAL, and writes a portable SQLite destination.
+        let needed = if state.databases.raft.resource(&stored.generation).is_some() {
+            restored_bytes.saturating_mul(4)
+        } else {
+            restored_bytes
+        };
+        let space = reserve_restore(state, stored, &work, needed)?;
         Replica::apply(&segments_dir, txid, &restored)
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         let verify = restored.clone();
-        tokio::task::spawn_blocking(move || tako_db::verify_database(&verify))
-            .await
-            .map_err(|e| e.to_string())??;
+        tokio::task::spawn_blocking(move || {
+            tako_db::materialize_recovery_image(&verify)?;
+            tako_db::verify_database(&verify)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok::<_, String>(space)
     })
     .await?;
@@ -1906,9 +1916,15 @@ async fn replace_inner(
             .map(|r| r.writer())
             .transpose()
             .map_err(|e| e.to_string())?;
+        if let Some(w) = writer.as_ref() {
+            tako_db::materialize_recovery_image(w.path())?;
+        }
         let path = writer.as_ref().map_or(path.as_path(), |w| w.path());
         prepare_runtime_state(path, &replacement)
             .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
+        if writer.is_some() {
+            tako_db::verify_hosted_import(&replacement)?;
+        }
         tako_db::replace_database(path, &replacement, &previous)?;
         let restored = path.to_owned();
         if let Some(w) = writer.as_mut() {

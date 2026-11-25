@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tako_raft::{Peer, RedbFile, Replica, SqliteWal, Types, Writer};
+use tako_raft::{Peer, RedbFile, Replica, Types, Writer};
 use tokio::net::TcpListener;
 
 const KV: TableDefinition<&str, &str> = TableDefinition::new("sessions");
@@ -95,30 +95,38 @@ async fn cluster() {
             .await
             .unwrap();
     }
-    let sq = writer(&first.db, &first.dir).await;
-    let value = tokio::task::spawn_blocking(move || {
-        let mut conn = rusqlite::Connection::open(sq.path()).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL").unwrap();
-        let wal = SqliteWal::new(sq);
-        wal.install(&mut conn).unwrap();
-        let _guard = wal.enter().unwrap();
-        conn.execute_batch("CREATE TABLE orders(id INTEGER PRIMARY KEY, item TEXT); BEGIN;")
-            .unwrap();
-        let value: String = conn
-            .query_row(
-                "INSERT INTO orders(item) VALUES(hex(randomblob(16))) RETURNING item",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        conn.execute_batch(
-            "SAVEPOINT s; INSERT INTO orders(item) VALUES('discard'); ROLLBACK TO s; COMMIT;",
-        )
+    let (sql, dbid) = sql_host(&first);
+    let create = "CREATE TABLE orders(id INTEGER PRIMARY KEY, item TEXT)";
+    let migration = tako_db::Migration {
+        name: "0001_orders.sql".into(),
+        sql: format!(
+            "{create}; SAVEPOINT trial; INSERT INTO orders(item) VALUES ('discard'); ROLLBACK TO trial; RELEASE trial;"
+        ),
+    };
+    let report = sql
+        .migrate(&dbid, "shop".into(), vec![migration.clone()], false)
+        .await
         .unwrap();
-        value
-    })
-    .await
-    .unwrap();
+    assert_eq!(report.applied, [migration.name.clone()]);
+    assert!(
+        sql.migrate(&dbid, "shop".into(), vec![migration], false)
+            .await
+            .unwrap()
+            .applied
+            .is_empty()
+    );
+    let row = sql
+        .admin_query(
+            &dbid,
+            "INSERT INTO orders(item) VALUES(hex(randomblob(16))) RETURNING item".into(),
+            1,
+        )
+        .await
+        .unwrap();
+    let tako_db::Value::Text(value) = row.rows[0][0].clone() else {
+        panic!("expected generated item")
+    };
+    sql.close_all().await;
     let mut kv = writer(&first.kv, &first.dir).await;
     tokio::task::spawn_blocking(move || {
         let file = RedbFile::open(&kv).unwrap();
@@ -169,22 +177,24 @@ async fn cluster() {
     let kv_leader = await_leader(&second.kv.0).await;
     let db_server = if db_leader == 2 { &second } else { &third };
     let kv_server = if kv_leader == 2 { &second } else { &third };
-    let sq = writer(&db_server.db, &db_server.dir).await;
+    let (sql, dbid) = sql_host(db_server);
+    let result = sql
+        .admin_query(&dbid, "SELECT item FROM orders".into(), 10)
+        .await
+        .unwrap();
+    assert!(
+        matches!(result.rows.as_slice(),[r] if matches!(r.as_slice(),[tako_db::Value::Text(t)] if t==&value))
+    );
+    sql.admin_query(
+        &dbid,
+        "INSERT INTO orders(item) VALUES('after election')".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    sql.close_all().await;
     let kv = writer(&kv_server.kv, &kv_server.dir).await;
-    let value_after = value.clone();
     tokio::task::spawn_blocking(move || {
-        let mut conn = rusqlite::Connection::open(sq.path()).unwrap();
-        let wal = SqliteWal::new(sq);
-        wal.install(&mut conn).unwrap();
-        let _guard = wal.enter().unwrap();
-        let (count, item): (i32, String) = conn
-            .query_row("SELECT count(*),item FROM orders", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        assert_eq!((count, item), (1, value_after));
-        conn.execute_batch("INSERT INTO orders(item) VALUES('after election')")
-            .unwrap();
         let db = redb::Database::open(kv.path()).unwrap();
         assert_eq!(
             db.begin_read()
@@ -206,6 +216,7 @@ async fn cluster() {
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
     let (local, _) = first.db.1.checkout(&first.dir).await.unwrap();
+    tako_db::materialize_recovery_image(local.path()).unwrap();
     assert_eq!(
         rusqlite::Connection::open(local.path())
             .unwrap()
@@ -218,17 +229,24 @@ async fn cluster() {
     third.stop().await;
 }
 
-async fn follower_read_only_sql(follower: &Server, expected: &str) {
+fn sql_host(follower: &Server) -> (tako_db::DatabaseHost, tako_db::DatabaseId) {
     let host = tako_db::DatabaseHost::new(Default::default());
     let database = tako_db::DatabaseId::parse("orders").unwrap();
     let path = follower.dir.join("orders.sqlite");
-    tako_db::DatabaseHost::create_file(&path).unwrap();
+    if !path.exists() {
+        tako_db::DatabaseHost::create_file(&path).unwrap();
+    }
     host.register_replicated(
         database.clone(),
         path,
         tako_raft::Resource::new(follower.db.0.clone(), follower.db.1.clone(), &follower.dir),
     )
     .unwrap();
+    (host, database)
+}
+
+async fn follower_read_only_sql(follower: &Server, expected: &str) {
+    let (host, database) = sql_host(follower);
     let tokens = tako_core::BindingTokenHashes::new("follower-sql");
     let replicas = [tokens.replica].into();
     host.set_bindings_with_replicas(
@@ -511,7 +529,7 @@ async fn hosted_trial(first: &Server, replicated: bool, remote_app: bool, mode: 
         put(i).await.unwrap();
         kv_ms.push(start.elapsed().as_secs_f64() * 1000.0);
     }
-    for (engine, mut ms) in [("SQLite", db_ms), ("KV", kv_ms)] {
+    for (engine, mut ms) in [("SQL", db_ms), ("KV", kv_ms)] {
         if ms.is_empty() {
             continue;
         }

@@ -5,7 +5,7 @@ use tako_channels::{
     ChannelError, ChannelPublishPayload, ChannelStore, ChannelStoreConfig, ReplayCursor,
 };
 use tako_db::{
-    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
+    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token,
     http::{self, Access},
 };
 
@@ -27,7 +27,7 @@ fn bind(
     host.set_bindings(
         &format!("{app}#channels"),
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: db.clone(),
             home,
         }],

@@ -218,8 +218,10 @@ pub(crate) struct Database {
     path: PathBuf,
     engine: EngineConfig,
     pool_size: usize,
+    buffered: Arc<Semaphore>,
     resource: Option<tako_raft::Resource>,
-    primary: Mutex<Option<tako_raft::SqliteWal>>,
+    primary: Mutex<Option<Arc<crate::mvcc::Owner>>>,
+    replica: Mutex<Option<(Arc<tempfile::NamedTempFile>, Arc<crate::mvcc::Owner>)>>,
     state: Mutex<DatabaseState>,
     idle: Notify,
     pool: Mutex<Vec<engine::Connection>>,
@@ -258,18 +260,31 @@ impl Database {
         read_only: bool,
         config: &EngineConfig,
     ) -> Result<engine::Connection, Error> {
-        if read_only {
-            return engine::Connection::replica(
-                resource.local_file().map_err(engine::replication_error)?,
-                config,
-            );
-        }
-        let mut primary = self.primary.lock();
-        if primary.as_ref().is_none_or(|wal| !wal.usable()) {
-            let writer = resource.writer().map_err(engine::replication_error)?;
-            *primary = Some(tako_raft::SqliteWal::new(writer));
-        }
-        engine::Connection::primary(primary.as_ref().expect("writer opened").clone(), config)
+        let owner = if read_only {
+            let file = resource.local_file().map_err(engine::replication_error)?;
+            let mut cache = self.replica.lock();
+            if let Some((previous, owner)) = cache.as_ref()
+                && Arc::ptr_eq(previous, &file)
+            {
+                owner.clone()
+            } else {
+                let owner = Arc::new(
+                    crate::mvcc::Owner::replica(file.path()).map_err(engine::replication_error)?,
+                );
+                *cache = Some((file, owner.clone()));
+                owner
+            }
+        } else {
+            let mut primary = self.primary.lock();
+            if primary.as_ref().is_none_or(|p| !p.usable()) {
+                let writer = resource.writer().map_err(engine::replication_error)?;
+                *primary = Some(Arc::new(
+                    crate::mvcc::Owner::primary(writer).map_err(engine::replication_error)?,
+                ));
+            }
+            primary.as_ref().expect("writer opened").clone()
+        };
+        engine::Connection::hosted(owner, config, read_only, self.buffered.clone())
     }
 
     /// Returns a connection for reuse when it carries no stream state.
@@ -580,8 +595,10 @@ impl DatabaseHost {
                 path,
                 engine: config.engine.clone(),
                 pool_size: config.pool_size,
+                buffered: self.inner.buffered.clone(),
                 resource,
                 primary: Mutex::new(None),
+                replica: Mutex::new(None),
                 state: Mutex::new(DatabaseState {
                     paused: None,
                     closed: false,
@@ -725,6 +742,9 @@ impl DatabaseHost {
                 .transpose()
                 .map_err(|e| e.to_string())?;
             let source = image.as_ref().map_or(path.as_path(), |image| image.path());
+            if image.is_some() && crate::mvcc::export(source, &dest).map_err(|e| e.to_string())? {
+                return Ok(());
+            }
             engine::snapshot_database(source, &dest, busy)
         })
         .await
@@ -770,6 +790,7 @@ impl DatabaseHost {
         let streams = self.take_streams(|entry| &entry.database == id);
         let pool = std::mem::take(&mut *database.pool.lock());
         database.primary.lock().take();
+        database.replica.lock().take();
         let lock_path = lock_path(&database.path);
         let lock = database.lock.lock().take();
         let timeout = self.inner.config.pause_timeout;
@@ -1008,7 +1029,11 @@ impl DatabaseHost {
 
     /// Size of a database's files (database and write-ahead log) in bytes.
     pub fn size_bytes(&self, id: &DatabaseId) -> Option<u64> {
-        let path = self.path(id)?;
+        let db = self.database(id).ok()?;
+        if let Some(resource) = &db.resource {
+            return resource.file_size().ok();
+        }
+        let path = db.path.clone();
         let mut wal = path.clone().into_os_string();
         wal.push("-wal");
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);

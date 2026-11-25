@@ -1,3 +1,4 @@
 vendor/pingora-core/** linguist-vendored=true
 vendor/pingora-core/src/protocols/l4/idle_buffer*.rs linguist-vendored=false
 vendor/pingora-core/src/protocols/http/v1/buffer_release_tests.rs linguist-vendored=false
+vendor/turso_core/** linguist-vendored=true

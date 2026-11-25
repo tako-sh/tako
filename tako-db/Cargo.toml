@@ -34,8 +34,12 @@ thiserror.workspace = true
 tokio.workspace = true
 tempfile = "=3.27.0"
 tracing.workspace = true
+turso_core = { version = "=0.9.0-pre.6", default-features = false, features = ["fs", "json", "time", "uuid"] }
+turso_sqlite = "=0.9.0-pre.6"
+turso_parser = "=0.9.0-pre.6"
 
 [dev-dependencies]
+tako-backup = { path = "../tako-backup" }
 tako-db = { path = ".", features = ["testing"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

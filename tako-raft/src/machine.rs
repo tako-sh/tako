@@ -102,6 +102,9 @@ impl Replica {
         self.disk.run(|db| crate::placement::load(db)).await
     }
 
+    pub(crate) fn file_size(&self) -> io::Result<u64> {
+        self.disk.read(|db| Ok(get(db, "file_size")?.unwrap_or(0)))
+    }
     pub async fn revision(&self) -> io::Result<u64> {
         self.disk
             .run(|db| Ok(get(db, "revision")?.unwrap_or(0)))

@@ -318,3 +318,13 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
     })
     .await;
 }
+
+#[test]
+fn replicated_host_persists_and_replays_a_channel_message() {
+    let server = TestServer::start();
+    let db = server.replicated_database("test#channels");
+    let store = HostedChannelStore::open(&server.url, &db.token, "shop", false).unwrap();
+    let (message, appended) = store.publish("orders", &event("placed"), None).unwrap();
+    assert!(appended);
+    assert_eq!(store.read_after("orders", None, 10).unwrap(), [message]);
+}

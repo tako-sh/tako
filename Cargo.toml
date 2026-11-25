@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/pingora-core", "vendor/terse-litestream"]
+exclude = ["vendor/pingora-core", "vendor/terse-litestream", "vendor/turso_core"]
 members = [
   "tako-core",
   "tako-backup",
@@ -53,3 +53,4 @@ codegen-units = 1
 # Pingora 0.9 buffer-lifetime fixes and Rust compression backend; see vendor/README.md.
 [patch.crates-io]
 pingora-core = { path = "vendor/pingora-core" }
+turso_core = { path = "vendor/turso_core" }

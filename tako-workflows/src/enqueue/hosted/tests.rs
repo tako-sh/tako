@@ -42,9 +42,18 @@ fn schedule_names(db: &RunsDb) -> Vec<String> {
 /// signals and schedules stay its own, even under the same run IDs.
 #[test]
 fn apps_sharing_a_database_never_see_each_others_runs_or_schedules() {
-    let fixture = HostedFixture::start();
-    let shop = fixture.open("shop/production");
-    let blog = fixture.open("blog/production");
+    let server = tako_db::testing::TestServer::start();
+    let binding = server.replicated_database("workflow-test/production#workflows");
+    let store = |app| {
+        RunsDb::open(crate::enqueue::WorkflowStoreConfig::hosted(
+            server.url.clone(),
+            binding.token.clone(),
+            app,
+        ))
+        .unwrap()
+    };
+    let shop = store("shop/production");
+    let blog = store("blog/production");
     let order = identified("order-1");
     assert!(
         !shop

@@ -78,6 +78,36 @@ impl TestServer {
         TestDatabase { id, path, token }
     }
 
+    /// Open the same single-voter Turso host used by a deployed app.
+    /// Call this from a blocking test thread.
+    pub fn replicated_database(&self, scope: &str) -> TestDatabase {
+        use std::{collections::BTreeMap, time::Duration};
+        let id = DatabaseId::generate();
+        let path = self.dir.path().join(format!("{id}.sqlite"));
+        DatabaseHost::create_file(&path).unwrap();
+        let runtime = self.runtime.as_ref().unwrap();
+        let group = self.dir.path().join(id.as_str());
+        let resource = runtime.block_on(async {
+            let (node, replica) = tako_raft::Peer::default()
+                .open(id.as_str(), [1; 32], 1, &group, Default::default())
+                .await
+                .unwrap();
+            node.initialize(BTreeMap::from([(1, "127.0.0.1:1".parse().unwrap())]))
+                .await
+                .unwrap();
+            node.wait(Some(Duration::from_secs(5)))
+                .current_leader(1, "test group")
+                .await
+                .unwrap();
+            tako_raft::Resource::new(node, replica, &group)
+        });
+        self.host
+            .register_replicated(id.clone(), path.clone(), resource)
+            .unwrap();
+        let token = self.bind(scope, &id);
+        TestDatabase { id, path, token }
+    }
+
     /// Adds a binding with a new token for `database` in `scope`.
     pub fn bind(&self, scope: &str, database: &DatabaseId) -> String {
         let token = generate_token();

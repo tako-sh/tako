@@ -9,7 +9,7 @@ const TABLES: &[&str] = &[
         stream_count INTEGER NOT NULL DEFAULT 0,
         message_count INTEGER NOT NULL DEFAULT 0,
         message_bytes INTEGER NOT NULL DEFAULT 0
-    ) STRICT, WITHOUT ROWID",
+    ) STRICT",
     "CREATE TABLE IF NOT EXISTS tako_replay_streams (
         app TEXT NOT NULL REFERENCES tako_replay_apps(app),
         channel TEXT NOT NULL,
@@ -23,7 +23,7 @@ const TABLES: &[&str] = &[
         inactivity_ms INTEGER NOT NULL,
         lifetime_ms INTEGER NOT NULL,
         PRIMARY KEY(app, channel)
-    ) STRICT, WITHOUT ROWID",
+    ) STRICT",
     "CREATE TABLE IF NOT EXISTS tako_replay_messages (
         app TEXT NOT NULL,
         id INTEGER NOT NULL,
@@ -34,7 +34,7 @@ const TABLES: &[&str] = &[
         created_ms INTEGER NOT NULL,
         PRIMARY KEY(app, id),
         FOREIGN KEY(app, channel) REFERENCES tako_replay_streams(app, channel)
-    ) STRICT, WITHOUT ROWID",
+    ) STRICT",
     "CREATE INDEX IF NOT EXISTS tako_replay_stream_ids ON tako_replay_messages(app, channel, id)",
     "CREATE INDEX IF NOT EXISTS tako_replay_stream_age
         ON tako_replay_messages(app, channel, created_ms, id)",

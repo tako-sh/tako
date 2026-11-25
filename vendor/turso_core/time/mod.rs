@@ -1,0 +1,1077 @@
+use std::str::FromStr as _;
+
+use chrono::prelude::*;
+use core::cmp::Ordering;
+use thiserror::Error;
+
+use std::ffi::CStr;
+
+use crate::ext::register_scalar_function;
+use crate::function::ReturnType;
+use turso_ext::{scalar, ExtensionApi, ResultCode, ScalarFunction, Value, ValueType};
+
+mod internal;
+
+use internal::*;
+
+pub fn register_extension(ext_api: &mut ExtensionApi) {
+    use ReturnType::{Blob, Integer, Text};
+    // time_get gives a REAL for the second and epoch fields and an INTEGER
+    // for the others, so its type is not known before it runs.
+    let functions: [(&CStr, ScalarFunction, Option<ReturnType>); 47] = [
+        (c"time_now", time_now, Some(Blob)),
+        (c"time_date", time_date, Some(Blob)),
+        (c"make_date", make_date, Some(Blob)),
+        (c"make_timestamp", make_timestamp, Some(Blob)),
+        (c"time_get", time_get, None),
+        (c"time_get_year", time_get_year, Some(Integer)),
+        (c"time_get_month", time_get_month, Some(Integer)),
+        (c"time_get_day", time_get_day, Some(Integer)),
+        (c"time_get_hour", time_get_hour, Some(Integer)),
+        (c"time_get_minute", time_get_minute, Some(Integer)),
+        (c"time_get_second", time_get_second, Some(Integer)),
+        (c"time_get_nano", time_get_nano, Some(Integer)),
+        (c"time_get_weekday", time_get_weekday, Some(Integer)),
+        (c"time_get_yearday", time_get_yearday, Some(Integer)),
+        (c"time_get_isoyear", time_get_isoyear, Some(Integer)),
+        (c"time_get_isoweek", time_get_isoweek, Some(Integer)),
+        (c"time_unix", time_unix, Some(Blob)),
+        (c"to_timestamp", to_timestamp, Some(Blob)),
+        (c"time_milli", time_milli, Some(Blob)),
+        (c"time_micro", time_micro, Some(Blob)),
+        (c"time_nano", time_nano, Some(Blob)),
+        (c"time_to_unix", time_to_unix, Some(Integer)),
+        (c"time_to_milli", time_to_milli, Some(Integer)),
+        (c"time_to_micro", time_to_micro, Some(Integer)),
+        (c"time_to_nano", time_to_nano, Some(Integer)),
+        (c"time_after", time_after, Some(Integer)),
+        (c"time_before", time_before, Some(Integer)),
+        (c"time_compare", time_compare, Some(Integer)),
+        (c"time_equal", time_equal, Some(Integer)),
+        (c"dur_ns", dur_ns, Some(Integer)),
+        (c"dur_us", dur_us, Some(Integer)),
+        (c"dur_ms", dur_ms, Some(Integer)),
+        (c"dur_s", dur_s, Some(Integer)),
+        (c"dur_m", dur_m, Some(Integer)),
+        (c"dur_h", dur_h, Some(Integer)),
+        (c"time_add", time_add, Some(Blob)),
+        (c"time_add_date", time_add_date, Some(Blob)),
+        (c"time_sub", time_sub, Some(Integer)),
+        (c"time_since", time_since, Some(Integer)),
+        (c"time_until", time_until, Some(Integer)),
+        (c"time_trunc", time_trunc, Some(Blob)),
+        (c"time_round", time_round, Some(Blob)),
+        (c"time_fmt_iso", time_fmt_iso, Some(Text)),
+        (c"time_fmt_datetime", time_fmt_datetime, Some(Text)),
+        (c"time_fmt_date", time_fmt_date, Some(Text)),
+        (c"time_fmt_time", time_fmt_time, Some(Text)),
+        (c"time_parse", time_parse, Some(Blob)),
+    ];
+    for (name, function, return_type) in functions {
+        unsafe {
+            register_scalar_function(ext_api.ctx, name.as_ptr(), function, return_type);
+        }
+    }
+}
+
+macro_rules! ok_tri {
+    ($e:expr) => {
+        match $e {
+            Some(val) => val,
+            None => return Value::error(ResultCode::Error),
+        }
+    };
+    ($e:expr, $msg:expr) => {
+        match $e {
+            Some(val) => val,
+            None => return Value::error_with_message($msg.to_string()),
+        }
+    };
+}
+
+macro_rules! tri {
+    ($e:expr) => {
+        match $e {
+            Ok(val) => val,
+            Err(err) => return Value::error_with_message(err.to_string()),
+        }
+    };
+    ($e:expr, $msg:expr) => {
+        match $e {
+            Ok(val) => val,
+            Err(_) => return Value::error_with_message($msg.to_string()),
+        }
+    };
+}
+
+/// Checks to see if e's enum is of type val
+macro_rules! value_tri {
+    ($e:expr, $val:pat) => {
+        match $e {
+            $val => (),
+            _ => return Value::error(ResultCode::InvalidArgs),
+        }
+    };
+    ($e:expr, $val:pat, $msg:expr) => {
+        match $e {
+            $val => (),
+            _ => return Value::error_with_message($msg.to_string()),
+        }
+    };
+}
+
+#[derive(Error, Debug)]
+pub enum TimeError {
+    /// Timezone offset is invalid
+    #[error("invalid timezone offset")]
+    InvalidOffset,
+    #[error("invalid datetime format")]
+    InvalidFormat,
+    /// Blob is not size of `TIME_BLOB_SIZE`
+    #[error("invalid time blob size")]
+    InvalidSize,
+    /// Blob time version not matching
+    #[error("mismatch time blob version")]
+    MismatchVersion,
+    #[error("unknown field")]
+    UnknownField(#[from] <TimeField as ::core::str::FromStr>::Err),
+    #[error("rounding error")]
+    RoundingError(#[from] chrono::RoundingError),
+    #[error("time creation error")]
+    CreationError,
+}
+
+type Result<T> = core::result::Result<T, TimeError>;
+
+#[scalar(name = "time_now", alias = "now")]
+fn time_now(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+    let t = Time::new();
+
+    t.into_blob()
+}
+
+/// ```text
+/// time_date(year, month, day[, hour, min, sec[, nsec[, offset_sec]]])
+/// ```
+///
+/// Returns the Time corresponding to a given date/time. The time part (hour+minute+second), the nanosecond part, and the timezone offset part are all optional.
+///
+/// The `month`, `day`, `hour`, `min`, `sec`, and `nsec` values may be outside their usual ranges and will be normalized during the conversion. For example, October 32 converts to November 1.
+///
+/// If `offset_sec` is not 0, the source time is treated as being in a given timezone (with an offset in seconds east of UTC) and converted back to UTC.
+fn time_date_internal(args: &[Value]) -> Value {
+    if args.len() != 3 && args.len() != 6 && args.len() != 7 && args.len() != 8 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    for arg in args {
+        value_tri!(
+            arg.value_type(),
+            ValueType::Integer,
+            "all parameters should be integers"
+        );
+    }
+
+    let year = ok_tri!(args[0].to_integer());
+    let month = ok_tri!(args[1].to_integer());
+    let day = ok_tri!(args[2].to_integer());
+    let mut hour = 0;
+    let mut minutes = 0;
+    let mut seconds = 0;
+    let mut nano_secs = 0;
+
+    if args.len() >= 6 {
+        hour = ok_tri!(args[3].to_integer());
+        minutes = ok_tri!(args[4].to_integer());
+        seconds = ok_tri!(args[5].to_integer());
+    }
+
+    if args.len() >= 7 {
+        nano_secs = ok_tri!(args[6].to_integer());
+    }
+
+    if args.len() == 8 {
+        let offset_sec = ok_tri!(args[7].to_integer());
+        if i32::try_from(offset_sec).is_err() {
+            return Value::null();
+        }
+        seconds = match seconds.checked_sub(offset_sec) {
+            Some(s) => s,
+            None => return Value::null(),
+        };
+    }
+
+    let (Ok(year), Ok(month)) = (i32::try_from(year), i32::try_from(month)) else {
+        return Value::null();
+    };
+
+    let t = Time::time_date(
+        year,
+        month,
+        day,
+        hour,
+        minutes,
+        seconds,
+        nano_secs,
+        FixedOffset::east_opt(0).unwrap(),
+    );
+
+    match tri!(t) {
+        Some(t) => t.into_blob(),
+        None => Value::null(),
+    }
+}
+
+#[scalar(name = "time_date")]
+fn time_date(args: &[Value]) {
+    time_date_internal(args)
+}
+
+#[scalar(name = "make_date")]
+fn make_date(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    time_date_internal(args)
+}
+
+#[scalar(name = "make_timestamp")]
+fn make_timestamp(args: &[Value]) -> Value {
+    if args.len() != 6 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    time_date_internal(args)
+}
+
+#[scalar(name = "time_get", alias = "date_part")]
+fn time_get(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let field = ok_tri!(args[1].to_text(), "2nd parameter: should be a field name");
+
+    let field = tri!(TimeField::from_str(field));
+
+    t.time_get(field)
+}
+
+#[scalar(name = "time_get_year")]
+fn time_get_year(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::Year)
+}
+
+#[scalar(name = "time_get_month")]
+fn time_get_month(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::Month)
+}
+
+#[scalar(name = "time_get_day")]
+fn time_get_day(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::Day)
+}
+
+#[scalar(name = "time_get_hour")]
+fn time_get_hour(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::Hour)
+}
+
+#[scalar(name = "time_get_minute")]
+fn time_get_minute(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::Minute)
+}
+
+#[scalar(name = "time_get_second")]
+fn time_get_second(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.get_second())
+}
+
+#[scalar(name = "time_get_nano")]
+fn time_get_nano(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.get_nanosecond())
+}
+
+#[scalar(name = "time_get_weekday")]
+fn time_get_weekday(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::WeekDay)
+}
+
+#[scalar(name = "time_get_yearday")]
+fn time_get_yearday(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::YearDay)
+}
+
+#[scalar(name = "time_get_isoyear")]
+fn time_get_isoyear(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::IsoYear)
+}
+
+#[scalar(name = "time_get_isoweek")]
+fn time_get_isoweek(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    t.time_get(TimeField::IsoWeek)
+}
+
+fn time_unix_internal(args: &[Value]) -> Value {
+    if args.len() != 1 && args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    for arg in args {
+        value_tri!(
+            arg.value_type(),
+            ValueType::Integer,
+            "all parameters should be integers"
+        );
+    }
+
+    let seconds = ok_tri!(args[0].to_integer());
+
+    let mut nano_sec = 0;
+
+    if args.len() == 2 {
+        nano_sec = ok_tri!(args[1].to_integer());
+    }
+
+    let dt = ok_tri!(DateTime::from_timestamp(seconds, nano_sec as u32));
+
+    let t = Time::from_datetime(dt);
+
+    t.into_blob()
+}
+
+#[scalar(name = "time_unix")]
+fn time_unix(args: &[Value]) -> Value {
+    time_unix_internal(args)
+}
+
+#[scalar(name = "to_timestamp")]
+fn to_timestamp(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    time_unix_internal(args)
+}
+
+#[scalar(name = "time_milli")]
+fn time_milli(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    value_tri!(
+        &args[0].value_type(),
+        ValueType::Integer,
+        "parameter should be an integer"
+    );
+
+    let millis = ok_tri!(args[0].to_integer());
+
+    let dt = ok_tri!(DateTime::from_timestamp_millis(millis));
+
+    let t = Time::from_datetime(dt);
+
+    t.into_blob()
+}
+
+#[scalar(name = "time_micro")]
+fn time_micro(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    value_tri!(
+        &args[0].value_type(),
+        ValueType::Integer,
+        "parameter should be an integer"
+    );
+
+    let micros = ok_tri!(args[0].to_integer());
+
+    let dt = ok_tri!(DateTime::from_timestamp_micros(micros));
+
+    let t = Time::from_datetime(dt);
+
+    t.into_blob()
+}
+
+#[scalar(name = "time_nano")]
+fn time_nano(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    value_tri!(
+        &args[0].value_type(),
+        ValueType::Integer,
+        "parameter should be an integer"
+    );
+
+    let nanos = ok_tri!(args[0].to_integer());
+
+    let dt = DateTime::from_timestamp_nanos(nanos);
+
+    let t = Time::from_datetime(dt);
+
+    t.into_blob()
+}
+
+#[scalar(name = "time_to_unix")]
+fn time_to_unix(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.to_unix())
+}
+
+#[scalar(name = "time_to_milli")]
+fn time_to_milli(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.to_unix_milli())
+}
+
+#[scalar(name = "time_to_micro")]
+fn time_to_micro(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.to_unix_micro())
+}
+
+#[scalar(name = "time_to_nano")]
+fn time_to_nano(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    Value::from_integer(ok_tri!(t.to_unix_nano()))
+}
+
+// Comparisons
+
+#[scalar(name = "time_after")]
+fn time_after(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let blob = ok_tri!(args[1].to_blob(), "2nd parameter: should be a time blob");
+
+    let u = tri!(Time::try_from(blob));
+
+    Value::from_integer((t > u).into())
+}
+
+#[scalar(name = "time_before")]
+fn time_before(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let blob = ok_tri!(args[1].to_blob(), "2nd parameter: should be a time blob");
+
+    let u = tri!(Time::try_from(blob));
+
+    Value::from_integer((t < u).into())
+}
+
+#[scalar(name = "time_compare")]
+fn time_compare(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let blob = ok_tri!(args[1].to_blob(), "2nd parameter: should be a time blob");
+
+    let u = tri!(Time::try_from(blob));
+
+    let cmp = match ok_tri!(t.partial_cmp(&u)) {
+        Ordering::Less => -1,
+        Ordering::Greater => 1,
+        Ordering::Equal => 0,
+    };
+
+    Value::from_integer(cmp)
+}
+
+#[scalar(name = "time_equal")]
+fn time_equal(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let blob = ok_tri!(args[1].to_blob(), "2nd parameter: should be a time blob");
+
+    let u = tri!(Time::try_from(blob));
+
+    Value::from_integer(t.eq(&u).into())
+}
+
+// Duration Constants
+
+/// 1 nanosecond
+#[scalar(name = "dur_ns")]
+fn dur_ns(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::nanoseconds(1).num_nanoseconds().unwrap())
+}
+
+/// 1 microsecond
+#[scalar(name = "dur_us")]
+fn dur_us(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::microseconds(1).num_nanoseconds().unwrap())
+}
+
+/// 1 millisecond
+#[scalar(name = "dur_ms")]
+fn dur_ms(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::milliseconds(1).num_nanoseconds().unwrap())
+}
+
+/// 1 second
+#[scalar(name = "dur_s")]
+fn dur_s(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::seconds(1).num_nanoseconds().unwrap())
+}
+
+/// 1 minute
+#[scalar(name = "dur_m")]
+fn dur_m(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::minutes(1).num_nanoseconds().unwrap())
+}
+
+/// 1 hour
+#[scalar(name = "dur_h")]
+fn dur_h(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    Value::from_integer(chrono::Duration::hours(1).num_nanoseconds().unwrap())
+}
+
+// Time Arithmetic
+
+/// Do not use `time_add` to add days, months or years. Use `time_add_date` instead.
+#[scalar(name = "time_add", alias = "date_add")]
+fn time_add(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+    let t = tri!(Time::try_from(blob));
+
+    value_tri!(
+        args[1].value_type(),
+        ValueType::Integer,
+        "2nd parameter: should be an integer"
+    );
+
+    let d = ok_tri!(args[1].to_integer());
+
+    let d = Duration::from(d);
+
+    match t.add_duration(d) {
+        Some(t) => t.into_blob(),
+        None => Value::null(),
+    }
+}
+
+#[scalar(name = "time_add_date")]
+fn time_add_date(args: &[Value]) -> Value {
+    if args.len() != 2 && args.len() != 3 && args.len() != 4 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+    let t = tri!(Time::try_from(blob));
+
+    value_tri!(
+        args[1].value_type(),
+        ValueType::Integer,
+        "2nd parameter: should be an integer"
+    );
+
+    let years = ok_tri!(args[1].to_integer());
+    let mut months = 0;
+    let mut days = 0;
+
+    if args.len() >= 3 {
+        value_tri!(
+            args[2].value_type(),
+            ValueType::Integer,
+            "3rd parameter: should be an integer"
+        );
+
+        months = ok_tri!(args[2].to_integer());
+    }
+
+    if args.len() == 4 {
+        value_tri!(
+            args[3].value_type(),
+            ValueType::Integer,
+            "4th parameter: should be an integer"
+        );
+
+        days = ok_tri!(args[3].to_integer());
+    }
+
+    let (Ok(years), Ok(months)) = (i32::try_from(years), i32::try_from(months)) else {
+        return Value::error_with_message(TimeError::CreationError.to_string());
+    };
+
+    let t: Time = tri!(t.time_add_date(years, months, days));
+
+    t.into_blob()
+}
+
+/// Returns the duration between two time values t and u (in nanoseconds).
+/// If the result exceeds the maximum (or minimum) value that can be stored in a Duration,
+/// the maximum (or minimum) duration will be returned.
+fn time_sub_internal(t: Time, u: Time) -> Value {
+    let cmp = ok_tri!(t.partial_cmp(&u));
+
+    let diff = t - u;
+
+    let nano_secs = match diff.num_nanoseconds() {
+        Some(nano) => nano,
+        None => match cmp {
+            Ordering::Equal => ok_tri!(diff.num_nanoseconds()),
+            Ordering::Less => i64::MIN,
+            Ordering::Greater => i64::MAX,
+        },
+    };
+
+    Value::from_integer(nano_secs)
+}
+
+#[scalar(name = "time_sub", alias = "age")]
+fn time_sub(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+    let t = tri!(Time::try_from(blob));
+
+    let blob = ok_tri!(args[1].to_blob(), "2nd parameter: should be a time blob");
+    let u = tri!(Time::try_from(blob));
+
+    time_sub_internal(t, u)
+}
+
+#[scalar(name = "time_since")]
+fn time_since(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let now = Time::new();
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+    let t = tri!(Time::try_from(blob));
+
+    time_sub_internal(now, t)
+}
+
+#[scalar(name = "time_until")]
+fn time_until(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let now = Time::new();
+
+    let blob = ok_tri!(args[0].to_blob(), "parameter should be a time blob");
+    let t = tri!(Time::try_from(blob));
+
+    time_sub_internal(t, now)
+}
+
+// Rounding
+
+#[scalar(name = "time_trunc", alias = "date_trunc")]
+fn time_trunc(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    match args[1].value_type() {
+        ValueType::Text => {
+            let field = ok_tri!(args[1].to_text());
+
+            let field = tri!(TimeRoundField::from_str(field));
+
+            match tri!(t.trunc_field(field)) {
+                Some(t) => t.into_blob(),
+                None => Value::null(),
+            }
+        }
+        ValueType::Integer => {
+            let duration = ok_tri!(args[1].to_integer());
+            let duration = Duration::from(duration);
+
+            tri!(t.trunc_duration(duration)).into_blob()
+        }
+        _ => Value::error_with_message("2nd parameter: should be a field name".to_string()),
+    }
+}
+
+#[scalar(name = "time_round")]
+fn time_round(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    value_tri!(
+        args[1].value_type(),
+        ValueType::Integer,
+        "2nd parameter: should be an integer"
+    );
+
+    let duration = ok_tri!(args[1].to_integer());
+    let duration = Duration::from(duration);
+
+    tri!(t.round_duration(duration)).into_blob()
+}
+
+// Formatting
+
+#[scalar(name = "time_fmt_iso")]
+fn time_fmt_iso(args: &[Value]) -> Value {
+    if args.len() != 1 && args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let offset_sec = {
+        if args.len() == 2 {
+            value_tri!(
+                args[1].value_type(),
+                ValueType::Integer,
+                "2nd parameter: should be an integer"
+            );
+            ok_tri!(args[1].to_integer()) as i32
+        } else {
+            0
+        }
+    };
+
+    let fmt_str = tri!(t.fmt_iso(offset_sec));
+
+    Value::from_text(fmt_str)
+}
+
+#[scalar(name = "time_fmt_datetime")]
+fn time_fmt_datetime(args: &[Value]) -> Value {
+    if args.len() != 1 && args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let offset_sec = {
+        if args.len() == 2 {
+            value_tri!(
+                args[1].value_type(),
+                ValueType::Integer,
+                "2nd parameter: should be an integer"
+            );
+            ok_tri!(args[1].to_integer()) as i32
+        } else {
+            0
+        }
+    };
+
+    let fmt_str = tri!(t.fmt_datetime(offset_sec));
+
+    Value::from_text(fmt_str)
+}
+
+#[scalar(name = "time_fmt_date")]
+fn time_fmt_date(args: &[Value]) -> Value {
+    if args.len() != 1 && args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let offset_sec = {
+        if args.len() == 2 {
+            value_tri!(
+                args[1].value_type(),
+                ValueType::Integer,
+                "2nd parameter: should be an integer"
+            );
+            ok_tri!(args[1].to_integer()) as i32
+        } else {
+            0
+        }
+    };
+
+    let fmt_str = tri!(t.fmt_date(offset_sec));
+
+    Value::from_text(fmt_str)
+}
+
+#[scalar(name = "time_fmt_time")]
+fn time_fmt_time(args: &[Value]) -> Value {
+    if args.len() != 1 && args.len() != 2 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+    let blob = ok_tri!(args[0].to_blob(), "1st parameter: should be a time blob");
+
+    let t = tri!(Time::try_from(blob));
+
+    let offset_sec = {
+        if args.len() == 2 {
+            value_tri!(
+                args[1].value_type(),
+                ValueType::Integer,
+                "2nd parameter: should be an integer"
+            );
+            ok_tri!(args[1].to_integer()) as i32
+        } else {
+            0
+        }
+    };
+
+    let fmt_str = tri!(t.fmt_time(offset_sec));
+
+    Value::from_text(fmt_str)
+}
+
+#[scalar(name = "time_parse")]
+fn time_parse(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::error(ResultCode::InvalidArgs);
+    }
+
+    let dt_str = ok_tri!(args[0].to_text());
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str) {
+        return Time::from_datetime(dt.to_utc()).into_blob();
+    }
+
+    if let Ok(mut dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S") {
+        // Unwrap is safe here
+        dt = dt.with_nanosecond(0).unwrap();
+        return Time::from_datetime(dt.and_utc()).into_blob();
+    }
+
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(dt_str, "%Y-%m-%d") {
+        // Unwrap is safe here
+
+        let dt = date
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .with_nanosecond(0)
+            .unwrap();
+        return Time::from_datetime(dt.and_utc()).into_blob();
+    }
+
+    let time = tri!(
+        chrono::NaiveTime::parse_from_str(dt_str, "%H:%M:%S"),
+        "error parsing datetime string"
+    );
+    let dt = NaiveDateTime::new(NaiveDate::from_ymd_opt(1, 1, 1).unwrap(), time)
+        .with_nanosecond(0)
+        .unwrap();
+
+    Time::from_datetime(dt.and_utc()).into_blob()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ints(v: &[i64]) -> Vec<Value> {
+        v.iter().map(|&i| Value::from_integer(i)).collect()
+    }
+
+    #[test]
+    fn time_date_overflowing_args_return_null() {
+        // seconds - offset_sec overflows i64
+        let v = time_date_internal(&ints(&[2000, 1, 1, 0, 0, i64::MIN, 0, 1]));
+        assert_eq!(v.value_type(), ValueType::Null);
+        let v = time_date_internal(&ints(&[2024, 1, 1, 0, 0, i64::MAX, 0, -1]));
+        assert_eq!(v.value_type(), ValueType::Null);
+        // year / month that don't fit in i32 must not be truncated
+        let v = time_date_internal(&ints(&[4294969297, 1, 1]));
+        assert_eq!(v.value_type(), ValueType::Null);
+        let v = time_date_internal(&ints(&[2024, 4294967297, 1]));
+        assert_eq!(v.value_type(), ValueType::Null);
+        // offset that doesn't fit in i32
+        let v = time_date_internal(&ints(&[2024, 1, 1, 0, 0, 0, 0, 4294967296]));
+        assert_eq!(v.value_type(), ValueType::Null);
+        // sanity: normal call still returns a blob
+        let v = time_date_internal(&ints(&[2024, 1, 1, 0, 0, 0, 0, 3600]));
+        assert_eq!(v.value_type(), ValueType::Blob);
+    }
+}

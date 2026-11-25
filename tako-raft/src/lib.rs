@@ -7,7 +7,7 @@ mod placement;
 pub use catalog::Claim;
 mod disk;
 mod engines;
-pub use engines::{RedbFile, SqliteWal};
+pub use engines::RedbFile;
 mod writer;
 pub use writer::{Resource, Writer};
 mod log;

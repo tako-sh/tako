@@ -26,7 +26,7 @@ const TABLE: &str = "CREATE TABLE IF NOT EXISTS _tako_migrations (\
     sha256 TEXT NOT NULL, \
     applied_at INTEGER NOT NULL, \
     PRIMARY KEY (app, name)\
-) WITHOUT ROWID";
+)";
 
 /// The longest migration file name.
 const MAX_NAME_BYTES: usize = 255;

@@ -134,7 +134,7 @@ impl Writer {
         self.publish_pages(page_size, file_size, pages, false)
     }
 
-    fn publish_pages(
+    pub fn publish_pages(
         &mut self,
         page_size: u32,
         file_size: u64,
@@ -246,6 +246,9 @@ impl Resource {
         Ok(())
     }
 
+    pub fn file_size(&self) -> io::Result<u64> {
+        self.replica.file_size()
+    }
     pub fn backup_settings(&self) -> Option<Vec<u8>> {
         self.replica.backup_settings()
     }

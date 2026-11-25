@@ -223,12 +223,12 @@ impl HostedChannelStore {
         Statement::new(format!(
             "INSERT INTO tako_replay_streams(app, channel, head, floor, activity_ms,
                     window_ms, inactivity_ms, lifetime_ms)
-             SELECT a.app, ?2, a.seq, a.seq, {NOW}, ?3, ?4, ?5
-             FROM tako_replay_apps a LEFT JOIN tako_replay_streams s ON s.app = a.app AND s.channel = ?2
+             SELECT a.app, ?2, a.seq, COALESCE(s.floor, a.seq), {NOW}, ?3, ?4, ?5
+             FROM tako_replay_apps a LEFT JOIN tako_replay_bounds s ON s.app = a.app AND s.channel = ?2
              WHERE a.app = ?1 AND (?7 = 0 OR s.marker IS NULL)
                  AND (?8 = 0 OR a.stream_count < {MAX_STREAMS} OR s.app IS NOT NULL)
              ON CONFLICT(app, channel) DO UPDATE SET
-                 floor = (SELECT floor FROM tako_replay_bounds WHERE app = ?1 AND channel = ?2),
+                 floor = excluded.floor,
                  activity_ms = excluded.activity_ms,
                  window_ms = CASE WHEN ?6 THEN excluded.window_ms ELSE window_ms END,
                  inactivity_ms = CASE WHEN ?6 THEN excluded.inactivity_ms ELSE inactivity_ms END,

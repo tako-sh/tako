@@ -13,6 +13,7 @@ mod exec;
 mod host;
 pub mod http;
 pub mod migrate;
+mod mvcc;
 pub mod proto;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -25,4 +26,5 @@ pub use host::{
     TokenHash, generate_token, hash_token,
 };
 pub use migrate::{Migration, MigrationReport};
+pub use mvcc::{materialize_recovery_image, verify_hosted_import};
 pub use proto::Value;

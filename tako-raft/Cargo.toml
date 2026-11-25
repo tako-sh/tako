@@ -18,7 +18,6 @@ serde_bytes = "0.11"
 tempfile = "=3.27.0"
 tokio.workspace = true
 
-terse-litestream = { path = "../vendor/terse-litestream" }
 redb = "5"
 
 [dev-dependencies]
