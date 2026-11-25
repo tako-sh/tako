@@ -45,6 +45,13 @@ impl TestSql {
             _owner: owner,
         }
     }
+    /// Bulk-load a fixture whose counters have already been calculated.
+    pub fn load_fixture(&self, sql: &str) -> turso_core::Result<()> {
+        self.connection.set_triggers_enabled(false);
+        let result = self.connection.execute(sql);
+        self.connection.set_triggers_enabled(true);
+        result
+    }
     pub fn execute_batch(&self, sql: &str) -> turso_core::Result<()> {
         self.connection.execute(sql)
     }

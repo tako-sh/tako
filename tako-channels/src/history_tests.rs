@@ -174,11 +174,11 @@ fn checker_rejects_a_read_that_skips_a_committed_message() {
 #[test]
 fn replay_and_presence_expiry_histories_are_reproducible() {
     // The database's clock decides expiry. Logical time moves stored messages
-    // back in whole minutes against a 90 second window, so the real time a
+    // back in whole hours against a 90 minute window, so the real time a
     // run takes never changes what has expired. Stream activity stays real,
     // so the stream is never idle long enough to be released.
-    const WINDOW_MS: i64 = 90_000;
-    const STEP_MS: i64 = 60_000;
+    const WINDOW_MS: i64 = 90 * 60_000;
+    const STEP_MS: i64 = 60 * 60_000;
     let db = TestDb::start();
     let run = |seed: u64, attempt: u8| -> Vec<String> {
         let app = format!("expiry-{seed}-{attempt}");

@@ -4,8 +4,7 @@
 //! It reaches the host through the server's local authenticated endpoint, so
 //! even the database's own server goes through admission, restore barriers
 //! and, for a database on another server, forwarding. Each call is one
-//! pipeline request holding one transaction: SQLite's single writer is never
-//! held across network round trips.
+//! pipeline request, so a transaction can finish without a second network round trip.
 
 use std::io::Read;
 use std::sync::OnceLock;
@@ -19,6 +18,7 @@ use serde_json::{Value, json};
 use crate::proto::Value as SqlValue;
 
 /// The largest response a call reads.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_LIMIT: u64 = 32 * 1024 * 1024;
 
 /// One SQL statement with positional arguments. Arguments are JSON scalars:
@@ -107,7 +107,6 @@ impl Client {
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .connect_timeout(Duration::from_secs(2))
-                    .timeout(Duration::from_secs(10))
                     .build()
             })
             .as_ref()
@@ -123,15 +122,25 @@ impl Client {
     /// returns each statement's rows. A failing statement rolls back all of
     /// them.
     pub fn batch(&self, statements: &[Statement]) -> Result<Vec<Rows>, ClientError> {
-        self.transaction("BEGIN IMMEDIATE", statements)
+        self.transaction("BEGIN IMMEDIATE", statements, REQUEST_TIMEOUT)
     }
 
     /// Runs `statements` in one read transaction, which sees one snapshot.
     pub fn read_batch(&self, statements: &[Statement]) -> Result<Vec<Rows>, ClientError> {
-        self.transaction("BEGIN", statements)
+        self.transaction("BEGIN", statements, REQUEST_TIMEOUT)
     }
 
-    fn transaction(&self, begin: &str, statements: &[Statement]) -> Result<Vec<Rows>, ClientError> {
+    /// Background maintenance may wait for admission and an engine checkpoint.
+    pub fn maintenance_batch(&self, statements: &[Statement]) -> Result<Vec<Rows>, ClientError> {
+        self.transaction("BEGIN IMMEDIATE", statements, Duration::from_secs(65))
+    }
+
+    fn transaction(
+        &self,
+        begin: &str,
+        statements: &[Statement],
+        timeout: Duration,
+    ) -> Result<Vec<Rows>, ClientError> {
         let mut steps = Vec::with_capacity(statements.len() + 2);
         steps.push(json!({"stmt":{"sql":begin}}));
         for (i, stmt) in statements.iter().enumerate() {
@@ -154,10 +163,18 @@ impl Client {
         let response = self
             .http
             .post(&self.url)
+            .timeout(timeout)
             .header(AUTHORIZATION, self.authorization.clone())
             .json(&request)
             .send()
-            .map_err(|_| ClientError::Unavailable("database request failed".into()))?;
+            .map_err(|error| {
+                let message = if error.is_timeout() {
+                    "database request timed out"
+                } else {
+                    "database request failed"
+                };
+                ClientError::Unavailable(message.into())
+            })?;
         let status = response.status();
         if !status.is_success() {
             let message = format!("database returned HTTP {}", status.as_u16());

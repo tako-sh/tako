@@ -5,9 +5,8 @@
 //! methods.
 
 use crate::{ChannelStore, ChannelStoreConfig};
-use std::path::PathBuf;
 use std::sync::Arc;
-use tako_db::testing::TestServer;
+use tako_db::testing::{TestServer, TestSql};
 
 /// The app a test's stores belong to unless it names another.
 pub(crate) const APP: &str = "app";
@@ -15,7 +14,7 @@ pub(crate) const APP: &str = "app";
 pub(crate) struct TestDb {
     url: String,
     token: String,
-    path: PathBuf,
+    sql: TestSql,
     _server: TestServer,
 }
 
@@ -26,7 +25,8 @@ impl TestDb {
         Self {
             url: server.url.clone(),
             token: database.token,
-            path: database.path,
+            // Keep the native owner open across requests, as on a hosted leader.
+            sql: TestSql::open(&database.path),
             _server: server,
         }
     }
@@ -80,8 +80,8 @@ impl TestDb {
     }
 
     /// Direct access to the database file, as an operator's tools have.
-    pub(crate) fn sql(&self) -> tako_db::testing::TestSql {
-        tako_db::testing::TestSql::open(&self.path)
+    pub(crate) fn sql(&self) -> &TestSql {
+        &self.sql
     }
 
     pub(crate) fn execute(&self, sql: &str) {
