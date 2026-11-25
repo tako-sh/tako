@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / 'scripts/install-tako-server.sh').read_text()
-NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install_sqlite_runtime() {')]
+NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install_podman_runtime() {')]
 IS_ENABLED = SOURCE[SOURCE.index('is_enabled() {'):SOURCE.index('vpn_functions() {')]
 
 

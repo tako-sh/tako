@@ -1307,23 +1307,6 @@ After=tako-network.target'
 }
 
 
-install_sqlite_runtime() {
-  if need_cmd apt-get; then
-    apt-get update -y
-    apt-get install -y libsqlite3-0
-  elif need_cmd dnf; then
-    dnf install -y sqlite-libs
-  elif need_cmd yum; then
-    yum install -y sqlite-libs
-  elif need_cmd pacman; then
-    pacman -Sy --noconfirm sqlite
-  elif need_cmd zypper; then
-    zypper --non-interactive install sqlite3
-  else
-    echo "warning: unsupported package manager; install libsqlite3 runtime manually if needed." >&2
-  fi
-}
-
 install_podman_runtime() {
   if need_cmd podman; then
     return
@@ -1512,7 +1495,6 @@ if ! need_cmd which; then
   install_pkgs which
 fi
 ensure_nc
-install_sqlite_runtime
 install_podman_runtime
 
 download_url="${TAKO_SERVER_URL:-}"

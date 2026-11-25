@@ -97,7 +97,6 @@ if ! need_cmd which; then
   install_pkgs which
 fi
 ensure_nc
-install_sqlite_runtime
 install_podman_runtime
 
 download_url="${TAKO_SERVER_URL:-}"
