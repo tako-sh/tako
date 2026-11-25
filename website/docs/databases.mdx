@@ -30,7 +30,7 @@ Then deploy with `tako deploy --env production`.
 
 A full-access deploy claims each missing name and prepares a replica on each selected server. A second app using the same name joins the same database. Adding a server to the network alone does not copy app data. Deploy with full access when introducing a binding or a new target. Preparing reports storage readiness per binding before the rollout.
 
-A deploy fails when a bound name belongs to a KV store rather than a database. `tako db list --json` shows the network's databases, their servers, and whether this project uses them (`in_project`).
+A SQL binding requires a name registered as a database. Run `tako status` to see which servers host replicas, which one is the current leader, and which apps bind to the database. `tako db list --json` lists the network's catalog entries and whether this project uses each one (`in_project`).
 
 Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. An environment's `db` and `kv` bindings share one set of names, so a binding name is used by one of them. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].db` is set.
 
@@ -48,7 +48,7 @@ The ordinary binding sends reads and writes to the elected leader. A successful 
 
 Without that setting, a channel-capable deploy selects a generated app/environment database. The automatically owned database cannot be bound as app SQL. If you intentionally select an ordinary database for replay and also bind it for SQL, the SQL binding can read or change **every table**: channel namespace isolation is not a SQL access restriction. Prefer a dedicated replay database.
 
-`tako db list --json` shows the home, `in_project`, `channel_replay_envs`, and `channel_owner` for an automatically owned database. `tako db status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
+`tako db list --json` includes `channel_replay_envs` and the `channel_owner` of an automatically owned database. `tako db status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
 
 ## Use it from application code
 
