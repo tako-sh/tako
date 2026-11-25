@@ -29,7 +29,7 @@ pub(crate) async fn collect(
         .iter()
         .map(|key| inventory_home(inventory, key))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    for record in records.into_iter().filter(|r| !r.founders.is_empty()) {
+    for record in records {
         if let Err(e) = one(
             network,
             &homes,

@@ -463,7 +463,7 @@ impl Context {
         &self,
         record: &DatabaseRecord,
     ) -> Result<Home, Box<dyn std::error::Error>> {
-        if !record.founders.is_empty() && !output::is_dry_run() {
+        if !output::is_dry_run() {
             return replication::leader(&self.network_homes()?, &record.generation).await;
         }
         self.home(&record.server).map_err(|error| {

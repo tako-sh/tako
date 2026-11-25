@@ -16,17 +16,6 @@ pub(crate) struct Home {
     pub name: String,
 }
 
-/// The network ID of an environment, as this command resolved it.
-pub(crate) fn env_network(env: &str) -> Result<String, String> {
-    crate::commands::env_network::resolved(env)
-        .map(|network| network.id)
-        .ok_or_else(|| {
-            format!(
-                "Environment '{env}' has no network. Databases are hosted on native network servers; deploy it to a network first."
-            )
-        })
-}
-
 /// Resolves a server name or device ID to a trusted server of the network.
 pub(crate) fn resolve_home(
     servers: &ServerInventory,

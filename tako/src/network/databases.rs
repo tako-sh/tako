@@ -1,11 +1,5 @@
-//! Database records in the network state, for SQLite databases and KV
-//! stores alike.
-//!
-//! A database's name identifies it within the network. Each database has two
-//! records under its name: a directory record with its home server, which
-//! every member that may deploy can read, and its snapshot key,
-//! which only administrators can read. Deleting a database publishes
-//! tombstones for both.
+//! The network directory publishes catalog-reserved SQL and KV generations.
+//! Deploy identities can read the directory. Only administrators can read backup keys.
 
 use serde::{Deserialize, Serialize};
 use tako_network::api::{RpcRequest, RpcResponse};
@@ -34,9 +28,8 @@ pub(crate) enum ServiceOwner {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseRecord {
     pub name: String,
-    /// Device ID of the server that hosts the database.
+    /// Initial coordinator. Leadership can move to another member.
     pub server: String,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub founders: std::collections::BTreeSet<String>,
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
@@ -107,11 +100,11 @@ pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<Databa
             continue;
         }
         let record: DatabaseRecord = serde_json::from_str(value)?;
-        if record.name != *address
-            && (record.founders.is_empty() || *address != format!("live.{}", record.generation))
-        {
+        tako_core::validate_database_name(&record.name)?;
+        tako_core::validate_database_generation(&record.generation)?;
+        if record.founders.is_empty() || *address != directory_address(&record) {
             return Err(format!(
-                "Database directory entry for '{address}' contains a different name."
+                "Database directory entry for '{address}' has an invalid generation or founding membership."
             )
             .into());
         }
@@ -176,11 +169,7 @@ pub(crate) fn publish(
 }
 
 fn directory_address(record: &DatabaseRecord) -> String {
-    if record.founders.is_empty() {
-        record.name.clone()
-    } else {
-        format!("live.{}", record.generation)
-    }
+    format!("live.{}", record.generation)
 }
 
 pub(crate) fn retire(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
@@ -264,7 +253,7 @@ mod tests {
     fn records_round_trip_and_reject_unknown_fields() {
         let record = DatabaseRecord {
             name: "main".into(),
-            founders: Default::default(),
+            founders: ["a".repeat(64)].into(),
             server: "a".repeat(64),
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
@@ -288,6 +277,9 @@ mod tests {
             serde_json::from_str::<DatabaseRecord>(&kv_json).unwrap(),
             kv
         );
+        let mut without_founders: serde_json::Value = serde_json::from_str(&json).unwrap();
+        without_founders.as_object_mut().unwrap().remove("founders");
+        assert!(serde_json::from_value::<DatabaseRecord>(without_founders).is_err());
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value["extra"] = true.into();
         assert!(serde_json::from_value::<DatabaseRecord>(value).is_err());
@@ -298,7 +290,6 @@ mod tests {
         // The longest name and its generation still make a valid address.
         let longest = DatabaseRecord {
             name: "a".repeat(63),
-            founders: Default::default(),
             ..record
         };
         RecordAddress {

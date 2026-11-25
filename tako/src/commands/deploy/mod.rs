@@ -700,44 +700,21 @@ async fn run_async(
         )
         .await?;
     }
-    // An administrator's deploy also revokes the grants of an environment
-    // that no longer binds the network's databases.
-    let revokes_grants = configure_bindings && !database_records.is_empty();
-    let mut granted = None;
-    if !database_plan.sql.is_empty() || !database_plan.kv.is_empty() || revokes_grants {
-        let prepared = databases::prepare(databases::Preparation {
+    if !database_plan.sql.is_empty()
+        || !database_plan.kv.is_empty()
+        || database_plan.service_bindings().next().is_some()
+    {
+        databases::prepare(databases::Preparation {
             plan: &database_plan,
-            records: &database_records,
             config: &tako_config,
-            servers: &servers,
             secrets: &secrets,
             project_dir: &project_dir,
             env: &env,
             app: &deployment_app_name,
-            targets: &server_names,
             administrator: configure_bindings,
             release: release_command.is_some(),
         })
         .await?;
-        databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
-        databases::apply_peer_keys(&mut database_plan.kv, &prepared.peer_keys);
-        if let Some(replay) = &mut database_plan.replay.binding
-            && replay.binding.generation.is_none()
-        {
-            replay.binding.peer_key = prepared
-                .replay_peer_keys
-                .get(&replay.home.device_id)
-                .cloned();
-        }
-        if let Some(workflows) = &mut database_plan.workflows.binding
-            && workflows.binding.generation.is_none()
-        {
-            workflows.binding.peer_key = prepared
-                .workflows_peer_keys
-                .get(&workflows.home.device_id)
-                .cloned();
-        }
-        granted = Some(prepared);
     }
     // Pin the environment's secret snapshot on the leader once it holds what
     // this deploy published. Every server then applies exactly that snapshot.
@@ -921,7 +898,7 @@ async fn run_async(
 
     if !successful_targets.is_empty()
         && configure_bindings
-        && database_records.iter().any(|r| !r.founders.is_empty())
+        && !database_records.is_empty()
         && let Err(e) = crate::commands::db::cleanup::collect(
             &network,
             &servers,
@@ -935,11 +912,6 @@ async fn run_async(
     }
     // ===== Summary =====
     if errors.is_empty() {
-        // Every server runs the new release; grants only the old one used
-        // can go.
-        if let Some(granted) = granted {
-            databases::narrow_grants(granted).await;
-        }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
             task_tree.set_success_summary(&version, &routes, https_port);

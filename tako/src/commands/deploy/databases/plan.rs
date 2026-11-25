@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use sha2::{Digest, Sha256};
 use tako_core::DatabaseEngine;
 
-use crate::commands::db::target::{PlannedBinding, inventory_home, resolve_home};
+use crate::commands::db::target::{PlannedBinding, inventory_home};
 use crate::config::{ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 
@@ -147,13 +147,14 @@ pub(in crate::commands::deploy) fn plan(
     )?;
     let sql_names_database = |name: &str| environment.databases.values().any(|db| db == name);
 
-    // Where a database named in this plan lives: its record's server, or a
-    // new database on the network's only server for a full client.
+    let first = members.first().ok_or("No storage target selected")?;
+    let coordinator = inventory_home(servers, first)?;
     let mut resolve = |name: &str,
                        engine: DatabaseEngine,
                        usage: Option<(Service, bool)>|
      -> Result<PlannedBinding, String> {
-        let home = if let Some(record) = records.iter().find(|r| r.name == name) {
+        let mut planned = PlannedBinding::new(name, coordinator.clone(), engine);
+        if let Some(record) = records.iter().find(|r| r.name == name) {
             if record.engine != engine {
                 if engine == DatabaseEngine::Kv {
                     return Err(format!(
@@ -191,64 +192,16 @@ pub(in crate::commands::deploy) fn plan(
                 }
                 _ => {}
             }
-            if !record.founders.is_empty()
-                && let Some(key) = members.first()
-            {
-                // Replicated groups elect their own leader. The original founder
-                // may have left the inventory since this name was created.
-                inventory_home(servers, key)?
-            } else {
-                let home = resolve_home(servers, network, &record.server, env)
-                    .map_err(|error| format!("The server of database '{name}': {error}"))?;
-                if home.device_id != record.server {
-                    return Err(format!(
-                        "Database '{name}' has no valid server device ID in the network directory."
-                    ));
-                }
-                home
-            }
-        } else if let Some(key) = members.first()
-            && administrator
-        {
-            let home = inventory_home(servers, key)?;
-            plan.create
-                .entry(name.to_owned())
-                .or_insert_with(|| PlannedBinding::new(name, home.clone(), engine));
-            home
-        } else {
-            let hint = match usage {
-                Some((service, true)) => format!(
-                    " Then set `db = \"{name}\"` under `[envs.{env}.{}]`.",
-                    service.table()
-                ),
-                _ => String::new(),
-            };
-            let command = if engine.is_sqlite() { "db" } else { "kv" };
-            let mut commands = Vec::new();
-            for key in &members {
-                let home = inventory_home(servers, key)?;
-                // Names can be ambiguous; device IDs never are.
-                let selector = if resolve_home(servers, network, &home.name, env).is_ok() {
-                    home.name
-                } else {
-                    home.device_id
-                };
-                commands.push(format!(
-                    "`tako {command} create {name} --server {selector} --network {network}`"
-                ));
-            }
-            return Err(format!(
-                "Database '{name}' is not recorded in this network. With full access, choose its home and run {}.{hint} Then deploy with full access to provision its binding.",
-                commands.join(" or ")
-            ));
-        };
-        let mut planned = PlannedBinding::new(name, home, engine);
-        if let Some(record) = records
-            .iter()
-            .find(|r| r.name == name && !r.founders.is_empty())
-        {
             planned.binding.generation = Some(record.generation.clone());
             planned.binding.server = record.server.clone();
+        } else if administrator {
+            plan.create
+                .entry(name.to_owned())
+                .or_insert_with(|| planned.clone());
+        } else {
+            return Err(format!(
+                "Resource '{name}' has not been provisioned. Deploy environment '{env}' with full access to create its replicas and grant this binding."
+            ));
         }
         Ok(planned)
     };
@@ -369,7 +322,7 @@ mod tests {
     fn record(name: &str, owner: Option<&str>) -> DatabaseRecord {
         DatabaseRecord {
             name: name.into(),
-            founders: Default::default(),
+            founders: ["a".repeat(64)].into(),
             server: "a".repeat(64),
             generation: "c".repeat(32),
             created_at_unix_secs: 1,
@@ -434,11 +387,12 @@ mod tests {
         }
         let mut moved = existing.clone();
         moved[0].server = "e".repeat(64);
-        assert!(
-            placement(&moved)
-                .err()
-                .unwrap()
-                .contains("not a trusted server")
+        let planned = placement(&moved).unwrap();
+        let replay = planned.replay.binding.unwrap();
+        assert_eq!(replay.home.name, "west");
+        assert_eq!(
+            replay.binding.generation.as_ref(),
+            Some(&moved[0].generation)
         );
     }
 
@@ -475,7 +429,7 @@ mod tests {
         )
         .unwrap();
         assert!(placement.create.is_empty());
-        assert_eq!(placement.replay.binding.unwrap().home.name, "east");
+        assert_eq!(placement.replay.binding.unwrap().home.name, "west");
     }
 
     #[test]
@@ -629,7 +583,7 @@ mod tests {
             .unwrap()
             .contains("created for workflow runs")
         );
-        // Several servers: the user creates the database and names it.
+        // The selected target coordinates both generated and explicitly named groups.
         assert_eq!(
             place("", 2, &[], true).unwrap().create[&name].home.name,
             "west"
@@ -643,7 +597,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(named.workflows.binding.unwrap().home.name, "east");
+        assert_eq!(named.workflows.binding.unwrap().home.name, "west");
         // Channels and workflows may share a named database.
         let shared = place(
             "[envs.production.channels]\ndb='runs'\n[envs.production.workflows]\ndb='runs'",

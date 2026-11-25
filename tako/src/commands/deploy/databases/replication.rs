@@ -59,9 +59,6 @@ pub(super) async fn prepare_replicas(
     };
     for name in names {
         let record = if let Some(record) = records.iter().find(|r| r.name == name) {
-            if record.founders.is_empty() {
-                continue;
-            }
             record.clone()
         } else {
             if registry.is_none() {
