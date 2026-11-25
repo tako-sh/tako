@@ -30,6 +30,7 @@ use crate::state_store::{AppDatabase, DatabaseSecrets, StoredDatabase};
 mod backup_capture;
 pub(crate) mod backups;
 mod encryption;
+mod inventory;
 mod objects;
 pub(crate) mod replication;
 pub(crate) mod snapshots;
@@ -1171,14 +1172,23 @@ impl ServerState {
 
     fn visit_persisted_database_bindings(
         &self,
-        mut visit: impl FnMut(&str, &HashMap<String, AppDatabase>) -> Result<(), String>,
+        app: Option<&str>,
+        mut visit: impl FnMut(&str, &HashMap<String, AppDatabase>, bool) -> Result<(), String>,
     ) -> Result<(), String> {
-        for (scope, set) in self
-            .state_store
-            .all_app_databases()
-            .map_err(|e| format!("read database bindings: {e}"))?
-        {
-            visit(&scope, &set)?;
+        if let Some(app) = app {
+            let bindings = self
+                .state_store
+                .get_app_databases(app)
+                .map_err(|e| e.to_string())?;
+            visit(app, &bindings, false)?;
+        } else {
+            for (scope, bindings) in self
+                .state_store
+                .all_app_databases()
+                .map_err(|e| e.to_string())?
+            {
+                visit(&scope, &bindings, false)?;
+            }
         }
         // A compacted release can still roll back from its archive. Only an
         // actual archive makes a historical binding reachable. An I/O error
@@ -1188,6 +1198,9 @@ impl ServerState {
             .releases_with_databases()
             .map_err(|e| e.to_string())?
         {
+            if app.is_some_and(|app| app != scope) {
+                continue;
+            }
             let archive = crate::release::app_root(&self.runtime_config().data_dir, &scope)
                 .join("archives")
                 .join(&version)
@@ -1200,7 +1213,7 @@ impl ServerState {
                     .release_databases(&scope, &version)
                     .map_err(|e| e.to_string())?
             {
-                visit(&scope, &bindings)?;
+                visit(&scope, &bindings, true)?;
             }
         }
         Ok(())
@@ -1220,7 +1233,7 @@ impl ServerState {
                 }
             }
         };
-        self.visit_persisted_database_bindings(|scope, set| {
+        self.visit_persisted_database_bindings(None, |scope, set, _| {
             record(scope, set);
             Ok(())
         })?;
@@ -1754,7 +1767,7 @@ mod tests {
         assert_eq!(error, "Missing local replica for shop");
         std::fs::remove_file(archive).unwrap();
         state
-            .visit_persisted_database_bindings(|_, bindings| {
+            .visit_persisted_database_bindings(None, |_, bindings, _| {
                 assert!(bindings.is_empty());
                 Ok(())
             })

@@ -684,6 +684,26 @@ run_database_checks() {
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
+  local inventory="$TMP_ROOT/resources-${server_host}.json"
+  local expected=1
+  if [[ "$server_host" != "$DATABASE_SERVER" ]]; then expected=2; fi
+  local deadline=$((SECONDS + 60))
+  until "${tako[@]}" --json status >"$inventory" 2>>"$log" &&
+    jq -e --argjson expected "$expected" '
+      [.servers[].databases[]? | select(.name == "messages")] as $copies
+      | ($copies | length) == $expected
+        and ([$copies[] | select(.is_leader)] | length) == 1
+        and ([$copies[].leader] | unique) == [$copies[0].leader]
+        and all($copies[]; (.leader | type == "string") and any(.bindings[];
+          .app == "cw-e2e/production" and .binding == "messages" and (.retained | not)))
+    ' "$inventory" >/dev/null; do
+    if (( SECONDS >= deadline )); then
+      echo "Resource inventory did not report the messages replicas and their leader" >&2
+      cat "$inventory" "$log" >&2
+      return 1
+    fi
+    sleep 1
+  done
   # The catalog generation and the environment's replicated grant must survive
   # the deploy on the second target, including an intervening leader election.
   jq -e '.databases[0] | .name == "messages" and (.status.generation | length > 0)

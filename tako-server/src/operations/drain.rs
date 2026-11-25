@@ -59,6 +59,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::Stop { service: None, .. }
         | Command::Delete { .. }
         | Command::Status { .. }
+        | Command::ListResources { .. }
         | Command::List
         | Command::ListReleases { .. }
         | Command::Routes

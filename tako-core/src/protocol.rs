@@ -484,6 +484,10 @@ pub enum Command {
 
     /// List all apps
     List,
+    /// List local replicas and deployed bindings, optionally limited to one app/environment.
+    ListResources {
+        app: Option<String>,
+    },
 
     /// List release/build history for an app
     ListReleases {

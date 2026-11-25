@@ -69,7 +69,6 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
         Some("main".into()),
         Some(NETWORK.into()),
         &[record("orders", "edge-a")],
-        &ServerInventory::default(),
     );
     assert_eq!(env.secrets, Some(2));
     assert_eq!(env.credentials, Some(vec!["ssl.cloudflare".to_string()]));
@@ -96,7 +95,8 @@ fn a_full_client_sees_counts_credential_names_and_bindings() {
                 binding: "main".into()
             },
             database: "orders".into(),
-            server: Some("edge-a".into()),
+            generation: Some("g1".into()),
+            leader: None,
         }]
     );
     assert_eq!(env.note, None);
@@ -117,7 +117,6 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
         Some("main".into()),
         Some(NETWORK.into()),
         &[record("orders", "edge-a")],
-        &ServerInventory::default(),
     );
     assert_eq!(env.secrets, None);
     assert_eq!(env.credentials, None);
@@ -126,7 +125,7 @@ fn a_deploy_client_sees_databases_and_servers_and_a_note_about_secrets() {
             .iter()
             .all(|storage| storage.credentials.is_none())
     );
-    assert_eq!(env.databases[0].server.as_deref(), Some("edge-a"));
+    assert_eq!(env.databases[0].generation.as_deref(), Some("g1"));
     assert_eq!(env.servers, vec!["edge-a".to_string()]);
     assert_eq!(env.note.as_deref(), Some(DEPLOY_CLIENT_NOTE));
     assert!(!env.can_read_secrets());
@@ -151,10 +150,7 @@ route = "staging.example.com"
         ..record("generated", "edge-b")
     };
     let records = [record("events", "edge-a"), owned];
-    for (name, database, server) in [
-        ("production", "events", "edge-a"),
-        ("staging", "generated", "edge-b"),
-    ] {
+    for (name, database) in [("production", "events"), ("staging", "generated")] {
         let env = env_resources(
             name,
             &config,
@@ -166,11 +162,10 @@ route = "staging.example.com"
             Some("main".into()),
             Some(NETWORK.into()),
             &records,
-            &ServerInventory::default(),
         );
         assert_eq!(
             serde_json::to_value(env.databases).unwrap(),
-            serde_json::json!([{"database":database, "server":server, "usage":"channel_replay"}]),
+            serde_json::json!([{"database":database, "generation":"g1", "leader":null, "usage":"channel_replay"}]),
         );
     }
     assert_eq!(
@@ -203,66 +198,6 @@ route = "staging.example.com"
         None,
         "a channel-owned database is not a workflow database"
     );
-}
-
-#[test]
-fn databases_on_a_server_name_the_environments_that_bind_them() {
-    let mut config = config();
-    config.envs.get_mut("production").unwrap().channels = Some(crate::config::ChannelsConfig {
-        db: "orders".into(),
-    });
-    let env = env_resources(
-        "production",
-        &config,
-        &secrets(),
-        true,
-        false,
-        Access::Full,
-        Ok(vec![]),
-        None,
-        Some(NETWORK.into()),
-        &[record("orders", "edge-a")],
-        &ServerInventory::default(),
-    );
-    let project = ProjectResources {
-        app: "shop".into(),
-        config,
-        secrets: secrets(),
-        envs: vec![env],
-        databases: BTreeMap::from([
-            (
-                NETWORK.to_string(),
-                Ok(vec![
-                    record("orders", "dev-a"),
-                    record("audit", "dev-a"),
-                    record("other", "dev-b"),
-                ]),
-            ),
-            // Another network's database of the same name isn't this one.
-            (
-                "other-network".to_string(),
-                Ok(vec![record("orders", "dev-x")]),
-            ),
-        ]),
-    };
-    assert_eq!(
-        project.databases_on("dev-a"),
-        vec![
-            ("audit".to_string(), vec![]),
-            (
-                "orders".to_string(),
-                vec![
-                    "shop/production".to_string(),
-                    "shop/production#channels".to_string()
-                ]
-            ),
-        ]
-    );
-    assert_eq!(
-        project.databases_on("dev-x"),
-        vec![("orders".to_string(), vec![])]
-    );
-    assert!(project.databases_on("dev-c").is_empty());
 }
 
 #[test]

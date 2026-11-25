@@ -58,8 +58,9 @@ pub(crate) struct ProjectDatabase {
     #[serde(flatten)]
     pub usage: DatabaseUsage,
     pub database: String,
-    /// The server the database lives on, when its network record is known.
-    pub server: Option<String>,
+    pub generation: Option<String>,
+    /// Filled by status from live observations for this network and generation.
+    pub leader: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -95,45 +96,6 @@ pub(crate) struct ProjectResources {
     pub envs: Vec<EnvResources>,
     /// The databases of each network the project uses, by network ID.
     pub databases: BTreeMap<String, Result<Vec<DatabaseRecord>, String>>,
-}
-
-impl ProjectResources {
-    /// Databases homed on `server_id`, with the app environments of this
-    /// project that bind each one.
-    pub(crate) fn databases_on(&self, server_id: &str) -> Vec<(String, Vec<String>)> {
-        let mut homed = Vec::new();
-        for (network_id, records) in &self.databases {
-            let Ok(records) = records else {
-                continue;
-            };
-            for record in records.iter().filter(|record| record.server == server_id) {
-                // Database names are unique within a network, not across them.
-                let mut users = BTreeSet::new();
-                for env in self
-                    .envs
-                    .iter()
-                    .filter(|env| env.network_id.as_ref() == Some(network_id))
-                {
-                    for db in env.databases.iter().filter(|db| db.database == record.name) {
-                        let scope = tako_core::deployment_app_id(&self.app, &env.name);
-                        users.insert(match db.usage {
-                            DatabaseUsage::Binding { .. } => scope,
-                            DatabaseUsage::ChannelReplay => {
-                                tako_core::channel_replay_grant_scope(&scope)
-                            }
-                            DatabaseUsage::Workflows => tako_core::workflows_grant_scope(&scope),
-                        });
-                    }
-                    if env.kv.iter().any(|store| store.database == record.name) {
-                        users.insert(tako_core::deployment_app_id(&self.app, &env.name));
-                    }
-                }
-                homed.push((record.name.clone(), users.into_iter().collect()));
-            }
-        }
-        homed.sort();
-        homed
-    }
 }
 
 /// Load the project's resources. Network failures become notes, not errors.
@@ -200,7 +162,6 @@ pub(crate) fn load(
             alias.map(|alias| alias.alias).or(network_id.clone()),
             network_id,
             homes.map(Vec::as_slice).unwrap_or_default(),
-            inventory,
         ));
     }
     Ok(ProjectResources {
@@ -219,30 +180,6 @@ fn environment_names(config: &TakoToml, secrets: &SecretsStore) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// Each database's server name, by database name.
-fn server_names(
-    records: &[DatabaseRecord],
-    inventory: &ServerInventory,
-) -> BTreeMap<String, String> {
-    records
-        .iter()
-        .map(|record| {
-            let server = inventory
-                .servers
-                .iter()
-                .find(|(_, entry)| {
-                    entry
-                        .native
-                        .as_ref()
-                        .is_some_and(|target| target.server_id.to_string() == record.server)
-                })
-                .map(|(name, _)| name.clone())
-                .unwrap_or_else(|| record.server.chars().take(12).collect());
-            (record.name.clone(), server)
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn env_resources(
     name: &str,
@@ -255,7 +192,6 @@ pub(crate) fn env_resources(
     network: Option<String>,
     network_id: Option<String>,
     records: &[DatabaseRecord],
-    inventory: &ServerInventory,
 ) -> EnvResources {
     let env = config.envs.get(name);
     let readable = matches!(access, Access::Local | Access::Full);
@@ -292,7 +228,10 @@ pub(crate) fn env_resources(
         .unwrap_or_default();
     storages.sort_by(|a, b| a.binding.cmp(&b.binding));
 
-    let database_servers = server_names(records, inventory);
+    let generations: BTreeMap<_, _> = records
+        .iter()
+        .map(|r| (r.name.as_str(), &r.generation))
+        .collect();
     let bindings = |bound: &std::collections::HashMap<String, String>| {
         let mut bindings: Vec<ProjectDatabase> = bound
             .iter()
@@ -301,7 +240,8 @@ pub(crate) fn env_resources(
                     binding: binding.clone(),
                 },
                 database: database.clone(),
-                server: database_servers.get(database).cloned(),
+                generation: generations.get(database.as_str()).map(|s| (*s).clone()),
+                leader: None,
             })
             .collect();
         bindings.sort_by(|a, b| a.usage.label().cmp(b.usage.label()));
@@ -312,14 +252,16 @@ pub(crate) fn env_resources(
     if let Some(database) = replay_database(config, name, records, needs_replay) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::ChannelReplay,
-            server: database_servers.get(database).cloned(),
+            generation: generations.get(database).map(|s| (*s).clone()),
+            leader: None,
             database: database.to_owned(),
         });
     }
     if let Some(database) = workflows_database(config, name, records, needs_workflows) {
         databases.push(ProjectDatabase {
             usage: DatabaseUsage::Workflows,
-            server: database_servers.get(database).cloned(),
+            generation: generations.get(database).map(|s| (*s).clone()),
+            leader: None,
             database: database.to_owned(),
         });
     }

@@ -230,6 +230,11 @@ impl StateStore {
     ) -> Result<BTreeMap<String, HashMap<String, AppDatabase>>, StateStoreError> {
         self.all_database_rows("app_databases")
     }
+    pub(crate) fn all_app_storages(
+        &self,
+    ) -> Result<BTreeMap<String, HashMap<String, tako_core::StorageBinding>>, StateStoreError> {
+        self.all_database_rows("app_storages")
+    }
     fn all_database_rows<T: serde::de::DeserializeOwned>(
         &self,
         bucket: &str,

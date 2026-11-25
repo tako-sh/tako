@@ -255,10 +255,15 @@ impl Resource {
     pub fn backup_settings(&self) -> Option<Vec<u8>> {
         self.replica.backup_settings()
     }
-    pub fn leads(&self) -> bool {
+    /// The observed leader and whether it is this replica, sampled from one metrics update.
+    pub fn leadership(&self) -> Option<(u128, bool)> {
         let rx = self.raft.metrics();
         let metrics = rx.borrow_watched();
-        metrics.current_leader == Some(metrics.id)
+        let leader = metrics.current_leader?;
+        Some((leader, leader == metrics.id))
+    }
+    pub fn leads(&self) -> bool {
+        self.leadership().is_some_and(|(_, local)| local)
     }
     pub fn backup_image(&self) -> io::Result<(NamedTempFile, crate::BackupPosition)> {
         self.runtime
@@ -272,7 +277,7 @@ impl Resource {
         self.runtime.block_on(self.replica.backup_delta(txid))
     }
     pub fn current_leader(&self) -> Option<u128> {
-        self.raft.metrics().borrow_watched().current_leader
+        self.leadership().map(|(leader, _)| leader)
     }
 
     pub fn leader_barrier(&self) -> io::Result<()> {

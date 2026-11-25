@@ -28,7 +28,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         Command::CoordinateStorage {
             request: tako_core::StorageOperation::DeploymentLeader { app, .. },
         } => CommandClass::Application { app },
-        Command::List
+        Command::ListResources { app: None }
+        | Command::List
         | Command::Routes
         | Command::DrainServer { .. }
         | Command::ResumeServer
@@ -84,6 +85,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::Start { app, .. }
         | Command::Stop { app, .. }
         | Command::Delete { app }
+        | Command::ListResources { app: Some(app) }
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
@@ -338,6 +340,7 @@ pub(crate) fn authorize_command(
         | Command::Start { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
+        | Command::ListResources { app: Some(_) }
         | Command::Status { .. }
         | Command::ListReleases { .. }
         | Command::SecretsDigest { .. }
@@ -349,6 +352,7 @@ pub(crate) fn authorize_command(
         | Command::RetryWorkflowRun { .. }
         | Command::CancelWorkflowRun { .. } => {}
         Command::Hello { .. }
+        | Command::ListResources { app: None }
         | Command::ServerInfo
         | Command::DrainServer { .. }
         | Command::ResumeServer
@@ -426,6 +430,7 @@ fn deploy_client_command(command: &Command) -> bool {
             | Command::SnapshotDatabase { .. }
             | Command::MigrateDatabase { .. }
             | Command::SecretsDigest { .. }
+            | Command::ListResources { app: Some(_) }
             | Command::Status { .. }
             | Command::ListReleases { .. }
             | Command::Rollback { .. }
@@ -638,6 +643,7 @@ mod tests {
         "stop",
         "delete",
         "status",
+        "list_resources",
         "list_releases",
         "rollback",
         "secrets_digest",
@@ -875,6 +881,7 @@ mod tests {
         "deploy",
         "snapshot_database",
         "status",
+        "list_resources",
         "list_releases",
         "rollback",
         "secrets_digest",
@@ -979,6 +986,7 @@ mod tests {
         let admin = Permissions::Full;
         for command in [
             Command::List,
+            Command::ListResources { app: None },
             Command::Routes,
             Command::DrainServer {
                 timeout_seconds: 30,

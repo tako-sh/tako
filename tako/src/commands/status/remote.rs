@@ -61,6 +61,7 @@ pub(super) async fn query_global_server_status(
         .and_then(|host| host.uptime_secs)
         .map(format_duration_human);
     let scoped_apps = client.scoped_apps();
+    let user_resources = fetch_user_resources(&mut client, scoped_apps.as_deref()).await;
     let routes = if scoped_apps.is_some() {
         Vec::new()
     } else {
@@ -135,6 +136,7 @@ pub(super) async fn query_global_server_status(
         server_uptime,
         process_uptime,
         resources: info.host,
+        user_resources,
         routes,
         apps,
         error,
@@ -148,10 +150,58 @@ fn status_error(message: String) -> GlobalServerStatusResult {
         server_uptime: None,
         process_uptime: None,
         resources: None,
+        user_resources: Err(message.clone()),
         routes: Vec::new(),
         apps: Vec::new(),
         error: Some(message),
     }
+}
+
+async fn fetch_user_resources(
+    client: &mut ManagementClient,
+    apps: Option<&[String]>,
+) -> Result<tako_core::ServerUserResources, String> {
+    async fn fetch(
+        client: &mut ManagementClient,
+        app: Option<String>,
+    ) -> Result<tako_core::ServerUserResources, String> {
+        let reply = client
+            .send(&Command::ListResources { app })
+            .await
+            .map_err(|e| e.to_string())?;
+        management_http::parse_ok_data(reply, "list_resources").map_err(|e| e.to_string())
+    }
+    let Some(apps) = apps else {
+        return fetch(client, None).await;
+    };
+    let mut databases = std::collections::BTreeMap::new();
+    let mut storages = Vec::new();
+    for app in apps {
+        let report = fetch(client, Some(app.clone())).await?;
+        for mut db in report.databases {
+            let key = (db.name.clone(), db.generation.clone());
+            match databases.entry(key) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(db);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let previous: &mut tako_core::DatabaseReplicaStatus = entry.get_mut();
+                    previous.bindings.append(&mut db.bindings);
+                    previous.bindings.sort();
+                    previous.bindings.dedup();
+                    // This is a later observation on the same server.
+                    previous.leader = db.leader;
+                    previous.is_leader = db.is_leader;
+                }
+            }
+        }
+        storages.extend(report.storages);
+    }
+    storages.sort_by(|a, b| (&a.app, &a.binding).cmp(&(&b.app, &b.binding)));
+    Ok(tako_core::ServerUserResources {
+        databases: databases.into_values().collect(),
+        storages,
+    })
 }
 
 fn process_uptime_since(epoch: i64) -> Option<String> {

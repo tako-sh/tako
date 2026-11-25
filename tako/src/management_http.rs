@@ -415,6 +415,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::FinishDatabaseExport { .. } => MANAGEMENT_DEPLOY_RPC_TIMEOUT,
         Command::Hello { .. }
         | Command::ServerInfo
+        | Command::ListResources { .. }
         | Command::List
         | Command::Routes
         | Command::EnterUpgrading { .. }

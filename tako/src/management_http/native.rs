@@ -161,6 +161,7 @@ pub(super) fn rpc_action(
         | Command::Stop { app, .. }
         | Command::Start { app, .. }
         | Command::Delete { app }
+        | Command::ListResources { app: Some(app) }
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
@@ -180,6 +181,7 @@ pub(super) fn rpc_action(
         }
         Command::Hello { .. }
         | Command::ServerInfo
+        | Command::ListResources { app: None }
         | Command::List
         | Command::Routes
         | Command::DrainServer { .. }

@@ -96,7 +96,7 @@ impl ServerState {
             .replication_groups()
             .map_err(|e| e.to_string())?;
         let mut required = BTreeMap::new();
-        self.visit_persisted_database_bindings(|_, bindings| {
+        self.visit_persisted_database_bindings(None, |_, bindings, _| {
             for binding in bindings.values().map(|entry| &entry.binding) {
                 let generation = &binding.generation;
                 let config = groups

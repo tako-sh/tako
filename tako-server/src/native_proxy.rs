@@ -245,6 +245,10 @@ impl NativeProxy {
         self.directory.read().server_address_by_id(server, now())
     }
 
+    pub(crate) fn server_name_at(&self, address: std::net::Ipv6Addr) -> Option<String> {
+        self.directory.read().server_name_at(address, now())
+    }
+
     /// Whether a peer address belongs to an effective server.
     pub(crate) fn is_server_address(&self, peer: IpAddr) -> bool {
         self.directory.read().is_server_address(peer, now())

@@ -73,9 +73,10 @@ checks exercise the same configuration the application deploys with.
    local app logs with `tako_dev_logs`; pass its `next_after` as `after` to fetch
    new entries on the next call.
 3. For production, inspect `tako_status`, `tako_release_list`, and `tako_logs`.
-   In a project, `tako_status` also lists each environment's resources
-   (secret count, credentials, storage, databases and KV stores
-   and their servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
+   `tako_status` shows SQL and KV replicas on each server, their observed leaders,
+   and deployed binding aliases, including object storage. Inside a project it
+   also shows configured bindings, secret counts and credential names.
+   `tako_doctor` checks for a missing `ssl.cloudflare`,
    expiring secrets, unrecorded databases or KV stores, and servers lacking key grants.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.

@@ -158,13 +158,13 @@ pub(super) fn checks(
                     .skipped
                     .push(format!("{}: no local network profile", env.name)),
                 Some(Ok(_)) => {
-                    for binding in env.databases.iter().filter(|db| db.server.is_none()) {
+                    for binding in env.databases.iter().filter(|db| db.generation.is_none()) {
                         databases.warnings.push(format!(
                             "{}: {} uses {}, which has no network record; create it with `tako db create {}`",
                             env.name, binding.usage.label(), binding.database, binding.database
                         ));
                     }
-                    for binding in env.kv.iter().filter(|db| db.server.is_none()) {
+                    for binding in env.kv.iter().filter(|db| db.generation.is_none()) {
                         databases.warnings.push(format!(
                             "{}: {} binds KV store {}, which has no network record. Deploy with full access on a single-server network or place it with `tako kv create {} --server <server>`",
                             env.name, binding.usage.label(), binding.database, binding.database
@@ -250,7 +250,7 @@ mod tests {
 
     const NETWORK: &str = "0123456789abcdef0123456789abcdef";
 
-    fn env(name: &str, access: Access, database_server: Option<&str>) -> EnvResources {
+    fn env(name: &str, access: Access, generation: Option<&str>) -> EnvResources {
         EnvResources {
             name: name.into(),
             network: Some("main".into()),
@@ -265,7 +265,8 @@ mod tests {
                     binding: "main".into(),
                 },
                 database: "orders".into(),
-                server: database_server.map(str::to_owned),
+                generation: generation.map(str::to_owned),
+                leader: None,
             }],
             kv: vec![],
             note: None,

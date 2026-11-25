@@ -2308,3 +2308,90 @@ async fn administrator_query_results_fit_through_the_management_relay() {
     );
     query(&state, ID, "SELECT randomblob(1024)").await;
 }
+
+#[tokio::test]
+async fn resource_inventory_scopes_bindings_and_reports_the_elected_leader() {
+    let dir = TempDir::new().unwrap();
+    let state = state(&dir);
+    create(&state, ID, None).await;
+    create(&state, "unbound", None).await;
+    let mut app = crate::instances::AppConfig {
+        name: "store".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        ..Default::default()
+    };
+    let binding = crate::state_store::AppDatabase {
+        binding: tako_core::DatabaseBinding {
+            name: ID.into(),
+            generation: GENERATION.into(),
+            peer_key: Some("private-grant".into()),
+            engine: tako_core::DatabaseEngine::Turso,
+        },
+        token: "private-token".into(),
+    };
+    app.databases.insert("history".into(), binding.clone());
+    let mut storage = backup("private-bucket");
+    storage.resource = Some("media".into());
+    app.storages.insert("uploads".into(), storage);
+    state
+        .state_store
+        .commit_deployment(&app, &[], None, None)
+        .unwrap();
+    let archive = crate::release::app_root(dir.path(), &app.deployment_id())
+        .join("archives/v1/release.tar.zst");
+    std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    std::fs::write(&archive, []).unwrap();
+    app.version = "v2".into();
+    app.databases.clear();
+    app.databases.insert("orders".into(), binding);
+    state
+        .state_store
+        .commit_deployment(&app, &[], None, None)
+        .unwrap();
+    app.name = "other".into();
+    state
+        .state_store
+        .commit_deployment(&app, &[], None, None)
+        .unwrap();
+
+    let scoped = ok(
+        &state,
+        Command::ListResources {
+            app: Some("store/production".into()),
+        },
+    )
+    .await;
+    assert_eq!(scoped["databases"].as_array().unwrap().len(), 1);
+    let db = &scoped["databases"][0];
+    assert_eq!(db["engine"], "turso");
+    assert_eq!(db["generation"], GENERATION);
+    assert_eq!(db["is_leader"], true);
+    assert!(db["leader"].is_string());
+    assert_eq!(
+        db["bindings"],
+        json!([
+            {"app":"store/production","binding":"history","retained":true},
+            {"app":"store/production","binding":"orders","retained":false}
+        ])
+    );
+    assert_eq!(
+        scoped["storages"],
+        json!([{"app":"store/production","binding":"uploads","resource":"media","provider":"s3"}])
+    );
+    for private in [
+        "other/production",
+        "private-token",
+        "private-grant",
+        "private-bucket",
+        "secret_access_key",
+        "signing_key",
+    ] {
+        assert!(!scoped.to_string().contains(private));
+    }
+    let all = ok(&state, Command::ListResources { app: None }).await;
+    assert_eq!(all["databases"][1]["name"], "unbound");
+    assert_eq!(all["databases"][1]["bindings"], json!([]));
+    assert_eq!(all["databases"][0]["bindings"].as_array().unwrap().len(), 3);
+    assert_eq!(all["storages"].as_array().unwrap().len(), 2);
+}

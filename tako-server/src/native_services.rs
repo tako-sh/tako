@@ -95,10 +95,16 @@ pub struct ServiceSnapshot {
     pub leases: Vec<ServiceLease>,
 }
 
+struct DirectoryServer {
+    address: IpAddr,
+    key: tako_network::SshPublicKey,
+    name: tako_network::DeviceName,
+}
+
 struct View {
     address: Ipv6Addr,
     peers: BTreeSet<IpAddr>,
-    servers: BTreeMap<DeviceId, (IpAddr, tako_network::SshPublicKey)>,
+    servers: BTreeMap<DeviceId, DirectoryServer>,
     server_names: BTreeMap<String, Ipv6Addr>,
     placements: BTreeMap<AppEnv, Vec<Placement>>,
     observed_at: u64,
@@ -192,19 +198,20 @@ impl ServiceDirectory {
         let mut ambiguous = BTreeSet::new();
         let mut valid_until = now.saturating_add(MAX_LEASE_SECONDS);
         for member in effective.values() {
+            let member_address = self.network.address(&member.request.wg_public_key);
             if matches!(member.kind, MemberKind::Server(_))
                 && member.permissions.is_full()
                 && member.wg_verified
             {
                 servers.insert(
                     member.device_id.clone(),
-                    (
-                        IpAddr::V6(self.network.address(&member.request.wg_public_key)),
-                        member.request.ssh_public_key.clone(),
-                    ),
+                    DirectoryServer {
+                        address: IpAddr::V6(member_address),
+                        key: member.request.ssh_public_key.clone(),
+                        name: member.request.name.clone(),
+                    },
                 );
             }
-            let member_address = self.network.address(&member.request.wg_public_key);
             peers.insert(IpAddr::V6(member_address));
             // Older registries may contain duplicate names; never guess between them.
             if let (MemberKind::Server(_), Some(label)) = (
@@ -324,13 +331,13 @@ impl ServiceDirectory {
             return None;
         }
         let view = self.current(now)?;
-        let (address, key) = view.servers.get(&call.server)?;
+        let server = view.servers.get(&call.server)?;
         // The signing server attests to socket-authenticated app identity. A
         // caller need not advertise an HTTP service (workers can call too).
-        if *address != peer {
+        if server.address != peer {
             return None;
         }
-        Some(key.clone())
+        Some(server.key.clone())
     }
 
     /// Every effective server's private address, by device ID.
@@ -338,7 +345,7 @@ impl ServiceDirectory {
         self.current(now).map_or_else(Vec::new, |view| {
             view.servers
                 .iter()
-                .map(|(id, (address, _))| (id.to_string(), *address))
+                .map(|(id, server)| (id.to_string(), server.address))
                 .collect()
         })
     }
@@ -349,13 +356,26 @@ impl ServiceDirectory {
         view.servers
             .iter()
             .find(|(id, _)| id.to_string() == server)
-            .map(|(_, (address, _))| *address)
+            .map(|(_, server)| server.address)
     }
 
     /// Whether `peer` is the private address of an effective server.
     pub(crate) fn is_server_address(&self, peer: IpAddr, now: u64) -> bool {
         self.current(now)
-            .is_some_and(|view| view.servers.values().any(|(address, _)| *address == peer))
+            .is_some_and(|view| view.servers.values().any(|server| server.address == peer))
+    }
+
+    pub(super) fn server_name_at(&self, address: Ipv6Addr, now: u64) -> Option<String> {
+        let servers = &self.current(now)?.servers;
+        let address = IpAddr::V6(address);
+        let name = &servers
+            .values()
+            .find(|server| server.address == address)?
+            .name;
+        let ambiguous = servers.values().any(|server| {
+            server.address != address && server.name.as_str().eq_ignore_ascii_case(name.as_str())
+        });
+        (!ambiguous).then(|| name.to_string())
     }
 
     /// Current WireGuard address of the uniquely named server.

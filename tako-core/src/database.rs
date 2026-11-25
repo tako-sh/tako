@@ -318,6 +318,39 @@ pub struct DatabaseBackupStatus {
     pub last_error: Option<String>,
 }
 
+/// Read-only inventory of the resource replicas and object storage bound on a server.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServerUserResources {
+    pub databases: Vec<DatabaseReplicaStatus>,
+    pub storages: Vec<StorageBindingStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseReplicaStatus {
+    pub name: String,
+    pub generation: String,
+    pub engine: DatabaseEngine,
+    pub leader: Option<String>,
+    pub is_leader: Option<bool>,
+    pub bindings: Vec<ResourceBindingStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ResourceBindingStatus {
+    pub app: String,
+    pub binding: String,
+    /// Only a retained rollback release still uses this binding.
+    pub retained: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBindingStatus {
+    pub app: String,
+    pub binding: String,
+    pub resource: String,
+    pub provider: crate::StorageProvider,
+}
+
 /// A database hosted on a server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseInfo {
