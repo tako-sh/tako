@@ -55,16 +55,20 @@ impl ReplicatedLog {
         self.state.lock().writer.revision_hint().is_ok()
     }
     pub fn barrier(&self) -> io::Result<()> {
-        self.state.lock().writer.check_current()
+        let mut state = self.state.lock();
+        let result = state.writer.check_current();
+        if result.is_err() {
+            state.writer.fence();
+        }
+        result
     }
 
     pub fn revision(&self) -> io::Result<u64> {
         self.state.lock().writer.revision_hint()
     }
     pub fn confirm(&self, before: u64) -> io::Result<()> {
-        let state = self.state.lock();
-        if state.writer.revision_hint()? == before {
-            state.writer.check_current()?;
+        if self.revision()? == before {
+            self.barrier()?;
         }
         Ok(())
     }

@@ -181,6 +181,28 @@ mod tests {
     use super::*;
     use std::{collections::BTreeMap, time::Duration};
     use tako_raft::{Config, Peer, Resource};
+    #[test]
+    fn hosted_import_checks_the_native_schema_before_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upload.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE items(k TEXT PRIMARY KEY) STRICT")
+            .unwrap();
+        verify_hosted_import(&path).unwrap();
+        conn.execute_batch("CREATE TABLE unsupported(k TEXT PRIMARY KEY) WITHOUT ROWID")
+            .unwrap();
+        assert!(
+            verify_hosted_import(&path)
+                .unwrap_err()
+                .contains("unsupported")
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM items", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn live_commit_is_recoverable_at_quorum_and_rollback_is_absent() {
         let dir = tempfile::tempdir().unwrap();
@@ -281,6 +303,24 @@ mod tests {
                 ..Default::default()
             };
             let buffered = Arc::new(tokio::sync::Semaphore::new(1 << 20));
+            // During a handoff another owner may advance the same group's
+            // revision without a new term. Stale handles must then reopen.
+            let stale = Owner::primary(resource.writer().unwrap()).unwrap();
+            conn.execute("INSERT INTO t VALUES(3)").unwrap();
+            assert!(stale.barrier().is_err());
+            assert!(!stale.usable());
+            let replacement = Owner::primary(resource.writer().unwrap()).unwrap();
+            assert_eq!(
+                replacement
+                    .connect()
+                    .unwrap()
+                    .prepare("SELECT count(*) FROM t")
+                    .unwrap()
+                    .run_collect_rows()
+                    .unwrap()[0][0]
+                    .as_int(),
+                Some(3)
+            );
             let mut clients = (0..4)
                 .map(|_| {
                     Connection::hosted(owner.clone(), &config, false, buffered.clone()).unwrap()
