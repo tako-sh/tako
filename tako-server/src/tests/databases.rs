@@ -807,7 +807,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
     .await;
     assert_eq!(status["databases"][0]["bindings"], json!([scope]));
     assert_eq!(status["databases"][0]["remote_grants"], json!([scope]));
-    let delete = || restored.purge_database_replica(ID, None, false);
+    let delete = || restored.purge_database_replica(ID, None);
     assert!(delete().await.unwrap_err().contains(&scope));
     restored.restore_apps_from_state_store(true).await.unwrap();
     assert_eq!(
@@ -1479,7 +1479,7 @@ async fn deleting_a_database_revokes_its_grants() {
     .await;
     // Grants can outlive the deployments that used them: deleting revokes
     // this database from them and keeps the environment's other grants.
-    state.purge_database_replica(ID, None, false).await.unwrap();
+    state.purge_database_replica(ID, None).await.unwrap();
     let grants = state.state_store.all_database_grants().unwrap();
     let grant = &grants["web/production"];
     assert_eq!(
@@ -1867,39 +1867,7 @@ async fn resets_apply_migrations_before_the_new_file_is_served() {
 }
 
 #[tokio::test]
-async fn deleting_a_database_deletes_its_snapshots() {
-    let temp = TempDir::new().unwrap();
-    let state = state(&temp);
-    create(&state, ID, Some("delete-bucket")).await;
-    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
-    ok(
-        &state,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
-        },
-    )
-    .await;
-    let store = crate::databases::backups::test_store("delete-bucket").unwrap();
-    let objects = || async {
-        use futures_util::TryStreamExt;
-        store
-            .list(None)
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-            .len()
-    };
-    assert_eq!(objects().await, 2, "a manifest and its data");
-    let deleted = state.purge_database_replica(ID, None, false).await.unwrap();
-    assert_eq!(deleted["warnings"], json!([]));
-    // Only the fence that stops copies left elsewhere from publishing.
-    assert_eq!(objects().await, 1);
-}
-
-#[tokio::test]
-async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
+async fn purging_a_replica_preserves_its_uploaded_backups() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, Some("keep-bucket")).await;
@@ -1913,9 +1881,7 @@ async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
         },
     )
     .await;
-    // A copy left behind by a move shares its snapshots with the copy that
-    // replaced it, so deleting it must leave them.
-    state.purge_database_replica(ID, None, true).await.unwrap();
+    state.purge_database_replica(ID, None).await.unwrap();
     let store = crate::databases::backups::test_store("keep-bucket").unwrap();
     use futures_util::TryStreamExt;
     let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
@@ -2195,7 +2161,7 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
-    let delete = || state.purge_database_replica(ID, None, false);
+    let delete = || state.purge_database_replica(ID, None);
     // A deploy has checked the database and is installing its binding.
     let pins = state.databases.pin([ID]).unwrap();
     let refused = delete().await.unwrap_err();
@@ -2243,7 +2209,7 @@ async fn deleting_a_database_ends_its_transfers() {
         state.databases.snapshot_space.reserved_bytes(),
         2 * bytes.len() as u64 + size
     );
-    state.purge_database_replica(ID, None, false).await.unwrap();
+    state.purge_database_replica(ID, None).await.unwrap();
     assert_eq!(state.databases.snapshot_space.reserved_bytes(), 0);
     // A database of the same name created afterwards receives none of the
     // old transfers' chunks.
@@ -2308,7 +2274,7 @@ async fn a_delete_acts_only_on_the_generation_it_names() {
     create(&state, ID, None).await;
     // The caller resolved an earlier database of this name.
     let refused = state
-        .purge_database_replica(ID, Some("an-earlier-generation"), false)
+        .purge_database_replica(ID, Some("an-earlier-generation"))
         .await
         .unwrap_err();
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
@@ -2316,7 +2282,7 @@ async fn a_delete_acts_only_on_the_generation_it_names() {
     assert!(refused.contains("not the one asked for"), "{refused}");
     query(&state, ID, "SELECT 1").await;
     state
-        .purge_database_replica(ID, Some(GENERATION), false)
+        .purge_database_replica(ID, Some(GENERATION))
         .await
         .unwrap();
 }
@@ -2345,16 +2311,13 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
     state
         .databases
         .apply_bindings("web/production", &[&old, &new]);
-    let refused = state
-        .purge_database_replica(ID, None, false)
-        .await
-        .unwrap_err();
+    let refused = state.purge_database_replica(ID, None).await.unwrap_err();
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
     // string; these commands carry no secrets.
     assert!(refused.contains("web/production"), "{refused}");
     // Once the rollout commits, only the new set stays.
     state.databases.apply_bindings("web/production", &[&new]);
-    state.purge_database_replica(ID, None, false).await.unwrap();
+    state.purge_database_replica(ID, None).await.unwrap();
 }
 
 #[tokio::test]

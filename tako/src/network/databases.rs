@@ -193,20 +193,6 @@ pub(crate) fn retire(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()
     )
 }
 
-/// Publishes tombstones for a database's records. The directory record is
-/// removed only while it still names this generation: a database created
-/// again under the name meanwhile keeps its record.
-pub(crate) fn remove(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    let current = list(alias)?
-        .into_iter()
-        .find(|current| current.name == record.name);
-    if current.is_some_and(|current| current.generation == record.generation) {
-        mutate(alias, RecordKind::Database, &record.name, None)?;
-    }
-    remove_key(alias, record)
-}
-
 /// Publishes a tombstone for one generation's key record.
 pub(crate) fn remove_key(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
     tako_core::validate_database_name(&record.name)?;

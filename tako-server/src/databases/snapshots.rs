@@ -201,12 +201,6 @@ pub(crate) fn verify_copy(engine: DatabaseEngine, path: &Path) -> Result<(), Str
     }
 }
 
-async fn check_active(remote: &dyn ObjectStore, stored: &StoredDatabase) -> Result<(), String> {
-    if super::objects::is_deleted(remote, &prefix(stored)).await? {
-        return Err(format!("Backup history for {} was deleted", stored.name));
-    }
-    Ok(())
-}
 fn key_binding(stored: &StoredDatabase, override_key: Option<&str>) -> BackupKeyBinding {
     BackupKeyBinding {
         id: format!("database-{}", stored.generation),
@@ -619,14 +613,8 @@ pub(crate) async fn take(
         return Ok(None);
     }
     let started = now_unix_secs();
-    let result = match store(&backup) {
-        Ok(remote) => match check_active(remote.as_ref(), stored).await {
-            Ok(()) => match copy_database(state, stored).await {
-                Ok(copy) => upload_copy(stored, &backup, &copy, reason).await,
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        },
+    let result = match copy_database(state, stored).await {
+        Ok(copy) => upload_copy(stored, &backup, &copy, reason).await,
         Err(error) => Err(error),
     };
     if result.is_err() {
@@ -712,8 +700,7 @@ async fn copy_database(
     })
 }
 
-/// Compresses, encrypts and uploads a copy, then its manifest. With `own`,
-/// the manifest is published only while no other server holds the database.
+/// Compresses, encrypts and uploads a committed copy before publishing its manifest.
 async fn upload_copy(
     stored: &StoredDatabase,
     backup: &StorageBinding,
@@ -759,42 +746,18 @@ async fn upload_copy(
     let remote = store(backup)?;
     let data = data_key(stored, &snapshot_id);
     upload_file(remote.clone(), &data, &encrypted).await?;
-    // Checked again now: the database may have moved during the upload.
-    let published = match check_active(remote.as_ref(), stored).await {
-        Ok(()) => {
-            put_json_object(
-                remote.as_ref(),
-                &manifest_key(stored, &snapshot_id),
-                &Manifest {
-                    format: MANIFEST_FORMAT,
-                    database: stored.name.clone(),
-                    generation: stored.generation.clone(),
-                    snapshot: snapshot.clone(),
-                    encryption,
-                },
-            )
-            .await
-        }
-        Err(error) => Err(error),
-    };
-    // The check and the write are separate requests, so a move can land
-    // between them: checking once more after writing takes the manifest
-    // back. Only a server stopping in that moment leaves one behind.
-    let published = match published {
-        Ok(()) => match check_active(remote.as_ref(), stored).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if let Ok(path) = ObjectPath::parse(manifest_key(stored, &snapshot_id)) {
-                    let _ = with_deadline(METADATA_TIMEOUT, async {
-                        remote.delete(&path).await.map_err(|e| e.to_string())
-                    })
-                    .await;
-                }
-                Err(error)
-            }
+    let published = put_json_object(
+        remote.as_ref(),
+        &manifest_key(stored, &snapshot_id),
+        &Manifest {
+            format: MANIFEST_FORMAT,
+            database: stored.name.clone(),
+            generation: stored.generation.clone(),
+            snapshot: snapshot.clone(),
+            encryption,
         },
-        other => other,
-    };
+    )
+    .await;
     if let Err(error) = published {
         // The manifest may have been written although the call failed (a
         // response lost to a timeout), so it goes first, then the data:
@@ -941,45 +904,6 @@ fn retained(snapshots: &[Snapshot], now: u64) -> BTreeSet<String> {
     keep
 }
 
-/// Deletes every snapshot object of a database from its backup storage and
-/// returns how many objects were removed. A holder naming no server stays
-/// behind as the deletion's fence.
-pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
-    let Some(backup) = &stored.secrets.backup else {
-        return Ok(0);
-    };
-    let remote = store(backup)?;
-    // First, and kept: a copy on a server the delete could not reach stops
-    // publishing, also when it comes back after the delete.
-    put_json_object(
-        remote.as_ref(),
-        &super::objects::deletion_marker(&prefix(stored)),
-        &true,
-    )
-    .await
-    .map_err(|e| format!("mark the snapshots deleted: {e}"))?;
-    let tombstone = super::objects::deletion_marker(&prefix(stored));
-    let keys = list_objects(remote.as_ref(), stored)
-        .await?
-        .into_iter()
-        .map(|(key, _)| key)
-        .filter(|key| key.as_ref() != tombstone);
-    // Manifests first, so a partial deletion lists no snapshot without data.
-    let (manifests, data): (Vec<_>, Vec<_>) = keys.partition(|key| key.as_ref().ends_with(".json"));
-    let mut deleted = 0;
-    for key in manifests.into_iter().chain(data) {
-        with_deadline(METADATA_TIMEOUT, async {
-            match remote.delete(&key).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                Err(error) => Err(format!("delete {key}: {error}")),
-            }
-        })
-        .await?;
-        deleted += 1;
-    }
-    Ok(deleted)
-}
-
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
     let remote = store(backup)?;
     let objects = list_objects(remote.as_ref(), stored).await?;
@@ -1067,7 +991,6 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
-    check_active(remote.as_ref(), &stored).await?;
     let manifests = list_manifests(remote.as_ref(), &stored).await?;
     let manifest = match snapshot {
         Some(wanted) => manifests

@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::backup_capture::Source as Capture;
-use object_store::{ObjectStore, path::Path as ObjectPath};
+use object_store::ObjectStore;
+#[cfg(test)]
+use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tako_backup::{Point, Replica, Stored, Target};
@@ -23,7 +25,7 @@ use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageB
 use tako_db::DatabaseId;
 
 use super::now_unix_secs;
-use super::objects::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
+use super::objects::{METADATA_TIMEOUT, backup_store, with_deadline};
 use crate::ServerState;
 use crate::state_store::StoredDatabase;
 
@@ -41,9 +43,6 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long stopping waits for the databases' final uploads.
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
-/// Objects deleted per request when a database's backups are deleted, the
-/// most an S3 `DeleteObjects` request takes.
-const DELETE_BATCH: usize = 1000;
 /// A work directory this old belongs to an operation that a restart or crash
 /// interrupted: restores and exports finish well within it, and import and
 /// export sessions expire after an hour.
@@ -117,30 +116,6 @@ fn prefix(stored: &StoredDatabase) -> String {
 
 fn spool_dir(state: &ServerState, name: &str) -> PathBuf {
     state.databases.database_dir(name).join("replica")
-}
-
-enum Refused {
-    Deleted(String),
-    Unavailable(String),
-}
-impl From<Refused> for String {
-    fn from(reason: Refused) -> Self {
-        match reason {
-            Refused::Deleted(s) | Refused::Unavailable(s) => s,
-        }
-    }
-}
-async fn check_active(remote: &dyn ObjectStore, stored: &StoredDatabase) -> Result<(), Refused> {
-    if super::objects::is_deleted(remote, &prefix(stored))
-        .await
-        .map_err(Refused::Unavailable)?
-    {
-        return Err(Refused::Deleted(format!(
-            "Backup history for {} was deleted",
-            stored.name
-        )));
-    }
-    Ok(())
 }
 
 fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -282,13 +257,12 @@ fn replica(
     stored: &StoredDatabase,
     backup: &StorageBinding,
     key_override: Option<&str>,
-) -> Result<(Replica, Arc<dyn ObjectStore>), String> {
+) -> Result<Replica, String> {
     let remote = store(backup)?;
     let key = super::decode_backup_key(key_override.unwrap_or(&stored.secrets.backup_key_base64))?;
     let key = tako_backup::encryption::Key::new(format!("database-{}", stored.generation), key)
         .map_err(|e| e.to_string())?;
-    let replica = Replica::new(remote.clone(), &prefix(stored), key).map_err(|e| e.to_string())?;
-    Ok((replica, remote))
+    Replica::new(remote, &prefix(stored), key).map_err(|e| e.to_string())
 }
 
 fn now_unix_ms() -> i64 {
@@ -373,8 +347,7 @@ async fn ensure_open(
         .raft
         .resource(&stored.generation)
         .ok_or("storage replica is unavailable")?;
-    let (replica, remote) = replica(stored, backup, None)?;
-    check_active(remote.as_ref(), stored).await?;
+    let replica = replica(stored, backup, None)?;
     let committed_remote = with_deadline(METADATA_TIMEOUT, async {
         replica
             .segments()
@@ -534,40 +507,15 @@ async fn upload(
     if pending.is_empty() && open.points.is_empty() {
         return Ok(());
     }
-    let (replica, remote) = replica(stored, &open.backup, None)?;
-    let checked = check_active(remote.as_ref(), stored).await;
-    if let Err(refused) = checked {
-        return Err(refuse(slot, refused));
-    }
-    let uploading = with_deadline(upload_timeout(&spool, &pending), async {
+    let replica = replica(stored, &open.backup, None)?;
+    with_deadline(upload_timeout(&spool, &pending), async {
         replica
             .upload(&spool)
             .await
             .map(|_| ())
             .map_err(|e| format!("upload backups: {e:#}"))
     })
-    .await;
-    // A move or a delete can land while the upload runs, also one that
-    // fails part way. What reached a deleted history is taken back. After a
-    // move the captures stay: they are this copy's history before the move,
-    // which the new holder may be restoring from.
-    let sent = tako_backup::Replica::receipted(&spool, &pending);
-    // A segment whose acknowledgement was lost to the deadline has no
-    // receipt but may be stored all the same.
-    if !sent.is_empty() || uploading.is_err() {
-        let rechecked = check_active(remote.as_ref(), stored).await;
-        match rechecked {
-            Err(refused @ Refused::Deleted(_)) => {
-                let removed = replica.remove(&pending).await;
-                if let Err(cleanup) = removed {
-                    tracing::warn!(database = %stored.name, error = %format!("{cleanup:#}"), "Could not remove backups uploaded after the database was deleted");
-                }
-                return Err(refuse(slot, refused));
-            }
-            Err(Refused::Unavailable(_)) | Ok(()) => {}
-        }
-    }
-    uploading?;
+    .await?;
     // The points name segments uploaded now or before.
     let points = std::mem::take(&mut slot.open.as_mut().expect("still open").points);
     for (index, point) in points.iter().enumerate() {
@@ -625,13 +573,6 @@ fn upload_timeout(spool: &Path, pending: &[tako_backup::Segment]) -> Duration {
     UPLOAD_TIMEOUT + Duration::from_secs(bytes / (4 << 20))
 }
 
-fn refuse(slot: &mut Slot, refused: Refused) -> String {
-    if matches!(refused, Refused::Deleted(_)) {
-        slot.open = None;
-    }
-    refused.into()
-}
-
 /// Starts the periodic backup of every database, and housekeeping.
 pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -683,7 +624,7 @@ pub(crate) async fn housekeeping(state: &Arc<ServerState>) {
     }
 }
 
-/// Starts a backup job for every SQLite database, without waiting for them.
+/// Starts a backup job for every hosted SQL database, without waiting for them.
 pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
     jobs.reap();
     if state.is_draining() {
@@ -1016,7 +957,7 @@ pub(crate) async fn full_snapshot(
             reason: reason_name(reason).into(),
         });
         upload(state, stored, &mut slot).await?;
-        let (replica, _) = replica(stored, &backup, None)?;
+        let replica = replica(stored, &backup, None)?;
         let stored_bytes = with_deadline(METADATA_TIMEOUT, async {
             replica.segments().await.map_err(|e| format!("{e:#}"))
         })
@@ -1108,7 +1049,7 @@ pub(crate) async fn list_command(
 ) -> Result<serde_json::Value, String> {
     let stored = state.hosted_database(id)?;
     let backup = require_backup(&stored)?;
-    let (replica, _) = replica(&stored, &backup, None)?;
+    let replica = replica(&stored, &backup, None)?;
     let (segments, points) = with_deadline(METADATA_TIMEOUT, async {
         let segments = replica
             .segments()
@@ -1219,8 +1160,7 @@ fn snapshots(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
 /// Applies retention to a database's backups: seven days of history, plus
 /// the full images [`retained`] keeps.
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
-    let (replica, remote) = replica(stored, backup, None)?;
-    check_active(remote.as_ref(), stored).await?;
+    let replica = replica(stored, backup, None)?;
     let pruned = with_deadline(UPLOAD_TIMEOUT, async {
         let segments = replica.segments().await.map_err(|e| format!("{e:#}"))?;
         let points = replica.points().await.map_err(|e| format!("{e:#}"))?;
@@ -1285,66 +1225,6 @@ pub(crate) fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<Str
     keep
 }
 
-/// Deletes every backup object of a database and returns how many were
-/// removed. A holder naming no server stays behind as the deletion's fence.
-pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
-    let Some(backup) = &stored.secrets.backup else {
-        return Ok(0);
-    };
-    let remote = store(backup)?;
-    // First, and kept: a copy on a server the delete could not reach stops
-    // uploading, also when it comes back after the delete.
-    put_json_object(
-        remote.as_ref(),
-        &super::objects::deletion_marker(&prefix(stored)),
-        &true,
-    )
-    .await
-    .map_err(|e| format!("mark the backups deleted: {e}"))?;
-    let tombstone = super::objects::deletion_marker(&prefix(stored));
-    let root = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
-    let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
-        use futures_util::TryStreamExt;
-        remote
-            .list(Some(&root))
-            .map_ok(|meta| meta.location)
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| format!("list database backups: {e}"))
-    })
-    .await?
-    .into_iter()
-    .filter(|key| key.as_ref() != tombstone)
-    .collect();
-    // Markers first, so a partial deletion lists no point without data.
-    let (points, data): (Vec<_>, Vec<_>) = keys
-        .into_iter()
-        .partition(|key| key.as_ref().contains("/points/"));
-    let mut deleted = 0;
-    // In batches, which S3 deletes in one request each.
-    let keys = [points, data];
-    for batch in keys.iter().flat_map(|keys| keys.chunks(DELETE_BATCH)) {
-        with_deadline(METADATA_TIMEOUT, async {
-            use futures_util::StreamExt;
-            // The store takes a stream that owns its paths.
-            let paths: Vec<ObjectPath> = batch.to_vec();
-            let mut deletions =
-                remote.delete_stream(futures_util::stream::iter(paths.into_iter().map(Ok)).boxed());
-            for _ in batch {
-                match deletions.next().await {
-                    Some(Ok(_) | Err(object_store::Error::NotFound { .. })) => {}
-                    Some(Err(error)) => return Err(format!("delete database backups: {error}")),
-                    None => return Err("the store did not acknowledge every deletion".into()),
-                }
-            }
-            Ok(())
-        })
-        .await?;
-        deleted += batch.len();
-    }
-    Ok(deleted)
-}
-
 /// Replaces a database with its state at `target`, after naming the current
 /// state with a restore point.
 pub(crate) async fn restore(
@@ -1363,9 +1243,8 @@ pub(crate) async fn restore(
     // have finished while this waited for it.
     let stored = state.hosted_database(id)?;
     let backup = require_backup(&stored)?;
-    let (replica, remote) = replica(&stored, &backup, key_override.as_deref())?;
-    check_active(remote.as_ref(), &stored).await?;
-    restore_from(state, &stored, &replica, target, remote.as_ref()).await
+    let replica = replica(&stored, &backup, key_override.as_deref())?;
+    restore_from(state, &stored, &replica, target).await
 }
 
 /// Downloads, verifies, and swaps in the database's state at `target`.
@@ -1374,7 +1253,6 @@ async fn restore_from(
     stored: &StoredDatabase,
     replica: &Replica,
     target: Target,
-    remote: &dyn ObjectStore,
 ) -> Result<serde_json::Value, String> {
     let segments = with_deadline(METADATA_TIMEOUT, async {
         replica
@@ -1434,7 +1312,6 @@ async fn restore_from(
         Ok::<_, String>(space)
     })
     .await?;
-    check_active(remote, stored).await?;
     let warnings = replace_inner(state, stored, restored, "database is being restored").await?;
     Ok(serde_json::json!({
         "database": stored.name,

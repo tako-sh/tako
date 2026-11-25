@@ -12,7 +12,7 @@ pub(crate) fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, 
     let encrypted = Aes256Gcm::new(key.into())
         .encrypt(&Nonce::from(nonce), plaintext)
         .map_err(|e| StateStoreError::Storage(format!("encrypt: {e}")))?;
-    // Keep the stored nonce || tag || ciphertext layout used by existing databases.
+    // Store the nonce and authentication tag before the ciphertext.
     let (ciphertext, tag) = encrypted.split_at(encrypted.len() - 16);
     let mut blob = Vec::with_capacity(12 + 16 + ciphertext.len());
     blob.extend_from_slice(&nonce);

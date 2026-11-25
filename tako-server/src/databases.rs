@@ -1099,7 +1099,6 @@ impl ServerState {
         &self,
         id: &str,
         generation: Option<&str>,
-        keep_snapshots: bool,
     ) -> Result<serde_json::Value, String> {
         let requested = self.hosted_database(id)?;
         let lock = self.databases.lock(id);
@@ -1203,30 +1202,7 @@ impl ServerState {
             .map_err(|e| format!("forget database: {e}"))?;
         self.databases.backups.lock().remove(id);
         tracing::info!(database = %stored.name, "Deleted database");
-        // Without the database's records its snapshots cannot be decrypted;
-        // they go with it, unless another copy lives on and shares them.
-        let mut warnings = Vec::new();
-        if keep_snapshots {
-            return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
-        }
-        // Deleting the snapshots deletes them for every copy of this
-        // generation, also one that a move left holding them, and fences the
-        // prefix so none publishes again; removing only a copy keeps them.
-        let deleted = match stored.engine {
-            DatabaseEngine::Sqlite => backups::delete_all(&stored).await,
-            DatabaseEngine::Kv => snapshots::delete_all(&stored).await,
-        };
-        match deleted {
-            Ok(0) => {}
-            Ok(count) => {
-                tracing::info!(database = %stored.name, objects = count, "Deleted database snapshots");
-            }
-            Err(error) => warnings.push(format!(
-                "Could not delete every snapshot of {}: {error}. Remove `_tako/databases/{}/{}/` from the backup storage.",
-                stored.name, stored.name, stored.generation
-            )),
-        }
-        Ok(serde_json::json!({"deleted": id, "warnings": warnings}))
+        Ok(serde_json::json!({"deleted": id}))
     }
 
     fn database_status(&self, id: Option<&str>) -> Result<serde_json::Value, String> {
@@ -1342,9 +1318,13 @@ impl ServerState {
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
         let stored = self.hosted_database(id)?;
-        if let Some(resource) = self.databases.raft.resource(&stored.generation)
-            && (resource.backup_settings().is_none() || stored.secrets.backup != backup)
-        {
+        let resource = self
+            .databases
+            .raft
+            .resource(&stored.generation)
+            .ok_or("storage replica is unavailable")?;
+        let initial = resource.backup_settings().is_none();
+        if initial || stored.secrets.backup != backup {
             let key = backup_settings_key(&stored.secrets.backup_key_base64)?;
             let sealed = crate::state_store::encryption::encrypt_blob(
                 &key,
@@ -1381,7 +1361,7 @@ impl ServerState {
                     // and the new one needs a snapshot even if the store is
                     // idle.
                     self.databases.backups.lock().remove(id);
-                    if secrets.backup.is_some() {
+                    if secrets.backup.is_some() && !initial {
                         snapshots::mark_changed(self, &stored);
                     }
                 }

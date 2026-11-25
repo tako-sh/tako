@@ -218,7 +218,7 @@ async fn kv_stores_are_created_queried_and_deleted() {
     assert!(duplicate.contains("already exists"));
 
     state
-        .purge_database_replica("sessions", None, false)
+        .purge_database_replica("sessions", None)
         .await
         .unwrap();
     assert!(!state.databases.database_dir("sessions").exists());
@@ -438,9 +438,9 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
     assert!(matches!(import(file).await, Response::Ok { .. }));
     assert_eq!(get(&state, "sessions", "kept").await, json!(r#""first""#));
 
-    // Deleting the store deletes its snapshots too.
+    // Purging the replica preserves its uploaded snapshots.
     state
-        .purge_database_replica("sessions", None, false)
+        .purge_database_replica("sessions", None)
         .await
         .unwrap();
     let left: Vec<_> = {
@@ -448,8 +448,7 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
         store.list(None).try_collect().await.unwrap()
     };
     assert!(
-        !left
-            .iter()
+        left.iter()
             .any(|meta| meta.location.as_ref().ends_with(".redb.zst.enc")),
         "{left:?}"
     );
@@ -592,16 +591,15 @@ async fn grants_reach_the_kv_peer_listener() {
         refused.contains("refused this app") && refused.contains(r#""code":"unavailable""#),
         "{refused}"
     );
-    // The grant also names the SQLite database, which no KV store serves.
+    // A grant for sessions cannot authorize access to another generation.
     let unserved = forward(address, request("main", &key)).await;
     assert!(
-        unserved.contains("not serving the KV store")
-            && unserved.contains(r#""code":"unavailable""#),
+        unserved.contains("refused this app") && unserved.contains(r#""code":"unavailable""#),
         "{unserved}"
     );
     // Deleting the store revokes it from the grant.
     state
-        .purge_database_replica("sessions", None, false)
+        .purge_database_replica("sessions", None)
         .await
         .unwrap();
     let revoked = forward(address, request("sessions", &key)).await;

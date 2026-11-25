@@ -58,7 +58,7 @@ impl TestSql {
             stmt.bind_at(
                 std::num::NonZeroUsize::new(index + 1).unwrap(),
                 turso_core::Value::from_text((*arg).to_owned()),
-            );
+            )?;
         }
         let rows = stmt.run_collect_rows()?;
         let [row] = rows.as_slice() else {

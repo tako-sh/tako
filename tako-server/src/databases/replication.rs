@@ -516,7 +516,7 @@ impl ServerState {
                             .mark_withdrawing(&generation)
                             .map_err(|e| e.to_string())?;
                     }
-                    self.purge_database_replica(&name, Some(&generation), true)
+                    self.purge_database_replica(&name, Some(&generation))
                         .await?;
                 }
                 if let Some(group) = storage.groups.write().remove(&generation)
