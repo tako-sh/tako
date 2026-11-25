@@ -249,6 +249,9 @@ impl Resource {
     pub fn file_size(&self) -> io::Result<u64> {
         self.replica.file_size()
     }
+    pub fn grant_scopes(&self) -> Vec<String> {
+        self.replica.grant_scopes()
+    }
     pub fn backup_settings(&self) -> Option<Vec<u8>> {
         self.replica.backup_settings()
     }

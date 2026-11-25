@@ -1273,7 +1273,7 @@ impl ServerState {
                 record(scope, set);
             }
         }
-        let remote_grants = self
+        let mut remote_grants: BTreeSet<_> = self
             .state_store
             .all_database_grants()
             .map_err(|e| format!("read database grants: {e}"))?
@@ -1281,6 +1281,9 @@ impl ServerState {
             .filter(|(_, grant)| grant.databases.contains(&stored.name))
             .map(|(scope, _)| scope)
             .collect();
+        if let Some(resource) = self.databases.raft.resource(&stored.generation) {
+            remote_grants.extend(resource.grant_scopes());
+        }
         let size_bytes = match stored.engine {
             DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
                 .ok()
@@ -1297,7 +1300,7 @@ impl ServerState {
             created_at_unix_secs: stored.created_at_unix_secs,
             size_bytes,
             bindings: bindings.into_iter().collect(),
-            remote_grants,
+            remote_grants: remote_grants.into_iter().collect(),
             backup: match stored.engine {
                 DatabaseEngine::Sqlite => backups::status(self, stored),
                 DatabaseEngine::Kv => snapshots::status(self, stored),

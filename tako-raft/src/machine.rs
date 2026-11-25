@@ -123,6 +123,10 @@ impl Replica {
         })
     }
 
+    pub(crate) fn grant_scopes(&self) -> Vec<String> {
+        self.grants.read().keys().cloned().collect()
+    }
+
     pub(crate) fn has_grant(&self, scope: &str) -> bool {
         self.grants.read().contains_key(scope)
     }

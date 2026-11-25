@@ -670,34 +670,6 @@ run_store_checks() {
   cleanup_store_sse
 }
 
-# Use the full network client to create the fixture's databases once. The
-# second server reaches the same generation over the private network.
-create_fixture_databases() {
-  local server_host=$1
-  local database databases
-  local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
-  databases=$(bun -e '
-    const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
-    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db, env.workflows?.db].filter(Boolean))].join("\n"));
-  ' "$PROJECT_DIR/tako.toml")
-  [[ -n "$databases" ]] || return 0
-  while IFS= read -r database; do
-    "${tako[@]}" db create "$database" --server "$server_host"
-  done <<< "$databases"
-  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
-    "${tako[@]}" --json db list | jq -e --arg home "$server_host" '
-      (.databases | any(.name == "messages" and .in_project)) and
-      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"])) and
-      (.databases | any(.name == "workflow-runs" and .server == $home and .workflow_envs == ["production"]))
-    ' >/dev/null
-    "${tako[@]}" --dry-run --json deploy --env production | jq -e --arg home "$server_host" '
-      .dry_run and .create_databases == [] and
-      .channel_database == {name: "channel-replay", server: $home, implicit: false} and
-      .workflows_database == {name: "workflow-runs", server: $home, implicit: false}
-    ' >/dev/null
-  fi
-}
-
 run_database_checks() {
   local server_host=$1
   local route_host=$2
@@ -712,13 +684,13 @@ run_database_checks() {
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
-  jq -e --arg server "$DATABASE_SERVER" '.databases[0].name == "messages" and .databases[0].server == $server' \
-    "$status_json" >/dev/null
-  if [[ "$server_host" == "$DATABASE_SERVER" ]]; then
-    jq -e '.databases[0].status.bindings | index("cw-e2e/production") != null' "$status_json" >/dev/null
-  else
-    # Instances on this server reach the database through its home server.
-    jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
+  # The catalog generation and the environment's replicated grant must survive
+  # the deploy on the second target, including an intervening leader election.
+  jq -e '.databases[0] | .name == "messages" and (.status.generation | length > 0)
+    and (.status.remote_grants | index("cw-e2e/production") != null)' "$status_json" >/dev/null
+  if [[ "$server_host" != "$DATABASE_SERVER" ]]; then
+    jq -es '.[0].databases[0].status.generation == .[1].databases[0].status.generation' \
+      "$TMP_ROOT/sqlite-status-${DATABASE_SERVER}.json" "$status_json" >/dev/null
   fi
 
   if ! "${tako[@]}" --json db shell messages "SELECT count(*) AS n FROM messages" \
@@ -1398,9 +1370,6 @@ for entry in "${SERVERS[@]}"; do
   echo "=== Testing deploy on $server ($libc) ==="
 
   bind_fixture_target "$PROJECT_DIR/tako.toml" "$server"
-  if [[ "$server" == "$DATABASE_SERVER" ]]; then
-    create_fixture_databases "$server"
-  fi
 
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 

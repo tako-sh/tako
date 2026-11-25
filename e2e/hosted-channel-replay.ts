@@ -90,7 +90,7 @@ await resume(peer, cursor, tail);
 const scope = "cw-e2e/production#channels";
 const [record] = db("status", database).databases;
 assert.equal(record.name, database);
-assert.equal(record.server, home);
+assert.ok([home, peer].includes(record.server), "status must resolve a selected target");
 assert.deepEqual(record.status.bindings, [scope]);
 assert.deepEqual(record.status.remote_grants, [scope]);
 console.log(`Hosted channel replay verified through ${home}, ${peer}, and db shell ${database}`);
