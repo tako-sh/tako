@@ -466,11 +466,7 @@ If a worker exits with an error before it can claim any work, Tako stops the imm
 
 Workflow runs live in a Tako-hosted SQLite [database](/databases/) that every server of the environment shares. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress. `tako-server` reads and writes the runs for its workers; app code never receives a token for this database.
 
-On a network with one trusted server, a full client's `tako deploy` creates the environment's workflow database the first time a release uses workflows. On a network with several servers, choose the server that holds it first, then name it in `tako.toml`:
-
-```bash
-tako db create shop-workflows --server edge-a
-```
+A full-access deploy creates the workflow database the first time a release uses workflows and prepares a replica on each selected target. To choose the name, set it in `tako.toml`.
 
 ```toml
 [envs.production.workflows]
@@ -487,7 +483,7 @@ Each claim receives a distinct ownership identifier. After a lease is reclaimed,
 
 Leases are written, renewed, and checked against the database server's clock rather than each server's own clock. Servers whose clocks disagree therefore cannot reclaim a run another server's worker still holds, or leave a lost worker's run stranded. Due times (`runAt`, sleep and wait deadlines, cron boundaries) still follow the clock of the server or worker that set them, so keep server clocks synchronized.
 
-The database lives on one server. While that server is unreachable, enqueues and claims fail on every server of the environment and workers retry. Configure [backups](/backups/) for the database: `tako db restore` recovers it, including onto another server. A restore, import, or reset releases every running lease, so workers from before it cannot save steps or finish runs; those runs are claimed again and resume after their last step saved in the restored data. Schedules keep the set the running releases registered, since a release registers them only when it starts.
+After a leader failure, enqueues and claims can resume when a voting majority elects a successor. Three voters tolerate one loss. Two voters require both servers. Configure [backups](/backups/) to recover earlier state with `tako db restore`. A restore, import, or reset releases every running lease, so workers from before it cannot save steps or finish runs; those runs are claimed again and resume after their last step saved in the restored data. Schedules keep the set the running releases registered, since a release registers them only when it starts.
 
 
 Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
@@ -559,7 +555,7 @@ Every server of the environment shares the same runs, so `list` shows each run o
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.
 - To stream partial output, such as an LLM reply, to a browser that may refresh, publish chunks to a channel from a step and close the stream when the run finishes or fails; see [Stream A Reply That Survives A Refresh](/channels/#stream-a-reply-that-survives-a-refresh).
 - Keep `signal` and `.enqueue()` in server-side code.
-- On a network with several servers, create the workflow database on the server you choose and name it with `[envs.<env>.workflows].db`.
+- Deploy with full access to provision the workflow database on the selected servers. Use `[envs.<env>.workflows].db` to select its name.
 
 ## Verify
 

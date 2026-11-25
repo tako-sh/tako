@@ -104,9 +104,8 @@ it had to differ from the first draft, this note records what was built.
   in a field the relay never forwards.
 - Debug builds only: tests without a network agent put values in
   `<data dir>/test-secrets.json`. Release builds never read it.
-- Database management commands (`CreateDatabase`, `ConfigureDatabaseBackup`)
-  still carry their snapshot key and storage credentials. Only full clients
-  send them.
+- Full clients reserve storage generations through `CoordinateStorage` and
+  configure their backup destination with `ConfigureDatabaseBackup`.
 - Rollback keeps today's semantics: old code with the server's last-applied
   secrets and bindings (`rollback_app`, `tako-server/src/operations/releases.rs:350`
   passes `None` for all of them). It does not read the shared store.

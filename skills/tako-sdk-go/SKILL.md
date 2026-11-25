@@ -119,7 +119,7 @@ Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the e
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako db create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
+Declare databases in `[envs.<env>].db`. A full-access deploy provisions Turso replicas on the selected targets. Apps connect through the libSQL HTTP protocol. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
 
 ```go
 import (
@@ -314,7 +314,7 @@ writers must explicitly invalidate; no SQL dependency tracking is performed.
 Invalidation failure does not undo or retry the committed database write. Use
 an application outbox for durable commit-and-notify. Params are limited to 16 KiB
 and read responses to 1 MiB. Invalidations use the environment's channel replay
-database (a Tako-hosted SQLite database), so they reach every server of the
+database (a Tako-hosted Turso database), so they reach every server of the
 network. Because `go.mod` depends on `tako.sh`, a deploy without
 `[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
 created automatically on the selected targets by a full-access deploy (see

@@ -254,21 +254,20 @@ validation.
   Only export keys when the user explicitly requests sharing or migration.
 - Storage bindings describe providers; credentials remain encrypted. Verify the
   target and authorization before deleting or restoring data.
-- Application SQLite belongs in a hosted database (`tako db create`, read as
-  `tako.db.<binding>`), not in the data directory, which is plain files
-  that Tako does not back up. Database commands need administrator permission;
-  `tako db restore`, `import`, and `reset` replace data, and `delete`
-  removes the database with its backups, so confirm the database and the
+- Declare application SQL in `[envs.<env>].db`. A full-access deploy provisions
+  the Turso database. Read it as `tako.db.<binding>`. Database restore, import,
+  and reset replace data. Deletion retires the generation once active and
+  retained releases no longer reference it. Uploaded backups keep their
+  generation and recovery key. Confirm the database and the
   environments that bind it first. With backup storage, databases are backed
   up continuously: `tako db backups` lists restore points and the window
   that `tako db restore <name> --at <time>` reaches, and every restore,
   import, and reset records a `before restore` point that undoes it. Schema changes go in `migrations/` SQL files, applied on deploy.
 - Values every server of the network must see (login and WebAuthn challenges,
-  one-time tokens, sessions, flags) belong in a KV store (`tako kv create`,
-  bound in `[envs.<env>].kv`, read as `tako.kv.<binding>` with `get`, `put`
-  with an optional TTL, and `delete` of JSON values; Go `tako.GetKV`, Rust
-  `tako::kv`): a replicated store reachable from the application’s selected targets
-  through each app's internal socket. `tako.cache` is per server and evicts,
+  one-time tokens, sessions, flags) belong in a replicated KV store. Declare it in
+  `[envs.<env>].kv`. The SDK exposes the binding through `tako.kv.<binding>`
+  in JavaScript, `tako.GetKV` in Go, and `tako::kv` in Rust. It supports
+  `get`, `put` with an optional TTL, and `delete` through the internal socket. `tako.cache` is per server and evicts,
   so a value cached on one server is a miss on the next. KV stores are backed
   up with snapshots, hourly while they change (`[envs.<env>].backup.storage`
   or `[kv.<name>].backup`; `tako kv backup|backups|restore|export|import`;
@@ -309,8 +308,7 @@ messages. Custom channels must reload authoritative application state when
 history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. In production, durable channel replay and Store
-invalidations use a Tako-hosted SQLite database (one home server; other servers
-reach it over the private network). `[envs.<env>.channels].db` names it;
+invalidations use a replicated Turso database on the selected targets. `[envs.<env>.channels].db` names it;
 otherwise a channel-capable release (JS channel/presence/store definitions, a
 native app depending on a Tako SDK, `container_options.sdk`, or a Compose
 service with `x-tako.sdk: true`) gets a generated `channels-<slug>-<hash>`
@@ -325,7 +323,7 @@ Workflow runs, steps, and schedules also live in a hosted database:
 `[envs.<env>.workflows].db` names it (it may be the channel database);
 otherwise a full-access deploy creates `workflows-<slug>-<hash>` on the selected targets. `tako dev` keeps both in the
 project's `.tako/data/tako/channels.sqlite` and `.tako/data/tako/workflows.sqlite`,
-served through the same SQLite server protocol as production. See
+served through the same Hrana HTTP protocol as production. See
 https://tako.sh/docs/channels/#deploy-replay-storage and
 https://tako.sh/docs/workflows/#storage-and-multiple-servers. Test expired
 history and the resulting authoritative-state reload.

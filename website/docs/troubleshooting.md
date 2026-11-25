@@ -81,7 +81,7 @@ Deploy performs validation before build work starts. Check for:
 - Missing or invalid server `arch`/`libc` metadata. Check that the enrolled host uses a supported Linux architecture and glibc.
 - Expired app secrets, S3 credentials, or provider credentials.
 - Missing `ssl.cloudflare` for wildcard Let's Encrypt routes or Cloudflare SSL.
-- No workflow database on a multi-server network. Create one with `tako db create` and set `[envs.<env>.workflows].db`; see [workflow storage](/workflows/#storage-and-multiple-servers).
+- Missing workflow database. Deploy once with full access to provision the configured or generated name on the selected targets. For details, see [workflow storage](/workflows/#storage-and-multiple-servers).
 - Local storage used in a multi-server deploy environment.
 
 Use:
@@ -191,7 +191,7 @@ For a hosted database, check `backup.last_error` and `backup.replicated_at_unix_
 
 ## Database Requests Fail
 
-`tako.db.<binding>` is `undefined` (or `GetDB` reports false) when the environment does not bind that name: check `[envs.<env>].db` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. A deploy that says the network has no database with a bound name needs `tako db create <name>`, or a binding to one of the names `tako db list` shows. See [Databases](/databases/#limits-and-security).
+`tako.db.<binding>` is `undefined` (or `GetDB` reports false) when the environment does not bind that name: check `[envs.<env>].db` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. If a named database is missing, check its spelling and deploy the environment with full access to provision it. See [Databases](/databases/#limits-and-security).
 
 ## KV Store Requests Fail
 
@@ -205,7 +205,7 @@ Rejections carry a reason (`TakoError.reason` in JavaScript, `errors.Is` in Go, 
 - `unavailable` with `not reachable`: this server could not reach the store's server over the private network. Check `tako network status --json`.
 - `unavailable` with `not serving the KV store right now`: the store's server is restarting or opening the store. Retry.
 
-For a missing KV store, deploy with full access on a one-server network, or place the store with `tako kv create <name> --server <server>` on a multi-server network. If the name belongs to a SQLite database, bind it under `db`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
+For a missing KV store, check its name in `[envs.<env>].kv` and deploy with full access. If the name belongs to a SQLite database, bind it under `db`. `tako kv import` refuses a file that is not a `tako kv export` file, and changes nothing. A write that fails with `KV storage error` and no reason usually means the store's server is out of disk space: free space there, or delete keys and give the rest a TTL. See [KV stores](/kv/#limits-and-security).
 
 ## Secret Or Credential Key Problems
 

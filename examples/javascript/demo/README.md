@@ -20,23 +20,17 @@ The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the re
 
 Supply requests live in the `mission` database, which the app reaches as
 `tako.db.mission` through `@libsql/client`. `tako dev` serves it from a
-local file, after applying `migrations/`. To deploy, create the database on one
-of the network's servers:
-
-```bash
-tako db create mission --server <server>
-```
-
-and bind it to production in `tako.toml`:
+local Turso file after applying `migrations/`. Bind the database to production
+in `tako.toml`.
 
 ```toml
 [envs.production]
 db = { mission = "mission" }
 ```
 
-Instances on every server of the network can use it. Deploys apply
-`migrations/` to it, and it gets hourly snapshots once production has a
-`backup.storage`.
+A full-access deploy creates the database and prepares a replica on each selected
+server. Deploys apply `migrations/`. Setting `backup.storage` enables continuous
+SQL backups.
 
 Secret values are not stored in Git. Set development values using
 `tako secret set NAME --env development`. To access published production values,

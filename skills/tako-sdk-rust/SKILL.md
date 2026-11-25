@@ -51,9 +51,8 @@ Secrets are available through `tako::secret("NAME")` or
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako db create <name>`
-(administrator permission), bound in `[envs.<env>].db`, and served over
-the libSQL HTTP protocol next to the app. `tako::db("main")` returns
+Declare database names in `[envs.<env>].db`. A full-access deploy provisions
+Turso replicas on the selected targets. Apps connect over the libSQL HTTP protocol. `tako::db("main")` returns
 `Option<tako::Db>` with `url()` and `auth_token()`; `Debug` redacts the
 token. `tako::bootstrap()?.databases()` lists every binding.
 
@@ -75,7 +74,7 @@ Use `db.read_replica()` and `store.read_replica()` for read-only access to the l
 ## KV stores
 
 Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on
-one server of the network, reachable from apps on every server. Use them for
+the selected application targets. Use them for
 values any server may need next: login and WebAuthn challenges, one-time
 tokens, sessions, and feature flags. A full-access deploy creates the store and prepares a replica on each selected target.
 Bind it in `[envs.<env>].kv`, such as
@@ -239,7 +238,7 @@ External writers must invalidate explicitly; Tako does not inspect database
 dependencies. Publication errors do not roll back or retry the database write;
 use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
 read responses at 1 MiB. Invalidations use the environment's channel replay
-database (a Tako-hosted SQLite database), so they reach every server of the
+database (a Tako-hosted Turso database), so they reach every server of the
 network. Because `Cargo.toml` depends on the `tako` crate, a deploy without
 `[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
 created automatically on the selected targets by a full-access deploy (see

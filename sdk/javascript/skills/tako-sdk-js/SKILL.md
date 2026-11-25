@@ -213,7 +213,7 @@ object URLs.
 
 ## Databases
 
-Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Declare the name under the environment and deploy with full access. Use the binding with `@libsql/client` or `@tursodatabase/serverless`.
+Tako-hosted Turso databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Declare the name under the environment and deploy with full access. Use the binding with `@libsql/client` or `@tursodatabase/serverless`.
 
 ```toml
 [envs.production]
@@ -272,7 +272,7 @@ await sessions.delete(`challenge:${userId}`);
 - Rejections are `TakoError` with `code: "TAKO_RPC_ERROR"` and `reason` `invalid_request` or `unavailable` (binding changed, store's server unreachable or restarting). A store has no size limit beyond its server's disk, and nothing is evicted. Requests go through the internal socket with the binding's token; logging or serializing a binding never shows the token, and KV calls are server-only.
 - Every write is on disk before it is acknowledged. With `[envs.<env>].backup.storage` or `[kv.<store>].backup`, the server snapshots a changing store hourly, before release commands, before restores and imports, and on demand (`tako kv backup`), like hosted databases. `tako kv restore <store> --latest`, `export`, and `import` replace or copy every key at once. Deploy to a replacement target to catch up its replica while the group has quorum.
 - `tako dev` and `tako run` serve bindings from `.tako/data/kv/<store>.redb` through their internal sockets. Development uses `[envs.development].kv`, else every `kv` binding of any environment. `tako run --env <other>` gets no KV stores.
-- On another server than the store's, the app's own server forwards each request over the private network, adding a round trip; place a store where most of its traffic runs.
+- The default binding routes to the elected leader. Use `readReplica.get` for a local read when the latest applied value is sufficient.
 - Container and Compose releases cannot bind KV stores yet. `tako.cache` stays the per-server, evicting JSON cache for recomputable values.
 - Verify with `tako kv status <store> --json` (`backup`, `bindings`, `remote_grants`), `tako kv put <store> tako:check '"ok"' --ttl 60` and `tako kv get <store> tako:check`, and from the app by putting a key through one server and getting it through another.
 
@@ -367,7 +367,7 @@ interface TakoStatus {
 
 Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks, using broker memory rather than the replay database. Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
 
-Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); `tako dev` keeps it in the project's `.tako/data/tako/channels.sqlite`, served through the same SQLite server protocol as production.
+Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); `tako dev` keeps it in the project's `.tako/data/tako/channels.sqlite`, served through the same Hrana HTTP protocol as production.
 
 ### Defining channels (file-based)
 
@@ -512,7 +512,7 @@ The terminal close (`tako.close`, code 4200) is final and never a business
 message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
 response that ends without `tako.close` stay reconnectable.
 
-In production, durable replay lives in the environment's Tako-hosted SQLite
+In production, durable replay lives in the environment's Tako-hosted Turso
 database on the selected deployment targets. Set `[envs.<env>.channels].db` to use an explicit name, or let a full-access deploy create the generated database. Ephemeral channels and presence
 leases stay in broker memory. Replay gaps, expired history, and a restore or
 import of the replay database trigger quiet SDK resync, not business reset
@@ -788,7 +788,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Runs, steps, and schedules live in a hosted database that every server of the environment shares: a run enqueued on one server can run on another, and each schedule fires once per due time. `[envs.<env>.workflows].db = "<name>"` binds one explicitly; it may be the same database as `[envs.<env>.channels].db`, but do not also bind it as app SQL. Without it, a deploy to a network with exactly one trusted server creates `workflows-<slug>-<hash>`. On a network with several servers, run `tako db create <name> --server <server>` and set `[envs.<env>.workflows].db`; otherwise deploy refuses with that hint. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`, served through the same SQLite server protocol as production.
+Runs, steps, and schedules live in a hosted database that every server of the environment shares: a run enqueued on one server can run on another, and each schedule fires once per due time. `[envs.<env>.workflows].db = "<name>"` binds one explicitly; it may be the same database as `[envs.<env>.channels].db`, but do not also bind it as app SQL. Without it, a full-access deploy creates `workflows-<slug>-<hash>` and prepares its replicas on the selected targets. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`, served through the same Hrana HTTP protocol as production.
 
 ### Enqueuing
 

@@ -247,9 +247,9 @@ Public application DNS, certificates, and ingress routes remain separate. A nati
 
 ## Understand replay and maintenance limits
 
-With hosted SQLite, all servers running an app read and write its durable channel history at one database home. Brokers send notifications over the network; a lost notification does not create another copy of the database. Native presence uses expiring in-memory leases, and ephemeral messages reach only live subscribers. Selecting the same database for two apps does not share channel names, rooms or membership between them.
+A full-access deploy prepares the channel replay and workflow databases on the environment’s selected servers. Each database has an elected leader. With three voting replicas the group can lose one server and continue committing after an election. With two voters it needs both. Native presence uses expiring in-memory leases, and ephemeral messages reach only live subscribers.
 
-Automatic creation requires exactly one trusted **server in the network**, regardless of the app's `servers` setting. On larger networks deploy reuses an existing placement; for a missing replay database, choose a home with `tako db create <name> --server <server>` and set `[envs.<env>.channels].db`. A database on another server is available through the private network while its home is reachable; it does not fail over to a replica. See [Channels](/channels/#deploy-replay-storage) for cutover and recovery. [Workflow storage](/workflows/#storage-and-multiple-servers) follows the same rules with `[envs.<env>.workflows].db`; [Compose volumes](/docker-compose/) remain separate.
+Choose a shared database name with `[envs.<env>.channels].db` or `[envs.<env>.workflows].db`. Apps sharing a database keep separate rooms and workflow runs. See [Channels](/channels/#deploy-replay-storage), [Workflow storage](/workflows/#storage-and-multiple-servers), and [Compose volumes](/docker-compose/).
 
 ```bash
 tako network server drain edge-a --network production --timeout 120 --json

@@ -98,7 +98,7 @@ cargo run -p tako-cli --bin tako -- deploy --help
 - Setting `name` explicitly is recommended for stable identity and uniqueness per server; renaming identity later creates a new app path and requires manual cleanup of old deployments.
 - Non-development environments must define `route` or `routes`; development defaults to `{app}.test`.
 - `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credential set ssl.cloudflare`. Deploy checks required Cloudflare credentials from each target server during remote prepare.
-- Channel replay and workflow runs live in hosted databases. On a network with one trusted server, deploy creates them. On a larger network, create them with `tako db create` and set `[envs.<env>.channels].db` and `[envs.<env>.workflows].db`.
+- Channel replay and workflow runs live in hosted databases. A full-access deploy prepares a replica on each selected application target. Optional names go in `[envs.<env>.channels].db` and `[envs.<env>.workflows].db`.
 - `[workflows].retention` defaults to `"184d"` for completed workflow runs and their steps. Set a positive duration or `"forever"`; the value is carried through local dev registration and deploy manifests.
 
 ## Related Docs

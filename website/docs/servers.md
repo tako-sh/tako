@@ -92,7 +92,7 @@ route = "app.example.com"
 servers = ["edge"]
 ```
 
-The network itself is set in `[envs.<env>].network` in `tako.toml`, explicitly or by the environment's first deploy. See [Deployment](/deployment/#configure-an-environment). On a network with one trusted server, deploy creates the databases that channels and workflows need. On a larger network, create them with `tako db create <name> --server <server>` and name them in `[envs.<env>.channels].db` and `[envs.<env>.workflows].db`; see [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/#storage-and-multiple-servers).
+The network itself is set in `[envs.<env>].network` in `tako.toml`, explicitly or by the environment's first deploy. See [Deployment](/deployment/#configure-an-environment). A full-access deploy provisions channel and workflow databases on the selected app targets. To choose their names, set `[envs.<env>.channels].db` and `[envs.<env>.workflows].db`; see [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## Verify access
 

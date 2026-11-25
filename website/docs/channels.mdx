@@ -398,11 +398,11 @@ A client written without the JavaScript SDK can use dedicated SSE/WS endpoints: 
 
 ## Deploy Replay Storage
 
-Durable channels and Store invalidations use the environment's replay database, a [hosted SQLite database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.sqlite`, and never connects to the production database.
+Durable channels and Store invalidations use the environment's replay database, a [hosted Turso database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.sqlite`, and never connects to the production database.
 
 | Production configuration                                  | What deploy does                                                                                                                                                                                                                         |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[envs.<env>.channels].db` names a hosted SQLite database | Uses that database for channels.                                                                                                                                                                                                         |
+| `[envs.<env>.channels].db` names a hosted Turso database | Uses that database for channels.                                                                                                                                                                                                         |
 | Not configured; channel-capable release                   | Uses a generated database name owned by this app/environment. A full-access deploy creates the missing database on the selected targets. |
 | Not configured; release without channels                  | Binds no replay database. Channel, Store, and Presence requests answer `503` with an error saying to deploy a release that uses channels, and server-side publishes fail with the same message.                                          |
 
