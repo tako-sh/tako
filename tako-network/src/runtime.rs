@@ -141,10 +141,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
     /// Keep this runtime on a blocking worker; its process lock lasts until drop.
     ///
     /// `state_path` names the journal by its stem: the runtime keeps a redb
-    /// journal at `<stem>.redb`, locks `<stem>.runtime-lock`, and imports a
-    /// legacy SQLite `<stem>.db` once when no `<stem>.redb` exists yet,
-    /// keeping it as `<stem>.db.migrated`. With both present, `<stem>.redb`
-    /// is used and the old file is left alone.
+    /// journal at `<stem>.redb` and locks `<stem>.runtime-lock`.
     pub fn open(
         store: S,
         keys: LocalDeviceKeys,

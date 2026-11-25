@@ -219,7 +219,7 @@ impl ApiServer {
             let stop = stop.clone();
             let store = store.clone();
             let drop_publication = drop_publication.clone();
-            let db = directory.path().join("runtime.db");
+            let db = directory.path().join("runtime.redb");
             std::thread::spawn(move || {
                 use openssl::ssl::{SslAcceptor, SslMethod};
                 let mut tls = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();

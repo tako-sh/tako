@@ -15,41 +15,50 @@ fn drain_survives_reopen_and_upgrade_mode_changes() {
     store.set_server_mode(UpgradeMode::Upgrading).unwrap();
     store.set_server_mode(UpgradeMode::Normal).unwrap();
     drop(store);
-    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
+    let store = StateStore::new(temp.path().join("state.redb"), TEST_KEY);
     store.init().unwrap();
     assert!(store.drain_requested().unwrap());
     store.set_drain_requested(false).unwrap();
     drop(store);
-    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
+    let store = StateStore::new(temp.path().join("state.redb"), TEST_KEY);
     store.init().unwrap();
     assert!(!store.drain_requested().unwrap());
 }
 
 #[test]
-fn drain_migration_preserves_existing_apps_and_upgrade_mode() {
-    let (_temp, store) = temp_store();
+fn overlapping_server_processes_share_upgrade_state() {
+    const PATH_VAR: &str = "TAKO_TEST_UPGRADE_STATE_PATH";
+    if let Some(path) = std::env::var_os(PATH_VAR) {
+        let store = StateStore::new(path.into(), TEST_KEY);
+        store.init().unwrap();
+        assert_eq!(store.upgrade_lock_owner().unwrap().as_deref(), Some("old"));
+        assert!(!store.try_acquire_upgrade_lock("new").unwrap());
+        assert_eq!(store.load_apps().unwrap()[0].config.version, "v1");
+        store.set_drain_requested(true).unwrap();
+        return;
+    }
+    let (_dir, store) = temp_store();
     store.init().unwrap();
-    store
-        .upsert_app(&sample_config(), &["demo.test".into()])
-        .unwrap();
-    store.set_server_mode(UpgradeMode::Upgrading).unwrap();
-    store
-        .lock_conn()
-        .unwrap()
-        .execute_batch("DROP TABLE server_drain; PRAGMA user_version = 10;")
-        .unwrap();
-    store.init().unwrap();
-    assert!(!store.drain_requested().unwrap());
-    assert_eq!(store.load_apps().unwrap().len(), 1);
-    assert_eq!(store.server_mode().unwrap(), UpgradeMode::Upgrading);
-    store.set_drain_requested(true).unwrap();
-    store.init().unwrap();
+    store.upsert_app(&sample_config(), &[]).unwrap();
+    assert!(store.try_acquire_upgrade_lock("old").unwrap());
+    assert!(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state_store::tests::overlapping_server_processes_share_upgrade_state"
+            ])
+            .env(PATH_VAR, store.path())
+            .status()
+            .unwrap()
+            .success()
+    );
     assert!(store.drain_requested().unwrap());
+    assert!(store.release_upgrade_lock("old").unwrap());
 }
 
-fn temp_store() -> (TempDir, SqliteStateStore) {
+fn temp_store() -> (TempDir, StateStore) {
     let temp = TempDir::new().unwrap();
-    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
+    let store = StateStore::new(temp.path().join("state.redb"), TEST_KEY);
     (temp, store)
 }
 
@@ -84,27 +93,16 @@ fn init_creates_schema() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
 
-    let user_version = store.raw_query_i64("PRAGMA user_version;", ());
-    assert_eq!(user_version as i32, STATE_SCHEMA_VERSION);
-
-    let columns = store.raw_query_strings("PRAGMA table_info(apps);", 1);
     assert_eq!(
-        columns,
-        vec![
-            "name".to_string(),
-            "environment".to_string(),
-            "version".to_string(),
-            "min_instances".to_string(),
-            "max_instances".to_string(),
-            "source_ip".to_string(),
-        ]
+        store.read(|r| get::<i32>(r, ("format", "", ""))).unwrap(),
+        Some(STATE_FORMAT)
     );
 }
 
 #[test]
 fn init_rejects_newer_unknown_schema() {
     let (_temp, store) = temp_store();
-    store.raw_execute_batch("PRAGMA user_version = 999;");
+    store.write(|r| put(r, ("format", "", ""), &999)).unwrap();
 
     let err = store.init().unwrap_err();
     match err {
@@ -179,7 +177,7 @@ fn server_mode_round_trip_persists() {
     assert_eq!(store.server_mode().unwrap(), UpgradeMode::Upgrading);
 
     // Verify persistence across new connection/process.
-    let reopened = SqliteStateStore::new(store.path().to_path_buf(), TEST_KEY);
+    let reopened = StateStore::new(store.path().to_path_buf(), TEST_KEY);
     reopened.init().unwrap();
     assert_eq!(reopened.server_mode().unwrap(), UpgradeMode::Upgrading);
 
@@ -219,12 +217,11 @@ fn upgrade_lock_force_acquires_stale_lock() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
-        - SqliteStateStore::UPGRADE_LOCK_STALE_SECS
+        - StateStore::UPGRADE_LOCK_STALE_SECS
         - 1;
-    store.raw_execute(
-        "UPDATE upgrade_lock SET acquired_at_unix_secs = ?1 WHERE id = 1;",
-        (stale_time,),
-    );
+    store
+        .write(|r| put(r, ("upgrade_lock", "", ""), &("controller-a", stale_time)))
+        .unwrap();
 
     // A different owner can now force-acquire the stale lock.
     assert!(store.try_acquire_upgrade_lock("controller-b").unwrap());
@@ -276,32 +273,6 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
-fn migration_leaves_retired_tables_for_an_earlier_process() {
-    // During a reload the earlier process still reads these tables, so the
-    // migration leaves them in place and a later schema version drops them.
-    let (_temp, store) = temp_store();
-    store.init().unwrap();
-    store
-        .lock_conn()
-        .unwrap()
-        .execute_batch(
-            "CREATE TABLE app_backups (app TEXT NOT NULL PRIMARY KEY, encrypted_data BLOB NOT NULL);
-             INSERT INTO app_backups VALUES ('my-app/production', x'00');
-             PRAGMA user_version = 16;",
-        )
-        .unwrap();
-    store.init().unwrap();
-    assert_eq!(
-        store.raw_query_i64("SELECT COUNT(*) FROM app_backups;", ()),
-        1
-    );
-    assert_eq!(
-        store.raw_query_i64("PRAGMA user_version;", ()) as i32,
-        STATE_SCHEMA_VERSION
-    );
-}
-
-#[test]
 fn get_secrets_returns_empty_when_not_set() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
@@ -347,11 +318,10 @@ fn secrets_are_encrypted_at_rest() {
     let secrets = HashMap::from([("API_KEY".to_string(), "supersecret".to_string())]);
     store.set_secrets("my-app", &secrets).unwrap();
 
-    // Read raw blob from SQLite — should not contain plaintext
-    let raw = store.raw_query_blob(
-        "SELECT encrypted_data FROM app_secrets WHERE app = ?1;",
-        ("my-app",),
-    );
+    let raw = store
+        .read(|r| bytes(r, ("app_secrets", "my-app", "")))
+        .unwrap()
+        .unwrap();
     let raw_str = String::from_utf8_lossy(&raw);
     assert!(!raw_str.contains("supersecret"));
     assert!(!raw_str.contains("API_KEY"));
@@ -360,69 +330,16 @@ fn secrets_are_encrypted_at_rest() {
 #[test]
 fn secrets_encrypted_with_wrong_key_cannot_be_read() {
     let temp = TempDir::new().unwrap();
-    let db_path = temp.path().join("state.sqlite");
+    let db_path = temp.path().join("state.redb");
 
-    let store1 = SqliteStateStore::new(db_path.clone(), [0x11; 32]);
+    let store1 = StateStore::new(db_path.clone(), [0x11; 32]);
     store1.init().unwrap();
     let secrets = HashMap::from([("KEY".to_string(), "value".to_string())]);
     store1.set_secrets("my-app", &secrets).unwrap();
 
-    let store2 = SqliteStateStore::new(db_path, [0x22; 32]);
+    let store2 = StateStore::new(db_path, [0x22; 32]);
     store2.init().unwrap();
     assert!(store2.get_secrets("my-app").is_err());
-}
-
-#[test]
-fn migrate_v1_to_current_adds_secret_tables() {
-    let temp = TempDir::new().unwrap();
-    let db_path = temp.path().join("state.sqlite");
-
-    // Create a v1 database manually
-    {
-        let store = SqliteStateStore::new(db_path.clone(), TEST_KEY);
-        store.raw_execute_batch(
-                "CREATE TABLE apps (
-                    name TEXT NOT NULL,
-                    environment TEXT NOT NULL,
-                    version TEXT NOT NULL,
-                    min_instances INTEGER NOT NULL,
-                    max_instances INTEGER NOT NULL,
-                    PRIMARY KEY (name, environment)
-                );
-                CREATE TABLE app_routes (
-                    name TEXT NOT NULL,
-                    environment TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    PRIMARY KEY (name, environment, route),
-                    FOREIGN KEY(name, environment) REFERENCES apps(name, environment) ON DELETE CASCADE
-                );
-                CREATE TABLE server_state (
-                    id INTEGER PRIMARY KEY CHECK(id = 1),
-                    server_mode TEXT NOT NULL
-                );
-                CREATE TABLE upgrade_lock (
-                    id INTEGER PRIMARY KEY CHECK(id = 1),
-                    owner TEXT NOT NULL,
-                    acquired_at_unix_secs INTEGER NOT NULL
-                );
-                INSERT INTO server_state (id, server_mode) VALUES (1, 'normal');
-                PRAGMA user_version = 1;",
-            );
-    }
-
-    // Open with current code — should migrate to the latest schema.
-    let store = SqliteStateStore::new(db_path, TEST_KEY);
-    store.init().unwrap();
-
-    // Verify migration: app_secrets table exists and works.
-    let secrets = HashMap::from([("KEY".to_string(), "value".to_string())]);
-    store.set_secrets("test-app", &secrets).unwrap();
-    let loaded = store.get_secrets("test-app").unwrap();
-    assert_eq!(loaded.get("KEY"), Some(&"value".to_string()));
-
-    // Verify version bumped
-    let version = store.raw_query_i64("PRAGMA user_version;", ());
-    assert_eq!(version as i32, STATE_SCHEMA_VERSION);
 }
 
 #[test]
@@ -452,20 +369,15 @@ fn load_or_create_device_key_sets_mode_0600() {
 }
 
 #[test]
-fn drain_deadline_migrates_from_v11_and_is_shared_by_reopened_store() {
+fn drain_deadline_is_shared_by_reopened_store() {
     let (dir, store) = temp_store();
     store.init().unwrap();
-    store.lock_conn().unwrap().execute_batch(
-        "DROP TABLE server_drain;
-         CREATE TABLE server_drain (id INTEGER PRIMARY KEY CHECK(id = 1), requested INTEGER NOT NULL CHECK(requested IN (0, 1)));
-         INSERT INTO server_drain VALUES (1, 1);
-         PRAGMA user_version = 11;",
-    ).unwrap();
+    store.set_drain_requested(true).unwrap();
     store.init().unwrap();
     assert!(store.drain_requested().unwrap());
     assert_eq!(store.drain_deadline_unix_ms().unwrap(), 0);
     store.request_drain_until(1_800_000_123_456).unwrap();
-    let other = SqliteStateStore::new(dir.path().join("state.sqlite"), TEST_KEY);
+    let other = StateStore::new(dir.path().join("state.redb"), TEST_KEY);
     other.init().unwrap();
     assert!(other.drain_requested().unwrap());
     assert_eq!(other.drain_deadline_unix_ms().unwrap(), 1_800_000_123_456);
@@ -479,9 +391,9 @@ fn drain_activity_requires_every_independent_holder_to_release() {
     let (dir, store) = temp_store();
     store.init().unwrap();
     let first = store.try_drain_activity(false).unwrap().unwrap();
-    let path = dir.path().join("state.sqlite");
+    let path = dir.path().join("state.redb");
     let second = std::thread::spawn(move || {
-        let store = SqliteStateStore::new(path, TEST_KEY);
+        let store = StateStore::new(path, TEST_KEY);
         store.try_drain_activity(false).unwrap().unwrap()
     })
     .join()

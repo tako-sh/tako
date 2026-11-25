@@ -69,10 +69,7 @@ impl ServerState {
         let app_manager = Arc::new(AppManager::new(data_dir.clone()));
         let load_balancer = Arc::new(LoadBalancer::new(app_manager.clone()));
         let device_key = load_or_create_device_key(&data_dir.join("secret.key"))?;
-        let state_store = Arc::new(SqliteStateStore::new(
-            data_dir.join("state.sqlite"),
-            device_key,
-        ));
+        let state_store = Arc::new(StateStore::new(data_dir.join("state.redb"), device_key));
         state_store.init()?;
         let (activity, requested) = drain_activity_at_start(&state_store)?;
         let drain_requested = Arc::new(AtomicBool::new(requested));
@@ -294,7 +291,7 @@ fn standby_lock_at_start(
 /// exclusively while it sweeps work directories, and a drain holds it
 /// briefly when it finishes: wait for either, up to [`STARTUP_LEASE_WAIT`].
 fn drain_activity_at_start(
-    state_store: &SqliteStateStore,
+    state_store: &StateStore,
 ) -> Result<(Option<crate::state_store::DrainLease>, bool), StateStoreError> {
     crate::state_store::wait_for_lease(
         STARTUP_LEASE_WAIT,

@@ -5,7 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-rusqlite.workspace = true
 redb = "5"
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
@@ -29,4 +28,5 @@ zeroize = { version = "1", features = ["serde"] }
 rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile = "=3.27.0"

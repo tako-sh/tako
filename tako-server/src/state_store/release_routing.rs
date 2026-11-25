@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tako_core::{SourceIpMode, compose::ComposeConfig};
 
-use super::{SqliteStateStore, StateStoreError};
+use super::{StateStore, StateStoreError};
 
 /// Server-owned bindings committed with a release. Uploaded manifests cannot
 /// grant route ownership or change the source-IP trust policy of an old release.
@@ -41,41 +40,14 @@ impl ReleaseRouting {
     }
 }
 
-impl SqliteStateStore {
+impl StateStore {
     pub(crate) fn release_routing(
         &self,
         app: &str,
         version: &str,
     ) -> Result<Option<ReleaseRouting>, StateStoreError> {
-        self.lock_conn()?
-            .query_row(
-                "SELECT routing FROM app_release_routing WHERE app = ?1 AND version = ?2",
-                (app, version),
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|value| {
-                serde_json::from_str(&value)
-                    .map_err(|error| StateStoreError::InvalidData(error.to_string()))
-            })
-            .transpose()
+        self.read(|r| super::get(r, ("app_release_routing", app, version)))
     }
-}
-
-pub(super) fn save_on(
-    conn: &rusqlite::Connection,
-    app: &str,
-    version: &str,
-    routing: &ReleaseRouting,
-) -> Result<(), StateStoreError> {
-    let json = serde_json::to_string(routing)
-        .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
-    conn.execute(
-        "INSERT INTO app_release_routing (app, version, routing) VALUES (?1, ?2, ?3)
-         ON CONFLICT(app, version) DO UPDATE SET routing = excluded.routing",
-        (app, version, json),
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -86,7 +58,7 @@ mod tests {
     #[test]
     fn release_bindings_survive_private_deploy_restart_and_failed_commit() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteStateStore::new(dir.path().join("state.sqlite"), [0; 32]);
+        let store = StateStore::new(dir.path().join("state.redb"), [0; 32]);
         store.init().unwrap();
         let public = AppConfig {
             name: "demo".into(),
@@ -96,12 +68,7 @@ mod tests {
             ..Default::default()
         };
         store.upsert_app(&public, &["demo.example".into()]).unwrap();
-        // Simulate a native release persisted before this table existed.
-        store
-            .lock_conn()
-            .unwrap()
-            .execute("DELETE FROM app_release_routing", [])
-            .unwrap();
+
         let private = AppConfig {
             version: "private".into(),
             ..public.clone()
@@ -118,9 +85,11 @@ mod tests {
             Some(expected.clone())
         );
         drop(store);
-        let store = SqliteStateStore::new(dir.path().join("state.sqlite"), [0; 32]);
+        let store = StateStore::new(dir.path().join("state.redb"), [0; 32]);
         store.init().unwrap();
-        store.lock_conn().unwrap().execute_batch("CREATE TRIGGER fail_commit BEFORE UPDATE ON apps BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        store
+            .reject_writes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(
             store
                 .commit_deployment(&public, &["changed.example".into()], None, None)
@@ -138,6 +107,9 @@ mod tests {
                 .routes
                 .is_empty()
         );
+        store
+            .reject_writes
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         store.delete_app("demo", "production").unwrap();
         assert!(
             store

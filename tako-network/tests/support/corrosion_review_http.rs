@@ -69,62 +69,64 @@ pub fn count() -> i64 {
 }
 
 pub fn post(path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
-    let bytes = DB.with(|db| -> RuntimeResult<Vec<u8>> {
-        let db = db.borrow();
-        match path {
-            "/v1/queries" => {
-                let mut statement = db.prepare(body[0].as_str().unwrap())?;
-                let values: Vec<rusqlite::types::Value> = body[1]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| {
-                        if let Some(text) = v.as_str() {
-                            rusqlite::types::Value::Text(text.to_owned())
-                        } else {
-                            rusqlite::types::Value::Integer(v.as_i64().unwrap())
-                        }
-                    })
-                    .collect();
-                let rows = statement.query_map(rusqlite::params_from_iter(values), |r| {
-                    Ok(vec![
-                        r.get::<_, String>(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                    ])
-                })?;
-                let mut bytes =
-                    b"{\"columns\":[\"kind\",\"record_id\",\"digest\",\"payload\"]}\n".to_vec();
-                for (i, row) in rows.enumerate() {
-                    serde_json::to_writer(&mut bytes, &json!({"row": [i + 1, row?]}))?;
-                    bytes.push(b'\n');
-                }
-                bytes.extend_from_slice(b"{\"eoq\":{}}\n");
-                Ok(bytes)
-            }
-            "/v1/transactions" => {
-                let transaction = db.unchecked_transaction()?;
-                let mut results = Vec::new();
-                for statement in body.as_array().unwrap() {
-                    let values: Vec<&str> = statement[1]
+    let bytes = DB
+        .with(|db| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let db = db.borrow();
+            match path {
+                "/v1/queries" => {
+                    let mut statement = db.prepare(body[0].as_str().unwrap())?;
+                    let values: Vec<rusqlite::types::Value> = body[1]
                         .as_array()
                         .unwrap()
                         .iter()
-                        .map(|v| v.as_str().unwrap())
+                        .map(|v| {
+                            if let Some(text) = v.as_str() {
+                                rusqlite::types::Value::Text(text.to_owned())
+                            } else {
+                                rusqlite::types::Value::Integer(v.as_i64().unwrap())
+                            }
+                        })
                         .collect();
-                    let affected = transaction.execute(
-                        statement[0].as_str().unwrap(),
-                        rusqlite::params_from_iter(values),
-                    )?;
-                    results.push(json!({"rows_affected": affected}));
+                    let rows = statement.query_map(rusqlite::params_from_iter(values), |r| {
+                        Ok(vec![
+                            r.get::<_, String>(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                        ])
+                    })?;
+                    let mut bytes =
+                        b"{\"columns\":[\"kind\",\"record_id\",\"digest\",\"payload\"]}\n".to_vec();
+                    for (i, row) in rows.enumerate() {
+                        serde_json::to_writer(&mut bytes, &json!({"row": [i + 1, row?]}))?;
+                        bytes.push(b'\n');
+                    }
+                    bytes.extend_from_slice(b"{\"eoq\":{}}\n");
+                    Ok(bytes)
                 }
-                transaction.commit()?;
-                Ok(serde_json::to_vec(&json!({"results": results}))?)
+                "/v1/transactions" => {
+                    let transaction = db.unchecked_transaction()?;
+                    let mut results = Vec::new();
+                    for statement in body.as_array().unwrap() {
+                        let values: Vec<&str> = statement[1]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|v| v.as_str().unwrap())
+                            .collect();
+                        let affected = transaction.execute(
+                            statement[0].as_str().unwrap(),
+                            rusqlite::params_from_iter(values),
+                        )?;
+                        results.push(json!({"rows_affected": affected}));
+                    }
+                    transaction.commit()?;
+                    Ok(serde_json::to_vec(&json!({"results": results}))?)
+                }
+                _ => panic!("unexpected adapter path: {path}"),
             }
-            _ => panic!("unexpected adapter path: {path}"),
-        }
-    })?;
+        })
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     if bytes.len() > MAX_REGISTRY_BYTES {
         return Err(RuntimeError::Capacity("Corrosion response"));
     }

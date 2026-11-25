@@ -2,8 +2,7 @@
 //! Every runtime operation spanning several rows is one write transaction,
 //! durable (fsynced) when its commit returns.
 //!
-//! Tables, named after the SQLite tables of the legacy `runtime.db`, plus
-//! expiry indexes for deletes without a scan:
+//! Tables and expiry indexes:
 //! - `runtime_identity`: `()` → (network JSON, server, last_time, auth_window)
 //! - `consumed_nonces`, `revocation_nonces`: (signer, nonce) → expires, each
 //!   indexed by `*_nonce_expiry`: (expires, signer, nonce) → ()
@@ -12,18 +11,15 @@
 //! - `pending_entitlements`, `invitations`, `shared_publications`: id →
 //!   (expires, payload), each indexed by `*_expiry`: (expires, id) → ()
 use std::{
-    collections::BTreeSet,
-    ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use redb::{
     Database, DatabaseError, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition, WriteTransaction, backends::FileBackend,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::api::{RuntimeError, RuntimeResult};
 
@@ -252,18 +248,10 @@ pub(super) struct Identity {
 }
 
 /// Opens the journal of `state_path` (see [`super::ServerRuntime::open`]),
-/// importing a legacy SQLite journal when that is all there is. The caller
+/// creating its tables on first bootstrap. The caller
 /// holds the runtime lock.
 pub(super) fn open(state_path: &Path, identity: &Identity) -> RuntimeResult<Database> {
     let path = state_path.with_extension("redb");
-    let legacy = state_path.with_extension("db");
-    if !present(&path)? && exists(&legacy)? {
-        import(&path, &legacy, identity)?;
-    } else if exists(&legacy)? {
-        // An import that stopped after moving its journal into place: the
-        // legacy file is stale, and nothing may open it again.
-        retire(&legacy)?;
-    }
     let file = private_options().create(true).truncate(false).open(&path)?;
     if !file.metadata()?.is_file() {
         return Err(RuntimeError::Invalid(
@@ -327,316 +315,6 @@ fn present(path: &Path) -> io::Result<bool> {
     }
 }
 
-fn exists(path: &Path) -> io::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-fn remove_if_exists(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
-}
-
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = OsString::from(path.as_os_str());
-    name.push(suffix);
-    name.into()
-}
-
-fn sync_parent(path: &Path) -> io::Result<()> {
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    File::open(parent)?.sync_all()
-}
-
-fn legacy_time(time: i64) -> RuntimeResult<u64> {
-    u64::try_from(time).map_err(|_| RuntimeError::Invalid("negative legacy journal time"))
-}
-
-/// Rows copied from each legacy table.
-#[derive(Default)]
-struct Copied {
-    consumed_nonces: u64,
-    revocation_nonces: u64,
-    observed_records: u64,
-    registry_failure: u64,
-    pending_entitlements: u64,
-    invitations: u64,
-    shared_observed: u64,
-    shared_publications: u64,
-}
-
-/// One-time upgrade from `runtime.db`: the identity anchors the monotonic
-/// clock and consumed nonces must stay replays, so nothing may be dropped.
-/// Every row is copied in one write transaction into a temporary file, which
-/// is synced and renamed into place only once it is complete and checked. The
-/// legacy files are then kept as `runtime.db.migrated*`.
-fn import(path: &Path, legacy: &Path, identity: &Identity) -> RuntimeResult<()> {
-    if !fs::symlink_metadata(legacy)?.is_file() {
-        return Err(RuntimeError::Invalid(
-            "legacy runtime database is not a regular file",
-        ));
-    }
-    let source = Connection::open_with_flags(
-        legacy,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    // The identity row precedes every other row, so a journal without any row
-    // was left by a first bootstrap that never finished: nothing to keep.
-    if blank(&source)? {
-        drop(source);
-        return retire(legacy);
-    }
-    let temporary = path.with_extension("redb-import");
-    // Left by a crash during an earlier import; it never replaced anything.
-    remove_if_exists(&temporary)?;
-    let file = private_options().create_new(true).open(&temporary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    let result = (|| -> RuntimeResult<()> {
-        let db = builder().create_with_backend(FileBackend::new(file.try_clone()?))?;
-        let txn = write(&db)?;
-        create_tables(&txn)?;
-        let (stored, copied) = copy_legacy(&source, &txn, identity)?;
-        txn.commit()?;
-        check_import(&db, &stored, &copied)?;
-        db.close()?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        sync_parent(path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result?;
-    drop(source);
-    retire(legacy)
-}
-
-/// Keeps the legacy files for an operator, under names nothing opens.
-fn retire(legacy: &Path) -> RuntimeResult<()> {
-    // Sidecars first: `runtime.db.migrated` only appears with its WAL beside it.
-    let migrated = legacy.with_extension("db.migrated");
-    for suffix in ["-wal", "-shm"] {
-        let from = with_suffix(legacy, suffix);
-        let to = with_suffix(&migrated, suffix);
-        remove_if_exists(&to)?;
-        if exists(&from)? {
-            fs::rename(&from, &to)?;
-        }
-    }
-    fs::rename(legacy, &migrated)?;
-    sync_parent(legacy)?;
-    Ok(())
-}
-
-fn blank(source: &Connection) -> RuntimeResult<bool> {
-    let tables: Vec<String> = source
-        .prepare("SELECT name FROM sqlite_master WHERE type='table'")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    for table in tables {
-        let quoted = table.replace('"', "\"\"");
-        let rows: bool = source.query_row(
-            &format!("SELECT EXISTS(SELECT 1 FROM \"{quoted}\")"),
-            [],
-            |row| row.get(0),
-        )?;
-        if rows {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-type StoredIdentity = (String, String, u64, u64);
-
-/// Copies every row of a legacy table. Tables an older agent never created
-/// are empty; only the identity is required.
-fn each_row(
-    source: &Connection,
-    tables: &BTreeSet<String>,
-    name: &str,
-    columns: &str,
-    mut copy: impl FnMut(&rusqlite::Row<'_>) -> RuntimeResult<()>,
-) -> RuntimeResult<u64> {
-    if !tables.contains(name) {
-        return Ok(0);
-    }
-    let mut statement = source.prepare(&format!("SELECT {columns} FROM {name}"))?;
-    let mut rows = statement.query([])?;
-    let mut count = 0;
-    while let Some(row) = rows.next()? {
-        copy(row)?;
-        count += 1;
-    }
-    Ok(count)
-}
-
-fn copy_legacy(
-    source: &Connection,
-    txn: &WriteTransaction,
-    identity: &Identity,
-) -> RuntimeResult<(StoredIdentity, Copied)> {
-    let tables: BTreeSet<String> = source
-        .prepare("SELECT name FROM sqlite_master WHERE type='table'")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    let (network, server, last_time, auth_window): (String, String, i64, i64) = source
-        .query_row(
-            "SELECT network, server, last_time, auth_window FROM runtime_identity WHERE singleton=1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?
-        .ok_or(RuntimeError::Invalid("legacy runtime identity missing"))?;
-    let stored = (
-        network,
-        server,
-        legacy_time(last_time)?,
-        legacy_time(auth_window)?,
-    );
-    if stored.0 != identity.network
-        || stored.1 != identity.server
-        || stored.3 != identity.auth_window
-    {
-        return Err(RuntimeError::Conflict("local runtime identity"));
-    }
-    txn.open_table(IDENTITY)?.insert(
-        (),
-        (stored.0.as_str(), stored.1.as_str(), stored.2, stored.3),
-    )?;
-    let mut copied = Copied::default();
-    for (name, pool, count) in [
-        (
-            "consumed_nonces",
-            CONSUMED_NONCES,
-            &mut copied.consumed_nonces,
-        ),
-        (
-            "revocation_nonces",
-            REVOCATION_NONCES,
-            &mut copied.revocation_nonces,
-        ),
-    ] {
-        *count = each_row(
-            source,
-            &tables,
-            name,
-            "signer, nonce, expires",
-            |row: &rusqlite::Row<'_>| {
-                let signer: String = row.get(0)?;
-                let nonce: String = row.get(1)?;
-                pool.insert(txn, &signer, &nonce, legacy_time(row.get(2)?)?)
-            },
-        )?;
-    }
-    for (name, definition, count) in [
-        (
-            "observed_records",
-            OBSERVED_RECORDS,
-            &mut copied.observed_records,
-        ),
-        (
-            "shared_observed",
-            SHARED_OBSERVED,
-            &mut copied.shared_observed,
-        ),
-    ] {
-        let mut table = txn.open_table(definition)?;
-        *count = each_row(
-            source,
-            &tables,
-            name,
-            "kind, id, payload",
-            |row: &rusqlite::Row<'_>| {
-                let (kind, id, payload): (String, String, String) =
-                    (row.get(0)?, row.get(1)?, row.get(2)?);
-                table.insert((kind.as_str(), id.as_str()), payload.as_str())?;
-                Ok(())
-            },
-        )?;
-    }
-    copied.registry_failure = each_row(
-        source,
-        &tables,
-        "registry_failure",
-        "singleton",
-        |_: &rusqlite::Row<'_>| {
-            txn.open_table(REGISTRY_FAILURE)?.insert((), ())?;
-            Ok(())
-        },
-    )?
-    .min(1);
-    for (name, rows, count) in [
-        (
-            "pending_entitlements",
-            PENDING_ENTITLEMENTS,
-            &mut copied.pending_entitlements,
-        ),
-        ("invitations", INVITATIONS, &mut copied.invitations),
-        (
-            "shared_publications",
-            SHARED_PUBLICATIONS,
-            &mut copied.shared_publications,
-        ),
-    ] {
-        *count = each_row(
-            source,
-            &tables,
-            name,
-            "id, expires, payload",
-            |row: &rusqlite::Row<'_>| {
-                let (id, expires, payload): (String, i64, String) =
-                    (row.get(0)?, row.get(1)?, row.get(2)?);
-                rows.put(txn, &id, legacy_time(expires)?, &payload)
-            },
-        )?;
-    }
-    Ok((stored, copied))
-}
-
-/// Reads the committed import back before it may replace anything.
-fn check_import(db: &Database, stored: &StoredIdentity, copied: &Copied) -> RuntimeResult<()> {
-    let txn = db.begin_read()?;
-    let identity = txn.open_table(IDENTITY)?.get(())?.map(|row| {
-        let (network, server, last_time, auth_window) = row.value();
-        (
-            network.to_owned(),
-            server.to_owned(),
-            last_time,
-            auth_window,
-        )
-    });
-    let both = |count: u64| (count, count);
-    if identity.as_ref() != Some(stored)
-        || CONSUMED_NONCES.len(&txn)? != both(copied.consumed_nonces)
-        || REVOCATION_NONCES.len(&txn)? != both(copied.revocation_nonces)
-        || txn.rows(OBSERVED_RECORDS)? != copied.observed_records
-        || txn.rows(REGISTRY_FAILURE)? != copied.registry_failure
-        || PENDING_ENTITLEMENTS.len(&txn)? != both(copied.pending_entitlements)
-        || INVITATIONS.len(&txn)? != both(copied.invitations)
-        || txn.rows(SHARED_OBSERVED)? != copied.shared_observed
-        || SHARED_PUBLICATIONS.len(&txn)? != both(copied.shared_publications)
-    {
-        return Err(RuntimeError::Invalid("runtime journal import incomplete"));
-    }
-    Ok(())
-}
-
 /// Row counts read from a journal without opening it for writing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JournalSummary {
@@ -647,11 +325,10 @@ pub struct JournalSummary {
 /// For a node that already completed bootstrap, whose journal must not be
 /// recreated: checks that the journal [`super::ServerRuntime::open`] would use
 /// for `state_path` holds its identity and nonce tables. Creates and imports
-/// nothing. A legacy SQLite journal not yet imported is checked in place. Call
+/// nothing. Call
 /// it only while no runtime has the journal open.
 pub fn verify_journal(state_path: &Path) -> RuntimeResult<JournalSummary> {
     let path = state_path.with_extension("redb");
-    let legacy = state_path.with_extension("db");
     if present(&path)? {
         return match builder().open_read_only(&path) {
             Ok(db) => summarize(&db),
@@ -661,9 +338,6 @@ pub fn verify_journal(state_path: &Path) -> RuntimeResult<JournalSummary> {
             Err(DatabaseError::RepairAborted) => summarize(&builder().open(&path)?),
             Err(error) => Err(error.into()),
         };
-    }
-    if exists(&legacy)? {
-        return verify_legacy(&legacy);
     }
     Err(RuntimeError::Invalid("runtime journal missing"))
 }
@@ -690,45 +364,5 @@ fn summarize(db: &impl ReadableDatabase) -> RuntimeResult<JournalSummary> {
     Ok(JournalSummary {
         consumed_nonces: count(CONSUMED_NONCES)?,
         revocation_nonces: count(REVOCATION_NONCES)?,
-    })
-}
-
-fn verify_legacy(path: &Path) -> RuntimeResult<JournalSummary> {
-    let db = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    let identity: i64 = db
-        .query_row(
-            "SELECT count(*) FROM runtime_identity WHERE singleton=1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| RuntimeError::Invalid("runtime identity missing"))?;
-    if identity != 1 {
-        return Err(RuntimeError::Invalid("runtime identity missing"));
-    }
-    let count = |table: &str| -> RuntimeResult<u64> {
-        let count: i64 = db
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .map_err(|_| RuntimeError::Invalid("nonce journal missing"))?;
-        Ok(count.max(0) as u64)
-    };
-    let revocations: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='revocation_nonces')",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(JournalSummary {
-        consumed_nonces: count("consumed_nonces")?,
-        revocation_nonces: if revocations {
-            count("revocation_nonces")?
-        } else {
-            0
-        },
     })
 }

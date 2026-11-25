@@ -558,7 +558,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
             store,
             server_keys,
             config.clone(),
-            &dir.path().join("runtime.db"),
+            &dir.path().join("runtime.redb"),
         )
         .unwrap();
         let call = |runtime: &mut ServerRuntime<CorrosionStore>,
@@ -659,7 +659,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
                 adapter(&original),
                 LocalDeviceKeys::load(&dir.path().join("keys")).unwrap(),
                 config,
-                &dir.path().join("runtime.db")
+                &dir.path().join("runtime.redb")
             ),
             Err(RuntimeError::Capacity(_))
         ));

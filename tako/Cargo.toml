@@ -110,7 +110,6 @@ zeroize = "1"
 
 # Dev daemon registrations
 redb = "5"
-rusqlite.workspace = true
 turso_parser = "=0.9.0-pre.6"
 # Hosts local databases for `tako dev` and `tako run`
 tako-db = { path = "../tako-db" }

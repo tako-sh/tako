@@ -40,6 +40,7 @@ pingora-prometheus = "0.9"
 openssl.workspace = true
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 getrandom = "0.4"
+redb = "5"
 rusqlite.workspace = true
 tako-storage = { path = "../tako-storage" }
 object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }

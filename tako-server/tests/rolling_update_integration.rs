@@ -451,16 +451,25 @@ fn failed_rolling_update_keeps_previous_release_serving() {
         "failed deploy should restore previous secrets"
     );
 
-    let state_db = server.data_dir().join("state.sqlite");
-    let conn = rusqlite::Connection::open(&state_db).unwrap();
-    let ssl_rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM app_ssl WHERE app = ?1",
-            (app_id,),
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(ssl_rows, 1, "failed deploy should restore previous SSL");
+    let state_db = server.data_dir().join("state.redb");
+    {
+        use redb::{ReadableDatabase, ReadableTable};
+        let db = redb::Database::builder()
+            .set_concurrency_mode(redb::ConcurrencyMode::MultiWriter)
+            .open_read_only(&state_db)
+            .unwrap();
+        let rows = db
+            .begin_read()
+            .unwrap()
+            .open_table(redb::TableDefinition::<(&str, &str, &str), &[u8]>::new(
+                "state",
+            ))
+            .unwrap();
+        assert!(
+            rows.get(("app_ssl", app_id, "")).unwrap().is_some(),
+            "failed deploy should restore previous SSL"
+        );
+    }
 
     let new_host_status = server.https_status(new_host, "/").unwrap_or(0);
     assert_eq!(

@@ -46,7 +46,7 @@ scope, pool bounds and tests. This does not enable TLS handshake offloading.
 - Public HTTP/HTTPS: `--http-port` and `--https-port` (defaults: `80` and `443`)
 - Remote management: pinned HTTPS on the configured HTTPS port; private HTTP `9844` on the native network address
 - Data root: `/opt/tako`
-- State DB: `/opt/tako/state.sqlite`
+- State DB: `/opt/tako/state.redb`
 - Server identity: `/opt/tako/identity.key`, `/opt/tako/identity.pub`
 - Remote management keys: `/opt/tako/management-authorized-keys`
 - App releases: `/opt/tako/apps/<app>/<env>/releases/<version>/`

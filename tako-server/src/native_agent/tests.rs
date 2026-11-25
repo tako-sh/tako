@@ -159,7 +159,6 @@ fn node_config_fullchain_unknown_fields_and_unsafe_paths() {
         "management.sock",
         "local-services-owner.json",
         "local-services-export.lock",
-        "runtime.db-wal",
         "runtime.redb",
         "agent-process-lock",
         "api-token",

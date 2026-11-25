@@ -4,10 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use rusqlite::OptionalExtension;
+use super::{bytes, get, put, remove, scan, storage};
+use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 
-use super::{SqliteStateStore, StateStoreError, encryption};
+use super::{StateStore, StateStoreError, encryption};
 
 /// Secret settings of a hosted database.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub(crate) struct DatabaseSecrets {
     pub backup: Option<tako_core::StorageBinding>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredDatabase {
     /// Unique within the network; identifies the database.
     pub name: String,
@@ -56,216 +57,118 @@ pub(crate) struct DatabaseGrant {
     pub key: String,
 }
 
-fn engine_name(engine: tako_core::DatabaseEngine) -> &'static str {
-    match engine {
-        tako_core::DatabaseEngine::Sqlite => "sqlite",
-        tako_core::DatabaseEngine::Kv => "kv",
-    }
-}
-
-fn parse_engine(name: &str) -> Result<tako_core::DatabaseEngine, StateStoreError> {
-    match name {
-        "sqlite" => Ok(tako_core::DatabaseEngine::Sqlite),
-        "kv" => Ok(tako_core::DatabaseEngine::Kv),
-        other => Err(StateStoreError::InvalidData(format!(
-            "unknown database engine {other}"
-        ))),
-    }
-}
-
-impl SqliteStateStore {
+impl StateStore {
     pub(crate) fn replication_groups(
         &self,
     ) -> Result<BTreeMap<String, crate::databases::replication::GroupConfig>, StateStoreError> {
-        self.all_database_rows("SELECT app,encrypted_data FROM replication_groups")
+        self.all_database_rows("replication_groups")
     }
     pub(crate) fn withdrawal(&self, id: &str) -> Result<Option<bool>, StateStoreError> {
-        Ok(self
-            .lock_conn()?
-            .query_row(
-                "SELECT pending FROM storage_withdrawals WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?)
+        self.read(|r| get(r, ("withdrawals", id, "")))
     }
     pub(crate) fn mark_withdrawing(&self, id: &str) -> Result<(), StateStoreError> {
-        self.lock_conn()?.execute(
-            "INSERT OR REPLACE INTO storage_withdrawals VALUES(?1,1)",
-            [id],
-        )?;
-        Ok(())
+        self.write(|r| put(r, ("withdrawals", id, ""), &true))
     }
     pub(crate) fn forget_replication_group(&self, id: &str) -> Result<(), StateStoreError> {
-        let mut conn = self.lock_conn()?;
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM replication_groups WHERE app=?1", [id])?;
-        tx.execute("UPDATE storage_withdrawals SET pending=0 WHERE id=?1", [id])?;
-        tx.execute("DELETE FROM storage_replica_presence WHERE id=?1", [id])?;
-        tx.commit()?;
-        Ok(())
+        self.write(|r| {
+            remove(r, ("replication_groups", id, ""))?;
+            if r.get(("withdrawals", id, "")).map_err(storage)?.is_some() {
+                put(r, ("withdrawals", id, ""), &false)?
+            }
+            remove(r, ("presence", id, ""))
+        })
     }
     pub(crate) fn mark_storage_present(&self, id: &str) -> Result<(), StateStoreError> {
-        self.lock_conn()?.execute(
-            "INSERT OR IGNORE INTO storage_replica_presence VALUES(?1)",
-            [id],
-        )?;
-        Ok(())
+        self.write(|r| put(r, ("presence", id, ""), &()))
     }
     pub(crate) fn storage_initialized(&self, id: &str) -> Result<bool, StateStoreError> {
-        Ok(self.lock_conn()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM storage_replica_presence WHERE id=?1)",
-            [id],
-            |row| row.get(0),
-        )?)
+        self.read(|r| Ok(r.get(("presence", id, "")).map_err(storage)?.is_some()))
     }
     pub(crate) fn claim_storage_bootstrap(&self, id: &str) -> Result<bool, StateStoreError> {
-        Ok(self
-            .lock_conn()?
-            .execute("INSERT OR IGNORE INTO storage_bootstraps VALUES (?1)", [id])?
-            == 1)
+        self.write(|r| {
+            Ok(r.insert(("bootstraps", id, ""), &[][..])
+                .map_err(storage)?
+                .is_none())
+        })
     }
-
     pub(crate) fn insert_replication_group(
         &self,
         id: &str,
         config: &crate::databases::replication::GroupConfig,
     ) -> Result<(), StateStoreError> {
-        let encrypted = self.encrypt_json(config)?;
-        self.lock_conn()?.execute(
-            "INSERT INTO replication_groups VALUES (?1,?2)",
-            (id, encrypted),
-        )?;
-        Ok(())
+        self.insert_record("replication_groups", id, config)
     }
-
+    fn insert_record(
+        &self,
+        bucket: &str,
+        id: &str,
+        record: &impl Serialize,
+    ) -> Result<(), StateStoreError> {
+        let value = self.encrypt_json(record)?;
+        self.write(|r| {
+            if r.insert((bucket, id, ""), value.as_slice())
+                .map_err(storage)?
+                .is_some()
+            {
+                return Err(StateStoreError::InvalidData(format!(
+                    "{bucket} entry {id} already exists"
+                )));
+            }
+            Ok(())
+        })
+    }
     pub(crate) fn release_databases(
         &self,
         app: &str,
         version: &str,
     ) -> Result<Option<HashMap<String, AppDatabase>>, StateStoreError> {
-        let bytes: Option<Vec<u8>> = self
-            .lock_conn()?
-            .query_row(
-                "SELECT encrypted_data FROM release_databases WHERE app=?1 AND version=?2",
-                (app, version),
-                |row| row.get(0),
-            )
-            .optional()?;
-        bytes
-            .as_deref()
-            .map(|data| self.decrypt_json(data))
+        self.read(|r| bytes(r, ("release_databases", app, version)))?
+            .map(|v| self.decrypt_json(&v))
             .transpose()
     }
-
     pub(crate) fn releases_with_databases(&self) -> Result<Vec<(String, String)>, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let mut stmt =
-            conn.prepare("SELECT app,version FROM release_databases ORDER BY app,version")?;
-        Ok(stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?)
-    }
-
-    pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
-        let encrypted = self.encrypt_json(&database.secrets)?;
-        self.lock_conn()?.execute(
-            "INSERT INTO databases (name, generation, created_at, encrypted_data, engine) VALUES (?1, ?2, ?3, ?4, ?5)",
-            (
-                &database.name,
-                &database.generation,
-                database.created_at_unix_secs as i64,
-                encrypted,
-                engine_name(database.engine),
-            ),
-        )?;
-        Ok(())
-    }
-
-    pub(crate) fn list_databases(&self) -> Result<Vec<StoredDatabase>, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let mut statement = conn.prepare(
-            "SELECT name, generation, created_at, encrypted_data, engine FROM databases ORDER BY name",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(name, generation, created_at, encrypted, engine)| {
-                Ok(StoredDatabase {
-                    name,
-                    engine: parse_engine(&engine)?,
-                    generation,
-                    created_at_unix_secs: created_at.max(0) as u64,
-                    secrets: self.decrypt_json(&encrypted)?,
-                })
+        self.read(|r| {
+            scan(r, "release_databases", |app, version, _| {
+                Ok((app.to_owned(), version.to_owned()))
             })
-            .collect()
+        })
     }
-
+    pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
+        self.insert_record("databases", &database.name, database)
+    }
+    pub(crate) fn list_databases(&self) -> Result<Vec<StoredDatabase>, StateStoreError> {
+        self.read(|r| scan(r, "databases", |_, _, v| self.decrypt_json(v)))
+    }
     pub(crate) fn get_database(
         &self,
         name: &str,
     ) -> Result<Option<StoredDatabase>, StateStoreError> {
-        let row = self
-            .lock_conn()?
-            .query_row(
-                "SELECT generation, created_at, encrypted_data, engine FROM databases WHERE name = ?1",
-                [name],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                },
-            )
-            .optional()?;
-        row.map(|(generation, created_at, encrypted, engine)| {
-            Ok(StoredDatabase {
-                name: name.to_owned(),
-                engine: parse_engine(&engine)?,
-                generation,
-                created_at_unix_secs: created_at.max(0) as u64,
-                secrets: self.decrypt_json(&encrypted)?,
-            })
-        })
-        .transpose()
+        self.read(|r| bytes(r, ("databases", name, "")))?
+            .map(|v| self.decrypt_json(&v))
+            .transpose()
     }
-
     pub(crate) fn set_database_secrets(
         &self,
         name: &str,
         secrets: &DatabaseSecrets,
     ) -> Result<(), StateStoreError> {
-        let encrypted = self.encrypt_json(secrets)?;
-        let changed = self.lock_conn()?.execute(
-            "UPDATE databases SET encrypted_data = ?2 WHERE name = ?1",
-            (name, encrypted),
-        )?;
-        if changed == 0 {
-            return Err(StateStoreError::InvalidData(format!(
-                "database {name} is not hosted on this server"
-            )));
-        }
-        Ok(())
+        self.write(|r| {
+            let key = ("databases", name, "");
+            let value = bytes(r, key)?.ok_or_else(|| {
+                StateStoreError::InvalidData(format!(
+                    "database {name} is not hosted on this server"
+                ))
+            })?;
+            let mut record: StoredDatabase = self.decrypt_json(&value)?;
+            record.secrets = secrets.clone();
+            r.insert(key, self.encrypt_json(&record)?.as_slice())
+                .map_err(storage)?;
+            Ok(())
+        })
     }
-
     pub(crate) fn delete_database(&self, name: &str) -> Result<(), StateStoreError> {
-        self.lock_conn()?
-            .execute("DELETE FROM databases WHERE name = ?1", [name])?;
-        Ok(())
+        self.write(|r| remove(r, ("databases", name, "")))
     }
-
     pub(crate) fn get_app_databases(
         &self,
         app: &str,
@@ -298,56 +201,46 @@ impl SqliteStateStore {
         app: &str,
         databases: &BTreeSet<String>,
     ) -> Result<Option<String>, StateStoreError> {
-        if databases.is_empty() {
-            self.lock_conn()?
-                .execute("DELETE FROM database_grants WHERE app = ?1", [app])?;
-            return Ok(None);
-        }
-        let key = match self.all_database_grants()?.remove(app) {
-            Some(existing) => existing.key,
-            None => tako_db::generate_token(),
-        };
-        let encrypted = self.encrypt_json(&DatabaseGrant {
-            databases: databases.clone(),
-            key: key.clone(),
-        })?;
-        self.lock_conn()?.execute(
-            "INSERT INTO database_grants (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data",
-            (app, encrypted),
-        )?;
-        Ok(Some(key))
+        self.write(|r| {
+            let row = ("database_grants", app, "");
+            if databases.is_empty() {
+                remove(r, row)?;
+                return Ok(None);
+            }
+            let key = bytes(r, row)?
+                .map(|v| self.decrypt_json::<DatabaseGrant>(&v))
+                .transpose()?
+                .map(|v| v.key)
+                .unwrap_or_else(tako_db::generate_token);
+            let value = self.encrypt_json(&DatabaseGrant {
+                databases: databases.clone(),
+                key: key.clone(),
+            })?;
+            r.insert(row, value.as_slice()).map_err(storage)?;
+            Ok(Some(key))
+        })
     }
-
-    /// Remote grants of every app environment.
     pub(crate) fn all_database_grants(
         &self,
     ) -> Result<BTreeMap<String, DatabaseGrant>, StateStoreError> {
-        self.all_database_rows("SELECT app, encrypted_data FROM database_grants")
+        self.all_database_rows("database_grants")
     }
-
-    /// Includes committed releases that could not be started on this boot.
     pub(crate) fn all_app_databases(
         &self,
     ) -> Result<BTreeMap<String, HashMap<String, AppDatabase>>, StateStoreError> {
-        self.all_database_rows("SELECT app, encrypted_data FROM app_databases")
+        self.all_database_rows("app_databases")
     }
-
     fn all_database_rows<T: serde::de::DeserializeOwned>(
         &self,
-        sql: &str,
+        bucket: &str,
     ) -> Result<BTreeMap<String, T>, StateStoreError> {
-        let rows = {
-            let conn = self.lock_conn()?;
-            let mut statement = conn.prepare(sql)?;
-            statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        rows.into_iter()
-            .map(|(app, encrypted)| Ok((app, self.decrypt_json(&encrypted)?)))
-            .collect()
+        self.read(|r| {
+            Ok(scan(r, bucket, |id, _, value| {
+                Ok((id.to_owned(), self.decrypt_json(value)?))
+            })?
+            .into_iter()
+            .collect())
+        })
     }
 
     fn encrypt_json(&self, value: &impl Serialize) -> Result<Vec<u8>, StateStoreError> {
@@ -369,9 +262,9 @@ impl SqliteStateStore {
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, SqliteStateStore) {
+    fn store() -> (tempfile::TempDir, StateStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteStateStore::new(dir.path().join("state.db"), [3; 32]);
+        let store = StateStore::new(dir.path().join("state.db"), [3; 32]);
         store.init().unwrap();
         (dir, store)
     }
@@ -417,9 +310,8 @@ mod tests {
             .unwrap();
         assert_eq!(store.list_databases().unwrap()[0].secrets, secrets);
         let raw: Vec<u8> = store
-            .lock_conn()
+            .read(|r| super::bytes(r, ("databases", &database.name, "")))
             .unwrap()
-            .query_row("SELECT encrypted_data FROM databases", [], |row| row.get(0))
             .unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("a2V5"));
         let kv = StoredDatabase {

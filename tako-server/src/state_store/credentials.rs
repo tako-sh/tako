@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use super::StateStoreError;
-use crate::state_store::SqliteStateStore;
+use crate::state_store::StateStore;
 
-impl SqliteStateStore {
+impl StateStore {
     #[cfg(test)]
     pub fn set_secrets(
         &self,

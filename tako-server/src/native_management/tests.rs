@@ -400,8 +400,10 @@ fn deploy_clients_make_first_deploys_and_failed_state_reads_deny() {
     // CI alone can run an app: a deploy client may make the first deploy.
     assert_eq!(check(), Ok(()));
     // A failed state read never authorizes.
-    let conn = rusqlite::Connection::open(state.state_store.path()).unwrap();
-    conn.execute_batch("DROP TABLE app_databases").unwrap();
+    state
+        .state_store
+        .reject_reads
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
         check().unwrap_err(),
         "Cannot read provisioned management state"

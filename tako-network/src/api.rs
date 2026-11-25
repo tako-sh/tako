@@ -41,8 +41,6 @@ pub enum RuntimeError {
     Transport,
     #[error("invalid Corrosion response: {0}")]
     Corrosion(&'static str),
-    #[error("local runtime database error: {0}")]
-    Database(#[from] rusqlite::Error),
     #[error("local runtime journal error: {0}")]
     Journal(#[from] redb::Error),
     #[error("runtime I/O error: {0}")]

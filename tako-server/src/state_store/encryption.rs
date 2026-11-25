@@ -8,10 +8,10 @@ use super::StateStoreError;
 pub(crate) fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, StateStoreError> {
     let mut nonce = [0u8; 12];
     getrandom::fill(&mut nonce)
-        .map_err(|e| StateStoreError::Sqlite(format!("generate nonce: {e}")))?;
+        .map_err(|e| StateStoreError::Storage(format!("generate nonce: {e}")))?;
     let encrypted = Aes256Gcm::new(key.into())
         .encrypt(&Nonce::from(nonce), plaintext)
-        .map_err(|e| StateStoreError::Sqlite(format!("encrypt: {e}")))?;
+        .map_err(|e| StateStoreError::Storage(format!("encrypt: {e}")))?;
     // Keep the stored nonce || tag || ciphertext layout used by existing databases.
     let (ciphertext, tag) = encrypted.split_at(encrypted.len() - 16);
     let mut blob = Vec::with_capacity(12 + 16 + ciphertext.len());

@@ -76,7 +76,7 @@ impl ChannelTarget {
     /// The app's committed replay binding. An app none of whose deployed
     /// releases uses channels has none, and its channels are unavailable.
     pub(crate) fn for_app(
-        store: &crate::state_store::SqliteStateStore,
+        store: &crate::state_store::StateStore,
         app: &str,
     ) -> Result<Self, ChannelError> {
         let hosted = store

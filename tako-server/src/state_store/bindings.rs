@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::{SqliteStateStore, StateStoreError};
+use super::{StateStore, StateStoreError};
 
-impl SqliteStateStore {
+impl StateStore {
     pub fn get_storages(
         &self,
         app: &str,

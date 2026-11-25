@@ -150,10 +150,14 @@ async fn failed_persistence_does_not_withdraw_instances() {
     let app = app(&state, "app");
     let instance = app.allocate_instance();
     app.set_instance_state(&instance, InstanceState::Healthy);
-    rusqlite::Connection::open(state.state_store.path())
-        .unwrap()
-        .execute_batch("DROP TABLE server_drain")
-        .unwrap();
+    state
+        .state_store
+        .reject_reads
+        .store(true, Ordering::Relaxed);
+    state
+        .state_store
+        .reject_writes
+        .store(true, Ordering::Relaxed);
     let response = state.drain_server(0).await;
     assert!(!response.is_ok());
     assert!(!state.drain_flag().load(Ordering::Acquire));
@@ -706,17 +710,20 @@ async fn observer_read_error_neither_raises_the_gate_nor_restarts_applications()
     let app = app(&state, "app");
     let instance = app.allocate_instance();
     app.set_instance_state(&instance, InstanceState::Healthy);
-    let conn = rusqlite::Connection::open(state.state_store.path()).unwrap();
-    conn.execute_batch("ALTER TABLE server_drain RENAME TO server_drain_hidden")
-        .unwrap();
+    state
+        .state_store
+        .reject_reads
+        .store(true, Ordering::Relaxed);
     assert!(state.observe_drain_once().await.is_err());
     assert!(
         state.is_draining(),
         "unreadable intent fails closed per call"
     );
     assert!(!state.drain_flag().load(Ordering::Acquire));
-    conn.execute_batch("ALTER TABLE server_drain_hidden RENAME TO server_drain")
-        .unwrap();
+    state
+        .state_store
+        .reject_reads
+        .store(false, Ordering::Relaxed);
     // Before the fix the raised in-memory flag read as an unpersisted drain here,
     // and the resume path stopped and restored every instance.
     state.observe_drain_once().await.unwrap();

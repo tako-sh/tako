@@ -213,11 +213,7 @@ impl Controller {
             )?;
             config.bootstrap.clone()
         };
-        // A legacy `runtime.db` not yet imported still holds the nonce journal.
-        if marker
-            && (!directory.exists("corrosion.db")?
-                || !(directory.exists(JOURNAL)? || directory.exists(LEGACY_JOURNAL)?))
-        {
+        if marker && (!directory.exists("corrosion.db")? || !directory.exists(JOURNAL)?) {
             Self::initial_isolate(&config, &directory, &keys)?;
             return Err(AgentError::Invalid(
                 "initialized database missing; operator restore required",
@@ -281,9 +277,7 @@ impl Controller {
                 MonotonicStore::new(store, Directory::open(&root, true)?, shared.clone())
                     .with_stop(stop.clone());
             guarded.snapshot()?;
-            // First bootstrap only: never put a placeholder beside a legacy
-            // journal, which the runtime imports instead.
-            if !directory.exists(JOURNAL)? && !directory.exists(LEGACY_JOURNAL)? {
+            if !directory.exists(JOURNAL)? {
                 directory.write(JOURNAL, b"")?;
             }
             if !directory.exists("runtime.runtime-lock")? {
@@ -675,7 +669,6 @@ impl Controller {
                 Ok(_)
                     | Err(AgentError::Runtime(
                         RuntimeError::Transport
-                            | RuntimeError::Database(_)
                             | RuntimeError::Journal(_)
                             | RuntimeError::Corrosion(_)
                             | RuntimeError::Capacity(_)
@@ -900,10 +893,7 @@ fn allowed_while_unready(request: &RpcRequest) -> bool {
     matches!(request, RpcRequest::Snapshot | RpcRequest::Revoke { .. })
 }
 
-/// The runtime's redb journal and the SQLite journal it replaces, which
-/// `ServerRuntime::open` imports once.
 const JOURNAL: &str = "runtime.redb";
-const LEGACY_JOURNAL: &str = "runtime.db";
 
 fn verify_existing_databases(directory: &Directory, root: &Path) -> Result<()> {
     use std::io::Read;
@@ -915,9 +905,7 @@ fn verify_existing_databases(directory: &Directory, root: &Path) -> Result<()> {
         ));
     }
     // Refuses a journal file that is linked, foreign or not owner-only.
-    for name in [JOURNAL, LEGACY_JOURNAL] {
-        directory.exists(name)?;
-    }
+    directory.exists(JOURNAL)?;
     // Runtime::open creates an empty journal for first bootstrap; do not let
     // that recreate an erased nonce journal on a previously initialized node.
     tako_network::runtime::verify_journal(&root.join(JOURNAL)).map_err(|error| {
@@ -1404,75 +1392,6 @@ mod tests {
         assert!(verify_existing_databases(&directory, temp.path()).is_err());
         std::fs::write(temp.path().join(JOURNAL), b"not a journal").unwrap();
         assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        std::fs::remove_file(temp.path().join(JOURNAL)).unwrap();
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        // An upgraded node's legacy SQLite journal is checked before its import.
-        directory.write(LEGACY_JOURNAL, b"").unwrap();
-        let db = rusqlite::Connection::open(temp.path().join(LEGACY_JOURNAL)).unwrap();
-        db.execute_batch(
-            "CREATE TABLE runtime_identity(singleton); INSERT INTO runtime_identity VALUES (1)",
-        )
-        .unwrap();
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        db.execute_batch("CREATE TABLE consumed_nonces(nonce)")
-            .unwrap();
-        verify_existing_databases(&directory, temp.path()).unwrap();
-    }
-    #[test]
-    fn legacy_journal_verifies_before_and_after_its_import() {
-        use super::super::tests::{Fixture, MemoryStore};
-        let fixture = Fixture::new();
-        let temp = crate::isolation::fixture::private_tempdir();
-        let directory = Directory::open(temp.path(), true).unwrap();
-        directory.write("corrosion.db", b"").unwrap();
-        rusqlite::Connection::open(temp.path().join("corrosion.db"))
-            .unwrap()
-            .execute_batch("CREATE TABLE fixture(x)")
-            .unwrap();
-        let limits = RuntimeLimits::default();
-        directory.write(LEGACY_JOURNAL, b"").unwrap();
-        let db = rusqlite::Connection::open(temp.path().join(LEGACY_JOURNAL)).unwrap();
-        db.execute_batch(
-            "CREATE TABLE runtime_identity (singleton INTEGER PRIMARY KEY, network TEXT, server TEXT, last_time INTEGER, auth_window INTEGER);
-            CREATE TABLE consumed_nonces (signer TEXT, nonce TEXT, expires INTEGER, PRIMARY KEY(signer, nonce));
-            INSERT INTO consumed_nonces VALUES ('signer', 'nonce', 500);",
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO runtime_identity VALUES (1, ?1, ?2, 2, ?3)",
-            rusqlite::params![
-                serde_json::to_string(&fixture.config.network).unwrap(),
-                fixture.config.server_id.to_string(),
-                limits.auth_window_seconds as i64
-            ],
-        )
-        .unwrap();
-        drop(db);
-        verify_existing_databases(&directory, temp.path()).unwrap();
-        let snapshot = fixture.config.bootstrap.clone();
-        let runtime = ServerRuntime::open(
-            MemoryStore(Rc::new(RefCell::new(snapshot))),
-            fixture.keys,
-            RuntimeConfig {
-                network: fixture.config.network.clone(),
-                server_id: fixture.config.server_id.clone(),
-                boot_id: BootId::random().unwrap(),
-                limits,
-            },
-            &temp.path().join(JOURNAL),
-        )
-        .unwrap();
-        drop(runtime);
-        assert!(!directory.exists(LEGACY_JOURNAL).unwrap());
-        assert!(directory.exists("runtime.db.migrated").unwrap());
-        verify_existing_databases(&directory, temp.path()).unwrap();
-        assert_eq!(
-            tako_network::runtime::verify_journal(&temp.path().join(JOURNAL))
-                .unwrap()
-                .consumed_nonces,
-            1
-        );
-        // Losing the imported journal is never repaired from the migrated copy.
         std::fs::remove_file(temp.path().join(JOURNAL)).unwrap();
         assert!(verify_existing_databases(&directory, temp.path()).is_err());
     }
