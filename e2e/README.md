@@ -12,13 +12,7 @@ Requires the `tako` binary to be built first (`cargo build -p tako-cli`).
 
 Focused native-network tests live in `e2e/cli/`. Run `cargo test -p tako-cli --bin tako network::` for configuration, identity, ownership, resolver cleanup, SSH configuration, and transport unit tests.
 
-To verify the schemas against the actual Corrosion engine, use the checksum-verified executable installed by Tako:
-
-```bash
-CORROSION_BIN=/usr/local/libexec/tako/corrosion just test corrosion
-```
-
-This starts two temporary loopback agents, loads all three production schemas, and checks that independent records and conflicting operation variants survive replication. It catches Corrosion-specific schema restrictions that plain SQLite tests cannot check. It requires no root access and removes its processes and temporary state afterward.
+Run `cargo test -p tako-raft --test failover` to exercise catalog and storage replication over loopback TCP.
 
 The following scripts must run inside disposable privileged Linux containers, with the checkout mounted read-only. They reject execution outside a container. Install Python, iproute2, ping, wireguard-tools, wireguard-go, OpenSSH client/server, systemd-resolved, and D-Bus in the test image:
 
@@ -34,7 +28,7 @@ Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run`
 
 Run `mise bootstrap` to install the repository toolchain, the image codec build tools, and package dependencies. Its CMake comes from the distro; where that is older than 3.22 (Debian 11), run `sh scripts/install-image-build-deps.sh` as well. Full E2E also requires a running Docker engine with Compose support.
 
-The Docker host kernel must support WireGuard interfaces. Privileged containers cannot supply a missing kernel module; an `ip link add ... type wireguard` failure prevents native enrollment. The loopback Corrosion check and pinned HTTPS CLI integration tests can run independently of that requirement.
+The Docker host kernel must support WireGuard interfaces. Privileged containers cannot supply a missing kernel module; an `ip link add ... type wireguard` failure prevents native enrollment. The loopback Raft failover suite and pinned HTTPS CLI integration tests can run independently of that requirement.
 
 `tako-images` statically links libwebp, libavif, and dav1d, so Tako binaries need no image libraries at runtime. Building them requires CMake 3.22 or newer, Meson, Ninja, and NASM on x86; `scripts/install-image-build-deps.sh` installs them on apt-based Linux and Homebrew hosts.
 
@@ -56,7 +50,7 @@ just e2e examples/compose/bun-redis
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
 Set `E2E_PROJECT_NAME` to a unique Docker Compose project name when running multiple worktrees concurrently (default: `tako-e2e`). Prebuilt images must use that project's `<project>-runner`, `<project>-server-ubuntu`, and `<project>-server-alma` tags.
 The runner disables CLI telemetry so local and CI test runs do not send usage stats.
-The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume and enrolls both Ubuntu and AlmaLinux test hosts through `tako network server add`. It uses the mounted binaries, real Corrosion replication, and pinned HTTPS management. It never uses the developer's SSH keys.
+The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume and enrolls both Ubuntu and AlmaLinux test hosts through `tako network server add`. It uses the mounted binaries, the replicated network catalog, and pinned HTTPS management. It never uses the developer's SSH keys.
 Server containers run systemd with privileged access and private cgroup namespaces so the production service lifecycle and cgroup limits can be exercised. No host cgroup filesystem is bind-mounted. A separate disposable administrator account performs bootstrap; app checks use the production `tako` account and its restricted sudo policy.
 
 Each test host also runs its own Docker Engine for Compose releases. The executor's Docker socket is not mounted into the test hosts. `E2E_PROXY_CA` optionally supplies a CA bundle for build and runtime downloads; in managed cloud sessions it defaults to `CODEX_PROXY_CERT`. Build trust is mounted through BuildKit secrets, with certificate verification enabled.

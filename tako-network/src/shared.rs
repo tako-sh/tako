@@ -306,17 +306,6 @@ impl From<&SharedRecord> for RecordReceipt {
     }
 }
 
-/// Only used to migrate persisted state written before recipient keys were
-/// included in current records. It is not an RPC or new-write format.
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LegacyKeyGrant {
-    pub record: RequestId,
-    pub recipient: DeviceId,
-    pub issuer: DeviceId,
-    pub key: SealedValue,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharedSnapshot {
@@ -379,42 +368,6 @@ impl SharedSnapshot {
         merged.validate()?;
         *self = merged;
         Ok(())
-    }
-
-    /// Upgrade a local cache without supporting the old wire protocol.
-    pub fn from_persisted(bytes: &[u8]) -> RuntimeResult<Self> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Persisted {
-            network: NetworkId,
-            #[serde(alias = "secrets")]
-            records: Vec<SharedRecord>,
-            #[serde(default)]
-            grants: Vec<LegacyKeyGrant>,
-        }
-        let old: Persisted = serde_json::from_slice(bytes)?;
-        let mut state = Self::empty(old.network.clone());
-        state.merge(&Self {
-            network: old.network,
-            records: old.records,
-        })?;
-        for grant in old.grants {
-            state.import_grant(&grant)?;
-        }
-        state.validate()?;
-        Ok(state)
-    }
-
-    pub(crate) fn import_grant(&mut self, grant: &LegacyKeyGrant) -> RuntimeResult<bool> {
-        if let Some(record) = self
-            .records
-            .iter_mut()
-            .find(|record| record.id == grant.record)
-        {
-            record.merge_key(&grant.recipient, &grant.key)?;
-            return Ok(true);
-        }
-        Ok(false)
     }
 
     pub fn latest(&self) -> RuntimeResult<BTreeMap<RecordAddress, &SharedRecord>> {

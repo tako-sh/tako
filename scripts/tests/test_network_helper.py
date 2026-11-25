@@ -47,7 +47,7 @@ class ValidationTests(unittest.TestCase):
             ('address', '2001:4860::1/128'), ('address', 'fd00::1%eth0/128'),
             ('address', 'fd00::/48'), ('private_key', 'x\nPostUp = reboot'),
             ('private_key', base64.b64encode(bytes(32)).decode()),
-            ('listen_port', 80), ('listen_port', 1023), ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
+            ('listen_port', 80), ('listen_port', 1023), ('listen_port', True), ('listen_port', 0), ('listen_port', 65536),
             ('ssh_port', True), ('ssh_port', 0), ('ssh_port', 65536), ('ssh_port', 80),
             ('ssh_port', 9845), ('ssh_port', 9848), ('ssh_port', 9849),
             ('listen_port', '51820\n'), ('PostUp', 'reboot'), ('routes', ['::/0']),
@@ -475,23 +475,23 @@ class ReconcileTests(unittest.TestCase):
         self.assertNotIn('[Peer]', self.runner.secret)
         self.assertNotIn('tcp dport 22 accept', self.runner.policy)
 
-    def test_policy_separates_membership_ssh_and_server_gossip(self):
+    def test_policy_separates_membership_ssh_and_catalog(self):
         data = desired()
         data['peers'][0].pop('ssh_user')
         data['peers'][0].pop('ssh_public_key')
         self.apply(data)
         self.assertEqual(self.ssh, '')
         self.assertNotIn('tcp dport 22 accept', self.runner.policy)
-        self.assertNotIn('udp dport 8787 accept', self.runner.policy)
-        self.assertNotIn('tcp dport { 9847, 9848, 9849, 9850 } accept', self.runner.policy)
+        self.assertNotIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } accept', self.runner.policy)
+        self.assertNotIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } accept', self.runner.policy)
         data['peers'][0]['kind'] = 'server'
         self.apply(data)
-        self.assertIn('udp dport 8787 accept', self.runner.policy)
+        self.assertIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } accept', self.runner.policy)
         # Channel peers (9850), forwarded database requests (9847), and
         # relayed KV store connections (9848) and storage Raft peers (9849).
-        self.assertIn('tcp dport { 9847, 9848, 9849, 9850 } accept', self.runner.policy)
-        self.assertIn('udp dport 8787 drop', self.runner.policy)
-        self.assertIn('tcp dport { 9847, 9848, 9849, 9850 } drop', self.runner.policy)
+        self.assertIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } accept', self.runner.policy)
+        self.assertIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } drop', self.runner.policy)
+        self.assertIn('tcp dport { 9847, 9848, 9849, 9850, 9851 } drop', self.runner.policy)
         self.assertIn(f'iifname "{DEV}" drop', self.runner.policy)
         with patch.object(helper, 'forwarding_options', return_value=helper.LOOPBACK_FORWARDING):
             self.apply()

@@ -152,8 +152,7 @@ Joining generates fresh device keys and pulls published state through servers.
 For CI, `client add <name> --deploy app/env --identity` prints a client identity
 instead; store it as the `TAKO_CLIENT_IDENTITY` secret and `tako deploy` acts as
 that client without writing keys to the Tako home. Never copy a joined device's
-private keys; create an identity or a new invitation instead. Clients never connect to other clients and do not
-run Corrosion. Servers replicate network state.
+private keys; create an identity or a new invitation instead. Clients communicate with servers. The servers replicate network state through the Raft catalog.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored.
 Each worktree has separate secret drafts. Set/remove changes remain local until

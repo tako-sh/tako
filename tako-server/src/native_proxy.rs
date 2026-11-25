@@ -21,11 +21,11 @@ pub(crate) struct NativeProxy {
     /// owning the export would freeze what the network sees from this host.
     export_owner: Option<String>,
     export_replaced: AtomicBool,
+    ready: AtomicBool,
     invocations: parking_lot::Mutex<crate::native_invocation::ReplayGuard>,
     /// Server addresses that database routes were last resolved against.
     database_peers: parking_lot::Mutex<Option<Vec<(String, IpAddr)>>>,
     pub(crate) address: Ipv6Addr,
-    pub(crate) catalog_founder: Option<String>,
     pub(crate) gateway: Ipv4Addr,
 }
 
@@ -54,20 +54,10 @@ impl NativeProxy {
             path: config.network_dir(&state.runtime_config().data_dir),
             export_owner: (!state.runtime_config().standby).then(|| nanoid::nanoid!(32)),
             export_replaced: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             invocations: Default::default(),
             database_peers: Default::default(),
             address: config.network.id.address(&member.request.wg_public_key),
-            catalog_founder: {
-                let mut roots = config
-                    .bootstrap
-                    .members
-                    .iter()
-                    .filter(|m| m.independent_root && matches!(m.kind, MemberKind::Server(_)));
-                let first = roots.next();
-                first
-                    .filter(|_| roots.next().is_none())
-                    .map(|m| m.device_id.to_string())
-            },
             gateway: gateway.address(),
         });
         let directory = Directory::open(&service.path, true)?;
@@ -173,11 +163,19 @@ impl NativeProxy {
         Ok(service)
     }
 
+    pub(crate) fn enable_local_services(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
     fn refresh(&self, state: &ServerState, draining: bool) -> Result<(), String> {
         let now = now();
         let directory = Directory::open(&self.path, true).map_err(|error| error.to_string())?;
         if let Some(owner) = &self.export_owner {
-            let export = local_services(state.app_manager().as_ref(), draining, now);
+            let export = local_services(
+                state.app_manager().as_ref(),
+                draining || !self.ready.load(Ordering::Acquire),
+                now,
+            );
             export.validate(now).map_err(str::to_string)?;
             let bytes = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
             let published =
@@ -349,10 +347,8 @@ fn now() -> u64 {
 
 #[cfg(test)]
 impl NativeProxy {
-    pub(crate) fn loopback_storage(path: &std::path::Path, founder: String) -> Arc<Self> {
-        let mut proxy = tests::proxy(path, None);
-        proxy.catalog_founder = Some(founder);
-        Arc::new(proxy)
+    pub(crate) fn loopback_storage(path: &std::path::Path, _founder: String) -> Arc<Self> {
+        Arc::new(tests::proxy(path, None))
     }
 }
 
@@ -367,11 +363,11 @@ mod tests {
             .device_id(&network, tako_network::DeviceKind::Server)
             .unwrap();
         NativeProxy {
-            catalog_founder: None,
             directory: RwLock::new(ServiceDirectory::new(network, server, None)),
             path: path.to_path_buf(),
             export_owner: export_owner.map(str::to_string),
             export_replaced: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             invocations: Default::default(),
             database_peers: Default::default(),
             address: Ipv6Addr::LOCALHOST,

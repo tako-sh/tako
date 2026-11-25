@@ -111,11 +111,10 @@ def validate(data, ident):
     require(network_id(data['network_id']) == ident, 'network_id mismatch')
     result = dict(data, address=address(data['address']), device_id=device_id(data['device_id']),
                   private_key=key(data['private_key']), listen_port=data.get('listen_port', 51820))
-    require(type(result['listen_port']) is int and (result['listen_port'] == 443 or 1024 <= result['listen_port'] <= 65535) and
-            result['listen_port'] != 8787, 'listen_port must be 443 or 1024..65535 except reserved gossip port 8787')
+    require(type(result['listen_port']) is int and (result['listen_port'] == 443 or 1024 <= result['listen_port'] <= 65535), 'listen_port must be 443 or 1024..65535')
     result['ssh_port'] = data.get('ssh_port', 22)
     require(type(result['ssh_port']) is int and 1 <= result['ssh_port'] <= 65535 and
-            result['ssh_port'] not in (53, 80, 443, 9844, 9845, 9847, 9848, 9849, 9850), 'invalid or reserved SSH port')
+            result['ssh_port'] not in (53, 80, 443, 9844, 9845, 9847, 9848, 9849, 9850, 9851), 'invalid or reserved SSH port')
     require(isinstance(data['peers'], list) and len(data['peers']) <= 256, 'too many peers')
     prefix = ipaddress.IPv6Network(result['address'].split('/')[0] + '/48', strict=False)
     ids, addresses, keys = {result['device_id']}, {result['address']}, set()
@@ -279,12 +278,12 @@ def bridge_options(ident):
 def firewall(state):
     lines = [f'table inet {TABLE} {{', f'comment "{state["owner"]}"',
              'chain input { type filter hook input priority -10; policy accept;']
-    # Drop gossip before generic established-connection rules in the host firewall.
+    # Filter private network services before generic established-connection rules in the host firewall.
     for ident, config in state['networks'].items():
         dev = interface(ident)
         local = config['address'].split('/')[0]
         local_match = f'iifname "lo" ip6 saddr {local} ip6 daddr {local}'
-        lines.append(f'{local_match} tcp dport {{ 53, 80, 443, 9844 }} accept')
+        lines.append(f'{local_match} tcp dport {{ 53, 80, 443, 9844, 9849 }} accept')
         lines.append(f'{local_match} udp dport 53 accept')
         lines.append(f'{local_match} ct state established ct direction reply accept')
         lines.append(f'ip6 daddr {local} iifname != "{dev}" drop')
@@ -294,9 +293,7 @@ def firewall(state):
             lines.append(f'{match} meta l4proto tcp ct state established ct direction reply accept')
             lines.append(f'{match} udp sport 53 ct state established ct direction reply accept')
             if peer['kind'] == 'server':
-                lines.append(f'{match} udp dport 8787 accept')
-                lines.append(f'{match} udp sport 8787 ct state established ct direction reply accept')
-                lines.append(f'{match} tcp dport {{ 9847, 9848, 9849, 9850 }} accept')
+                lines.append(f'{match} tcp dport {{ 9847, 9848, 9849, 9850, 9851 }} accept')
             if 'ssh_public_key' in peer:
                 lines.append(f'{match} tcp dport {config.get("ssh_port", 22)} accept')
             lines.append(f'{match} tcp dport {{ 53, 80, 443, 9844 }} accept')
@@ -311,7 +308,7 @@ def firewall(state):
             lines.append(f'{match} tcp dport {{ 53, 80 }} accept')
             lines.append(f'{match} udp dport 53 accept')
             lines.append(f'iifname "{name}" drop')
-    lines.extend(['udp dport 8787 drop', 'tcp dport { 9847, 9848, 9849, 9850 } drop', '}',
+    lines.extend(['tcp dport { 9847, 9848, 9849, 9850, 9851 } drop', '}',
                   'chain forward { type filter hook forward priority -10; policy accept;'])
     for ident in state['networks']:
         lines.extend([f'iifname "{interface(ident)}" drop', f'oifname "{interface(ident)}" drop'])

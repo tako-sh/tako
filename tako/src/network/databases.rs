@@ -102,7 +102,7 @@ pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<Databa
         let record: DatabaseRecord = serde_json::from_str(value)?;
         tako_core::validate_database_name(&record.name)?;
         tako_core::validate_database_generation(&record.generation)?;
-        if record.founders.is_empty() || *address != directory_address(&record) {
+        if record.founders.is_empty() || *address != format!("live.{}", record.generation) {
             return Err(format!(
                 "Database directory entry for '{address}' has an invalid generation or founding membership."
             )
@@ -120,9 +120,6 @@ pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<Databa
 }
 
 /// The key record of a database is named after its name and generation.
-/// Two records cannot be published together, so when the same name is
-/// created twice at once, each create's key keeps its own address and the
-/// directory record that wins still finds the key that matches it.
 fn key_name(record: &DatabaseRecord) -> String {
     format!("{}.{}", record.name, record.generation)
 }
@@ -147,35 +144,6 @@ pub(crate) fn generation_key(
         .ok_or_else(|| {
             format!("The recovery key for '{name}' generation {generation} is unavailable. Use a full-access workstation that has synchronized this network.").into()
         })
-}
-
-pub(crate) fn publish_key(alias: &LocalNetwork, record: &DatabaseRecord, key: &str) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    tako_core::validate_database_generation(&record.generation)?;
-    mutate(alias, RecordKind::DatabaseKey, &key_name(record), Some(key))
-}
-
-/// Publishes a database's records: the directory record and, when given,
-/// its snapshot key.
-pub(crate) fn publish(
-    alias: &LocalNetwork,
-    record: &DatabaseRecord,
-    backup_key_base64: Option<&str>,
-) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    if let Some(key) = backup_key_base64 {
-        mutate(alias, RecordKind::DatabaseKey, &key_name(record), Some(key))?;
-    }
-    mutate(
-        alias,
-        RecordKind::Database,
-        &directory_address(record),
-        Some(&serde_json::to_string(record)?),
-    )
-}
-
-fn directory_address(record: &DatabaseRecord) -> String {
-    format!("live.{}", record.generation)
 }
 
 pub(crate) fn retire(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {

@@ -1,8 +1,8 @@
 use super::*;
 use crate::AppEnv;
 use crate::shared::{
-    LegacyKeyGrant, PUBLICATION_RETRY_SECONDS, RecordAddress, RecordMutation, RecordReceipt,
-    SharedRecord, SharedSnapshot,
+    PUBLICATION_RETRY_SECONDS, RecordAddress, RecordMutation, RecordReceipt, SharedRecord,
+    SharedSnapshot,
 };
 use sha2::{Digest, Sha256};
 
@@ -68,79 +68,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if snapshot.network != self.config.network.id {
             return Err(RuntimeError::Conflict("shared state network"));
         }
-        let mut observed = SharedSnapshot::empty(self.config.network.id.clone());
-        let mut legacy_grants = Vec::new();
-        let mut seen_ids = std::collections::BTreeSet::new();
-        {
-            let txn = self.db.begin_read()?;
-            for row in txn.open_table(SHARED_OBSERVED)?.iter()? {
-                let (key, payload) = row?;
-                let (kind, id) = key.value();
-                let payload = payload.value();
-                if payload.len() > crate::shared::MAX_SHARED_RECORD_BYTES {
-                    return Err(RuntimeError::Capacity("observed shared record"));
-                }
-                match kind {
-                    // Record rows keep the `secret` tag they were stored with,
-                    // including plaintext records.
-                    "secret" => {
-                        let record: SharedRecord = serde_json::from_str(payload)?;
-                        seen_ids.insert(record.id.clone());
-                        observed.records.push(record);
-                    }
-                    "grant" => legacy_grants.push((
-                        id.to_owned(),
-                        serde_json::from_str::<LegacyKeyGrant>(payload)?,
-                    )),
-                    _ => return Err(RuntimeError::Invalid("observed shared record kind")),
-                }
-            }
-        }
-        seen_ids.extend(snapshot.records.iter().map(|record| record.id.clone()));
-        observed.merge(&snapshot)?;
-        for (_, grant) in &legacy_grants {
-            observed.import_grant(grant)?;
-        }
-        observed.validate()?;
-        // Repair with the durable current value if replication is temporarily
-        // missing it. This cache is one record per address, not a value history.
-        let replicated: BTreeMap<_, _> = snapshot
-            .records
-            .iter()
-            .map(|record| (&record.id, record))
-            .collect();
-        for record in &observed.records {
-            if replicated.get(&record.id).copied() != Some(record) {
-                self.store.append_record(record)?;
-            }
-        }
-        // One write transaction replaces every record row.
-        let txn = write(&self.db)?;
-        {
-            let mut table = txn.open_table(SHARED_OBSERVED)?;
-            table.retain_in(("secret", "")..("secret\0", ""), |_, _| false)?;
-            for record in &observed.records {
-                let address = serde_json::to_string(&record.address)?;
-                if table
-                    .insert(
-                        ("secret", address.as_str()),
-                        serde_json::to_string(record)?.as_str(),
-                    )?
-                    .is_some()
-                {
-                    return Err(RuntimeError::Conflict("duplicate current record"));
-                }
-            }
-            for (id, grant) in &legacy_grants {
-                if seen_ids.contains(&grant.record) {
-                    table.remove(("grant", id.as_str()))?;
-                }
-            }
-        }
-        // The old protocol's commands had no retry deadline and were never
-        // imported from the SQLite journal: new clients replace them.
-        txn.commit()?;
-        Ok(observed)
+        Ok(snapshot)
     }
 
     pub(super) fn publish_record(
@@ -240,7 +168,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 .get(&record.address)
                 .is_none_or(|current| current.order() < record.order())
             {
-                return Err(RuntimeError::Corrosion("published record absent"));
+                return Err(RuntimeError::Catalog("published record absent"));
             }
             publication.pending = None;
             let txn = write(&self.db)?;

@@ -1,5 +1,3 @@
-mod store;
-
 use std::{collections::BTreeSet, net::Ipv6Addr};
 
 use serde::{Deserialize, Serialize};

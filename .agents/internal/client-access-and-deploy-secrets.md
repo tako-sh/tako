@@ -1,3 +1,5 @@
+> Historical implementation notes. The network agent now replicates server state through the Raft catalog. See [the current protocol](../../PROTOCOL.md#hosted-databases).
+
 # Client access and server-side deploy secrets
 
 Plan for simplifying network clients to two access levels, making a client name a

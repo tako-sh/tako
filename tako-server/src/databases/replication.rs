@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use tako_core::StorageOperation;
 use tako_raft::{Node, Peer, Replica, Resource};
 
-const CATALOG: &str = "catalog";
 const PORT: u16 = tako_core::STORAGE_PEER_PORT;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -82,6 +81,102 @@ impl ServerState {
                 continue;
             }
             self.open_storage_group(&id, &config).await?;
+        }
+        Ok(())
+    }
+
+    /// Capture one barrier per assigned binding. An active writer must not move
+    /// the finish line while this server is installing a snapshot.
+    pub(crate) async fn recover_assigned_storage(
+        &self,
+        proxy: &crate::native_proxy::NativeProxy,
+        local_server: &str,
+        standby: bool,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        crate::native_agent::catalog_storage(
+            &self.runtime_config().data_dir,
+            StorageOperation::CatalogStatus,
+        )
+        .await?;
+        let groups = self
+            .state_store
+            .replication_groups()
+            .map_err(|e| e.to_string())?;
+        let mut required = BTreeMap::new();
+        for bindings in self
+            .state_store
+            .all_app_databases()
+            .map_err(|e| e.to_string())?
+            .values()
+        {
+            for binding in bindings.values().map(|entry| &entry.binding) {
+                let generation = binding
+                    .generation
+                    .as_ref()
+                    .ok_or_else(|| format!("Missing generation for {}", binding.name))?;
+                let config = groups
+                    .get(generation)
+                    .ok_or_else(|| format!("Missing local replica for {}", binding.name))?;
+                if config.name.as_ref() != Some(&binding.name) {
+                    return Err(format!(
+                        "Local replica identity differs for {}",
+                        binding.name
+                    ));
+                }
+                required.insert(generation.clone(), binding.name.clone());
+            }
+        }
+        let peer = &self.databases.raft.peer;
+        let local = SocketAddr::new(
+            proxy.address.into(),
+            env_port("TAKO_STORAGE_PEER_PORT", PORT),
+        );
+        for (generation, name) in required {
+            let key = decode_backup_key(&groups[&generation].key)?;
+            let mut barrier = None;
+            loop {
+                let result = async {
+                    if barrier.is_none() {
+                        barrier = Some(if standby {
+                            peer.primary_barrier(&generation, local, key).await?
+                        } else {
+                            peer.committed_position(&generation).await?
+                        });
+                    }
+                    let progress = if standby {
+                        peer.primary_progress(&generation, local, key).await?
+                    } else {
+                        peer.local_progress(&generation)?
+                    };
+                    Ok::<_, std::io::Error>(progress)
+                }
+                .await;
+                match result {
+                    Ok(progress)
+                        if progress
+                            .applied
+                            .zip(barrier)
+                            .is_some_and(|(applied, target)| applied >= target) =>
+                    {
+                        break;
+                    }
+                    Ok(progress) => match progress.snapshot_bytes {
+                        Some((done, total)) => crate::boot::starting(&format!(
+                            "Syncing {name} · {done} / {total} bytes"
+                        )),
+                        None => crate::boot::starting(&format!(
+                            "Syncing {name} · {} bytes received",
+                            progress.received
+                        )),
+                    },
+                    Err(error) => crate::boot::starting(&format!("Syncing {name} · {error}")),
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+        if proxy.server_address(local_server) != Some(proxy.address.into()) {
+            return Err("Waiting for current network membership".into());
         }
         Ok(())
     }
@@ -243,9 +338,7 @@ impl ServerState {
             return Ok(group);
         }
         let dir = self.runtime_config().data_dir.join("raft").join(id);
-        if id != CATALOG {
-            tako_core::validate_database_generation(id)?;
-        }
+        tako_core::validate_database_generation(id)?;
         create_private_dir(&dir)?;
         let withdrawn = self.state_store.withdrawal(id).map_err(|e| e.to_string())?;
         if withdrawn == Some(true) {
@@ -406,53 +499,20 @@ impl ServerState {
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!({}))
             }
-            StorageOperation::Retirement {
-                generation,
-                targets,
-            } => {
-                let g = storage.group(CATALOG)?;
-                storage
-                    .peer
-                    .read_barrier(CATALOG)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if let Some(targets) = targets {
-                    let reply = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        g.node.client_write(tako_raft::Proposal::Retirement {
-                            generation: generation.clone(),
-                            targets,
-                        }),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| e.to_string())?;
-                    if reply.data != tako_raft::Applied::NoChange {
-                        return Err("retirement conflict".into());
-                    }
-                }
-                serde_json::to_value(
-                    g.replica
-                        .retirement(generation)
+            operation @ (StorageOperation::CatalogStatus
+            | StorageOperation::Retirement { .. }
+            | StorageOperation::RetireName { .. }
+            | StorageOperation::Claim { .. }) => {
+                #[cfg(target_os = "linux")]
+                {
+                    crate::native_agent::catalog_storage(&self.runtime_config().data_dir, operation)
                         .await
-                        .map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())
-            }
-            StorageOperation::RetireName { name, generation } => {
-                let g = storage.group(CATALOG)?;
-                let result = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    g.node
-                        .client_write(tako_raft::Proposal::RetireName { name, generation }),
-                )
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-                if result.data != tako_raft::Applied::NoChange {
-                    return Err("resource generation changed".into());
                 }
-                Ok(serde_json::json!({}))
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = operation;
+                    Err("Hosted network catalogs require Linux".into())
+                }
             }
             StorageOperation::PurgeReplica { name, generation } => {
                 let _lock = storage.opening.lock().await;
@@ -584,59 +644,6 @@ impl ServerState {
                 }
                 Ok(serde_json::json!({"key":enabled.then_some(key)}))
             }
-            StorageOperation::OpenCatalog { key } => {
-                let _opening = storage.opening.lock().await;
-                let mut configs = self
-                    .state_store
-                    .replication_groups()
-                    .map_err(|e| e.to_string())?;
-                let config = if let Some(config) = configs.remove(CATALOG) {
-                    if key.as_ref().is_some_and(|key| key != &config.key) {
-                        return Err("catalog credential mismatch".into());
-                    }
-                    config
-                } else {
-                    let founder = proxy.catalog_founder.as_deref();
-                    let is_founder = self
-                        .databases
-                        .server_id()
-                        .as_deref()
-                        .is_some_and(|id| Some(id) == founder);
-                    let secret = match key {
-                        Some(key) => {
-                            decode_backup_key(&key)?;
-                            key
-                        }
-                        None if is_founder => {
-                            let mut bytes = [0; 32];
-                            getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
-                            BASE64.encode(bytes)
-                        }
-                        None => {
-                            return Err(
-                                "the network founder must establish the catalog first".into()
-                            );
-                        }
-                    };
-                    let founders = if is_founder {
-                        self.storage_addresses(founder.into_iter().map(str::to_owned))?
-                    } else {
-                        BTreeMap::new()
-                    };
-                    let config = GroupConfig {
-                        name: None,
-                        key: secret,
-                        local,
-                        founders,
-                    };
-                    self.state_store
-                        .insert_replication_group(CATALOG, &config)
-                        .map_err(|e| e.to_string())?;
-                    config
-                };
-                self.open_storage_group(CATALOG, &config).await?;
-                Ok(serde_json::json!({"key":config.key}))
-            }
             StorageOperation::OpenReplica { claim, backup_key } => {
                 let _opening = storage.opening.lock().await;
                 tako_core::validate_database_generation(&claim.generation)?;
@@ -707,27 +714,6 @@ impl ServerState {
                         .map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())
-            }
-            StorageOperation::Claim { candidate } => {
-                let group = storage.group(CATALOG)?;
-                let result = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    group
-                        .node
-                        .client_write(tako_raft::Proposal::Claim(candidate)),
-                )
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-                match result.data {
-                    tako_raft::Applied::Claimed(claim) => {
-                        serde_json::to_value(claim).map_err(|e| e.to_string())
-                    }
-                    tako_raft::Applied::EngineConflict => {
-                        Err("name already reserved for another storage engine".into())
-                    }
-                    _ => Err("invalid storage name claim".into()),
-                }
             }
             StorageOperation::AddMembers { group, targets } => {
                 let group = storage.group(&group)?;

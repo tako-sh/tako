@@ -1245,7 +1245,7 @@ ssh_wait server-alma
 ssh-keyscan -H server-ubuntu >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 
-# Exercise real native enrollment, Corrosion replication, and pinned HTTPS.
+# Exercise real native enrollment, catalog replication, and pinned HTTPS.
 HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci network create e2e
 NETWORK_ID=$(HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --json network list | jq -r '.networks[0].id')
 ACTIVE_SERVERS=()

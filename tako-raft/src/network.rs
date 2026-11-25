@@ -34,6 +34,13 @@ use tokio::{
 
 type Node = Raft<Types, Replica>;
 type Connections = Arc<parking_lot::Mutex<HashMap<SocketAddr, Vec<TcpStream>>>>;
+type PeerKey = Arc<dyn Fn(IpAddr) -> Option<[u8; 32]> + Send + Sync>;
+fn credential(keys: &Option<PeerKey>, ip: IpAddr, group_secret: [u8; 32]) -> io::Result<[u8; 32]> {
+    match keys {
+        Some(keys) => keys(ip).ok_or_else(|| error("unknown peer")),
+        None => Ok(group_secret),
+    }
+}
 const FRAME_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -43,6 +50,7 @@ struct Group {
     secret: [u8; 32],
     received: Arc<std::sync::atomic::AtomicU64>,
     transfer: Arc<parking_lot::Mutex<Option<Arc<Transfer>>>>,
+    announcement: Arc<RwLock<Vec<u8>>>,
 }
 
 struct Transfer {
@@ -92,11 +100,21 @@ impl Group {
 /// supplies its WireGuard server directory to authenticate connections.
 #[derive(Clone, Default)]
 pub struct Peer {
+    keys: Option<PeerKey>,
     groups: Arc<RwLock<HashMap<String, Group>>>,
     connections: Connections,
 }
 
 impl Peer {
+    pub fn with_peer_keys(
+        keys: impl Fn(IpAddr) -> Option<[u8; 32]> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            keys: Some(Arc::new(keys)),
+            ..Self::default()
+        }
+    }
+
     pub async fn open(
         &self,
         generation: &str,
@@ -122,7 +140,12 @@ impl Peer {
         let raft = Node::new(
             id,
             config,
-            Network(generation.to_owned(), secret, self.connections.clone()),
+            Network(
+                generation.to_owned(),
+                secret,
+                self.connections.clone(),
+                self.keys.clone(),
+            ),
             log,
             replica.clone(),
         )
@@ -135,6 +158,7 @@ impl Peer {
                 directory: directory.to_owned(),
                 secret,
                 transfer: Default::default(),
+                announcement: Default::default(),
                 received: Default::default(),
             },
         );
@@ -162,6 +186,161 @@ impl Peer {
         Ok(barrier)
     }
 
+    /// Obtain a quorum-confirmed position even when this replica is a follower.
+    pub async fn committed_position(&self, generation: &str) -> io::Result<u64> {
+        let group = self
+            .groups
+            .read()
+            .get(generation)
+            .cloned()
+            .ok_or_else(|| error("unknown resource group"))?;
+        let target = Self::leader_address(&group)?;
+        if let Some(target) = target {
+            self.observe(generation, target, group.secret, Request::Barrier)
+                .await
+        } else {
+            self.read_barrier(generation).await
+        }
+    }
+
+    fn leader_address(group: &Group) -> io::Result<Option<SocketAddr>> {
+        Ok({
+            let metrics = group.raft.metrics();
+            let view = metrics.borrow_watched();
+            let leader = view
+                .current_leader
+                .ok_or_else(|| error("waiting for election"))?;
+            if leader == view.id {
+                None
+            } else {
+                Some(
+                    *view
+                        .membership_config
+                        .membership()
+                        .get_node(&leader)
+                        .ok_or_else(|| error("missing leader address"))?,
+                )
+            }
+        })
+    }
+
+    /// Private catalog traffic runs over the authenticated server overlay.
+    pub async fn catalog_write(&self, proposal: crate::Proposal) -> io::Result<crate::Applied> {
+        let group = self
+            .groups
+            .read()
+            .get("catalog")
+            .cloned()
+            .ok_or_else(|| error("catalog unavailable"))?;
+        let (index, result) = if let Some(target) = Self::leader_address(&group)? {
+            self.observe(
+                "catalog",
+                target,
+                group.secret,
+                Request::CatalogWrite(proposal),
+            )
+            .await?
+        } else {
+            Self::apply_catalog(&group, proposal).await?
+        };
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if group.progress().applied.is_some_and(|i| i >= index) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(error)?;
+        Ok(result)
+    }
+
+    async fn apply_catalog(
+        group: &Group,
+        proposal: crate::Proposal,
+    ) -> io::Result<(u64, crate::Applied)> {
+        if !matches!(
+            proposal,
+            crate::Proposal::PublishClaim { .. }
+                | crate::Proposal::CatalogUpdate { .. }
+                | crate::Proposal::Retirement { .. }
+                | crate::Proposal::RetireName { .. }
+        ) {
+            return Err(error("invalid catalog operation"));
+        }
+        let reply = timeout(Duration::from_secs(10), group.raft.client_write(proposal))
+            .await
+            .map_err(error)?
+            .map_err(error)?;
+        Ok((reply.log_id.index(), reply.data))
+    }
+
+    pub fn publish_announcement(&self, bytes: Vec<u8>) -> io::Result<()> {
+        if bytes.len() > 65536 {
+            return Err(error("announcement exceeds limit"));
+        }
+        let groups = self.groups.read();
+        let catalog = groups
+            .get("catalog")
+            .ok_or_else(|| error("catalog unavailable"))?;
+        *catalog.announcement.write() = bytes;
+        Ok(())
+    }
+
+    pub async fn announcement(&self, target: SocketAddr) -> io::Result<Vec<u8>> {
+        let group = self
+            .groups
+            .read()
+            .get("catalog")
+            .cloned()
+            .ok_or_else(|| error("catalog unavailable"))?;
+        self.observe("catalog", target, group.secret, Request::Announcement)
+            .await
+    }
+
+    async fn observe<T: DeserializeOwned>(
+        &self,
+        generation: &str,
+        target: SocketAddr,
+        secret: [u8; 32],
+        request: Request,
+    ) -> io::Result<T> {
+        let client = Client {
+            keys: self.keys.clone(),
+            group: generation.to_owned(),
+            target,
+            secret,
+            connections: self.connections.clone(),
+        };
+        timeout(Duration::from_secs(12), async {
+            let mut stream = client.send(&request).await?;
+            read_frame(&mut stream, 128 * 1024).await
+        })
+        .await
+        .map_err(error)?
+    }
+
+    /// A hot standby shares the primary's replica without taking its disk locks.
+    pub async fn primary_barrier(
+        &self,
+        generation: &str,
+        target: SocketAddr,
+        secret: [u8; 32],
+    ) -> io::Result<u64> {
+        self.observe(generation, target, secret, Request::RecoveryPosition)
+            .await
+    }
+    pub async fn primary_progress(
+        &self,
+        generation: &str,
+        target: SocketAddr,
+        secret: [u8; 32],
+    ) -> io::Result<Progress> {
+        self.observe(generation, target, secret, Request::Progress)
+            .await
+    }
+
     pub fn local_progress(&self, generation: &str) -> io::Result<Progress> {
         let groups = self.groups.read();
         let g = groups
@@ -177,18 +356,8 @@ impl Peer {
             .get(generation)
             .cloned()
             .ok_or_else(|| error("unknown resource group"))?;
-        let client = Client {
-            group: generation.to_owned(),
-            target,
-            secret: group.secret,
-            connections: self.connections.clone(),
-        };
-        timeout(Duration::from_secs(10), async {
-            let mut stream = client.send(&Request::Progress).await?;
-            read_frame::<Progress>(&mut stream, 1024).await
-        })
-        .await
-        .map_err(error)?
+        self.primary_progress(generation, target, group.secret)
+            .await
     }
 
     pub async fn wait_ready(
@@ -257,19 +426,42 @@ impl Peer {
         timeout(Duration::from_secs(5), stream.read_exact(&mut presented))
             .await
             .map_err(error)??;
-        if !bool::from(subtle::ConstantTimeEq::ct_eq(
-            presented.as_slice(),
-            group.secret.as_slice(),
-        )) {
-            return Err(error("invalid resource credential"));
-        }
+        let remote = stream.peer_addr()?.ip();
+        let verify_peer = || {
+            credential(&self.keys, remote, group.secret).and_then(|expected| {
+                if bool::from(subtle::ConstantTimeEq::ct_eq(
+                    presented.as_slice(),
+                    expected.as_slice(),
+                )) {
+                    Ok(())
+                } else {
+                    Err(error("peer credential changed"))
+                }
+            })
+        };
+        verify_peer()?;
         let (req, length) = timeout(
             Duration::from_secs(30),
             read_sized_frame(&mut stream, FRAME_LIMIT),
         )
         .await
         .map_err(error)??;
+        verify_peer()?;
         match req {
+            Request::CatalogWrite(proposal) if generation == "catalog" => {
+                write_frame(&mut stream, &Self::apply_catalog(&group, proposal).await?).await
+            }
+            Request::Announcement if generation == "catalog" => {
+                let bytes = group.announcement.read().clone();
+                write_frame(&mut stream, &bytes).await
+            }
+            Request::CatalogWrite(_) | Request::Announcement => Err(error("unknown catalog")),
+            Request::Barrier => {
+                write_frame(&mut stream, &self.read_barrier(&generation).await?).await
+            }
+            Request::RecoveryPosition => {
+                write_frame(&mut stream, &self.committed_position(&generation).await?).await
+            }
             Request::Progress => write_frame(&mut stream, &group.progress()).await,
             Request::Append(req) => {
                 if !req.entries.is_empty() {
@@ -322,6 +514,7 @@ impl Peer {
                         .received
                         .fetch_add(len as u64, std::sync::atomic::Ordering::Relaxed);
                 }
+                verify_peer()?;
                 dest.flush().await?;
                 let snapshot = openraft::Snapshot {
                     meta,
@@ -340,6 +533,10 @@ impl Peer {
 
 #[derive(Serialize, Deserialize)]
 enum Request {
+    CatalogWrite(crate::Proposal),
+    Announcement,
+    Barrier,
+    RecoveryPosition,
     Progress,
     Append(AppendEntriesRequest<Types>),
     Vote(VoteRequest<Types>),
@@ -382,8 +579,9 @@ async fn write_frame<T: Serialize>(stream: &mut TcpStream, value: &T) -> io::Res
     stream.write_all(&bytes).await
 }
 
-struct Network(String, [u8; 32], Connections);
+struct Network(String, [u8; 32], Connections, Option<PeerKey>);
 struct Client {
+    keys: Option<PeerKey>,
     group: String,
     target: SocketAddr,
     secret: [u8; 32],
@@ -393,6 +591,7 @@ impl RaftNetworkFactory<Types> for Network {
     type Network = Client;
     async fn new_client(&mut self, _: u128, target: &SocketAddr) -> Client {
         Client {
+            keys: self.3.clone(),
             group: self.0.clone(),
             target: *target,
             secret: self.1,
@@ -403,6 +602,7 @@ impl RaftNetworkFactory<Types> for Network {
 
 impl Client {
     async fn send(&self, req: &Request) -> io::Result<TcpStream> {
+        let secret = credential(&self.keys, self.target.ip(), self.secret)?;
         let cached = self
             .connections
             .lock()
@@ -414,7 +614,7 @@ impl Client {
         };
         stream.set_nodelay(true)?;
         write_frame(&mut stream, &self.group).await?;
-        stream.write_all(&self.secret).await?;
+        stream.write_all(&secret).await?;
         write_frame(&mut stream, req).await?;
         Ok(stream)
     }

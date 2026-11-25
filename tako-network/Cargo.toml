@@ -28,5 +28,4 @@ zeroize = { version = "1", features = ["serde"] }
 rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
-rusqlite.workspace = true
 tempfile = "=3.27.0"

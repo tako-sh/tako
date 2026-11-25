@@ -1,8 +1,7 @@
 //! Locate the elected leader and reserve immutable resource generations.
 use super::target::Home;
 use crate::network::databases::DatabaseRecord;
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use futures_util::{StreamExt, future::join_all, stream::FuturesUnordered};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tako_core::{Command, StorageClaim, StorageOperation as Op};
@@ -55,47 +54,21 @@ pub(crate) async fn discover(homes: &[Home], group: &str, app: Option<&str>) -> 
     }
 }
 
-async fn open_catalog(home: &Home, key: Option<&str>) -> Result<serde_json::Value> {
-    tokio::time::timeout(
-        Duration::from_secs(4),
-        command(
-            home,
-            Op::OpenCatalog {
-                key: key.map(str::to_owned),
-            },
-        ),
-    )
-    .await?
-}
-
 pub(crate) async fn catalog(homes: &[Home]) -> Result<Home> {
-    let replies = join_all(homes.iter().map(|home| open_catalog(home, None))).await;
-    let key=replies.iter().filter_map(|r| r.as_ref().ok()).find_map(|r| r["key"].as_str())
-        .ok_or("Cannot establish the storage catalog. The first enrollment or an existing catalog member must be reachable.")?;
-    if replies
+    let mut pending: FuturesUnordered<_> = homes
         .iter()
-        .filter_map(|r| r.as_ref().ok())
-        .any(|r| r["key"].as_str() != Some(key))
-    {
-        return Err("Servers disagree about the network storage catalog.".into());
+        .map(|home| async move {
+            command::<serde_json::Value>(home, Op::CatalogStatus)
+                .await
+                .map(|_| home.clone())
+        })
+        .collect();
+    while let Some(reply) = pending.next().await {
+        if let Ok(home) = reply {
+            return Ok(home);
+        }
     }
-    let opened = join_all(homes.iter().zip(&replies).map(|(home, reply)| async move {
-        (reply.is_ok() || open_catalog(home, Some(key)).await.is_ok()).then(|| home.clone())
-    }))
-    .await
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let home = leader(&opened, "catalog").await?;
-    command::<serde_json::Value>(
-        &home,
-        Op::AddMembers {
-            group: "catalog".into(),
-            targets: opened.iter().map(|h| h.device_id.clone()).collect(),
-        },
-    )
-    .await?;
-    Ok(home)
+    Err("Cannot reach the network catalog quorum".into())
 }
 
 pub(crate) fn claim(record: &DatabaseRecord) -> StorageClaim {
@@ -111,7 +84,6 @@ pub(crate) fn claim(record: &DatabaseRecord) -> StorageClaim {
 }
 
 pub(crate) async fn reserve(
-    network: &crate::config::LocalNetwork,
     catalog: &Home,
     targets: &[Home],
     name: &str,
@@ -137,11 +109,6 @@ pub(crate) async fn reserve(
         channel_owner: owner.0,
         workflows_owner: owner.1,
     };
-    let mut key = [0; 32];
-    getrandom::fill(&mut key)?;
-    tokio::task::block_in_place(|| {
-        crate::network::databases::publish_key(network, &record, &BASE64.encode(key))
-    })?;
     let winner: StorageClaim = command(
         catalog,
         Op::Claim {
@@ -149,9 +116,6 @@ pub(crate) async fn reserve(
         },
     )
     .await?;
-    if record.generation != winner.generation {
-        tokio::task::block_in_place(|| crate::network::databases::remove_key(network, &record))?;
-    }
     if winner.name != name
         || winner.engine != engine
         || winner.channel_owner != record.channel_owner
@@ -169,6 +133,5 @@ pub(crate) async fn reserve(
     record.generation = winner.generation;
     record.founders = winner.founders;
     record.created_at_unix_secs = winner.created_at_unix_secs;
-    tokio::task::block_in_place(|| crate::network::databases::publish(network, &record, None))?;
     Ok(record)
 }

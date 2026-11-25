@@ -86,6 +86,7 @@ async fn promote(state: Arc<ServerState>, startup_exe: Option<PathBuf>) -> Resul
         .args(arguments)
         .env(SIGNAL_PARENT_ON_READY_ENV, "1")
         .env(PROMOTION_CHILD_ENV, "1")
+        .env_remove("TAKO_STORAGE_HANDOFF")
         .spawn();
     match child {
         Ok(mut child) => {

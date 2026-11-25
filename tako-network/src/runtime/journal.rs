@@ -31,8 +31,6 @@ pub(super) const OBSERVED_RECORDS: TableDefinition<(&str, &str), &str> =
     TableDefinition::new("observed_records");
 pub(super) const REGISTRY_FAILURE: TableDefinition<(), ()> =
     TableDefinition::new("registry_failure");
-pub(super) const SHARED_OBSERVED: TableDefinition<(&str, &str), &str> =
-    TableDefinition::new("shared_observed");
 pub(super) const CONSUMED_NONCES: NoncePool = NoncePool(
     TableDefinition::new("consumed_nonces"),
     TableDefinition::new("consumed_nonce_expiry"),
@@ -293,7 +291,6 @@ fn create_tables(txn: &WriteTransaction) -> RuntimeResult<()> {
     txn.open_table(IDENTITY)?;
     txn.open_table(OBSERVED_RECORDS)?;
     txn.open_table(REGISTRY_FAILURE)?;
-    txn.open_table(SHARED_OBSERVED)?;
     for pool in [CONSUMED_NONCES, REVOCATION_NONCES] {
         txn.open_table(pool.0)?;
         txn.open_table(pool.1)?;

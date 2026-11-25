@@ -47,6 +47,12 @@ pub enum Applied {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Proposal {
     Pages(Commit),
+    CatalogUpdate {
+        shared: bool,
+        expected: u64,
+        #[serde(with = "serde_bytes")]
+        value: Vec<u8>,
+    },
     Placement(tako_core::PlacementChange),
     Retirement {
         generation: String,
@@ -60,7 +66,12 @@ pub enum Proposal {
         track: bool,
         sealed: Vec<u8>,
     },
-    Claim(Claim),
+    PublishClaim {
+        candidate: Claim,
+        expected: u64,
+        #[serde(with = "serde_bytes")]
+        shared: Vec<u8>,
+    },
     Grant {
         scope: String,
         key_hash: Option<[u8; 32]>,
@@ -78,6 +89,7 @@ pub enum Proposal {
 impl std::fmt::Display for Proposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CatalogUpdate { .. } => f.write_str("update network catalog"),
             Self::Placement(_) => f.write_str("placement"),
             Self::Retirement { generation, .. } => write!(f, "retirement {generation}"),
             Self::RetireName { name, .. } => write!(f, "retire {name}"),
@@ -85,7 +97,9 @@ impl std::fmt::Display for Proposal {
             Self::Pages(commit) => std::fmt::Display::fmt(commit, f),
             Self::BackupSettings { track: enabled, .. } => write!(f, "track backups {enabled}"),
             Self::Grant { scope, .. } => write!(f, "grant {scope}"),
-            Self::Claim(claim) => write!(f, "claim {}", claim.name),
+            Self::PublishClaim {
+                candidate: claim, ..
+            } => write!(f, "claim {}", claim.name),
         }
     }
 }
@@ -109,6 +123,30 @@ impl std::fmt::Display for Commit {
 /// voters where possible to avoid elections during an unrelated deploy.
 pub async fn reconcile(
     raft: &openraft::Raft<Types, Replica>,
+    targets: &BTreeMap<u128, std::net::SocketAddr>,
+) -> std::io::Result<()> {
+    reconcile_voters(raft, targets).await?;
+    let retired: std::collections::BTreeSet<_> = raft
+        .metrics()
+        .borrow_watched()
+        .membership_config
+        .membership()
+        .nodes()
+        .map(|(id, _)| *id)
+        .filter(|id| !targets.contains_key(id))
+        .collect();
+    if !retired.is_empty() {
+        raft.change_membership(openraft::ChangeMembers::RemoveNodes(retired), false)
+            .await
+            .map_err(disk::error)?;
+    }
+    Ok(())
+}
+
+/// Keep departing servers as learners until the catalog commits their denial.
+/// This lets the old voting majority acknowledge its own replacement.
+pub async fn reconcile_voters(
+    raft: &Node,
     targets: &BTreeMap<u128, std::net::SocketAddr>,
 ) -> std::io::Result<()> {
     use std::collections::BTreeSet;
@@ -142,17 +180,6 @@ pub async fn reconcile(
     }
     if before != voters {
         raft.change_membership(voters, true)
-            .await
-            .map_err(disk::error)?;
-    }
-    let retired: BTreeSet<_> = membership
-        .membership()
-        .nodes()
-        .map(|(id, _)| *id)
-        .filter(|id| !targets.contains_key(id))
-        .collect();
-    if !retired.is_empty() {
-        raft.change_membership(openraft::ChangeMembers::RemoveNodes(retired), false)
             .await
             .map_err(disk::error)?;
     }

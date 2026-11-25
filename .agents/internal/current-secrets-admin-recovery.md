@@ -1,3 +1,5 @@
+> Historical implementation notes. The network agent now replicates server state through the Raft catalog. See [the current protocol](../../PROTOCOL.md#hosted-databases).
+
 # Current secrets and administrator recovery
 
 Follow-up to the network shared state change. Keep Corrosion on servers and

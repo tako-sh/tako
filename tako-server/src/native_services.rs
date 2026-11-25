@@ -133,10 +133,6 @@ impl ServiceDirectory {
         }
     }
 
-    pub fn network(&self) -> &NetworkId {
-        &self.network
-    }
-
     pub fn clear(&mut self) {
         self.view = None;
     }

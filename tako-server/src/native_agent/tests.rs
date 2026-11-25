@@ -1,11 +1,11 @@
-//! Offline fixtures only: no installed helper, Corrosion, firewall or WG device.
+//! Offline fixtures only: no installed helper, firewall or WG device.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 use tako_network::{
     Ack, DeviceKind, LocalDeviceKeys, Member, MemberKind, NetworkDescriptor, NetworkId, NodeConfig,
     NodeFiles, Permissions, RegistrySnapshot, Revocation, RevocationId, ServerInfo,
     api::{RpcRequest, RuntimeResult},
-    corrosion::RegistryStore,
+    catalog::RegistryStore,
     node_config::protected::Directory,
 };
 
@@ -58,7 +58,6 @@ impl Fixture {
                 https_port: 443,
                 https_certificate_pem: None,
                 https_spki_sha256: None,
-                corrosion_ca_certificate_pem: Some(certificate()),
             }),
             permissions: rights,
             approved_by: None,
@@ -87,12 +86,7 @@ impl Fixture {
                 keys: "device-keys.json".into(),
                 https_certificate: "https-fullchain.pem".into(),
                 https_private_key: "https-key.pem".into(),
-                gossip_ca_certificate: "gossip-ca.pem".into(),
-                gossip_certificate: "gossip-fullchain.pem".into(),
-                gossip_private_key: "gossip-key.pem".into(),
-                api_token: "api-token".into(),
             },
-            corrosion_binary_sha256: "5".repeat(64),
             wireguard_listen_port: 51820,
         };
         config.validate().unwrap();
@@ -120,29 +114,6 @@ impl Fixture {
         .unwrap();
         snapshot.revocations.push(revocation);
     }
-}
-fn certificate() -> String {
-    use openssl::{
-        asn1::Asn1Time,
-        hash::MessageDigest,
-        pkey::PKey,
-        x509::{X509, X509NameBuilder},
-    };
-    let key = PKey::generate_ed25519().unwrap();
-    let mut name = X509NameBuilder::new().unwrap();
-    name.append_entry_by_text("CN", "offline fixture").unwrap();
-    let name = name.build();
-    let mut cert = X509::builder().unwrap();
-    cert.set_version(2).unwrap();
-    cert.set_subject_name(&name).unwrap();
-    cert.set_issuer_name(&name).unwrap();
-    cert.set_pubkey(&key).unwrap();
-    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
-    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
-        .unwrap();
-    cert.sign(&key, MessageDigest::null()).unwrap();
-    String::from_utf8(cert.build().to_pem().unwrap()).unwrap()
 }
 
 #[test]
@@ -231,57 +202,6 @@ fn deploy_clients_are_neither_peers_nor_shell_users() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["peers"],
         serde_json::json!([])
-    );
-}
-
-#[test]
-fn generated_corrosion_toml_uses_exact_local_api_and_mutual_tls() {
-    let fixture = Fixture::new();
-    let temp = crate::isolation::fixture::private_tempdir();
-    let root = fixture.config.network_dir(temp.path());
-    std::fs::create_dir_all(&root).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let directory = Directory::open(&root, true).unwrap();
-    let (bundle, seeds) =
-        projection::gossip(&fixture.config, &fixture.config.bootstrap, 2).unwrap();
-    assert!(seeds.is_empty()); // The other member is a laptop, never a seed/CA issuer.
-    projection::write_corrosion(
-        &fixture.config,
-        temp.path(),
-        &directory,
-        &fixture.keys,
-        &bundle,
-        &seeds,
-        "offline-fixture-token",
-    )
-    .unwrap();
-    let bytes = directory.read("corrosion.toml", 65536).unwrap();
-    let value: toml::Value = toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
-    assert_eq!(value["api"]["addr"].as_str(), Some("127.0.0.1:9834"));
-    assert_eq!(
-        value["api"]["authz"]["bearer-token"].as_str(),
-        Some("offline-fixture-token")
-    );
-    assert_eq!(value["gossip"]["plaintext"].as_bool(), Some(false));
-    assert_eq!(
-        value["gossip"]["idle_timeout_secs"].as_integer(),
-        Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
-    );
-    assert_eq!(
-        value["perf"]["max_sync_backoff"].as_integer(),
-        Some(tako_network::corrosion::MAX_SYNC_BACKOFF_SECS.into())
-    );
-    assert_eq!(value["gossip"]["tls"]["insecure"].as_bool(), Some(false));
-    assert_eq!(
-        value["gossip"]["tls"]["key_file"],
-        value["gossip"]["tls"]["client"]["key_file"]
-    );
-    assert!(
-        value["gossip"]["tls"]["cert_file"]
-            .as_str()
-            .unwrap()
-            .ends_with("gossip-fullchain.pem")
     );
 }
 
@@ -406,56 +326,6 @@ fn compacted_or_omitted_ack_progress_never_blocks_authority_reads() {
     store::preserves(&before, &after).unwrap();
     after.revocations.clear();
     assert!(store::preserves(&before, &after).is_err());
-}
-
-#[test]
-fn isolated_repair_config_uses_only_loopback_and_no_gossip_seeds() {
-    use std::os::unix::fs::PermissionsExt;
-    let fixture = Fixture::new();
-    let temp = crate::isolation::fixture::private_tempdir();
-    let root = fixture.config.network_dir(temp.path());
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let directory = Directory::open(&root, true).unwrap();
-    let MemberKind::Server(info) = &fixture.config.bootstrap.members[1].kind else {
-        unreachable!()
-    };
-    let ca = info.corrosion_ca_certificate_pem.as_ref().unwrap();
-    directory
-        .write(&fixture.config.files.gossip_ca_certificate, ca.as_bytes())
-        .unwrap();
-    projection::write_repair_corrosion(&fixture.config, temp.path(), &directory, "test-credential")
-        .unwrap();
-    let text = directory.read("corrosion.toml", 64 * 1024).unwrap();
-    let config: toml::Value = toml::from_str(std::str::from_utf8(&text).unwrap()).unwrap();
-    assert_eq!(config["api"]["addr"].as_str(), Some("127.0.0.1:9834"));
-    assert_eq!(config["gossip"]["addr"].as_str(), Some("[::1]:8787"));
-    assert_eq!(config["gossip"]["client_addr"].as_str(), Some("[::1]:0"));
-    assert!(config["gossip"]["bootstrap"].as_array().unwrap().is_empty());
-    assert_eq!(config["gossip"]["plaintext"].as_bool(), Some(false));
-    assert_eq!(
-        config["gossip"]["idle_timeout_secs"].as_integer(),
-        Some(tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS.into())
-    );
-    assert_eq!(
-        config["perf"]["max_sync_backoff"].as_integer(),
-        Some(tako_network::corrosion::MAX_SYNC_BACKOFF_SECS.into())
-    );
-    assert_eq!(config["gossip"]["tls"]["insecure"].as_bool(), Some(false));
-    assert_eq!(
-        &*directory.read("corrosion-ca.pem", 16 * 1024).unwrap(),
-        ca.as_bytes()
-    );
-    let mut denied = fixture.config.bootstrap.clone();
-    fixture.revoke(&mut denied, &fixture.config.server_id);
-    // No live gossip issuer remains. Local repair does not depend on recovering
-    // positive membership or generating a new issuer to trust.
-    assert!(projection::gossip(&fixture.config, &denied, 3).is_err());
-    let desired = projection::desired(&fixture.config, &fixture.keys, &denied, 3, true).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&desired).unwrap()["peers"],
-        serde_json::json!([])
-    );
 }
 
 #[test]
@@ -616,13 +486,13 @@ fn helper_projection_pins_custom_local_ssh_port_during_isolation() {
 }
 
 #[test]
-fn node_config_wireguard_port_accepts_udp443_and_unprivileged_except_gossip() {
+fn node_config_wireguard_port_accepts_udp443_and_unprivileged() {
     let mut config = Fixture::new().config;
     for port in [443, 1024, 8786, 8788, 51820, u16::MAX] {
         config.wireguard_listen_port = port;
         config.validate().unwrap();
     }
-    for port in [0, 22, 53, 80, 442, 444, 1023, 8787] {
+    for port in [0, 22, 53, 80, 442, 444, 1023] {
         config.wireguard_listen_port = port;
         assert!(
             config.validate().is_err(),

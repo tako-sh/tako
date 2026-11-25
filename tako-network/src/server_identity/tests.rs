@@ -52,7 +52,6 @@ fn load_preserves_identity_and_exposes_the_local_keys_path() {
     assert_eq!(loaded.request(), first.request());
     assert_eq!(loaded.server_info(), first.server_info());
     assert_eq!(loaded.tls_paths(), first.tls_paths());
-    assert_eq!(loaded.gossip_paths(), first.gossip_paths());
     assert_eq!(loaded.keys_path(), first.keys_path());
     assert_eq!(loaded.keys_path(), path.join(DEVICE_KEYS));
     let filename = Path::new(loaded.keys_path().file_name().unwrap());
@@ -147,7 +146,7 @@ fn openssl_verifies_chain_sans_and_distinct_tls_roles() {
     let identity = prepare(temp.path()).unwrap();
     let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
     let tls = identity.tls_paths();
-    let gossip = identity.gossip_paths();
+
     assert!(openssl_verify(
         tls,
         "sslserver",
@@ -164,7 +163,7 @@ fn openssl_verifies_chain_sans_and_distinct_tls_roles() {
         tls,
         "sslserver",
         "-verify_hostname",
-        &names.gossip
+        "other.tako.internal"
     ));
     assert!(!openssl_verify(
         tls,
@@ -185,25 +184,13 @@ fn openssl_verifies_chain_sans_and_distinct_tls_roles() {
             "-verify_ip",
             &ip.to_string()
         ));
-        assert!(openssl_verify(
-            gossip,
-            "sslserver",
-            "-verify_ip",
-            &ip.to_string()
-        ));
-    }
-    for hostname in [&names.hostname, &names.gossip] {
-        for purpose in ["sslclient", "sslserver"] {
-            assert!(openssl_verify(
-                gossip,
-                purpose,
-                "-verify_hostname",
-                hostname
-            ));
-        }
     }
     let mut wrong_issuer = tls.clone();
-    wrong_issuer.ca_certificate = gossip.ca_certificate.clone();
+    wrong_issuer.ca_certificate = prepare(&temp.path().join("other"))
+        .unwrap()
+        .tls_paths()
+        .ca_certificate
+        .clone();
     assert!(!openssl_verify(
         &wrong_issuer,
         "sslserver",
@@ -221,16 +208,10 @@ fn all_tls_keys_are_independent_and_match_their_certificates() {
     let mut public_keys = BTreeSet::new();
     for identity in [&first, &second] {
         let info = identity.server_info();
-        for (paths, pin) in [
-            (
-                identity.tls_paths(),
-                info.https_certificate_pem.as_ref().unwrap(),
-            ),
-            (
-                identity.gossip_paths(),
-                info.corrosion_ca_certificate_pem.as_ref().unwrap(),
-            ),
-        ] {
+        for (paths, pin) in [(
+            identity.tls_paths(),
+            info.https_certificate_pem.as_ref().unwrap(),
+        )] {
             assert_eq!(fs::read_to_string(&paths.ca_certificate).unwrap(), *pin);
             assert_eq!(X509::stack_from_pem(pin.as_bytes()).unwrap().len(), 1);
             for (cert_path, key_path) in [
@@ -289,10 +270,8 @@ fn leaf_renewal_with_the_local_ca_preserves_public_pins() {
     let temp = crate::private_tempdir();
     let identity = prepare(temp.path()).unwrap();
     let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
-    for (paths, gossip) in [
-        (identity.tls_paths(), false),
-        (identity.gossip_paths(), true),
-    ] {
+    {
+        let paths = identity.tls_paths();
         let ca_key_pem = fs::read(&paths.ca_private_key).unwrap();
         let old_leaf = fs::read(&paths.certificate).unwrap();
         // An external renewal re-signs the existing leaf key with the local
@@ -304,16 +283,7 @@ fn leaf_renewal_with_the_local_ca_preserves_public_pins() {
             openssl::pkey::PKey::private_key_from_pem(&fs::read(&paths.private_key).unwrap())
                 .unwrap();
         let now = current_time().unwrap();
-        let renewed = issue_leaf(
-            &ca,
-            &ca_key,
-            &leaf_key,
-            &names,
-            gossip,
-            now,
-            now + 364 * 86_400,
-        )
-        .unwrap();
+        let renewed = issue_leaf(&ca, &ca_key, &leaf_key, &names, now, now + 364 * 86_400).unwrap();
         let leaf_pem = renewed.to_pem().unwrap();
         assert_ne!(leaf_pem, old_leaf);
         fs::write(&paths.certificate, &leaf_pem).unwrap();
@@ -342,7 +312,7 @@ fn public_ipv6_endpoint_is_a_verified_ip_san() {
         443,
     )
     .unwrap();
-    for paths in [identity.tls_paths(), identity.gossip_paths()] {
+    for paths in [identity.tls_paths()] {
         assert!(openssl_verify(
             paths,
             "sslserver",
@@ -473,8 +443,7 @@ fn metadata_is_bounded_strict_and_bound_to_keys_and_pins() {
     let mut kind = original.clone();
     kind["request"]["kind"] = "laptop".into();
     let mut pin = original.clone();
-    pin["server_info"]["https_certificate_pem"] =
-        original["server_info"]["corrosion_ca_certificate_pem"].clone();
+    pin["server_info"]["https_certificate_pem"] = "invalid certificate".into();
     let mut endpoint = original.clone();
     endpoint["server_info"]["https_port"] = 8443.into();
     let mut cases = vec![b"{".to_vec(), vec![b' '; MAX_FILE_BYTES + 1]];
@@ -504,10 +473,6 @@ fn rejects_substituted_device_and_tls_keys() {
         (
             first.tls_paths().private_key.clone(),
             other.tls_paths().private_key.clone(),
-        ),
-        (
-            first.gossip_paths().ca_private_key.clone(),
-            other.gossip_paths().ca_private_key.clone(),
         ),
         (
             first.tls_paths().certificate.clone(),
@@ -623,11 +588,11 @@ fn concurrent_prepare_never_replaces_the_winners_identity() {
         assert_eq!(winner.server_info(), reloaded.server_info());
     }
 }
-fn materials(identity: &ServerIdentity) -> [TlsMaterial; 2] {
+fn materials(identity: &ServerIdentity) -> [TlsMaterial; 1] {
     let dir = secure::Directory::open(identity.keys_path().parent().unwrap(), false).unwrap();
-    identity
+    [identity
         .validate_at(&dir, current_time().unwrap(), LeafValidation::Current, None)
-        .unwrap()
+        .unwrap()]
 }
 
 fn assert_immutable_files(
@@ -637,12 +602,7 @@ fn assert_immutable_files(
     for (name, bytes) in before {
         if !matches!(
             name.to_str().unwrap(),
-            "https-leaf.pem"
-                | "https-fullchain.pem"
-                | "gossip-leaf.pem"
-                | "gossip-fullchain.pem"
-                | RENEWAL_JOURNAL
-                | RENEWAL_STAGE
+            "https-leaf.pem" | "https-fullchain.pem" | RENEWAL_JOURNAL | RENEWAL_STAGE
         ) {
             assert_eq!(
                 &std::fs::read(path.join(name)).unwrap(),
@@ -672,7 +632,8 @@ fn native_renewal_preserves_keys_pins_and_renews_expiring_or_expired_leaves() {
         assert_eq!(first.server_info(), renewed.server_info());
         assert_immutable_files(&original, temp.path());
         let names = certificate_names(&first.prepared.config, first.request()).unwrap();
-        for (paths, gossip) in [(renewed.tls_paths(), false), (renewed.gossip_paths(), true)] {
+        {
+            let paths = renewed.tls_paths();
             let leaf = X509::from_pem(&fs::read(&paths.certificate).unwrap()).unwrap();
             assert_eq!(timestamp(leaf.not_before()).unwrap(), now);
             assert_eq!(timestamp(leaf.not_after()).unwrap(), now + LEAF_LIFETIME);
@@ -696,7 +657,7 @@ fn native_renewal_preserves_keys_pins_and_renews_expiring_or_expired_leaves() {
                     .unwrap();
                 assert_eq!(
                     result.status.success(),
-                    gossip || purpose == "sslserver",
+                    purpose == "sslserver",
                     "{}",
                     String::from_utf8_lossy(&result.stderr)
                 );
@@ -759,7 +720,7 @@ fn renewal_caps_leaf_validity_and_refuses_expired_or_future_ca() {
         assert_eq!(snapshot(temp.path()), before);
     }
     ServerIdentity::renew_at(temp.path(), ca_end - 10 * DAY).unwrap();
-    for paths in [identity.tls_paths(), identity.gossip_paths()] {
+    for paths in [identity.tls_paths()] {
         let leaf = X509::from_pem(&std::fs::read(&paths.certificate).unwrap()).unwrap();
         let ca = X509::from_pem(&std::fs::read(&paths.ca_certificate).unwrap()).unwrap();
         assert_eq!(leaf.not_after(), ca.not_after());
@@ -774,7 +735,7 @@ fn renewal_refuses_corrupt_bindings_and_future_leaf_before_any_writes() {
     let temp = crate::private_tempdir();
     let identity = prepare(temp.path()).unwrap();
     let original = snapshot(temp.path());
-    let [tls, _] = materials(&identity);
+    let [tls] = materials(&identity);
     let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
     let now = current_time().unwrap();
     let wrong_key = new_key().unwrap();
@@ -789,22 +750,12 @@ fn renewal_refuses_corrupt_bindings_and_future_leaf_before_any_writes() {
         std::fs::write(target, &original[target.file_name().unwrap()]).unwrap();
     }
     for leaf in [
-        issue_leaf(
-            &tls.ca,
-            &wrong_key,
-            &tls.leaf_key,
-            &names,
-            false,
-            now,
-            now + DAY,
-        )
-        .unwrap(),
+        issue_leaf(&tls.ca, &wrong_key, &tls.leaf_key, &names, now, now + DAY).unwrap(),
         issue_leaf(
             &tls.ca,
             &tls.ca_key,
             &tls.leaf_key,
             &names,
-            false,
             now + DAY,
             now + LEAF_LIFETIME,
         )
@@ -893,12 +844,12 @@ fn renewal_recovers_at_every_write_and_sync_boundary_including_recovery_itself()
                 );
             }
             if boundary == 7 || boundary == 8 {
-                interrupted.push((snapshot(case.path()), if boundary == 7 { 24 } else { 17 }));
+                interrupted.push((snapshot(case.path()), if boundary == 7 { 14 } else { 7 }));
             }
         }
         assert_recovered(case.path(), now, &original, &before);
     }
-    assert_eq!(failures, 27); // journal + four certificate replacements + journal removal
+    assert_eq!(failures, 17); // journal + two certificate replacements + journal removal
     assert_eq!(interrupted.len(), 2);
     for (interrupted, expected_failures) in interrupted {
         let mut failures = 0;
@@ -963,15 +914,11 @@ fn recovery_rejects_journal_tampering_and_unrelated_disk_state_without_writes() 
                     .to_string()
                     .into()
             }
-            2 => {
-                corrupted["https"]["replacement_pem"] = journal["gossip"]["replacement_pem"].clone()
-            }
-            3 => corrupted["gossip"]["previous_pem"] = "bad PEM".into(),
+            2 => corrupted["https"]["replacement_pem"] = "bad replacement PEM".into(),
+            3 => corrupted["https"]["previous_pem"] = "bad PEM".into(),
             4 => corrupted["https"]["path"] = "../victim".into(),
             5 => std::fs::write(case.path().join("https-leaf.pem"), b"corrupt leaf").unwrap(),
-            6 => {
-                std::fs::write(case.path().join("gossip-fullchain.pem"), b"corrupt chain").unwrap()
-            }
+            6 => std::fs::write(case.path().join("https-fullchain.pem"), b"corrupt chain").unwrap(),
             7 => std::fs::write(case.path().join(RENEWAL_JOURNAL), b"{").unwrap(),
             8 => std::fs::write(
                 case.path().join(RENEWAL_JOURNAL),
@@ -1099,10 +1046,9 @@ fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
     let identity = prepare(temp.path()).unwrap();
     let tls = materials(&identity);
     let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
-    for (material, paths, gossip) in [
-        (&tls[0], identity.tls_paths(), false),
-        (&tls[1], identity.gossip_paths(), true),
-    ] {
+    {
+        let material = &tls[0];
+        let paths = identity.tls_paths();
         let original = snapshot(temp.path());
         for corruption in 0..4 {
             let mut leaf = certificate(&material.leaf_key, "malformed managed leaf", 365).unwrap();
@@ -1127,16 +1073,9 @@ fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
             if corruption != 0 {
                 let mut eku = ExtendedKeyUsage::new();
                 if corruption == 1 {
-                    if gossip {
-                        eku.server_auth();
-                    } else {
-                        eku.client_auth();
-                    }
+                    eku.client_auth();
                 } else {
                     eku.server_auth();
-                    if gossip {
-                        eku.client_auth();
-                    }
                 }
                 leaf.append_extension(eku.build().unwrap()).unwrap();
             }
@@ -1146,9 +1085,6 @@ fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
             } else {
                 &names.hostname
             });
-            if gossip {
-                san.dns(&names.gossip);
-            }
             for ip in names.ips {
                 san.ip(&ip.to_string());
             }
@@ -1173,7 +1109,7 @@ fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
             let before = snapshot(temp.path());
             assert!(
                 ServerIdentity::renew(temp.path()).is_err(),
-                "role {gossip}, corruption {corruption}"
+                "corruption {corruption}"
             );
             assert_eq!(snapshot(temp.path()), before);
         }

@@ -125,6 +125,7 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                             .start_databases_after_handoff(config.database_network.clone())
                             .await;
 
+                        config.state.serve_databases();
                         promoted = true;
                         consecutive_failures = 0;
                         tracing::info!("Promotion complete — standby now running as full server");

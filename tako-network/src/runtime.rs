@@ -12,7 +12,7 @@ mod shared;
 
 use journal::{
     CONSUMED_NONCES, IDENTITY, INVITATIONS, OBSERVED_RECORDS, PENDING_ENTITLEMENTS,
-    REGISTRY_FAILURE, REVOCATION_NONCES, SHARED_OBSERVED, SHARED_PUBLICATIONS, write,
+    REGISTRY_FAILURE, REVOCATION_NONCES, SHARED_PUBLICATIONS, write,
 };
 pub use journal::{JournalSummary, verify_journal};
 
@@ -22,7 +22,7 @@ use crate::{
     Permissions, RegistrySnapshot, RequestId, Revocation, RevocationId, ServerInfo, SshPublicKey,
     SshUser, WgChallenge, WgPublicKey,
     api::{ApproveRequest, RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
-    corrosion::{
+    catalog::{
         MAX_RECORD_BYTES, MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore, bound_projection,
         bounded_json_size,
     },
@@ -790,7 +790,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
         self.check_grant(&entitlement, &updated, now)?;
         let profile = self
             .active_profile(&entitlement, &updated, now)?
-            .ok_or(RuntimeError::Corrosion("admission absent after write"))?;
+            .ok_or(RuntimeError::Catalog("admission absent after write"))?;
         Ok(RpcResponse::Active(profile))
     }
 
@@ -1180,7 +1180,6 @@ mod tests {
                             ssh_port: 22,
                             https_port: 443,
                             https_certificate_pem: Some(certificate()),
-                            corrosion_ca_certificate_pem: None,
                             https_spki_sha256: None,
                         }),
                         permissions: admin(),

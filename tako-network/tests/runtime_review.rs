@@ -7,7 +7,7 @@ mod support;
 use std::{cell::RefCell, rc::Rc};
 use tako_network::{
     api::{RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
-    corrosion::RegistryStore,
+    catalog::RegistryStore,
     runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
     *,
 };
@@ -70,7 +70,6 @@ impl Fixture {
                         ssh_port: 22,
                         https_port: 443,
                         https_certificate_pem: Some(support::certificate_pem()),
-                        corrosion_ca_certificate_pem: None,
                         https_spki_sha256: None,
                     }),
                     permissions: support::admin(),
@@ -365,7 +364,7 @@ fn oversized_store_failure_remains_closed_after_rollback_and_reopen() {
     let mut runtime = fixture.open();
     let member = original.members[2].clone();
     fixture.store.0.borrow_mut().members =
-        vec![member; tako_network::corrosion::MAX_REGISTRY_ROWS + 1];
+        vec![member; tako_network::catalog::MAX_REGISTRY_ROWS + 1];
     assert!(matches!(
         runtime.desired_host_state(10),
         Err(RuntimeError::Capacity(_))

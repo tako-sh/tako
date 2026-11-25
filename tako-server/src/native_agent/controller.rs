@@ -1,8 +1,9 @@
+use super::catalog::Catalog;
 use super::{
     AgentCommand, AgentError, AgentRequest, AgentResponse, Result, authority,
     lifecycle::{Control, WithdrawOnDrop},
     now,
-    process::{self, DnsStatus, OwnedChild},
+    process::{self, DnsStatus},
     projection,
     services::Publisher,
     store::{MonotonicStore, preserves},
@@ -23,11 +24,10 @@ use std::{
 use tako_network::{
     BootId, DeviceKind, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot, ServerIdentity,
     api::{RpcRequest, RuntimeError},
-    corrosion::{BearerToken, CorrosionStore, MAX_REGISTRY_BYTES, RegistryStore},
+    catalog::{MAX_REGISTRY_BYTES, RegistryStore},
     node_config::protected::Directory,
     runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
 };
-use zeroize::Zeroizing;
 
 pub(super) struct Work {
     pub request: AgentCommand,
@@ -71,10 +71,13 @@ pub(super) fn worker(
             controller.refresh_services();
             if controller.ready {
                 if let Err(error) = now().and_then(|time| {
-                    controller
+                    controller.service_store.borrow_mut().begin_request()?;
+                    let result = controller
                         .runtime
                         .reconcile_record_keys(time)
-                        .map_err(Into::into)
+                        .map_err(Into::into);
+                    controller.service_store.borrow_mut().end_request();
+                    result
                 }) {
                     if let AgentError::Runtime(error) = &error {
                         controller.note_journal_error(error);
@@ -93,13 +96,34 @@ pub(super) fn worker(
                     continue;
                 }
                 // The request path is never reconstructed from the signed body.
+                let guard = controller.service_store.borrow_mut().begin_request();
+                if let Err(error) = guard {
+                    let _ = work.reply.send(controller.response(Err(error.into())));
+                    continue;
+                }
                 let response = match work.request {
                     AgentCommand::Rpc(request) => controller.handle(request),
                     AgentCommand::Recovery(request) => {
                         controller.recover_client(request.recover_client)
                     }
+                    AgentCommand::Catalog { catalog } => {
+                        let mut reply = AgentResponse::unavailable(&controller.boot);
+                        if controller.ready {
+                            match controller.service_store.borrow_mut().storage(catalog) {
+                                Ok(value) => {
+                                    reply.status = 200;
+                                    reply.ready = true;
+                                    reply.catalog = Some(value);
+                                    reply.error = None;
+                                }
+                                Err(e) => reply.error = Some(e.to_string()),
+                            }
+                        }
+                        reply
+                    }
                     AgentCommand::Secrets(request) => controller.scope_secrets(request),
                 };
+                controller.service_store.borrow_mut().end_request();
                 let _ = work.reply.send(response);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => (),
@@ -119,11 +143,7 @@ pub(super) fn worker(
     if let Err(error) = &isolation {
         tracing::error!(error = %error, "agent shutdown isolation not acknowledged");
     }
-    let child = controller.child.stop();
-    if let Err(error) = &child {
-        tracing::error!(error = %error, "agent child shutdown failed");
-    }
-    isolation.and(child)?;
+    isolation?;
     if journal_failed {
         // A failed exit makes the service manager start the agent again.
         return Err(AgentError::Invalid("runtime journal write failed"));
@@ -145,20 +165,17 @@ struct Controller {
     directory: Directory,
     keys: LocalDeviceKeys,
     // This wrapper is required: runtime performs several reads within one RPC.
-    runtime: ServerRuntime<MonotonicStore<CorrosionStore>>,
+    runtime: ServerRuntime<MonotonicStore<Catalog>>,
     known: Rc<RefCell<RegistrySnapshot>>,
-    service_store: Rc<RefCell<CorrosionStore>>,
+    service_store: Rc<RefCell<Catalog>>,
     publisher: Publisher,
-    child: OwnedChild,
-    token: Zeroizing<String>,
-    gossip_hash: [u8; 32],
     applied: ApplyCache,
     boot: BootId,
     ready: bool,
     revoked: bool,
-    repair_mode: bool,
+
     stop: Arc<AtomicBool>,
-    renewal: Renewal,
+    renewal: Instant,
     control: Control,
     /// Set once a journal write failed on disk. The worker then exits, so
     /// the agent restarts and reopens it instead of failing every request.
@@ -177,7 +194,7 @@ impl Controller {
         let directory = Directory::open(&root, true)?;
         // Recover any committed leaf journal before loading keys/certificates.
         // Renewal validates immutable keys/issuers and never changes their pins.
-        let gossip_leaf_hash = renew_identity(&config, &root, &directory)?;
+        renew_identity(&config, &root, &directory)?;
         for name in config.files.names() {
             directory.read(name, 128 * 1024)?;
         }
@@ -187,13 +204,6 @@ impl Controller {
                 "configured keys do not identify server",
             ));
         }
-        let token_bytes = directory.read(&config.files.api_token, 4096)?;
-        let token = Zeroizing::new(
-            std::str::from_utf8(&token_bytes)
-                .map_err(|_| AgentError::Invalid("invalid API credential encoding"))?
-                .to_owned(),
-        );
-        BearerToken::new(token.to_string())?;
         let marker = directory.exists("bootstrap-complete")?;
         let known = if directory.exists("known-registry.json")? {
             let known: RegistrySnapshot = serde_json::from_slice(
@@ -213,7 +223,7 @@ impl Controller {
             )?;
             config.bootstrap.clone()
         };
-        if marker && (!directory.exists("corrosion.db")? || !directory.exists(JOURNAL)?) {
+        if marker && !directory.exists(JOURNAL)? {
             Self::initial_isolate(&config, &directory, &keys)?;
             return Err(AgentError::Invalid(
                 "initialized database missing; operator restore required",
@@ -222,56 +232,13 @@ impl Controller {
         if marker {
             verify_existing_databases(&directory, &root)?;
         }
-        validate_gossip_leaf(&config, &directory, &known)?;
         let current_time = now()?;
-        // Bring up the overlay before binding gossip to its derived WG address.
-        let desired = projection::desired(&config, &keys, &known, current_time, true)?;
+        let desired = projection::recovery(&config, &keys, &known, current_time)?;
         directory.write("desired.json", &desired)?;
         process::apply(&config, &desired)?;
-        let repair_mode = !serving(&config, &known, current_time)?;
-        let (bundle, seeds) = if repair_mode {
-            projection::write_repair_corrosion(&config, &data_dir, &directory, &token)?;
-            (String::new(), Vec::new())
-        } else {
-            let (bundle, seeds) = projection::gossip(&config, &known, current_time)?;
-            projection::write_corrosion(
-                &config, &data_dir, &directory, &keys, &bundle, &seeds, &token,
-            )?;
-            (bundle, seeds)
-        };
         let publisher = Publisher::open(&config, &data_dir)?;
-        let mut child = OwnedChild::corrosion(&config, &data_dir)?;
         let startup = (|| -> Result<_> {
-            let mut store = CorrosionStore::new(
-                "http://127.0.0.1:9834",
-                BearerToken::new(token.to_string())?,
-                config.network.clone(),
-            )?;
-            // Only transport failures are retryable. An empty/malformed existing
-            // registry is not permission to bootstrap a replacement database.
-            wait_for_corrosion(
-                &stop,
-                || child.running(),
-                || {
-                    if marker {
-                        store.snapshot().map(|_| ())
-                    } else {
-                        store.initialize()
-                    }
-                },
-                Instant::now() + Duration::from_secs(30),
-            )?;
-            if !marker {
-                for member in &config.bootstrap.members {
-                    check_stop(&stop)?;
-                    store.append_member(member)?;
-                }
-                for revocation in &config.bootstrap.revocations {
-                    check_stop(&stop)?;
-                    store.append_revocation(revocation)?;
-                }
-                // Historical bootstrap ACKs are not evidence of this boot's enforcement.
-            }
+            let store = Catalog::start(&config, &known, &keys, &root, &directory, &stop)?;
             let shared = Rc::new(RefCell::new(known.clone()));
             let mut guarded =
                 MonotonicStore::new(store, Directory::open(&root, true)?, shared.clone())
@@ -317,16 +284,12 @@ impl Controller {
             known: shared,
             service_store,
             publisher,
-            child,
-            token,
-            gossip_hash: gossip_hash(&bundle, &seeds)?,
             applied: ApplyCache::default(),
             boot,
             ready: false,
-            revoked: repair_mode,
-            repair_mode,
+            revoked: false,
             stop,
-            renewal: Renewal::new(gossip_leaf_hash),
+            renewal: Instant::now() + RENEWAL_INTERVAL,
             control,
             journal_failed: std::cell::Cell::new(false),
         })
@@ -365,19 +328,23 @@ impl Controller {
                 process::apply(&self.config, bytes)
             })
     }
-    fn wait_for_registry(&mut self) -> Result<()> {
-        wait_for_corrosion(
-            &self.stop,
-            || self.child.running(),
-            || self.runtime.snapshot().map(|_| ()),
-            Instant::now() + Duration::from_secs(30),
-        )
-    }
     fn reconcile(&mut self) -> Result<()> {
         let now = now()?;
         // Runtime projection advances its durable clock floor and includes
         // local denial intent even when remote publication failed.
         let snapshot = self.runtime.desired_host_state(now)?.snapshot;
+        // A locally journaled denial may precede the catalog's voter change.
+        // Withdraw management and app routes; keep the committed server-only
+        // overlay available for the old quorum to finish the change.
+        if snapshot
+            .revocations
+            .iter()
+            .any(|r| !self.known.borrow().revocations.contains(r))
+        {
+            return Err(AgentError::Invalid(
+                "waiting for committed network revocation",
+            ));
+        }
         if !self.control.matches(&snapshot) {
             self.withdraw();
         }
@@ -386,31 +353,14 @@ impl Controller {
         if !serving(&self.config, &snapshot, now)? {
             // Empty desired state has already removed peers and SSH access.
             self.withdraw();
+            self.service_store.borrow_mut().withdraw();
             self.revoked = true;
-            self.maintain_repair()?;
+            self.isolate()?;
             return Ok(());
         }
-        let (bundle, seeds) = projection::gossip(&self.config, &snapshot, now)?;
-        let hash = gossip_hash(&bundle, &seeds)?;
-        if hash != self.gossip_hash || self.renewal.restart || !self.child.running()? {
-            self.withdraw();
-            self.child.stop()?;
-            projection::write_corrosion(
-                &self.config,
-                &self.data_dir,
-                &self.directory,
-                &self.keys,
-                &bundle,
-                &seeds,
-                &self.token,
-            )?;
-            self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
-            self.gossip_hash = hash;
-            self.renewal.restart = false;
-            // The new child must answer a validated read before readiness/ACK.
-            // Spawning it does not mean its HTTP listener is already serving.
-            self.wait_for_registry()?;
-        }
+        self.service_store
+            .borrow_mut()
+            .reconcile(&self.keys, &snapshot, now)?;
         self.runtime.acknowledge_applied(&snapshot)?;
         // ACK creates rows; reject rollback observed while writing those ACKs.
         let after = self.runtime.snapshot()?;
@@ -429,76 +379,35 @@ impl Controller {
             self.withdraw();
             return;
         }
-        // Restart a reaped child before reading the HTTP store. Never reopen the
-        // runtime, so the nonce DB lock remains held through child restarts.
         let result = (|| {
-            if Instant::now() >= self.renewal.next {
-                let root = self.config.network_dir(&self.data_dir);
-                let hash = renew_identity(&self.config, &root, &self.directory)?;
-                self.renewal.observe(hash);
+            if Instant::now() >= self.renewal {
+                renew_identity(
+                    &self.config,
+                    &self.config.network_dir(&self.data_dir),
+                    &self.directory,
+                )?;
+                self.renewal = Instant::now() + RENEWAL_INTERVAL;
             }
             if self.revoked {
-                return self.maintain_repair();
-            }
-            if !self.child.running()? {
-                self.withdraw();
-                // A forced-but-reaped stop must never restart stale CA trust.
-                let (bundle, seeds) =
-                    projection::gossip(&self.config, &self.known.borrow(), now()?)?;
-                projection::write_corrosion(
-                    &self.config,
-                    &self.data_dir,
-                    &self.directory,
-                    &self.keys,
-                    &bundle,
-                    &seeds,
-                    &self.token,
-                )?;
-                self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
-                self.gossip_hash = gossip_hash(&bundle, &seeds)?;
-                self.renewal.restart = false;
-                self.wait_for_registry()?;
+                return self.isolate();
             }
             self.reconcile()
         })();
         if let Err(error) = result {
             self.withdraw();
-            if self.stop.load(Ordering::Acquire) {
-                return;
-            }
-            tracing::warn!(error = %error, "native agent reconciliation failed closed");
-            if self.revoked {
-                if let Err(error) = self.child.stop() {
-                    tracing::error!(error = %error, "isolated repair child stop failed");
-                }
-            }
-            if let Err(error) = self.isolate() {
-                tracing::error!(error = %error, "native agent host isolation not acknowledged");
+            tracing::warn!(%error,"Network catalog reconciliation pending");
+            let result = if self.revoked {
+                self.isolate()
+            } else {
+                let peers = now().and_then(|time| {
+                    projection::recovery(&self.config, &self.keys, &self.known.borrow(), time)
+                });
+                peers.and_then(|bytes| self.apply(&bytes))
+            };
+            if let Err(error) = result {
+                tracing::error!(%error,"Network recovery projection failed")
             }
         }
-    }
-    fn maintain_repair(&mut self) -> Result<()> {
-        // A revoked latch is terminal for positive authority, including across
-        // child restarts. Keep zero peers/SSH and all admission watches withdrawn.
-        self.isolate()?;
-        if !self.repair_mode || self.renewal.restart {
-            self.child.stop()?;
-        }
-        if !self.child.running()? {
-            validate_gossip_leaf(&self.config, &self.directory, &self.known.borrow())?;
-            projection::write_repair_corrosion(
-                &self.config,
-                &self.data_dir,
-                &self.directory,
-                &self.token,
-            )?;
-            self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
-            self.repair_mode = true;
-            self.renewal.restart = false;
-        }
-        // This enables only local SQL persistence. No ACK/readiness or claim of
-        // peer dissemination follows a successful loopback child restart.
-        Ok(())
     }
     fn refresh_services(&mut self) {
         if !self.ready || self.stop.load(Ordering::Acquire) {
@@ -516,7 +425,7 @@ impl Controller {
             let leases = self.publisher.refresh(
                 &self.config,
                 &self.keys,
-                &self.service_store.borrow(),
+                &mut self.service_store.borrow_mut(),
                 &snapshot,
                 time,
             )?;
@@ -627,6 +536,7 @@ impl Controller {
             Ok(secrets) => AgentResponse {
                 status: 200,
                 response: None,
+                catalog: None,
                 secrets: Some(secrets),
                 error: None,
                 boot: self.boot.clone(),
@@ -670,7 +580,7 @@ impl Controller {
                     | Err(AgentError::Runtime(
                         RuntimeError::Transport
                             | RuntimeError::Journal(_)
-                            | RuntimeError::Corrosion(_)
+                            | RuntimeError::Catalog(_)
                             | RuntimeError::Capacity(_)
                     ))
             )
@@ -696,6 +606,7 @@ impl Controller {
             Ok(response) => AgentResponse {
                 status: 200,
                 response: Some(response),
+                catalog: None,
                 secrets: None,
                 error: None,
                 boot: self.boot.clone(),
@@ -721,6 +632,7 @@ impl Controller {
                 AgentResponse {
                     status,
                     response: None,
+                    catalog: None,
                     secrets: None,
                     error: Some(message.into()),
                     boot: self.boot.clone(),
@@ -815,42 +727,15 @@ impl ApplyCache {
 }
 
 const RENEWAL_INTERVAL: Duration = Duration::from_secs(3600);
-struct Renewal {
-    next: Instant,
-    gossip: [u8; 32],
-    restart: bool,
-}
-impl Renewal {
-    fn new(gossip: [u8; 32]) -> Self {
-        Self {
-            next: Instant::now() + RENEWAL_INTERVAL,
-            gossip,
-            restart: false,
-        }
-    }
-    fn observe(&mut self, gossip: [u8; 32]) {
-        // Keep an outstanding restart after a forced/failed stop. A later no-op
-        // renewal is not evidence that the existing child loaded the new leaf.
-        self.restart |= gossip != self.gossip;
-        self.gossip = gossip;
-        self.next = Instant::now() + RENEWAL_INTERVAL;
-    }
-}
-
-fn renew_identity(config: &NodeConfig, root: &Path, directory: &Directory) -> Result<[u8; 32]> {
+fn renew_identity(config: &NodeConfig, root: &Path, _directory: &Directory) -> Result<()> {
     let identity = ServerIdentity::renew(root)?;
     let https = identity.tls_paths();
-    let gossip = identity.gossip_paths();
     // NodeFiles stay explicit. Accept either managed leaf or fullchain references,
     // but never renew one identity while actually serving unrelated files.
     let https_file = root.join(&config.files.https_certificate);
-    let gossip_file = root.join(&config.files.gossip_certificate);
     if root.join(&config.files.keys) != identity.keys_path()
         || (https_file != https.certificate && https_file != https.fullchain)
         || root.join(&config.files.https_private_key) != https.private_key
-        || (gossip_file != gossip.certificate && gossip_file != gossip.fullchain)
-        || root.join(&config.files.gossip_private_key) != gossip.private_key
-        || root.join(&config.files.gossip_ca_certificate) != gossip.ca_certificate
     {
         return Err(AgentError::Invalid(
             "configured files differ from prepared server identity",
@@ -872,12 +757,7 @@ fn renew_identity(config: &NodeConfig, root: &Path, directory: &Directory) -> Re
             "prepared identity differs from admitted keys or pins",
         ));
     }
-    let name = gossip
-        .fullchain
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(AgentError::Invalid("invalid managed gossip fullchain path"))?;
-    Ok(Sha256::digest(&directory.read(name, 128 * 1024)?).into())
+    Ok(())
 }
 
 fn serving(config: &NodeConfig, snapshot: &RegistrySnapshot, now: u64) -> Result<bool> {
@@ -896,14 +776,6 @@ fn allowed_while_unready(request: &RpcRequest) -> bool {
 const JOURNAL: &str = "runtime.redb";
 
 fn verify_existing_databases(directory: &Directory, root: &Path) -> Result<()> {
-    use std::io::Read;
-    let mut file = directory.open_file("corrosion.db")?;
-    let mut header = [0u8; 16];
-    if file.read_exact(&mut header).is_err() || &header != b"SQLite format 3\0" {
-        return Err(AgentError::Invalid(
-            "initialized database empty or invalid; operator restore required",
-        ));
-    }
     // Refuses a journal file that is linked, foreign or not owner-only.
     directory.exists(JOURNAL)?;
     // Runtime::open creates an empty journal for first bootstrap; do not let
@@ -915,179 +787,9 @@ fn verify_existing_databases(directory: &Directory, root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_stop(stop: &AtomicBool) -> Result<()> {
-    if stop.load(Ordering::Acquire) {
-        return Err(AgentError::Invalid("agent stopping"));
-    }
-    Ok(())
-}
-
-fn wait_for_corrosion(
-    stop: &AtomicBool,
-    mut running: impl FnMut() -> Result<bool>,
-    mut read: impl FnMut() -> tako_network::api::RuntimeResult<()>,
-    deadline: Instant,
-) -> Result<()> {
-    loop {
-        check_stop(stop)?;
-        if !running()? {
-            return Err(AgentError::Invalid("Corrosion exited during startup"));
-        }
-        match read() {
-            Ok(()) => return Ok(()),
-            Err(RuntimeError::Transport) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-fn gossip_hash(bundle: &str, seeds: &[String]) -> Result<[u8; 32]> {
-    Ok(Sha256::digest(&serde_json::to_vec(&(bundle, seeds))?).into())
-}
-fn validate_gossip_leaf(
-    config: &NodeConfig,
-    directory: &Directory,
-    known: &RegistrySnapshot,
-) -> Result<()> {
-    use openssl::{pkey::PKey, x509::X509};
-    let pem = directory.read(&config.files.gossip_ca_certificate, 16 * 1024)?;
-    let member = known
-        .members
-        .iter()
-        .find(|m| m.device_id == config.server_id)
-        .ok_or(AgentError::Invalid("server not present in known records"))?;
-    let MemberKind::Server(info) = &member.kind else {
-        return Err(AgentError::Invalid("local identity is not a server"));
-    };
-    if info
-        .corrosion_ca_certificate_pem
-        .as_deref()
-        .map(str::as_bytes)
-        != Some(pem.as_slice())
-    {
-        return Err(AgentError::Invalid(
-            "prepared gossip CA differs from admitted server",
-        ));
-    }
-    let check = || -> std::result::Result<bool, openssl::error::ErrorStack> {
-        let issuer = X509::from_pem(&pem)?;
-        let leaf_pem = directory
-            .read(&config.files.gossip_certificate, 128 * 1024)
-            .map_err(|_| openssl::error::ErrorStack::get())?;
-        let leaf = X509::from_pem(&leaf_pem)?;
-        let key_pem = directory
-            .read(&config.files.gossip_private_key, 128 * 1024)
-            .map_err(|_| openssl::error::ErrorStack::get())?;
-        let key = PKey::private_key_from_pem(&key_pem)?;
-        let issuer_key = issuer.public_key()?;
-        let time = openssl::asn1::Asn1Time::days_from_now(0)?;
-        let address = config
-            .network
-            .id
-            .address(&member.request.wg_public_key)
-            .octets();
-        let san_matches = leaf.subject_alt_names().is_some_and(|names| {
-            names
-                .iter()
-                .any(|name| name.ipaddress() == Some(address.as_slice()))
-        });
-        Ok(leaf.verify(&issuer_key)?
-            && leaf.public_key()?.public_eq(&key)
-            && leaf.not_before() <= time.as_ref()
-            && leaf.not_after() > time.as_ref()
-            && issuer.not_before() <= time.as_ref()
-            && issuer.not_after() > time.as_ref()
-            && san_matches)
-    };
-    if !check().map_err(|_| AgentError::Invalid("invalid prepared gossip certificate"))? {
-        return Err(AgentError::Invalid("prepared gossip leaf/key mismatch"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn corrosion_readiness_waits_for_the_restarted_api() {
-        let stop = AtomicBool::new(false);
-        let mut reads = 0;
-        wait_for_corrosion(
-            &stop,
-            || Ok(true),
-            || {
-                reads += 1;
-                if reads == 1 {
-                    Err(RuntimeError::Transport)
-                } else {
-                    Ok(())
-                }
-            },
-            Instant::now() + Duration::from_secs(1),
-        )
-        .unwrap();
-        assert_eq!(reads, 2);
-    }
-
-    #[test]
-    fn corrosion_readiness_does_not_retry_invalid_registry_state() {
-        let stop = AtomicBool::new(false);
-        let mut reads = 0;
-        let result = wait_for_corrosion(
-            &stop,
-            || Ok(true),
-            || {
-                reads += 1;
-                Err(RuntimeError::Corrosion("known records missing"))
-            },
-            Instant::now() + Duration::from_secs(1),
-        );
-        assert!(matches!(
-            result,
-            Err(AgentError::Runtime(RuntimeError::Corrosion(_)))
-        ));
-        assert_eq!(reads, 1);
-    }
-
-    #[test]
-    fn corrosion_readiness_stops_on_deadline_shutdown_or_child_exit() {
-        let stop = AtomicBool::new(false);
-        assert!(matches!(
-            wait_for_corrosion(
-                &stop,
-                || Ok(true),
-                || Err(RuntimeError::Transport),
-                Instant::now(),
-            ),
-            Err(AgentError::Runtime(RuntimeError::Transport))
-        ));
-        let mut reads = 0;
-        let result = wait_for_corrosion(
-            &stop,
-            || Ok(true),
-            || {
-                reads += 1;
-                stop.store(true, Ordering::Release);
-                Err(RuntimeError::Transport)
-            },
-            Instant::now() + Duration::from_secs(1),
-        );
-        assert!(matches!(result, Err(AgentError::Invalid("agent stopping"))));
-        assert_eq!(reads, 1);
-        stop.store(false, Ordering::Release);
-        assert!(matches!(
-            wait_for_corrosion(
-                &stop,
-                || Ok(false),
-                || panic!("an exited child must not be queried"),
-                Instant::now() + Duration::from_secs(1),
-            ),
-            Err(AgentError::Invalid("Corrosion exited during startup"))
-        ));
-    }
 
     fn healthy_dns() -> DnsStatus {
         DnsStatus {
@@ -1280,19 +982,6 @@ mod tests {
     }
 
     #[test]
-    fn renewal_restart_requires_changed_gossip_bytes_and_survives_retry() {
-        let mut renewal = Renewal::new([1; 32]);
-        renewal.observe([1; 32]);
-        assert!(!renewal.restart);
-        renewal.observe([2; 32]);
-        assert!(renewal.restart);
-        renewal.observe([2; 32]);
-        assert!(renewal.restart); // no-op after a failed restart cannot clear it
-        renewal.restart = false;
-        renewal.observe([2; 32]);
-        assert!(!renewal.restart);
-    }
-    #[test]
     fn startup_and_periodic_renewal_validate_paths_pins_and_fullchain() {
         let fixture = super::super::tests::Fixture::new();
         let mut config = fixture.config;
@@ -1313,9 +1002,6 @@ mod tests {
         config.files.keys = name(identity.keys_path());
         config.files.https_certificate = name(&identity.tls_paths().fullchain);
         config.files.https_private_key = name(&identity.tls_paths().private_key);
-        config.files.gossip_ca_certificate = name(&identity.gossip_paths().ca_certificate);
-        config.files.gossip_certificate = name(&identity.gossip_paths().fullchain);
-        config.files.gossip_private_key = name(&identity.gossip_paths().private_key);
         config.server_id = identity
             .keys()
             .device_id(&config.network.id, DeviceKind::Server)
@@ -1327,29 +1013,29 @@ mod tests {
         config.validate().unwrap();
         let directory = Directory::open(&root, true).unwrap();
         let first = renew_identity(&config, &root, &directory).unwrap();
-        let before = std::fs::metadata(&identity.gossip_paths().fullchain)
+        let before = std::fs::metadata(&identity.tls_paths().fullchain)
             .unwrap()
             .modified()
             .unwrap();
         assert_eq!(first, renew_identity(&config, &root, &directory).unwrap());
         assert_eq!(
             before,
-            std::fs::metadata(&identity.gossip_paths().fullchain)
+            std::fs::metadata(&identity.tls_paths().fullchain)
                 .unwrap()
                 .modified()
                 .unwrap()
         );
         let mut wrong = config.clone();
-        wrong.files.gossip_certificate = "unmanaged.pem".into();
+        wrong.files.https_certificate = "unmanaged.pem".into();
         assert!(renew_identity(&wrong, &root, &directory).is_err());
         let MemberKind::Server(info) = &mut wrong.bootstrap.members[1].kind else {
             unreachable!()
         };
         info.https_port = 8443;
-        wrong.files.gossip_certificate = config.files.gossip_certificate.clone();
+        wrong.files.https_certificate = config.files.https_certificate.clone();
         assert!(renew_identity(&wrong, &root, &directory).is_err());
         directory
-            .write(&config.files.gossip_certificate, b"corrupt fullchain")
+            .write(&config.files.https_certificate, b"corrupt fullchain")
             .unwrap();
         assert!(renew_identity(&config, &root, &directory).is_err());
     }
@@ -1378,22 +1064,6 @@ mod tests {
         assert!(!allowed_while_unready(&RpcRequest::Begin {
             pending_id: tako_network::RequestId::random().unwrap()
         }));
-    }
-    #[test]
-    fn initialized_empty_database_cannot_rebootstrap() {
-        let temp = crate::isolation::fixture::private_tempdir();
-        let directory = Directory::open(temp.path(), true).unwrap();
-        directory.write("corrosion.db", b"").unwrap();
-        directory.write(JOURNAL, b"").unwrap();
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        let db = rusqlite::Connection::open(temp.path().join("corrosion.db")).unwrap();
-        db.execute_batch("CREATE TABLE fixture(x)").unwrap();
-        // The first-bootstrap placeholder is not a journal.
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        std::fs::write(temp.path().join(JOURNAL), b"not a journal").unwrap();
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
-        std::fs::remove_file(temp.path().join(JOURNAL)).unwrap();
-        assert!(verify_existing_databases(&directory, temp.path()).is_err());
     }
     #[test]
     fn helper_failure_is_not_cached_and_each_boot_applies() {

@@ -16,8 +16,7 @@ pub(crate) fn read_cache(alias: &LocalNetwork) -> Result<Option<SharedSnapshot>>
     if !path.try_exists()? {
         return Ok(None);
     }
-    let stored: serde_json::Value = super::read_json(&path)?;
-    let cache = SharedSnapshot::from_persisted(&serde_json::to_vec(&stored)?)?;
+    let cache: SharedSnapshot = super::read_json(&path)?;
     if cache.network.to_string() != alias.id {
         return Err("Network state cache belongs to another network".into());
     }

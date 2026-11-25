@@ -20,7 +20,7 @@ async fn state(dir: &Path) -> Arc<ServerState> {
         )
         .unwrap(),
     );
-    state.open_databases(None).await.unwrap();
+    state.start_databases(None).await.unwrap();
     state
 }
 

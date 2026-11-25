@@ -81,7 +81,6 @@ socket2 = "0.6"
 hickory-proto = "0.26.1"
 
 [dev-dependencies]
-rusqlite.workspace = true
 tako-db = { path = "../tako-db", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true

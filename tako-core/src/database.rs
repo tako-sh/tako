@@ -97,7 +97,7 @@ pub fn validate_database_name(name: &str) -> Result<(), String> {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum DatabaseEngine {
-    /// SQLite, served over the libSQL HTTP protocol.
+    /// Turso SQL, served over the libSQL-compatible HTTP protocol.
     #[default]
     Sqlite,
     /// A key-value store, served through the internal socket.
@@ -574,9 +574,7 @@ pub enum StorageOperation {
         scope: String,
         enabled: bool,
     },
-    OpenCatalog {
-        key: Option<String>,
-    },
+    CatalogStatus,
     Claim {
         candidate: StorageClaim,
     },
@@ -618,7 +616,7 @@ impl std::fmt::Debug for StorageOperation {
             }
             Self::RetireName { name, .. } => f.debug_tuple("RetireName").field(name).finish(),
             Self::SetGrant { scope, .. } => f.debug_tuple("SetGrant").field(scope).finish(),
-            Self::OpenCatalog { .. } => f.write_str("OpenCatalog"),
+            Self::CatalogStatus => f.write_str("CatalogStatus"),
             Self::Claim { candidate } => f.debug_tuple("Claim").field(&candidate.name).finish(),
             Self::SeedReplica { name, .. } => f.debug_tuple("SeedReplica").field(name).finish(),
             Self::Readiness { group, target, .. } => f

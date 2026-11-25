@@ -49,10 +49,6 @@ fn exchange(
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use openssl::{
-        hash::{Hasher, MessageDigest},
-        rand::rand_bytes,
-    };
     use std::{
         fs::{self, File, OpenOptions},
         os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -66,12 +62,8 @@ mod unix {
         node_config::{MAX_NODE_CONFIG_BYTES, NODE_CONFIG_FILE, protected::Directory},
     };
 
-    const TOKEN_FILE: &str = "bootstrap-api-token";
-
     pub(super) struct Host<'a> {
         pub host_key: &'a Path,
-        pub binary: &'a Path,
-        pub receipt: &'a Path,
         pub owner: u32,
     }
 
@@ -79,8 +71,6 @@ mod unix {
         pub(super) fn production() -> Self {
             Self {
                 host_key: Path::new("/etc/ssh/ssh_host_ed25519_key.pub"),
-                binary: Path::new("/usr/local/libexec/tako/corrosion"),
-                receipt: Path::new("/usr/local/libexec/tako/corrosion.sha256"),
                 owner: 0,
             }
         }
@@ -106,9 +96,7 @@ mod unix {
                 https_port,
             } => {
                 validate_ingress(data_dir)?;
-                if (wireguard_endpoint.port() < 1024 && wireguard_endpoint.port() != 443)
-                    || wireguard_endpoint.port() == 8787
-                {
+                if wireguard_endpoint.port() < 1024 && wireguard_endpoint.port() != 443 {
                     return Err("invalid WireGuard listen port".into());
                 }
                 if data.exists(NODE_CONFIG_FILE)? {
@@ -242,22 +230,12 @@ mod unix {
                 keys: filename(identity.keys_path())?,
                 https_certificate: filename(&identity.tls_paths().fullchain)?,
                 https_private_key: filename(&identity.tls_paths().private_key)?,
-                gossip_ca_certificate: filename(&identity.gossip_paths().ca_certificate)?,
-                gossip_certificate: filename(&identity.gossip_paths().fullchain)?,
-                gossip_private_key: filename(&identity.gossip_paths().private_key)?,
-                api_token: TOKEN_FILE.into(),
             },
-            corrosion_binary_sha256: verify_binary(host)?,
             wireguard_listen_port: identity.server_info().wireguard_endpoint.port(),
         };
         config.validate()?;
         let directory = Directory::open(&config.network_dir(data_dir), true)?;
-        for name in config
-            .files
-            .names()
-            .into_iter()
-            .filter(|name| *name != TOKEN_FILE)
-        {
+        for name in config.files.names().into_iter() {
             directory.open_file(name)?;
         }
         let existing = if data.exists(NODE_CONFIG_FILE)? {
@@ -290,19 +268,6 @@ mod unix {
         } else {
             false
         };
-        if directory.exists(TOKEN_FILE)? {
-            let token = directory.read(TOKEN_FILE, 64)?;
-            if token.len() != 64 || !token.iter().all(u8::is_ascii_hexdigit) {
-                return Err("invalid local Corrosion API token".into());
-            }
-        } else {
-            if existing {
-                return Err("installed network is missing its API token".into());
-            }
-            let mut random = [0u8; 32];
-            rand_bytes(&mut random)?;
-            directory.write(TOKEN_FILE, hex::encode(random).as_bytes())?;
-        }
         if !existing {
             data.write(NODE_CONFIG_FILE, &serde_json::to_vec(&config)?)?;
         }
@@ -336,45 +301,6 @@ mod unix {
         let algorithm = fields.next().ok_or("missing SSH host key algorithm")?;
         let key = fields.next().ok_or("missing SSH host public key")?;
         Ok(format!("{algorithm} {key}").parse()?)
-    }
-
-    fn verify_binary(host: &Host<'_>) -> Result<String> {
-        let mut bytes = Vec::new();
-        trusted_file(host.receipt, host.owner)?
-            .take(66)
-            .read_to_end(&mut bytes)?;
-        let receipt = std::str::from_utf8(&bytes)?
-            .strip_suffix('\n')
-            .unwrap_or(std::str::from_utf8(&bytes)?);
-        if receipt.len() != 64
-            || !receipt
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err("invalid installed Corrosion digest receipt".into());
-        }
-        let mut binary = trusted_file(host.binary, host.owner)?;
-        if binary.metadata()?.mode() & 0o111 == 0 {
-            return Err("Corrosion binary is not executable".into());
-        }
-        let mut hasher = Hasher::new(MessageDigest::sha256())?;
-        let mut buffer = [0u8; 64 * 1024];
-        let mut total = 0;
-        loop {
-            let count = binary.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            total += count as u64;
-            if total > tako_network::node_config::MAX_CORROSION_BINARY_BYTES {
-                return Err("Corrosion binary exceeds size limit".into());
-            }
-            hasher.update(&buffer[..count])?;
-        }
-        if total == 0 || hex::encode(hasher.finish()?) != receipt {
-            return Err("Corrosion executable does not match its receipt".into());
-        }
-        Ok(receipt.to_owned())
     }
 
     fn trusted_file(path: &Path, owner: u32) -> Result<File> {

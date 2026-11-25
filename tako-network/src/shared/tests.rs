@@ -320,9 +320,8 @@ fn overwrites_do_not_consume_lifetime_capacity_and_backup_key_ids_stay_distinct(
 }
 
 #[test]
-fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_values() {
+fn concurrent_recipient_wraps_merge() {
     let (mut registry, keys, admin) = bootstrap();
-    let old = record(&registry, &admin, "TOKEN", 1, Some(b"obsolete"));
     let current = record(&registry, &admin, "TOKEN", 2, Some(b"current"));
     let mut initial = SharedSnapshot::empty(registry.network.id.clone());
     initial.append_record(&current).unwrap();
@@ -353,79 +352,6 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
             .unwrap()
             .unwrap(),
         b"current"
-    );
-    let legacy = serde_json::json!({
-        "network": registry.network.id, "secrets": [old, current],
-        "grants": [{"record": a.id, "recipient": recipient, "issuer": admin, "key": a.keys[&recipient]}]
-    });
-    let migrated = SharedSnapshot::from_persisted(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated.records.len(), 1);
-    assert_eq!(
-        &*migrated.records[0]
-            .open(&migrated, &client, &recipient)
-            .unwrap()
-            .unwrap(),
-        b"current"
-    );
-    assert!(
-        !serde_json::to_value(&migrated)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("grants")
-    );
-}
-
-#[test]
-fn legacy_grants_can_fill_the_shared_budget_without_losing_recipient_keys() {
-    let (registry, admin_keys, admin) = bootstrap();
-    let current = record(&registry, &admin, "TOKEN", 1, Some(b"retained"));
-    let initial = SharedSnapshot {
-        network: registry.network.id.clone(),
-        records: vec![current.clone()],
-    };
-    let content_key = current.content_key(&initial, &admin_keys, &admin).unwrap();
-    let mut recipients = Vec::new();
-    let mut grants = Vec::new();
-    for _ in 0..800 {
-        let keys = LocalDeviceKeys::generate().unwrap();
-        let id = keys
-            .device_id(&registry.network.id, DeviceKind::Laptop)
-            .unwrap();
-        let key = SealedValue::seal(
-            &keys.encryption_public_key().unwrap(),
-            content_key.as_slice(),
-            &current.key_context(&registry.network.id, &id).unwrap(),
-        )
-        .unwrap();
-        grants.push(serde_json::json!({
-            "record": current.id, "recipient": id, "issuer": admin, "key": key,
-        }));
-        recipients.push((id, keys));
-    }
-    let legacy = serde_json::to_vec(&serde_json::json!({
-        "network": registry.network.id, "secrets": [current], "grants": grants,
-    }))
-    .unwrap();
-    assert!(legacy.len() < MAX_SHARED_BYTES);
-    let migrated = SharedSnapshot::from_persisted(&legacy).unwrap();
-    assert_eq!(migrated.records.len(), 1);
-    assert_eq!(migrated.records[0].keys.len(), 801);
-    assert!(serde_json::to_vec(&migrated.records[0]).unwrap().len() > 128 * 1024);
-    recipients.push((admin, admin_keys));
-    for (id, keys) in &recipients {
-        assert_eq!(
-            &*migrated.records[0]
-                .open(&migrated, keys, id)
-                .unwrap()
-                .unwrap(),
-            b"retained"
-        );
-    }
-    let persisted = serde_json::to_vec(&migrated).unwrap();
-    assert_eq!(
-        SharedSnapshot::from_persisted(&persisted).unwrap(),
-        migrated
     );
 }
 

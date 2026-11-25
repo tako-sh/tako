@@ -1,7 +1,7 @@
 //! Databases hosted by this server, and the database bindings of its apps.
 //!
 //! Each database is a file under `<data_dir>/databases/<id>/`, owned by the
-//! server process: a SQLite database served over the libSQL HTTP protocol on
+//! server process: a Turso database served over the libSQL HTTP protocol on
 //! a loopback port, or a KV store (redb) served through the internal socket,
 //! both with the app's binding token. Apps on other servers of the network
 //! reach it through their own server, which forwards requests to this
@@ -699,7 +699,6 @@ impl ServerState {
             databases.opened.store(false, Ordering::Release);
             return Err(error);
         }
-        self.spawn_database_app_listener();
         Ok(())
     }
 
@@ -728,23 +727,16 @@ impl ServerState {
         self: &Arc<Self>,
         native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
     ) {
-        if let Err(error) = self.start_databases(native.clone()).await {
-            tracing::warn!(%error,"Hosted storage is waiting to acquire its persistent state");
-            let state = Arc::downgrade(self);
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    let Some(state) = state.upgrade() else { return };
-                    match state.start_databases(native.clone()).await {
-                        Ok(()) => return,
-                        Err(error) => tracing::debug!(%error,"Retrying hosted storage startup"),
-                    }
-                }
-            });
+        loop {
+            match self.prepare_databases(native.clone()).await {
+                Ok(()) => return,
+                Err(error) => crate::boot::starting(&format!("Opening hosted storage · {error}")),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
 
-    pub(crate) async fn start_databases(
+    pub(crate) async fn prepare_databases(
         self: &Arc<Self>,
         native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
     ) -> Result<(), String> {
@@ -763,6 +755,14 @@ impl ServerState {
             databases.started.store(false, Ordering::Release);
             return Err(error);
         }
+        Ok(())
+    }
+
+    /// Open request listeners and start background storage jobs after every
+    /// binding has reached its recovery position.
+    pub(crate) fn serve_databases(self: &Arc<Self>) {
+        let databases = &self.databases;
+        self.spawn_database_app_listener();
         self.refresh_database_routes();
         match self.state_store.all_database_grants() {
             Ok(grants) => {
@@ -779,6 +779,15 @@ impl ServerState {
         databases.tasks.lock().push(scheduler.abort_handle());
         let kv_snapshots = snapshots::spawn_scheduler(self.clone());
         databases.tasks.lock().push(kv_snapshots.abort_handle());
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn start_databases(
+        self: &Arc<Self>,
+        native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
+    ) -> Result<(), String> {
+        self.prepare_databases(native).await?;
+        self.serve_databases();
         Ok(())
     }
 

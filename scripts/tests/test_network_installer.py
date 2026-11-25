@@ -16,7 +16,7 @@ IS_ENABLED = SOURCE[SOURCE.index('is_enabled() {'):SOURCE.index('vpn_functions()
 
 class NativeInstallerTests(unittest.TestCase):
     def install(self, *, provider='native', source=True, digest=True, packaged=None, download=False,
-                manager='none', restart='0', prepared=False, legacy=False, agent_fails=False):
+                manager='none', restart='0', prepared=False, agent_fails=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -31,8 +31,6 @@ class NativeInstallerTests(unittest.TestCase):
             (root / 'extract/scripts/tako-network-helper.py').write_bytes(packaged)
         if prepared:
             (root / 'opt/tako/native-network.json').write_text('{}\n')
-        if legacy:
-            (root / 'etc/systemd/system/tako-corrosion.service').write_text('old placeholder\n')
         script = NATIVE
         # Relocate privileged paths; command fakes never alter this machine's services.
         for prefix in ('/usr/local/', '/etc/', '/var/lib/', '/opt/tako/'):
@@ -42,7 +40,6 @@ class NativeInstallerTests(unittest.TestCase):
         result = subprocess.run(['sh', '-eu'], input=IS_ENABLED + '''
 need_cmd() { case "$1" in apt-get|wg|ip|nft|python3) return 0;; *) return 1;; esac; }
 install_pkgs() { printf 'packages %s\\n' "$*"; }
-install_native_corrosion() { printf 'install verified corrosion\\n'; }
 download_file() { [ "$TEST_DOWNLOAD" = 1 ] || return 1; cp "$TEST_HELPER" "$2"; }
 chown() { :; }
 python3() { cat >/dev/null; }
@@ -73,13 +70,11 @@ fake_sshd() {
         root, result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('packages wireguard-tools iproute2 nftables python3 openssh-server', result.stdout)
-        self.assertIn('install verified corrosion', result.stdout)
         self.assertEqual((root / 'usr/local/libexec/tako/tako-network-helper.py').read_text(), '# local helper fixture\n')
         unit = (root / 'etc/systemd/system/tako-network@.service').read_text()
         self.assertIn('%i isolate', unit)
         self.assertNotIn('ExecStop', unit)
         self.assertNotIn('PartOf=tako-server', unit)
-        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
         command = (root / 'usr/local/libexec/tako/network-authorized-keys').read_text()
         self.assertIn("sys.argv[1:] != ['tako']", command)
         self.assertIn("network.read_file(fd, 'authorized_keys', private=False)", command)
@@ -124,19 +119,10 @@ fake_sshd() {
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('OK native network agent installed', result.stdout)
 
-    def test_old_placeholder_is_disabled_and_removed(self):
-        root, result = self.install(manager='systemd', legacy=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
-        calls = (root / 'systemctl.log').read_text().splitlines()
-        self.assertIn('disable --now tako-corrosion.service', calls)
-        self.assertLess(calls.index('disable --now tako-corrosion.service'), calls.index('daemon-reload'))
-
     def test_image_bootstrap_writes_agent_without_activation(self):
-        root, result = self.install(manager='none', prepared=True, legacy=True)
+        root, result = self.install(manager='none', prepared=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((root / 'etc/systemd/system/tako-network-agent.service').exists())
-        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
         self.assertFalse((root / 'systemctl.log').exists())
 
     @unittest.skipUnless(shutil.which('systemd-analyze'), 'systemd-analyze is unavailable')
@@ -185,7 +171,6 @@ fake_sshd() {
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('only native Tako networking', result.stderr)
             self.assertNotIn('packages', result.stdout)
-            self.assertNotIn('install verified corrosion', result.stdout)
             self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())
             self.assertFalse((root / 'etc/systemd/system/tako-network-agent.service').exists())
             self.assertFalse((root / 'systemctl.log').exists())

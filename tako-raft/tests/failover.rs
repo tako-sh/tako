@@ -218,11 +218,10 @@ async fn cluster() {
     let (local, _) = first.db.1.checkout(&first.dir).await.unwrap();
     tako_db::materialize_recovery_image(local.path()).unwrap();
     assert_eq!(
-        rusqlite::Connection::open(local.path())
-            .unwrap()
-            .query_row("SELECT count(*) FROM orders", [], |r| r.get::<_, i32>(0))
+        tako_db::testing::TestSql::open(local.path())
+            .integers("SELECT count(*) FROM orders", &[])
             .unwrap(),
-        2
+        [2]
     );
     first.stop().await;
     second.stop().await;
@@ -545,7 +544,7 @@ async fn hosted_trial(first: &Server, replicated: bool, remote_app: bool, mode: 
 async fn concurrent_first_deploys_reuse_the_winning_bootstrap() {
     let dir = tempfile::tempdir().unwrap();
     let node = server(1, dir.path(), "127.0.0.1:0".parse().unwrap()).await;
-    let (catalog, _) = node
+    let (catalog, replica) = node
         .peer
         .open(
             "catalog",
@@ -574,23 +573,29 @@ async fn concurrent_first_deploys_reuse_the_winning_bootstrap() {
         workflows_owner: None,
         founders: [digit.repeat(64)].into_iter().collect(),
     };
+    let publish = |candidate: tako_raft::Claim| tako_raft::Proposal::PublishClaim {
+        shared: candidate.generation.as_bytes().to_vec(),
+        candidate,
+        expected: 0,
+    };
     let (a, b) = tokio::join!(
-        catalog.client_write(tako_raft::Proposal::Claim(candidate("a"))),
-        catalog.client_write(tako_raft::Proposal::Claim(candidate("b")))
+        node.peer.catalog_write(publish(candidate("a"))),
+        node.peer.catalog_write(publish(candidate("b")))
     );
-    let winner = a.unwrap().data;
-    assert_eq!(winner, b.unwrap().data);
-    assert!(matches!(winner, tako_raft::Applied::Claimed(_)));
+    let winner = a.unwrap();
+    assert_eq!(winner, b.unwrap());
+    let tako_raft::Applied::Claimed(winner) = winner else {
+        panic!("no winner");
+    };
+    let publication = replica.catalog_document(true).await.unwrap();
+    assert_eq!(publication, (1, winner.generation.as_bytes().to_vec()));
     let mut collision = candidate("c");
     collision.engine = tako_core::DatabaseEngine::Kv;
     assert_eq!(
-        catalog
-            .client_write(tako_raft::Proposal::Claim(collision))
-            .await
-            .unwrap()
-            .data,
+        catalog.client_write(publish(collision)).await.unwrap().data,
         tako_raft::Applied::EngineConflict
     );
+    assert_eq!(replica.catalog_document(true).await.unwrap(), publication);
     node.peer.close("catalog").await.unwrap();
     node.stop().await;
 }
@@ -757,4 +762,138 @@ async fn follower_read_only_kv(leader: &Server, follower: &Server) {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_recovers_after_founder_loss_and_demotes_before_removal() {
+    async fn run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut replicas = Vec::new();
+        for id in 1..=3 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = Peer::with_peer_keys(|ip| ip.is_loopback().then_some([37; 32]));
+            let config = Config {
+                heartbeat_interval: 50,
+                election_timeout_min: 220,
+                election_timeout_max: 450,
+                ..Default::default()
+            };
+            let (node, replica) = peer
+                .open(
+                    "catalog",
+                    [0; 32],
+                    id,
+                    &dir.path().join(id.to_string()),
+                    config,
+                )
+                .await
+                .unwrap();
+            let server = peer.clone();
+            let task =
+                tokio::spawn(async move { server.serve(listener, |ip| ip.is_loopback()).await });
+            replicas.push((peer, node, replica, address, task));
+        }
+        let (peer, leader, _, addr, _) = &replicas[0];
+        leader
+            .initialize(BTreeMap::from([(1, *addr)]))
+            .await
+            .unwrap();
+        leader
+            .wait(Some(Duration::from_secs(4)))
+            .current_leader(1, "founder")
+            .await
+            .unwrap();
+        let members = replicas
+            .iter()
+            .zip(1..)
+            .map(|(replica, id)| (id, replica.3))
+            .collect();
+        tako_raft::reconcile(leader, &members).await.unwrap();
+        peer.wait_ready("catalog", replicas[1].3, |_| {})
+            .await
+            .unwrap();
+        let update = |expected, bytes: &[u8]| tako_raft::Proposal::CatalogUpdate {
+            shared: false,
+            expected,
+            value: bytes.to_vec(),
+        };
+        assert_eq!(
+            replicas[1]
+                .0
+                .catalog_write(update(0, b"first"))
+                .await
+                .unwrap(),
+            tako_raft::Applied::Committed(1)
+        );
+        assert_eq!(
+            replicas[1].2.catalog_document(false).await.unwrap(),
+            (1, b"first".to_vec())
+        );
+        // An enrolled overlay IP still needs its catalog credential.
+        let untrusted = Peer::with_peer_keys(|_| Some([38; 32]));
+        untrusted
+            .open(
+                "catalog",
+                [0; 32],
+                4,
+                &dir.path().join("unauthorized"),
+                Config::default(),
+            )
+            .await
+            .unwrap();
+        assert!(untrusted.announcement(*addr).await.is_err());
+        untrusted.close("catalog").await.unwrap();
+        replicas[0].4.abort();
+        replicas[0].0.close("catalog").await.unwrap();
+        let id = await_leader(&replicas[1].1).await;
+        let live = &replicas[id as usize - 1];
+        assert_eq!(
+            live.0
+                .catalog_write(update(1, b"after election"))
+                .await
+                .unwrap(),
+            tako_raft::Applied::Committed(2)
+        );
+        let mut survivors = members;
+        survivors.remove(&1);
+        tako_raft::reconcile(&live.1, &survivors).await.unwrap();
+        // Two voting nodes must both acknowledge their transition to one.
+        let other = if id == 2 { 3 } else { 2 };
+        let retiring = &replicas[other - 1];
+        survivors.remove(&(other as u128));
+        tako_raft::reconcile_voters(&live.1, &survivors)
+            .await
+            .unwrap();
+        assert!(
+            live.1
+                .metrics()
+                .borrow_watched()
+                .membership_config
+                .membership()
+                .get_node(&(other as u128))
+                .is_some()
+        );
+        assert_eq!(
+            live.0.catalog_write(update(2, b"revoked")).await.unwrap(),
+            tako_raft::Applied::Committed(3)
+        );
+        live.0
+            .wait_ready("catalog", retiring.3, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            retiring.2.catalog_document(false).await.unwrap(),
+            (3, b"revoked".to_vec())
+        );
+        tako_raft::reconcile(&live.1, &survivors).await.unwrap();
+        retiring.4.abort();
+        retiring.0.close("catalog").await.unwrap();
+        assert!(live.0.committed_position("catalog").await.is_ok());
+        live.4.abort();
+        live.0.close("catalog").await.unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(30), run())
+        .await
+        .expect("catalog failed to converge");
 }

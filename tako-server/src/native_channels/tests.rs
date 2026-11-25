@@ -51,7 +51,6 @@ fn member(network: &NetworkId, keys: &LocalDeviceKeys) -> Member {
             ssh_port: 22,
             https_port: 443,
             https_certificate_pem: None,
-            corrosion_ca_certificate_pem: None,
             https_spki_sha256: None,
         }),
         request,

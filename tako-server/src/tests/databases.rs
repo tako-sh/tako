@@ -129,10 +129,7 @@ async fn replicated_sql_reopens_and_restores_a_committed_snapshot() {
         .await
         .unwrap();
     let coordinate = |request| ok(&server, Command::CoordinateStorage { request });
-    let catalog = coordinate(Op::OpenCatalog { key: None }).await;
-    assert!(catalog["key"].is_string());
-    wait_storage_leader(&server, "catalog").await;
-    let candidate = StorageClaim {
+    let claim = StorageClaim {
         name: ID.to_owned(),
         engine: tako_core::DatabaseEngine::Sqlite,
         generation: GENERATION.to_owned(),
@@ -141,8 +138,6 @@ async fn replicated_sql_reopens_and_restores_a_committed_snapshot() {
         channel_owner: None,
         workflows_owner: None,
     };
-    let claim: StorageClaim =
-        serde_json::from_value(coordinate(Op::Claim { candidate }).await).unwrap();
     coordinate(Op::OpenReplica {
         claim,
         backup_key: key(),
@@ -213,8 +208,6 @@ async fn replicated_storage_retirement_fences_both_engines_and_allows_name_reuse
         .await
         .unwrap();
     let call = |request| ok(&server, Command::CoordinateStorage { request });
-    call(Op::OpenCatalog { key: None }).await;
-    wait_storage_leader(&server, "catalog").await;
     for (index, engine) in [DatabaseEngine::Sqlite, DatabaseEngine::Kv]
         .into_iter()
         .enumerate()
@@ -229,14 +222,6 @@ async fn replicated_storage_retirement_fences_both_engines_and_allows_name_reuse
             channel_owner: None,
             workflows_owner: None,
         };
-        let winner: StorageClaim = serde_json::from_value(
-            call(Op::Claim {
-                candidate: claim.clone(),
-            })
-            .await,
-        )
-        .unwrap();
-        assert_eq!(winner, claim);
         call(Op::OpenReplica {
             claim,
             backup_key: key(),
@@ -378,17 +363,7 @@ async fn replicated_storage_retirement_fences_both_engines_and_allows_name_reuse
             .await
             .is_empty()
         );
-        call(Op::Retirement {
-            generation: id.clone(),
-            targets: Some(founders.clone()),
-        })
-        .await;
         call(Op::PurgeReplica {
-            name: ID.into(),
-            generation: id.clone(),
-        })
-        .await;
-        call(Op::RetireName {
             name: ID.into(),
             generation: id.clone(),
         })
@@ -1376,9 +1351,9 @@ async fn import_and_export_round_trip_a_file() {
     // Build a replacement locally and import it.
     let replacement = temp.path().join("replacement.db");
     {
-        let db = rusqlite::Connection::open(&replacement).unwrap();
+        let db = tako_db::testing::TestSql::open(&replacement);
         db.execute_batch(
-            "CREATE TABLE items (name TEXT); INSERT INTO items VALUES ('a'), ('b'), ('c');",
+            "CREATE TABLE items (name TEXT); INSERT INTO items VALUES ('a'), ('b'), ('c'); PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .unwrap();
     }

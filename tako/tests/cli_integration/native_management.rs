@@ -117,7 +117,6 @@ impl Fixture {
                 https_port: 8443,
                 https_certificate_pem: None,
                 https_spki_sha256: None,
-                corrosion_ca_certificate_pem: None,
             };
             let mut scratch = laptop_only.clone();
             admit(

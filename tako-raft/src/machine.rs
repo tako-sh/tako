@@ -139,6 +139,25 @@ impl Replica {
             .is_some_and(|expected| bool::from(expected.ct_eq(hash)))
     }
 
+    pub async fn catalog_document(&self, shared: bool) -> io::Result<(u64, Vec<u8>)> {
+        self.disk
+            .query(move |tx| {
+                Ok((
+                    get(tx, "network_revision")?.unwrap_or(0),
+                    get(
+                        tx,
+                        if shared {
+                            "network_shared"
+                        } else {
+                            "network_members"
+                        },
+                    )?
+                    .unwrap_or_default(),
+                ))
+            })
+            .await
+    }
+
     pub async fn retirement(
         &self,
         generation: String,
@@ -468,8 +487,66 @@ impl RaftStateMachine<Types> for Replica {
                                 grant_change = Some((scope, key_hash));
                                 Applied::NoChange
                             }
-                            EntryPayload::Normal(crate::Proposal::Claim(candidate)) => {
-                                crate::catalog::claim(tx, candidate)?
+                            EntryPayload::Normal(crate::Proposal::PublishClaim {
+                                candidate,
+                                expected,
+                                shared,
+                            }) => {
+                                let revision = get(tx, "network_revision")?.unwrap_or(0u64);
+                                let existing = crate::disk::lookup::<crate::Claim>(
+                                    tx,
+                                    crate::catalog::NAMES,
+                                    &candidate.name,
+                                )?
+                                .is_some();
+                                if existing {
+                                    crate::catalog::claim(tx, candidate)?
+                                } else if expected != revision {
+                                    Applied::Stale {
+                                        current_revision: revision,
+                                    }
+                                } else if shared.is_empty()
+                                    || shared.len() > 8 * 1024 * 1024
+                                    || revision == u64::MAX
+                                {
+                                    Applied::Invalid
+                                } else {
+                                    let reply = crate::catalog::claim(tx, candidate)?;
+                                    if matches!(reply, Applied::Claimed(_)) {
+                                        set(tx, "network_shared", &shared)?;
+                                        set(tx, "network_revision", &(revision + 1))?;
+                                    }
+                                    reply
+                                }
+                            }
+                            EntryPayload::Normal(crate::Proposal::CatalogUpdate {
+                                shared,
+                                expected,
+                                value,
+                            }) => {
+                                let revision = get(tx, "network_revision")?.unwrap_or(0u64);
+                                if revision != expected {
+                                    Applied::Stale {
+                                        current_revision: revision,
+                                    }
+                                } else if value.len() > 16 * 1024 * 1024
+                                    || value.is_empty()
+                                    || revision == u64::MAX
+                                {
+                                    Applied::Invalid
+                                } else {
+                                    set(
+                                        tx,
+                                        if shared {
+                                            "network_shared"
+                                        } else {
+                                            "network_members"
+                                        },
+                                        &value,
+                                    )?;
+                                    set(tx, "network_revision", &(revision + 1))?;
+                                    Applied::Committed(revision + 1)
+                                }
                             }
                         };
                         set(tx, "applied", &id)?;

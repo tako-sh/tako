@@ -72,7 +72,6 @@ pub(super) async fn prepare_replicas(
                         .is_some_and(|p| p.database_name == name)
             };
             let record = reserve(
-                network,
                 registry.as_ref().unwrap(),
                 &targets,
                 &name,

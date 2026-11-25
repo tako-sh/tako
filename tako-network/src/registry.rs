@@ -94,7 +94,6 @@ pub struct ServerInfo {
     pub ssh_host_key: SshPublicKey,
     pub ssh_port: u16,
     pub https_certificate_pem: Option<String>,
-    pub corrosion_ca_certificate_pem: Option<String>,
     pub https_spki_sha256: Option<KeyFingerprint>,
     pub https_port: u16,
 }
@@ -135,9 +134,6 @@ impl ServerInfo {
             .is_some_and(|pin| Some(pin) != derived_spki.as_ref())
         {
             return Err(invalid("HTTPS SPKI", "must match the supplied certificate"));
-        }
-        if let Some(pem) = &self.corrosion_ca_certificate_pem {
-            parse_certificate(pem, "Corrosion CA certificate")?;
         }
         Ok(())
     }

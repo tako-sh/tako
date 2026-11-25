@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tako_network::api::{RpcResponse, RuntimeResult, SignedRequest};
-use tako_network::corrosion::RegistryStore;
+use tako_network::catalog::RegistryStore;
 use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
 use tako_network::shared::{SharedRecord, SharedSnapshot, SharedStore};
 use tako_network::*;
@@ -172,7 +172,6 @@ impl ApiServer {
             ssh_port: 22,
             https_port: listener.local_addr().unwrap().port(),
             https_certificate_pem: Some(certificate.clone()),
-            corrosion_ca_certificate_pem: None,
             https_spki_sha256: None,
         };
         admit(

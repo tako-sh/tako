@@ -36,12 +36,10 @@ enum Stage {
 }
 
 /// The server-side rule: UDP 443 is an explicit WireGuard option independent
-/// of HTTPS, and 8787 is reserved for gossip.
+/// of HTTPS.
 fn validate_wireguard_port(port: u16) -> Result<()> {
-    if (port < 1024 && port != 443) || port == 8787 {
-        return Err(
-            "WireGuard must use UDP 443 or a port from 1024 to 65535 other than 8787".into(),
-        );
+    if port < 1024 && port != 443 {
+        return Err("WireGuard must use UDP 443 or a port from 1024 to 65535".into());
     }
     Ok(())
 }
@@ -412,7 +410,7 @@ mod tests {
         for port in [443, 1024, 51820, 65535] {
             assert!(validate_wireguard_port(port).is_ok(), "{port}");
         }
-        for port in [0, 22, 80, 1023, 8787] {
+        for port in [0, 22, 80, 1023] {
             assert!(validate_wireguard_port(port).is_err(), "{port}");
         }
     }

@@ -112,7 +112,6 @@ pub fn server_info(keys: &LocalDeviceKeys) -> ServerInfo {
         ssh_port: 22,
         https_port: 443,
         https_certificate_pem: Some(certificate_pem()),
-        corrosion_ca_certificate_pem: Some(certificate_pem()),
         https_spki_sha256: None,
     }
 }

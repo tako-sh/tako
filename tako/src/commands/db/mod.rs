@@ -796,11 +796,9 @@ async fn create_database(
     engine: DatabaseEngine,
 ) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
     use tako_core::StorageOperation as Op;
-    let network = ctx.alias()?;
     let homes = ctx.network_homes()?;
     let catalog = replication::catalog(&homes).await?;
     let record = replication::reserve(
-        &network,
         &catalog,
         std::slice::from_ref(home),
         name,
