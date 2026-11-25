@@ -26,8 +26,24 @@ pub(crate) struct Owner {
     log: Option<Arc<ReplicatedLog>>,
     _directory: Option<TempDir>,
     _owner_lock: Option<File>,
-    slots: Arc<tokio::sync::Semaphore>,
+    slots: Arc<WriterSlots>,
 }
+// Sessions can outlive a request (Hrana batons). Bound both concurrency and
+// the wait for a session, including during shutdown.
+struct WriterSlots {
+    available: parking_lot::Mutex<usize>,
+    changed: parking_lot::Condvar,
+}
+
+pub(crate) struct WriterSlot(Arc<WriterSlots>);
+
+impl Drop for WriterSlot {
+    fn drop(&mut self) {
+        *self.0.available.lock() += 1;
+        self.0.changed.notify_one();
+    }
+}
+
 fn other(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
@@ -90,7 +106,10 @@ impl Owner {
             log,
             _directory: directory,
             _owner_lock: owner_lock,
-            slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            slots: Arc::new(WriterSlots {
+                available: parking_lot::Mutex::new(4),
+                changed: parking_lot::Condvar::new(),
+            }),
         })
     }
     pub(crate) fn scratch(path: &Path) -> io::Result<Self> {
@@ -113,8 +132,16 @@ impl Owner {
             Ok(())
         }
     }
-    pub fn writer_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        self.slots.clone().try_acquire_owned().ok()
+    pub fn writer_slot(&self, timeout: std::time::Duration) -> Option<WriterSlot> {
+        let mut available = self.slots.available.lock();
+        self.slots
+            .changed
+            .wait_while_for(&mut available, |n| *n == 0, timeout);
+        if *available == 0 {
+            return None;
+        }
+        *available -= 1;
+        Some(WriterSlot(self.slots.clone()))
     }
     pub fn revision(&self) -> io::Result<u64> {
         self.log.as_ref().map_or(Ok(0), |log| log.revision())
@@ -151,6 +178,55 @@ pub(crate) fn create_empty_portable(path: &Path) -> io::Result<()> {
         .map_err(other)?;
     conn.close().map_err(other)?;
     file.sync_all()
+}
+
+/// Native Turso access to a private, portable database image during import or restore.
+/// Existing images use WAL here. MVCC checkouts must be materialized first.
+pub struct PortableDatabase(Arc<turso_core::Connection>);
+pub use turso_core::Value as PortableValue;
+impl PortableDatabase {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let io = Arc::new(directory_io::DirectoryIo::existing(path).map_err(other)?);
+        let opts = OpenOptions::new(Arc::new(SqliteDialect))
+            .flags(OpenFlags::Create)
+            .db_opts(DatabaseOpts::new().with_views(true));
+        let db = Database::open(io, text(path)?, opts).map_err(other)?;
+        let conn = db
+            .connect(ConnectOpts::new(SessionRole::Superuser))
+            .map_err(other)?;
+        conn.set_triggers_enabled(false);
+        Ok(Self(conn))
+    }
+    pub fn execute_batch(&self, sql: &str) -> io::Result<()> {
+        self.0.execute(sql).map_err(other)
+    }
+    pub fn query(
+        &self,
+        sql: &str,
+        params: &[PortableValue],
+    ) -> io::Result<Vec<Vec<PortableValue>>> {
+        let mut stmt = self.0.prepare(sql).map_err(other)?;
+        for (index, value) in params.iter().enumerate() {
+            stmt.bind_at(
+                std::num::NonZeroUsize::new(index + 1).unwrap(),
+                value.clone(),
+            )
+            .map_err(other)?;
+        }
+        stmt.run_collect_rows().map_err(other)
+    }
+    pub fn checkpoint(&self) -> io::Result<()> {
+        let result = self.query("PRAGMA wal_checkpoint(TRUNCATE)", &[])?;
+        if result
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|v| v.as_int())
+            != Some(0)
+        {
+            return Err(other("the database is still in use; cannot checkpoint"));
+        }
+        Ok(())
+    }
 }
 
 /// Check an import on a private native copy before publishing it to Raft.

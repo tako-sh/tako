@@ -36,6 +36,23 @@ pub(crate) async fn with_deadline<T>(
         .map_err(|_| "backup object request timed out".to_string())?
 }
 
+pub(super) fn deletion_marker(prefix: &str) -> String {
+    format!("{prefix}/deleted")
+}
+
+pub(super) async fn is_deleted(store: &dyn ObjectStore, prefix: &str) -> Result<bool, String> {
+    let key =
+        object_store::path::Path::parse(deletion_marker(prefix)).map_err(|e| e.to_string())?;
+    with_deadline(METADATA_TIMEOUT, async {
+        match store.head(&key).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(format!("read backup deletion marker: {e}")),
+        }
+    })
+    .await
+}
+
 pub(crate) async fn upload_file(
     store: Arc<dyn ObjectStore>,
     key: &str,

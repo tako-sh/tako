@@ -212,11 +212,11 @@ tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by a full client sends the destination and credentials to the database's server. Removing the backup storage and deploying stops backups. Moving to another storage starts a new history there, beginning with a full snapshot; the history in the earlier storage stays there (retention and `delete` reach only the current one), so remove `_tako/databases/<name>/` from it yourself once you no longer need it. A new database is not backed up until such a deploy. Backups provide point-in-time recovery even if all replicas are lost. Environments that bind the same database should use the same storage, since each full client's deploy sets it.
+A deploy by a full client sends the destination and credentials to the database's server. Removing the backup storage and deploying stops backups. Moving to another storage starts a new history there, beginning with a full snapshot; the history in the earlier storage stays there (retention applies to the current destination), so remove `_tako/databases/<name>/` from it yourself once you no longer need it. A new database is not backed up until such a deploy. Backups retain committed data independently of the replicas. Environments that bind the same database should use the same storage, because each full client's deploy sets it.
 
 ### Continuous backups
 
-For replicated databases, the elected leader uploads committed Turso recovery images and changes to backup storage. A Raft majority commits each write before the client receives success. Uploads run separately. After losing the entire group, you can recover through the most recent uploaded transaction. The default retention window is seven days.
+For replicated databases, the elected leader uploads committed Turso recovery images and changes to backup storage. A Raft majority commits each write before the client receives success. Uploads run separately. The latest recovery point is the last committed transaction uploaded to storage. The default retention window is seven days.
 
 - **Full snapshots** restore on their own. The server captures one when backups start (after the server starts, a restore, import, or reset, or a new destination), once a day while the database changes, and on demand with `tako db backup <name>`.
 - **Restore points** name a transaction: the state before a deploy's release command, before pending migrations, and before a restore, import, or reset replaces the database. Every full snapshot is a restore point too.
@@ -259,24 +259,9 @@ tako db import main ./main.sqlite
 
 To move an app from a SQLite file in its data directory, create a hosted database, copy the file to your machine during a write freeze, import it, bind the database, and deploy the code that uses `tako.db`.
 
-### Recover on another server
+### Replace a failed replica
 
-For a replicated database, restore through the elected leader. The replacement commits through Raft. A new deployment target joins the group during a full-access deploy. For a legacy single-home database, use the following recovery procedure.
-
-```bash
-tako db restore main --latest --server edge-b
-tako deploy --env production
-```
-
-With `--server`, Tako creates the database on `edge-b` from its backups and records `edge-b` as its server in the network; `tako.toml` does not change. `--latest` restores everything the old server uploaded, so at most its last few seconds of writes are lost; `--at` and `--snapshot` work too. It reads the backups from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
-
-When the old server is still running, its copy stays, and Tako stops its backups so it cannot prune the new copy's history. An old server that was unreachable during the move stops uploading on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Until it notices, anything it still uploads stays apart from the new copy's history, which starts far above it, so a restore never mixes the two; once it notices, it stops capturing, also across restarts. The copy a move creates on `edge-b` uploads nothing until its restore has finished, so its empty file never becomes the latest state. Once every app is deployed, remove the old copy:
-
-```bash
-tako db delete main --server edge-a
-```
-
-That deletes only the copy on `edge-a`; the database, its network record, and its backups stay. If `edge-a` holds an earlier database of the same name instead (one deleted from the network while `edge-a` was unreachable), the command says so before deleting it, together with that database's backups. If the recovery itself fails, Tako removes the new copy on `edge-b` without touching the backups. If the move stops after the restore (for example, the network record could not be published), run the same command again: it finds its copy on `edge-b`, restores it again, and finishes the move. If that second restore fails, the copy on `edge-b` stays as it was, so the command can be run again. To abandon the move instead, remove that copy with `tako db delete main --server edge-b`, which gives the backups back to the copy the network still names; `tako db delete main` also removes such leftover copies from every reachable server of the network.
+Deploy the app to the replacement server while the group has a voting majority. Preparing catches the new replica up to the committed state. Other targets can keep serving during this operation. A point-in-time restore rolls back every replica of the database.
 
 ## Reset a database
 
@@ -306,7 +291,7 @@ Targets share the same committed history. Tako elects a leader automatically. Af
 - Each binding has its own random token. A token works only on the server that issued it and only for the databases its app environment binds. Binding tokens stay stable across deploys while a binding names the same database on the same server.
 - During a rolling deploy, the old and new release's bindings are both active, so old instances keep working until they drain. A release command receives temporary bindings that are revoked when it finishes.
 - SQL cannot reach other files or load code: `ATTACH` (including `VACUUM INTO '<path>'` and attachments named at run time), `load_extension`, and `fts3_tokenizer` are refused. Plain `VACUUM` works.
-- Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako runs WAL with `synchronous = FULL`.
+- Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako manages durability through Turso and Raft.
 - `foreign_keys` is on for every connection. A statement may take at most 30 seconds to prepare and run, and the statements of one `sequence` (such as `executeMultiple`) share that limit; a statement waits up to 5 seconds for the write lock. A migration file's statements may run for 5 minutes together and wait up to 30 seconds for the write lock. Interactive transactions idle for 10 seconds are rolled back.
 - Requests are limited to 32 MiB and 65,536 statements and batch steps, and a request's body must arrive within 30 seconds (otherwise `408`); a request that waits 30 seconds for one of the database's 32 request slots, or for room in the server's 256 MiB of buffered requests and cursor output, gets `503`, as does a pipeline whose results find no room left in that buffer (results stay counted until the response is sent); a connection that sends no request for 30 seconds, or stops reading its response for 30 seconds, is closed, and a server holds at most 1,024 connections per listener; responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
 - App SQL bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them; their SDK-enabled services can use hosted replay through the channel runtime.

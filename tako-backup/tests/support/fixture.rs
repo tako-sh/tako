@@ -6,14 +6,17 @@ use std::{
     time::Duration,
 };
 
+use super::capture::Capture;
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
-use tako_backup::Capture;
 
-fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().collect();
-    let mode = args.get(1).context("missing mode")?;
-    let database = Path::new(args.get(2).context("missing database")?);
+#[test]
+fn subprocess() -> Result<()> {
+    let Ok(mode) = std::env::var("TAKO_LTX_FIXTURE_MODE") else {
+        return Ok(());
+    };
+    let db = std::env::var_os("TAKO_LTX_FIXTURE_DB").context("missing database")?;
+    let database = Path::new(&db);
     let stdin = io::stdin();
     match mode.as_str() {
         "writer" => {
@@ -27,7 +30,8 @@ fn main() -> Result<()> {
             }
         }
         "capture" => {
-            let spool = Path::new(args.get(3).context("missing spool")?);
+            let spool_dir = std::env::var_os("TAKO_LTX_FIXTURE_SPOOL").context("missing spool")?;
+            let spool = Path::new(&spool_dir);
             let mut capture = Capture::open(database, spool, 0)?;
             reply("ready")?;
             for line in stdin.lock().lines() {
@@ -44,7 +48,7 @@ fn main() -> Result<()> {
 
 fn reply(message: &str) -> Result<()> {
     let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{message}")?;
+    writeln!(stdout, "LTX-FIXTURE>{message}")?;
     stdout.flush()?;
     Ok(())
 }

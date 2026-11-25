@@ -309,34 +309,6 @@ pub enum Command {
         request: crate::StorageOperation,
     },
 
-    /// Create a database hosted on this server.
-    CreateDatabase {
-        name: String,
-        #[serde(default)]
-        engine: crate::database::DatabaseEngine,
-        /// Tells this database apart from earlier ones with the same name.
-        generation: String,
-        /// 32-byte key, base64, that encrypts the database's snapshots.
-        backup_key_base64: String,
-        /// Private S3 storage that receives snapshots.
-        #[serde(default)]
-        backup: Option<StorageBinding>,
-    },
-
-    /// Delete a database hosted on this server. Refused while bound. Its
-    /// snapshots are deleted too, unless `keep_snapshots` is set: a copy
-    /// left behind by a move, or one whose recovery failed, shares them
-    /// with the database that lives on.
-    DeleteDatabase {
-        name: String,
-        /// The generation the caller means. When set, a database of that
-        /// name created again meanwhile is not deleted.
-        #[serde(default)]
-        generation: Option<String>,
-        #[serde(default)]
-        keep_snapshots: bool,
-    },
-
     /// Describe databases hosted on this server: one, or all when `None`.
     DatabaseStatus {
         #[serde(default)]

@@ -1,3 +1,5 @@
+pub mod capture;
+mod fixture;
 use std::{
     fmt,
     io::{BufRead, BufReader, Write},
@@ -29,10 +31,11 @@ pub struct Process {
 
 impl Process {
     pub fn start(mode: &str, database: &Path, spool: &Path) -> Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_terse-fixture"))
-            .arg(mode)
-            .arg(database)
-            .arg(spool)
+        let mut child = Command::new(std::env::current_exe()?)
+            .args(["--exact", "support::fixture::subprocess", "--nocapture"])
+            .env("TAKO_LTX_FIXTURE_MODE", mode)
+            .env("TAKO_LTX_FIXTURE_DB", database)
+            .env("TAKO_LTX_FIXTURE_SPOOL", spool)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -43,7 +46,10 @@ impl Process {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                if sender.send(line).is_err() {
+                let Some((_, message)) = line.split_once("LTX-FIXTURE>") else {
+                    continue;
+                };
+                if sender.send(message.to_owned()).is_err() {
                     break;
                 }
             }

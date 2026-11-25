@@ -79,4 +79,5 @@ and encoded-record limit for synchronous statement execution. The string
 functions, printf accumulator and record encoder use the same limit.
 The statement also exposes the rowid inserted by its own program so the
 wire protocol can distinguish an insert from the update branch of an upsert.
+The sorter opens spill files through a separate IO hook, so Tako can allow Turso's private temporary directory while restricting database paths.
 Recheck the hosted size-limit and recovery tests before updating the engine.

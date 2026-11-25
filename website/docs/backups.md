@@ -32,7 +32,7 @@ tako db restore main --snapshot <id>
 tako db backup main
 ```
 
-Backups are encrypted with the database's own key, which the network stores for full clients. Any moment of the last 7 days can be restored. Full snapshots, captured daily while the database changes and on demand with `tako db backup`, are kept longer: all from the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
+Backups are encrypted with the database's own key, which the network stores for full clients. Any moment of the last 7 days can be restored. Full snapshots, captured daily while the database changes and on demand with `tako db backup`, are kept longer: all from the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and replica replacement.
 
 ## Configure the destination
 
@@ -54,15 +54,7 @@ tako deploy --env production
 
 The environment's `backup.storage` is the default destination of every hosted database and KV store it binds; `[db.<name>].backup` and `[kv.<name>].backup` override it for one. The destination must be private S3-compatible storage without `public_base_url`. A backup-only storage resource is not exposed through `tako.storages` unless separately bound to the app. Keep the storage credentials: the server cannot reach its backups without them.
 
-### Upgrade from SQLite file capture
 
-Earlier versions listed SQLite files in `backup = { databases = [...], shared_databases = [...] }` and captured them continuously. Those fields are rejected now. Move each database to a hosted database:
-
-1. `tako db create <name> --server <server>`, then bind it with `db = { <binding> = "<name>" }` under `[envs.production]` in `tako.toml`. Its backups go to the environment's `backup.storage`, or to `[db.<name>].backup`.
-2. During a write freeze, copy the existing file to your machine, checkpoint it (`PRAGMA wal_checkpoint(TRUNCATE)`), and run `tako db import <name> <file>`.
-3. Change the app to use `tako.db.<binding>` and deploy.
-
-Capture history uploaded by earlier versions stays in its bucket, but this version cannot restore it.
 
 ## Files in the data directories
 
@@ -70,12 +62,9 @@ Capture history uploaded by earlier versions stays in its bucket, but this versi
 
 Apps retain separate Unix users. Tako grants shared-directory access through their common group; apps must create shared files and directories writable by that group. Never put app-private secrets in the shared directory.
 
-## Recover on a fresh server
+## Replace a failed replica
 
-1. Enroll the replacement server in the network. Restore access to the app's backup configuration and storage credentials.
-2. Recover each hosted database with `tako db restore <name> --latest --server <new-server>`, and each KV store with `tako kv restore <name> --latest --server <new-server>`. Each keeps its name and points its network record at the new server. A KV store without backups cannot be recovered: once the lost server is removed from the network, `tako kv delete <name>` forgets it, and `tako kv create <name> --server <new-server>` creates an empty one under the same name.
-3. Deploy the app to the replacement server.
-4. Verify known records and app behavior before sending traffic to the replacement.
+When a voting majority survives, add the replacement server to the environment's deploy targets and deploy. Preparing waits for each selected database and KV store to catch up before that app starts. Use `tako db restore` or `tako kv restore` to roll back the whole resource to an uploaded recovery point. Restoring to the group requires a working quorum.
 
 ## Know the limits
 

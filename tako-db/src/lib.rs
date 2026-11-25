@@ -24,5 +24,8 @@ pub use host::{
     TokenHash, generate_token, hash_token,
 };
 pub use migrate::{Migration, MigrationReport};
-pub use mvcc::{materialize_recovery_image, reset_database_file, verify_hosted_import};
+pub use mvcc::{
+    PortableDatabase, PortableValue, materialize_recovery_image, reset_database_file,
+    verify_hosted_import,
+};
 pub use proto::Value;

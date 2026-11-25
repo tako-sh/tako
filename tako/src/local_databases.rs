@@ -385,7 +385,7 @@ impl LocalDatabases {
                 Some(id) => DatabaseId::clone(id),
                 None => {
                     let id = local_id(&path);
-                    host.register_development(id.clone(), path.clone())?;
+                    host.register(id.clone(), path.clone())?;
                     registered.insert(path.clone(), id.clone());
                     id
                 }
@@ -549,8 +549,7 @@ route = "empty.test"
         let dev_file = PathBuf::from(&dev_files(&project, &cfg, "development")["main"]);
         let host = DatabaseHost::new(HostConfig::default());
         let dev = local_id(&dev_file);
-        host.register_development(dev.clone(), dev_file.clone())
-            .unwrap();
+        host.register(dev.clone(), dev_file.clone()).unwrap();
         host.admin_query(&dev, "INSERT INTO items VALUES ('keep')".into(), 1)
             .await
             .unwrap();
@@ -560,7 +559,7 @@ route = "empty.test"
         let test_file = PathBuf::from(&test_files["main"]);
         assert_ne!(test_file, dev_file);
         let test = local_id(&test_file);
-        host.register_development(test.clone(), test_file).unwrap();
+        host.register(test.clone(), test_file).unwrap();
         assert_eq!(
             host.admin_query(&test, "SELECT count(*) FROM items".into(), 1)
                 .await

@@ -350,10 +350,10 @@ async fn restore_does_not_start_an_app_whose_secrets_cannot_be_read() {
     state_a.persist_app_state(app_id).await;
     let db = state_a.state_store.path().to_path_buf();
     drop(state_a);
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute("UPDATE app_secrets SET encrypted_data = x'00'", [])
-        .unwrap();
+    let wrong_key = crate::state_store::StateStore::new(db, [0x34; 32]);
+    wrong_key.init().unwrap();
+    wrong_key.set_secrets(app_id, &Default::default()).unwrap();
+    drop(wrong_key);
 
     let state_b = ServerState::new(
         temp.path().to_path_buf(),

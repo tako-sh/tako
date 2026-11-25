@@ -183,8 +183,8 @@ pub(crate) mod test_replay {
         }
 
         /// Direct access to the database file, as an operator's tools have.
-        pub(crate) fn sql(&self) -> rusqlite::Connection {
-            rusqlite::Connection::open(&self.path).unwrap()
+        pub(crate) fn sql(&self) -> tako_db::testing::TestSql {
+            tako_db::testing::TestSql::open(&self.path)
         }
     }
 

@@ -745,15 +745,19 @@ async fn requests_waiting_for_a_slot_do_not_start_once_closing_begins() {
         .await
         .expect("closing finishes")
         .unwrap();
-    let connection = rusqlite::Connection::open(h._dir.path().join("db.sqlite")).unwrap();
-    let tables: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name = 'late'",
-            [],
-            |row| row.get(0),
-        )
+    let reopened = DatabaseHost::new(HostConfig::default());
+    reopened
+        .register(h.id.clone(), h._dir.path().join("db.sqlite"))
         .unwrap();
-    assert_eq!(tables, 0, "the waiting request never ran");
+    let result = reopened
+        .admin_query(
+            &h.id,
+            "SELECT name FROM sqlite_schema WHERE name='late'".into(),
+            1,
+        )
+        .await
+        .unwrap();
+    assert!(result.rows.is_empty(), "the waiting request never ran");
 }
 
 #[tokio::test(flavor = "multi_thread")]

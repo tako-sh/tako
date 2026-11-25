@@ -53,7 +53,7 @@ async fn ok(state: &ServerState, command: Command) -> Value {
     match state.handle_command(command).await {
         Response::Ok { data } => data,
         // Responses can carry secrets, so failures name the outcome only.
-        Response::Error { .. } => panic!("expected an ok response, got an error"),
+        Response::Error { message, .. } => panic!("management command failed: {message}"),
     }
 }
 
@@ -82,17 +82,16 @@ async fn count(state: &ServerState, id: &str) -> i64 {
 }
 
 async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
-    ok(
-        state,
-        Command::CreateDatabase {
-            name: id.into(),
-            engine: tako_core::DatabaseEngine::Sqlite,
-            generation: GENERATION.into(),
-            backup_key_base64: key(),
-            backup: bucket.map(backup),
-        },
-    )
-    .await;
+    state
+        .create_test_database(
+            id.into(),
+            tako_core::DatabaseEngine::Sqlite,
+            GENERATION.into(),
+            key(),
+            bucket.map(backup),
+        )
+        .await
+        .unwrap();
 }
 
 async fn wait_storage_leader(state: &ServerState, group: &str) {
@@ -641,7 +640,12 @@ async fn resetting_a_workflow_database_keeps_its_workflow_tables() {
         },
     )
     .await;
-    let tables = query(&state, plain, "SELECT count(*) FROM sqlite_schema").await;
+    let tables = query(
+        &state,
+        plain,
+        "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'tako_workflow_%'",
+    )
+    .await;
     assert_eq!(tables["rows"][0][0], 0, "{tables}");
 }
 
@@ -728,7 +732,18 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
     ] {
         assert!(!error(&original, grant(malformed)).await.is_empty());
     }
-    let key = ok(&original, grant(&scope)).await["peer_key"]
+    ok(&original, grant(&scope)).await;
+    let key = ok(
+        &original,
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::SetGrant {
+                generation: GENERATION.into(),
+                scope: scope.clone(),
+                enabled: true,
+            },
+        },
+    )
+    .await["key"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -746,8 +761,8 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         CHANNEL_REPLAY_BINDING.into(),
         DatabaseBinding {
             name: ID.into(),
-            generation: None,
-            server: "edge".into(),
+            generation: Some(GENERATION.into()),
+            server: "test-founder".into(),
             peer_key: Some(key.clone()),
             engine: tako_core::DatabaseEngine::Sqlite,
         },
@@ -770,11 +785,18 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
     assert!(original.databases.connections(&config.databases).is_empty());
     let debug = format!("{config:?}");
     assert!(!debug.contains(&key) && !debug.contains(&connection.auth_token));
+    original.stop_databases().await;
     drop(original);
 
     let restored = state(&temp);
     let database = &restored.databases.host;
-    restored.start_databases(None).await.unwrap();
+    let proxy =
+        crate::native_proxy::NativeProxy::loopback_storage(temp.path(), "test-founder".into());
+    restored
+        .start_databases(Some(("test-founder".into(), proxy)))
+        .await
+        .unwrap();
+    wait_storage_leader(&restored, GENERATION).await;
     // Status/delete must account for bindings even before the app has been restored.
     let status = ok(
         &restored,
@@ -785,12 +807,8 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
     .await;
     assert_eq!(status["databases"][0]["bindings"], json!([scope]));
     assert_eq!(status["databases"][0]["remote_grants"], json!([scope]));
-    let delete = || Command::DeleteDatabase {
-        name: ID.into(),
-        generation: None,
-        keep_snapshots: false,
-    };
-    assert!(error(&restored, delete()).await.contains(&scope));
+    let delete = || restored.purge_database_replica(ID, None, false);
+    assert!(delete().await.unwrap_err().contains(&scope));
     restored.restore_apps_from_state_store(true).await.unwrap();
     assert_eq!(
         restored.channel_replay_database(APP).unwrap().unwrap(),
@@ -861,7 +879,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
         StatusCode::UNAUTHORIZED
     );
     // A grant may be all that remains on a remote home. Delete revokes it too.
-    ok(&restored, delete()).await;
+    delete().await.unwrap();
     assert!(
         restored
             .state_store
@@ -987,6 +1005,17 @@ async fn release_points_name_the_state_before_each_release() {
             app: "web/production".into(),
             databases: vec![ID.into()],
             keep_existing: false,
+        },
+    )
+    .await;
+    ok(
+        &state,
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::SetGrant {
+                generation: GENERATION.into(),
+                scope: "web/production".into(),
+                enabled: true,
+            },
         },
     )
     .await;
@@ -1258,26 +1287,6 @@ async fn a_restore_point_uses_the_backups_configured_when_it_runs() {
 }
 
 #[tokio::test]
-async fn a_restore_that_stopped_before_clearing_its_marker_backs_up() {
-    let temp = TempDir::new().unwrap();
-    let state = state(&temp);
-    state.open_databases(Some("server-a".into())).await.unwrap();
-    create(&state, ID, Some("swap-crash-bucket")).await;
-    assert!(crate::databases::backups::is_unrestored(&state, ID).unwrap());
-    // A restore renamed another file into place, then the server stopped
-    // before it removed the marker.
-    let path = state.databases.database_path(ID);
-    let staged = path.with_extension("staged");
-    std::fs::copy(&path, &staged).unwrap();
-    std::fs::rename(&staged, &path).unwrap();
-    assert!(!crate::databases::backups::is_unrestored(&state, ID).unwrap());
-    assert!(
-        !state.databases.database_dir(ID).join("unrestored").exists(),
-        "the stale marker is cleared"
-    );
-}
-
-#[tokio::test]
 async fn a_replacement_during_an_outage_keeps_its_restore_point() {
     const BUCKET: &str = "outage-bucket";
     let temp = TempDir::new().unwrap();
@@ -1445,17 +1454,16 @@ async fn deleting_a_database_revokes_its_grants() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
-    let duplicate = error(
-        &state,
-        Command::CreateDatabase {
-            name: ID.into(),
-            engine: tako_core::DatabaseEngine::Sqlite,
-            generation: GENERATION.into(),
-            backup_key_base64: key(),
-            backup: None,
-        },
-    )
-    .await;
+    let duplicate = state
+        .create_test_database(
+            ID.into(),
+            tako_core::DatabaseEngine::Sqlite,
+            GENERATION.into(),
+            key(),
+            None,
+        )
+        .await
+        .unwrap_err();
     assert!(duplicate.contains("already exists"));
 
     const OTHER: &str = "orders";
@@ -1471,15 +1479,7 @@ async fn deleting_a_database_revokes_its_grants() {
     .await;
     // Grants can outlive the deployments that used them: deleting revokes
     // this database from them and keeps the environment's other grants.
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state.purge_database_replica(ID, None, false).await.unwrap();
     let grants = state.state_store.all_database_grants().unwrap();
     let grant = &grants["web/production"];
     assert_eq!(
@@ -1736,6 +1736,17 @@ async fn deployers_migrate_only_their_own_apps_databases() {
         },
     )
     .await;
+    ok(
+        &state,
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::SetGrant {
+                generation: GENERATION.into(),
+                scope: "web/production".into(),
+                enabled: true,
+            },
+        },
+    )
+    .await;
     let Response::Ok { .. } =
         migrate(&state, migrations.clone(), false, Some("web/production")).await
     else {
@@ -1881,15 +1892,7 @@ async fn deleting_a_database_deletes_its_snapshots() {
             .len()
     };
     assert_eq!(objects().await, 2, "a manifest and its data");
-    let deleted = ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    let deleted = state.purge_database_replica(ID, None, false).await.unwrap();
     assert_eq!(deleted["warnings"], json!([]));
     // Only the fence that stops copies left elsewhere from publishing.
     assert_eq!(objects().await, 1);
@@ -1912,413 +1915,11 @@ async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
     .await;
     // A copy left behind by a move shares its snapshots with the copy that
     // replaced it, so deleting it must leave them.
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: true,
-        },
-    )
-    .await;
+    state.purge_database_replica(ID, None, true).await.unwrap();
     let store = crate::databases::backups::test_store("keep-bucket").unwrap();
     use futures_util::TryStreamExt;
     let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
     assert_eq!(objects.len(), 2, "the manifest and its data remain");
-}
-
-#[tokio::test]
-async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
-    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let old = state(&old_dir);
-    old.open_databases(Some("server-a".into())).await.unwrap();
-    create(&old, ID, Some("fence-bucket")).await;
-    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
-    query(&old, ID, "INSERT INTO items VALUES ('moved')").await;
-    let snapshot = |reason| Command::SnapshotDatabase {
-        name: ID.into(),
-        reason,
-        app: None,
-    };
-    ok(&old, snapshot(SnapshotReason::Manual)).await;
-
-    // The database moves while its old server is unreachable, so nobody
-    // tells the old copy to stop.
-    let new = state(&new_dir);
-    new.open_databases(Some("server-b".into())).await.unwrap();
-    create(&new, ID, Some("fence-bucket")).await;
-    ok(
-        &new,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: None,
-            at_unix_ms: None,
-            backup_key_base64: Some(key()),
-        },
-    )
-    .await;
-    assert_eq!(count(&new, ID).await, 1);
-
-    // Back online, the old copy diverges but publishes nothing.
-    query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
-    let refused = error(&old, snapshot(SnapshotReason::Manual)).await;
-    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
-    // string; these commands carry no secrets.
-    assert!(refused.contains("was moved to another server"), "{refused}");
-    let listed = ok(&new, Command::ListDatabaseSnapshots { name: ID.into() }).await;
-    let manual = listed["snapshots"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|snapshot| snapshot["reason"] == "manual")
-        .count();
-    assert_eq!(manual, 1, "only the snapshot taken before the move");
-    // The new copy still snapshots.
-    query(&new, ID, "INSERT INTO items VALUES ('new')").await;
-    let taken = ok(&new, snapshot(SnapshotReason::Manual)).await;
-    ok(
-        &new,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: Some(taken["snapshot"]["id"].as_str().unwrap().into()),
-            at_unix_ms: None,
-            backup_key_base64: None,
-        },
-    )
-    .await;
-    let names = query(&new, ID, "SELECT name FROM items ORDER BY rowid").await;
-    assert_eq!(names["rows"], json!([["moved"], ["new"]]));
-}
-
-#[tokio::test]
-async fn a_new_copy_backs_up_nothing_until_it_is_restored() {
-    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let old = state(&old_dir);
-    old.open_databases(Some("server-a".into())).await.unwrap();
-    create(&old, ID, Some("move-target-bucket")).await;
-    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
-    query(&old, ID, "INSERT INTO items VALUES ('moved')").await;
-    ok(
-        &old,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
-        },
-    )
-    .await;
-    // A move creates the copy, and the scheduler can reach it before the
-    // restore lists the backups.
-    let new = state(&new_dir);
-    new.open_databases(Some("server-b".into())).await.unwrap();
-    create(&new, ID, Some("move-target-bucket")).await;
-    crate::databases::backups::back_up(&new, ID).await;
-    let status = ok(
-        &new,
-        Command::DatabaseStatus {
-            name: Some(ID.into()),
-        },
-    )
-    .await;
-    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
-    // it carries no secrets.
-    assert!(
-        status["databases"][0]["backup"]["last_error"]
-            .as_str()
-            .is_some_and(|error| error.contains("until it is restored")),
-        "{status}"
-    );
-    // Its empty file was not uploaded, so the latest state is the old copy's.
-    ok(
-        &new,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: None,
-            at_unix_ms: None,
-            backup_key_base64: Some(key()),
-        },
-    )
-    .await;
-    assert_eq!(count(&new, ID).await, 1);
-    // Restored, it backs up.
-    query(&new, ID, "INSERT INTO items VALUES ('new')").await;
-    ok(
-        &new,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
-        },
-    )
-    .await;
-}
-
-fn spool_segments(state: &ServerState) -> usize {
-    let ltx = state.databases.database_dir(ID).join("replica").join("ltx");
-    std::fs::read_dir(&ltx)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|level| {
-            std::fs::read_dir(level.path())
-                .map(|entries| entries.count())
-                .unwrap_or(0)
-        })
-        .sum()
-}
-
-#[tokio::test]
-async fn a_copy_that_lost_the_database_stops_capturing() {
-    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let old = state(&old_dir);
-    old.open_databases(Some("server-a".into())).await.unwrap();
-    create(&old, ID, Some("lost-bucket")).await;
-    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
-    ok(
-        &old,
-        Command::SnapshotDatabase {
-            name: ID.into(),
-            reason: SnapshotReason::Manual,
-            app: None,
-        },
-    )
-    .await;
-    let new = state(&new_dir);
-    new.open_databases(Some("server-b".into())).await.unwrap();
-    create(&new, ID, Some("lost-bucket")).await;
-    ok(
-        &new,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: None,
-            at_unix_ms: None,
-            backup_key_base64: Some(key()),
-        },
-    )
-    .await;
-    // The old copy, unreachable during the move, keeps taking writes.
-    query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
-    crate::databases::backups::back_up(&old, ID).await;
-    let status = ok(
-        &old,
-        Command::DatabaseStatus {
-            name: Some(ID.into()),
-        },
-    )
-    .await;
-    // CodeQL[rust/cleartext-logging]: test-only assertion on a status string;
-    // it carries no secrets.
-    assert!(
-        status["databases"][0]["backup"]["last_error"]
-            .as_str()
-            .is_some_and(|error| error.contains("moved to another server")),
-        "{status}"
-    );
-    // It stopped capturing, so its spool no longer grows with each write.
-    let held = spool_segments(&old);
-    for round in 0..3 {
-        query(
-            &old,
-            ID,
-            &format!("INSERT INTO items VALUES ('stale {round}')"),
-        )
-        .await;
-        crate::databases::backups::back_up(&old, ID).await;
-    }
-    assert_eq!(spool_segments(&old), held);
-    // Nor after a restart, which forgets everything but the disk.
-    crate::databases::backups::forget(&old, ID, false)
-        .await
-        .unwrap();
-    crate::databases::backups::back_up(&old, ID).await;
-    assert_eq!(spool_segments(&old), held);
-}
-
-#[tokio::test]
-async fn a_failed_move_leaves_the_old_copy_snapshotting() {
-    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let old = state(&old_dir);
-    old.open_databases(Some("server-a".into())).await.unwrap();
-    create(&old, ID, Some("unfenced-bucket")).await;
-    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
-    let snapshot = || Command::SnapshotDatabase {
-        name: ID.into(),
-        reason: SnapshotReason::Manual,
-        app: None,
-    };
-    ok(&old, snapshot()).await;
-    // The new server claims the database, then fails to decrypt the
-    // snapshot with the wrong key.
-    let new = state(&new_dir);
-    new.open_databases(Some("server-b".into())).await.unwrap();
-    create(&new, ID, Some("unfenced-bucket")).await;
-    error(
-        &new,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: None,
-            at_unix_ms: None,
-            backup_key_base64: Some(BASE64.encode([9u8; 32])),
-        },
-    )
-    .await;
-    // The claim was given back: the holder names no server, so the old copy
-    // still snapshots.
-    let store = crate::databases::backups::test_store("unfenced-bucket").unwrap();
-    let holder =
-        object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}/holder"));
-    let holder: serde_json::Value =
-        serde_json::from_slice(&store.get(&holder).await.unwrap().bytes().await.unwrap()).unwrap();
-    assert_eq!(holder["server"], "(none)");
-    query(&old, ID, "INSERT INTO items VALUES ('later')").await;
-    ok(&old, snapshot()).await;
-}
-
-#[tokio::test]
-async fn deleting_a_database_fences_its_snapshots_from_a_copy_that_holds_them() {
-    let (home_dir, target_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let home = state(&home_dir);
-    home.open_databases(Some("server-a".into())).await.unwrap();
-    create(&home, ID, Some("held-elsewhere-bucket")).await;
-    query(&home, ID, "CREATE TABLE items (name TEXT)").await;
-    let snapshot = || Command::SnapshotDatabase {
-        name: ID.into(),
-        reason: SnapshotReason::Manual,
-        app: None,
-    };
-    ok(&home, snapshot()).await;
-    // A move restored a copy elsewhere, which now holds the snapshots, but
-    // the network still names the first server (the move did not finish).
-    let target = state(&target_dir);
-    target
-        .open_databases(Some("server-b".into()))
-        .await
-        .unwrap();
-    create(&target, ID, Some("held-elsewhere-bucket")).await;
-    ok(
-        &target,
-        Command::RestoreDatabase {
-            name: ID.into(),
-            snapshot: None,
-            at_unix_ms: None,
-            backup_key_base64: None,
-        },
-    )
-    .await;
-    // Deleting the database deletes its snapshots all the same, and the
-    // copy that held them, unreachable for the rest of the delete,
-    // publishes nothing afterwards.
-    let deleted = ok(
-        &home,
-        Command::DeleteDatabase {
-            generation: Some(GENERATION.into()),
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
-    // CodeQL[rust/cleartext-logging]: test-only assertions on command results;
-    // these commands carry no secrets.
-    assert_eq!(deleted["warnings"], json!([]), "{deleted}");
-    let listed = ok(&target, Command::ListDatabaseSnapshots { name: ID.into() }).await;
-    assert_eq!(listed["snapshots"], json!([]), "{listed}");
-    query(&target, ID, "INSERT INTO items VALUES ('later')").await;
-    let refused = error(&target, snapshot()).await;
-    assert!(refused.contains("was deleted"), "{refused}");
-}
-
-#[tokio::test]
-async fn a_copy_the_delete_could_not_reach_publishes_nothing_afterwards() {
-    let (home_dir, stale_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let home = state(&home_dir);
-    home.open_databases(Some("server-a".into())).await.unwrap();
-    create(&home, ID, Some("deleted-fence-bucket")).await;
-    query(&home, ID, "CREATE TABLE items (name TEXT)").await;
-    let snapshot = || Command::SnapshotDatabase {
-        name: ID.into(),
-        reason: SnapshotReason::Manual,
-        app: None,
-    };
-    ok(&home, snapshot()).await;
-    // A copy of the same database, such as one an unfinished move left on
-    // a server that is offline while the database is deleted.
-    let stale = state(&stale_dir);
-    stale.open_databases(Some("server-b".into())).await.unwrap();
-    create(&stale, ID, Some("deleted-fence-bucket")).await;
-    ok(
-        &home,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
-    // Back online, it publishes nothing into the deleted history.
-    query(&stale, ID, "CREATE TABLE later (name TEXT)").await;
-    let refused = error(&stale, snapshot()).await;
-    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
-    // string; these commands carry no secrets.
-    assert!(refused.contains("was deleted"), "{refused}");
-    let store = crate::databases::backups::test_store("deleted-fence-bucket").unwrap();
-    let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
-    let left: Vec<String> =
-        futures_util::TryStreamExt::try_collect::<Vec<_>>(store.list(Some(&prefix)))
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|meta| meta.location.to_string())
-            .collect();
-    assert_eq!(left.len(), 1, "only the fence remains: {left:?}");
-    assert!(left[0].ends_with("/holder"), "{left:?}");
-}
-
-#[tokio::test]
-async fn moves_resume_and_abandoned_moves_give_the_snapshots_back() {
-    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let old = state(&old_dir);
-    old.open_databases(Some("server-a".into())).await.unwrap();
-    create(&old, ID, Some("abandon-bucket")).await;
-    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
-    let snapshot = || Command::SnapshotDatabase {
-        name: ID.into(),
-        reason: SnapshotReason::Manual,
-        app: None,
-    };
-    ok(&old, snapshot()).await;
-    let new = state(&new_dir);
-    new.open_databases(Some("server-b".into())).await.unwrap();
-    create(&new, ID, Some("abandon-bucket")).await;
-    let restore = || Command::RestoreDatabase {
-        name: ID.into(),
-        snapshot: None,
-        at_unix_ms: None,
-        backup_key_base64: Some(key()),
-    };
-    ok(&new, restore()).await;
-    // The status names the generation, so a retried move finds this copy
-    // and restores it again instead of creating it.
-    let status = ok(&new, Command::DatabaseStatus { name: None }).await;
-    assert_eq!(status["databases"][0]["generation"], GENERATION);
-    ok(&new, restore()).await;
-    // The move is abandoned: removing the new copy gives the snapshots back,
-    // so the copy the network still names takes them again.
-    assert!(
-        error(&old, snapshot())
-            .await
-            .contains("was moved to another server")
-    );
-    ok(
-        &new,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: true,
-        },
-    )
-    .await;
-    query(&old, ID, "INSERT INTO items VALUES ('kept')").await;
-    ok(&old, snapshot()).await;
 }
 
 #[tokio::test]
@@ -2331,20 +1932,19 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     tako_db::DatabaseHost::create_file(&other).unwrap();
     let id = tako_db::DatabaseId::parse(ID).unwrap();
     state.databases.host.register(id.clone(), other).unwrap();
-    let failed = error(
-        &state,
-        Command::CreateDatabase {
-            name: ID.into(),
-            engine: tako_core::DatabaseEngine::Sqlite,
-            generation: GENERATION.into(),
-            backup_key_base64: key(),
-            backup: None,
-        },
-    )
-    .await;
+    let failed = state
+        .create_test_database(
+            ID.into(),
+            tako_core::DatabaseEngine::Sqlite,
+            GENERATION.into(),
+            key(),
+            None,
+        )
+        .await
+        .unwrap_err();
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
     // string; these commands carry no secrets.
-    assert!(failed.contains("open database"), "{failed}");
+    assert!(failed.contains("already exists"), "{failed}");
     assert!(state.state_store.get_database(ID).unwrap().is_none());
     assert!(!state.databases.database_dir(ID).exists());
     // Once the obstacle is gone, the same name can be created.
@@ -2595,14 +2195,10 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
-    let delete = || Command::DeleteDatabase {
-        generation: None,
-        name: ID.into(),
-        keep_snapshots: false,
-    };
+    let delete = || state.purge_database_replica(ID, None, false);
     // A deploy has checked the database and is installing its binding.
     let pins = state.databases.pin([ID]).unwrap();
-    let refused = error(&state, delete()).await;
+    let refused = delete().await.unwrap_err();
     assert!(
         refused.contains("deploy that binds"),
         "the delete waits for the deploy"
@@ -2614,7 +2210,7 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
             .is_registered(&tako_db::DatabaseId::parse(ID).unwrap())
     );
     drop(pins);
-    ok(&state, delete()).await;
+    delete().await.unwrap();
     // A deploy that starts once the database is gone fails its own check.
     assert!(state.databases.pin([ID]).is_ok());
 }
@@ -2647,15 +2243,7 @@ async fn deleting_a_database_ends_its_transfers() {
         state.databases.snapshot_space.reserved_bytes(),
         2 * bytes.len() as u64 + size
     );
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state.purge_database_replica(ID, None, false).await.unwrap();
     assert_eq!(state.databases.snapshot_space.reserved_bytes(), 0);
     // A database of the same name created afterwards receives none of the
     // old transfers' chunks.
@@ -2719,28 +2307,18 @@ async fn a_delete_acts_only_on_the_generation_it_names() {
     let state = state(&temp);
     create(&state, ID, None).await;
     // The caller resolved an earlier database of this name.
-    let refused = error(
-        &state,
-        Command::DeleteDatabase {
-            generation: Some("an-earlier-generation".into()),
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    let refused = state
+        .purge_database_replica(ID, Some("an-earlier-generation"), false)
+        .await
+        .unwrap_err();
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
     // string; these commands carry no secrets.
     assert!(refused.contains("not the one asked for"), "{refused}");
     query(&state, ID, "SELECT 1").await;
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: Some(GENERATION.into()),
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state
+        .purge_database_replica(ID, Some(GENERATION), false)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2767,29 +2345,16 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
     state
         .databases
         .apply_bindings("web/production", &[&old, &new]);
-    let refused = error(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    let refused = state
+        .purge_database_replica(ID, None, false)
+        .await
+        .unwrap_err();
     // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
     // string; these commands carry no secrets.
     assert!(refused.contains("web/production"), "{refused}");
     // Once the rollout commits, only the new set stays.
     state.databases.apply_bindings("web/production", &[&new]);
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            generation: None,
-            name: ID.into(),
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state.purge_database_replica(ID, None, false).await.unwrap();
 }
 
 #[tokio::test]

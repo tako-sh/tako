@@ -20,10 +20,17 @@ pub(super) fn with_suffix(database: &Path, suffix: &str) -> PathBuf {
 pub(super) struct DirectoryIo {
     platform: PlatformIO,
     files: Vec<PathBuf>,
+    existing: Option<PathBuf>,
 }
 impl DirectoryIo {
     pub fn new(database: &Path) -> Result<Self> {
         Self::for_databases(&[database])
+    }
+
+    pub fn existing(database: &Path) -> Result<Self> {
+        let mut io = Self::new(database)?;
+        io.existing = Some(database.to_owned());
+        Ok(io)
     }
 
     pub(super) fn for_databases(databases: &[&Path]) -> Result<Self> {
@@ -41,6 +48,7 @@ impl DirectoryIo {
         Ok(Self {
             platform: PlatformIO::new()?,
             files,
+            existing: None,
         })
     }
 
@@ -64,7 +72,16 @@ impl Clock for DirectoryIo {
 impl IO for DirectoryIo {
     fn open_file(&self, path: &str, flags: OpenFlags, direct: bool) -> Result<Arc<dyn File>> {
         self.check(path)?;
+        let flags = if self.existing.as_deref() == Some(Path::new(path)) {
+            flags - OpenFlags::Create
+        } else {
+            flags
+        };
         self.platform.open_file(path, flags, direct)
+    }
+    fn open_sorter_temp_file(&self, path: &str) -> Result<Arc<dyn File>> {
+        // Only Turso supplies this path, inside a fresh private TempDir.
+        self.platform.open_sorter_temp_file(path)
     }
     fn remove_file(&self, path: &str) -> Result<()> {
         self.check(path)?;

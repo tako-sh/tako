@@ -43,17 +43,16 @@ async fn error(state: &ServerState, command: Command) -> String {
 }
 
 async fn create(state: &ServerState, name: &str, engine: DatabaseEngine) {
-    ok(
-        state,
-        Command::CreateDatabase {
-            name: name.into(),
+    state
+        .create_test_database(
+            name.into(),
             engine,
-            generation: GENERATION.into(),
-            backup_key_base64: BASE64.encode([7u8; 32]),
-            backup: None,
-        },
-    )
-    .await;
+            GENERATION.into(),
+            BASE64.encode([7u8; 32]),
+            None,
+        )
+        .await
+        .unwrap();
 }
 
 async fn query(state: &ServerState, name: &str, request: KvRequest) -> Response {
@@ -206,28 +205,22 @@ async fn kv_stores_are_created_queried_and_deleted() {
             .contains("SQLite database")
     );
     // Names are unique across engines.
-    let duplicate = error(
-        &state,
-        Command::CreateDatabase {
-            name: "main".into(),
-            engine: DatabaseEngine::Kv,
-            generation: GENERATION.into(),
-            backup_key_base64: BASE64.encode([7u8; 32]),
-            backup: None,
-        },
-    )
-    .await;
+    let duplicate = state
+        .create_test_database(
+            "main".into(),
+            DatabaseEngine::Kv,
+            GENERATION.into(),
+            BASE64.encode([7u8; 32]),
+            None,
+        )
+        .await
+        .unwrap_err();
     assert!(duplicate.contains("already exists"));
 
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            name: "sessions".into(),
-            generation: None,
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state
+        .purge_database_replica("sessions", None, false)
+        .await
+        .unwrap();
     assert!(!state.databases.database_dir("sessions").exists());
     assert!(
         !state
@@ -263,17 +256,16 @@ fn backup(bucket: &str) -> tako_core::StorageBinding {
 async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
-    ok(
-        &state,
-        Command::CreateDatabase {
-            name: "sessions".into(),
-            engine: DatabaseEngine::Kv,
-            generation: GENERATION.into(),
-            backup_key_base64: BASE64.encode([7u8; 32]),
-            backup: Some(backup("kv-snapshots")),
-        },
-    )
-    .await;
+    state
+        .create_test_database(
+            "sessions".into(),
+            DatabaseEngine::Kv,
+            GENERATION.into(),
+            BASE64.encode([7u8; 32]),
+            Some(backup("kv-snapshots")),
+        )
+        .await
+        .unwrap();
     let release = |reason| Command::SnapshotDatabase {
         name: "sessions".into(),
         reason,
@@ -447,15 +439,10 @@ async fn kv_stores_are_snapshotted_restored_exported_and_imported() {
     assert_eq!(get(&state, "sessions", "kept").await, json!(r#""first""#));
 
     // Deleting the store deletes its snapshots too.
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            name: "sessions".into(),
-            generation: None,
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state
+        .purge_database_replica("sessions", None, false)
+        .await
+        .unwrap();
     let left: Vec<_> = {
         use futures_util::TryStreamExt;
         store.list(None).try_collect().await.unwrap()
@@ -578,14 +565,16 @@ async fn grants_reach_the_kv_peer_listener() {
     create(&state, "main", DatabaseEngine::Sqlite).await;
     let granted = ok(
         &state,
-        Command::GrantDatabases {
-            app: "web/production".into(),
-            databases: vec!["sessions".into(), "main".into()],
-            keep_existing: false,
+        Command::CoordinateStorage {
+            request: tako_core::StorageOperation::SetGrant {
+                generation: GENERATION.into(),
+                scope: "web/production".into(),
+                enabled: true,
+            },
         },
     )
     .await;
-    let key = granted["peer_key"].as_str().unwrap().to_owned();
+    let key = granted["key"].as_str().unwrap().to_owned();
     let address = listen_peers(&state).await;
     let request = |store: &str, grant: &str| {
         json!({
@@ -611,15 +600,10 @@ async fn grants_reach_the_kv_peer_listener() {
         "{unserved}"
     );
     // Deleting the store revokes it from the grant.
-    ok(
-        &state,
-        Command::DeleteDatabase {
-            name: "sessions".into(),
-            generation: None,
-            keep_snapshots: false,
-        },
-    )
-    .await;
+    state
+        .purge_database_replica("sessions", None, false)
+        .await
+        .unwrap();
     let revoked = forward(address, request("sessions", &key)).await;
     assert!(
         revoked.contains("refused this app") && revoked.contains(r#""code":"unavailable""#),
@@ -638,7 +622,13 @@ async fn kv_stores_reopen_with_their_data_after_a_restart() {
         state.stop_databases().await;
     }
     let state = state(&temp);
-    state.open_databases(None).await.unwrap();
+    let proxy =
+        crate::native_proxy::NativeProxy::loopback_storage(temp.path(), "test-founder".into());
+    state
+        .start_databases(Some(("test-founder".into(), proxy)))
+        .await
+        .unwrap();
+    state.wait_for_test_leader(GENERATION).await.unwrap();
     assert_eq!(get(&state, "sessions", "kept").await, json!("1"));
     let status = ok(&state, Command::DatabaseStatus { name: None }).await;
     assert_eq!(status["databases"][0]["engine"], "kv");
@@ -648,17 +638,16 @@ async fn kv_stores_reopen_with_their_data_after_a_restart() {
 async fn kv_stores_snapshot_again_when_their_backup_destination_moves() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
-    ok(
-        &state,
-        Command::CreateDatabase {
-            name: "moving".into(),
-            engine: DatabaseEngine::Kv,
-            generation: GENERATION.into(),
-            backup_key_base64: BASE64.encode([7u8; 32]),
-            backup: Some(backup("kv-moving-old")),
-        },
-    )
-    .await;
+    state
+        .create_test_database(
+            "moving".into(),
+            DatabaseEngine::Kv,
+            GENERATION.into(),
+            BASE64.encode([7u8; 32]),
+            Some(backup("kv-moving-old")),
+        )
+        .await
+        .unwrap();
     put(&state, "moving", "k", "1", None).await;
     let release = || Command::SnapshotDatabase {
         name: "moving".into(),

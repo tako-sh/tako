@@ -31,8 +31,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 tako-db = { path = "../tako-db", features = ["testing"] }
-# Tests inspect and age the hosted database file directly.
-rusqlite.workspace = true
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 tempfile = "=3.27.0"

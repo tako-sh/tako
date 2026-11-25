@@ -36,8 +36,6 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
         | Command::CoordinateStorage { .. }
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }
@@ -377,8 +375,6 @@ pub(crate) fn authorize_command(
         | Command::Cache { .. }
         | Command::Kv { .. }
         | Command::CoordinateStorage { .. }
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
         | Command::DatabaseStatus { .. }
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }

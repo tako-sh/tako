@@ -5,12 +5,10 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc, sync::atomic::Orderi
 use anyhow::Result;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjectPath};
 use rusqlite::Connection;
-use tako_backup::{
-    Capture, OWNER_JUMP, Point, RETENTION, Replica, Target, encryption::Key, windows,
-};
+use tako_backup::{OWNER_JUMP, Point, RETENTION, Replica, Target, encryption::Key, windows};
 use terse_litestream::{FileStore, ReplicaStore};
 
-use support::{Process, Remote};
+use support::{Process, Remote, capture::Capture};
 
 const PREFIX: &str = "_tako/databases/app/generation";
 

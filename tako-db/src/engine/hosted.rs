@@ -7,32 +7,29 @@ use turso_sqlite::SqliteDialect;
 
 /// Development and replicated bindings share the native Turso execution path.
 pub struct Connection {
-    backend: Backend,
-    pub(crate) read_only: bool,
-}
-enum Backend {
-    Local(SqliteConnection),
-    Hosted(Hosted),
+    backend: Hosted,
 }
 pub(super) struct Hosted {
     conn: Arc<turso_core::Connection>,
     owner: Arc<Owner>,
     read_only: bool,
     wrote: bool,
+    transaction_wrote: bool,
+    dirty: std::cell::Cell<bool>,
     max_value_bytes: usize,
     timeout: Duration,
     buffered: Arc<tokio::sync::Semaphore>,
-    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
+    _slot: Option<crate::mvcc::WriterSlot>,
 }
 impl Connection {
+    #[cfg(test)]
     pub fn open(path: &Path, c: &EngineConfig) -> Result<Self, Error> {
-        Self::open_mode(path, c, false)
-    }
-    pub(crate) fn open_mode(path: &Path, c: &EngineConfig, read_only: bool) -> Result<Self, Error> {
-        Ok(Self {
-            backend: Backend::Local(SqliteConnection::open_mode(path, c, read_only)?),
-            read_only,
-        })
+        Self::development(
+            path,
+            c,
+            false,
+            Arc::new(tokio::sync::Semaphore::new(64 << 20)),
+        )
     }
     pub(crate) fn development(
         path: &Path,
@@ -59,7 +56,7 @@ impl Connection {
             if read_only {
                 None
             } else {
-                Some(owner.writer_slot().ok_or_else(|| {
+                Some(owner.writer_slot(config.busy_timeout).ok_or_else(|| {
                     Error::new("SQLITE_BUSY", "database writer connections are busy")
                 })?)
             };
@@ -76,45 +73,32 @@ impl Connection {
         .map_err(map_native)?;
         conn.set_query_only(read_only);
         Ok(Self {
-            backend: Backend::Hosted(Hosted {
+            backend: Hosted {
                 conn,
                 owner,
                 read_only,
                 wrote: false,
+                transaction_wrote: false,
+                dirty: Default::default(),
                 max_value_bytes: config.max_value_bytes,
                 timeout: config.statement_timeout,
                 _slot: slot,
                 buffered,
-            }),
-            read_only,
+            },
         })
     }
     pub fn is_autocommit(&self) -> bool {
-        match &self.backend {
-            Backend::Local(c) => c.is_autocommit(),
-            Backend::Hosted(c) => c.conn.get_auto_commit(),
-        }
+        self.backend.conn.get_auto_commit()
     }
     pub fn is_dirty(&self) -> bool {
-        match &self.backend {
-            Backend::Local(c) => c.is_dirty(),
-            Backend::Hosted(_) => true,
-        }
+        self.backend.dirty.get()
     }
     pub fn take_wrote(&mut self) -> bool {
-        match &mut self.backend {
-            Backend::Local(c) => c.take_wrote(),
-            Backend::Hosted(c) => std::mem::take(&mut c.wrote),
-        }
+        std::mem::take(&mut self.backend.wrote)
     }
     pub fn rollback(&mut self) {
-        match &mut self.backend {
-            Backend::Local(c) => c.rollback(),
-            Backend::Hosted(c) => {
-                if !c.conn.get_auto_commit() {
-                    let _ = c.conn.execute("ROLLBACK");
-                }
-            }
+        if !self.is_autocommit() {
+            let _ = self.backend.conn.execute("ROLLBACK");
         }
     }
     pub fn execute(
@@ -185,62 +169,48 @@ impl Connection {
         streaming: bool,
         sink: impl FnMut(Event<'_>) -> Result<(), Error>,
     ) -> Result<Outcome, Error> {
-        match &mut self.backend {
-            Backend::Local(c) => c.run(sql, args, copy_rows, sink),
-            Backend::Hosted(c) => turso_core::Value::with_length_limit(c.max_value_bytes, || {
-                c.run(sql, args, copy_rows, streaming, sink)
-            }),
-        }
+        let c = &mut self.backend;
+        turso_core::Value::with_length_limit(c.max_value_bytes, || {
+            c.run(sql, args, copy_rows, streaming, sink)
+        })
     }
     pub fn sequence(&mut self, sql: &str) -> Result<(), Error> {
-        match &mut self.backend {
-            Backend::Local(c) => c.sequence(sql),
-            Backend::Hosted(c) => {
-                turso_core::Value::with_length_limit(c.max_value_bytes, || c.sequence(sql, false))
-                    .map(|_| ())
-            }
-        }
+        let c = &mut self.backend;
+        turso_core::Value::with_length_limit(c.max_value_bytes, || c.sequence(sql, false))
+            .map(|_| ())
     }
     pub(crate) fn sequence_in_transaction(&mut self, sql: &str) -> Result<bool, Error> {
-        match &mut self.backend {
-            Backend::Local(c) => c.sequence_in_transaction(sql),
-            Backend::Hosted(c) => {
-                turso_core::Value::with_length_limit(c.max_value_bytes, || c.sequence(sql, true))
-            }
-        }
+        let c = &mut self.backend;
+        turso_core::Value::with_length_limit(c.max_value_bytes, || c.sequence(sql, true))
     }
     pub fn describe(&mut self, sql: &str, budget: &mut Budget) -> Result<DescribeResult, Error> {
-        match &mut self.backend {
-            Backend::Local(c) => c.describe(sql, budget),
-            Backend::Hosted(c) => {
-                c.barrier()?;
-                let (stmt, explain) = c.prepare(sql)?;
-                let params = (1..=stmt.parameters_count())
-                    .map(|i| DescribeParam {
-                        name: stmt
-                            .parameters()
-                            .name(NonZeroUsize::new(i).unwrap())
-                            .filter(|s| !s.starts_with('?')),
-                    })
-                    .collect::<Vec<_>>();
-                let columns = PendingColumns::Turso(&stmt);
-                if !budget.charge(
-                    columns.encoded_size()
-                        + params
-                            .iter()
-                            .map(|p| 18 + p.name.as_deref().map_or(4, escaped_len))
-                            .sum::<usize>(),
-                ) {
-                    return Err(too_large());
-                }
-                Ok(DescribeResult {
-                    params,
-                    cols: columns.to_cols(),
-                    is_explain: explain,
-                    is_readonly: stmt.get_program().is_readonly(),
-                })
-            }
+        let c = &self.backend;
+        c.barrier()?;
+        let (stmt, explain) = c.prepare(sql)?;
+        let params = (1..=stmt.parameters_count())
+            .map(|i| DescribeParam {
+                name: stmt
+                    .parameters()
+                    .name(NonZeroUsize::new(i).unwrap())
+                    .filter(|s| !s.starts_with('?')),
+            })
+            .collect::<Vec<_>>();
+        let columns = PendingColumns::Turso(&stmt);
+        if !budget.charge(
+            columns.encoded_size()
+                + params
+                    .iter()
+                    .map(|p| 18 + p.name.as_deref().map_or(4, escaped_len))
+                    .sum::<usize>(),
+        ) {
+            return Err(too_large());
         }
+        Ok(DescribeResult {
+            params,
+            cols: columns.to_cols(),
+            is_explain: explain,
+            is_readonly: stmt.get_program().is_readonly(),
+        })
     }
 }
 fn too_large() -> Error {
@@ -260,6 +230,15 @@ fn map_native(e: LimboError) -> Error {
     }
 }
 impl Hosted {
+    fn note_write(&mut self, in_transaction: bool, modified: bool) {
+        self.wrote |= modified;
+        if self.conn.get_auto_commit() {
+            let ended = std::mem::take(&mut self.transaction_wrote);
+            self.wrote |= in_transaction && ended;
+        } else {
+            self.transaction_wrote |= modified;
+        }
+    }
     fn barrier(&self) -> Result<(), Error> {
         self.owner.barrier().map_err(replication_error)
     }
@@ -336,6 +315,21 @@ impl Hosted {
     }
     fn compile(&self, cmd: Cmd, sql: &str) -> Result<Statement, Error> {
         self.authorize(&cmd)?;
+        if let Cmd::Stmt(stmt) = &cmd {
+            let session_state = match stmt {
+                Stmt::Pragma {
+                    name,
+                    body: Some(_),
+                } => SESSION_PRAGMAS.contains(&name.name.as_str().to_ascii_lowercase().as_str()),
+                Stmt::CreateTable { temporary, .. }
+                | Stmt::CreateView { temporary, .. }
+                | Stmt::CreateTrigger { temporary, .. } => *temporary,
+                _ => false,
+            };
+            if session_state {
+                self.dirty.set(true);
+            }
+        }
         let stmt = self
             .conn
             .prepare_translated_cmd(cmd, sql)
@@ -357,6 +351,7 @@ impl Hosted {
         Ok(stmt)
     }
     fn prepare(&self, sql: &str) -> Result<(Statement, bool), Error> {
+        let start = Instant::now();
         check_not_empty(sql)?;
         let (cmd, len) = SqliteDialect.parse(sql).map_err(map_native)?;
         let cmd = cmd.ok_or_else(|| Error::new("SQL_NO_STATEMENT", "SQL contains no statement"))?;
@@ -372,7 +367,15 @@ impl Hosted {
             ));
         }
         let explain = !matches!(&cmd, Cmd::Stmt(_));
-        Ok((self.compile(cmd, &sql[..len])?, explain))
+        let mut stmt = self.compile(cmd, &sql[..len])?;
+        let remaining = self
+            .timeout
+            .max(Duration::from_millis(1))
+            .checked_sub(start.elapsed())
+            .filter(|t| !t.is_zero())
+            .ok_or_else(|| Error::new("SQLITE_INTERRUPT", "statement exceeded time limit"))?;
+        stmt.set_query_timeout_override(Some(Some(remaining)));
+        Ok((stmt, explain))
     }
     fn sequence(&mut self, mut sql: &str, managed: bool) -> Result<bool, Error> {
         let before = self.owner.revision().map_err(replication_error)?;
@@ -432,7 +435,9 @@ impl Hosted {
         sink(Event::Begin(PendingColumns::Turso(&stmt)))?;
         let mut count = 0;
         let mut sink_error = None;
-        let result = stmt.run_with_row_callback(|row| {
+        let in_transaction = !self.conn.get_auto_commit();
+        let mut discard_rows = false;
+        let mut on_row = |row: &turso_core::Row| {
             count += 1;
             if !copy_rows {
                 return Ok(());
@@ -468,15 +473,49 @@ impl Hosted {
                 return Err(LimboError::Interrupt);
             }
             Ok(())
-        });
-        self.wrote |= !readonly;
-        match sink_error {
-            Some(e) if e.code == STOP && readonly => {}
-            Some(e) => return Err(e),
-            None => result.map_err(|e| self.execution_error(e))?,
+        };
+        let pager = self.conn.get_pager();
+        let result = loop {
+            use turso_core::StepResult;
+            match stmt.step_with_structured_errors() {
+                Ok(StepResult::Row) => {
+                    if !discard_rows
+                        && let Err(error) = on_row(stmt.row().expect("statement has a row"))
+                    {
+                        if readonly {
+                            break Err(error);
+                        }
+                        // RETURNING can exceed a response budget after mutations have started.
+                        // Complete the statement and confirm the commit before reporting that error.
+                        discard_rows = true;
+                    }
+                }
+                Ok(StepResult::Done) => break Ok(()),
+                Ok(StepResult::Interrupt) => break Err(LimboError::Interrupt),
+                Ok(StepResult::Busy) => break Err(LimboError::Busy),
+                Ok(StepResult::IO | StepResult::Yield | StepResult::Sleep { .. }) => {
+                    if let Err(error) = pager.io.step() {
+                        break Err(error);
+                    }
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let modified = self.conn.total_changes() != before
+            || (!readonly && !statement_verb(sql).is_some_and(changes_only_rows));
+        self.note_write(in_transaction, modified);
+        if let Err(error) = result
+            && !(readonly && sink_error.is_some())
+        {
+            return Err(self.execution_error(error));
         }
         if !(streaming && readonly) {
             self.owner.confirm(revision).map_err(replication_error)?;
+        }
+        if let Some(e) = sink_error
+            && !(e.code == STOP && readonly)
+        {
+            return Err(e);
         }
         for row in deferred {
             if let Err(e) = sink(Event::Row(PendingRow(
@@ -526,16 +565,15 @@ fn bind_native(stmt: &mut Statement, args: &Args<'_>, max_value_bytes: usize) ->
                         .into_iter()
                         .find_map(|p| stmt.parameter_index(&format!("{p}{name}")))
                 };
-                let pos = pos
-                    .filter(|p| {
-                        !name.starts_with('?') && !std::mem::replace(&mut seen[p.get() - 1], true)
-                    })
-                    .ok_or_else(|| {
-                        Error::new(
-                            "ARGS_INVALID",
-                            format!("invalid or repeated named argument {name}"),
-                        )
-                    })?;
+                let pos = pos.filter(|_| !name.starts_with('?')).ok_or_else(|| {
+                    Error::new("ARGS_INVALID", format!("invalid named argument {name}"))
+                })?;
+                if std::mem::replace(&mut seen[pos.get() - 1], true) {
+                    return Err(Error::new(
+                        "ARGS_INVALID",
+                        format!("another argument already binds {name}"),
+                    ));
+                }
                 (pos, value)
             }
         };

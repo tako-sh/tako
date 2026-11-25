@@ -321,16 +321,15 @@ fn channel_store_append_updates_channel_activity() {
     store
         .append("chat:room-123", &event(serde_json::json!({ "text": "hi" })))
         .unwrap();
-    let persisted: String = db
+    let persisted = db
         .sql()
-        .query_row(
-            "SELECT data_json FROM tako_replay_messages WHERE channel = 'chat:room-123'",
-            [],
-            |row| row.get(0),
+        .integers::<1>(
+            "SELECT data_json = ?1 FROM tako_replay_messages WHERE channel = 'chat:room-123'",
+            &[r#"{"text":"hi"}"#],
         )
         .unwrap();
     assert!(db.query_i64(activity) >= before + 1_000);
-    assert_eq!(persisted, r#"{"text":"hi"}"#);
+    assert_eq!(persisted, [1]);
 }
 
 #[test]

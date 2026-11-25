@@ -205,24 +205,6 @@ impl Databases {
         self.database_dir(id).join("store.redb")
     }
 
-    /// Opens a stored database's file and serves it. Blocks.
-    fn register(&self, name: &str, engine: DatabaseEngine) -> Result<(), String> {
-        match engine {
-            DatabaseEngine::Sqlite => {
-                let id = DatabaseId::parse(name)?;
-                self.host
-                    .register(id, self.database_path(name))
-                    .map_err(|e| e.to_string())
-            }
-            DatabaseEngine::Kv => {
-                let id = tako_kv::StoreId::parse(name)?;
-                self.kv
-                    .register(id, self.kv_path(name))
-                    .map_err(|e| e.to_string())
-            }
-        }
-    }
-
     fn is_registered(&self, name: &str, engine: DatabaseEngine) -> bool {
         match engine {
             DatabaseEngine::Sqlite => {
@@ -713,43 +695,9 @@ impl ServerState {
         if let Some(server_id) = server_id {
             *databases.server_id.write() = Some(server_id);
         }
-        let prepared = create_private_dir(&databases.root).and_then(|()| {
-            self.state_store
-                .list_databases()
-                .map_err(|e| format!("read databases: {e}"))
-        });
-        let stored = match prepared {
-            Ok(stored) => stored,
-            Err(error) => {
-                // Nothing was opened, so a later call (such as
-                // `start_databases`) tries again.
-                databases.opened.store(false, Ordering::Release);
-                return Err(error);
-            }
-        };
-        let groups = self
-            .state_store
-            .replication_groups()
-            .map_err(|e| e.to_string())?;
-        for database in stored {
-            if groups.contains_key(&database.generation) {
-                continue;
-            }
-            let state = self.clone();
-            let registered = tokio::task::spawn_blocking(move || {
-                state
-                    .databases
-                    .register(&database.name, database.engine)
-                    .map_err(|error| (database.name, error))
-            })
-            .await;
-            match registered {
-                Ok(Ok(())) => {}
-                Ok(Err((name, error))) => {
-                    tracing::error!(database = %name, %error, "Failed to open database");
-                }
-                Err(error) => tracing::error!(%error, "Failed to open database"),
-            }
+        if let Err(error) = create_private_dir(&databases.root) {
+            databases.opened.store(false, Ordering::Release);
+            return Err(error);
         }
         self.spawn_database_app_listener();
         Ok(())
@@ -766,40 +714,10 @@ impl ServerState {
         let Ok(Some(stored)) = self.state_store.get_database(name) else {
             return;
         };
-        // A replica must never fall back to its original bootstrap file.
-        if self
-            .state_store
-            .replication_groups()
-            .map_or(true, |groups| groups.contains_key(&stored.generation))
+        if !databases.is_registered(name, stored.engine)
+            && let Err(error) = self.reopen_storage_group(&stored.generation).await
         {
-            return;
-        }
-        if databases.is_registered(name, stored.engine) {
-            return;
-        }
-        let lock = databases.lock(name);
-        let _guard = lock.lock().await;
-        let Ok(Some(stored)) = self.state_store.get_database(name) else {
-            return;
-        };
-        if databases.is_registered(name, stored.engine) {
-            return;
-        }
-        let state = self.databases.clone();
-        let owned = name.to_owned();
-        let registered =
-            tokio::task::spawn_blocking(move || state.register(&owned, stored.engine)).await;
-        match registered {
-            Ok(Ok(())) => {
-                tracing::info!(database = %name, "Opened database after an earlier failure");
-                self.refresh_database_routes();
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(database = %name, %error, "Database still cannot be opened")
-            }
-            Err(error) => {
-                tracing::warn!(database = %name, %error, "Database still cannot be opened")
-            }
+            tracing::warn!(database = %name, %error, "Database still cannot be opened");
         }
     }
 
@@ -993,29 +911,11 @@ impl ServerState {
             && stored.engine == DatabaseEngine::Kv
         {
             return Response::error(format!(
-                "{name} is a KV store; this works only on SQLite databases."
+                "{name} is a KV store; this works only on SQL databases."
             ));
         }
         let result = match command {
             Command::CoordinateStorage { request } => self.coordinate_storage(request).await,
-            Command::CreateDatabase {
-                name,
-                engine,
-                generation,
-                backup_key_base64,
-                backup,
-            } => {
-                self.create_database(name, engine, generation, backup_key_base64, backup)
-                    .await
-            }
-            Command::DeleteDatabase {
-                name,
-                generation,
-                keep_snapshots,
-            } => {
-                self.delete_database(&name, generation.as_deref(), keep_snapshots)
-                    .await
-            }
             Command::DatabaseStatus { name } => self.database_status(name.as_deref()),
             Command::ConfigureDatabaseBackup { name, backup } => {
                 self.configure_database_backup(&name, backup).await
@@ -1190,60 +1090,16 @@ impl ServerState {
             undo(false);
             return Err(format!("record database: {error}"));
         }
-        // A copy created for a move backs up only once it is restored; a new
-        // database clears this on its first backup. Marked before the
-        // database is registered, so no scheduler tick finds it unmarked.
-        if engine == DatabaseEngine::Sqlite
-            && let Err(error) = backups::mark_unrestored(self, &id)
-        {
-            undo(true);
-            return Err(error);
-        }
-        let databases = self.databases.clone();
-        let register_id = id.clone();
-        let registered =
-            tokio::task::spawn_blocking(move || databases.register(&register_id, engine))
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|registered| registered);
-        if let Err(error) = registered {
-            undo(true);
-            return Err(format!("open database: {error}"));
-        }
-        match engine {
-            DatabaseEngine::Sqlite => {
-                // Nothing to capture until something is written.
-                if let Ok(database) = DatabaseId::parse(&id) {
-                    self.databases.host.clear_changed(&database);
-                }
-            }
-            DatabaseEngine::Kv => {
-                // Nothing to snapshot until something is written.
-                if let Ok(store) = tako_kv::StoreId::parse(&id) {
-                    self.databases.kv.clear_changed(&store);
-                }
-            }
-        }
+        // Only open_storage_group can make this seed available to a binding.
         tracing::info!(database = %id, engine = ?engine, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)?).expect("info serializes"))
     }
 
-    async fn delete_database(
+    pub(crate) async fn purge_database_replica(
         &self,
         id: &str,
         generation: Option<&str>,
         keep_snapshots: bool,
-    ) -> Result<serde_json::Value, String> {
-        self.delete_database_inner(id, generation, keep_snapshots, false)
-            .await
-    }
-
-    async fn delete_database_inner(
-        &self,
-        id: &str,
-        generation: Option<&str>,
-        keep_snapshots: bool,
-        retiring: bool,
     ) -> Result<serde_json::Value, String> {
         let requested = self.hosted_database(id)?;
         let lock = self.databases.lock(id);
@@ -1256,9 +1112,6 @@ impl ServerState {
             return Err(format!(
                 "Database {id} on this server is not the one asked for: a database of the same name was created again meanwhile. Nothing was deleted."
             ));
-        }
-        if !retiring && self.databases.raft.hosts(&stored.generation, id) {
-            return Err("This resource is replicated. Release its app and rollback bindings before retiring the group.".into());
         }
         // From here, deploys cannot start binding the database; one already
         // binding it makes the delete wait for it to finish.
@@ -1354,16 +1207,6 @@ impl ServerState {
         // they go with it, unless another copy lives on and shares them.
         let mut warnings = Vec::new();
         if keep_snapshots {
-            // A copy left by an unfinished move may still hold the
-            // snapshots, which would keep the database's own copy from
-            // taking any.
-            let released = match stored.engine {
-                DatabaseEngine::Sqlite => backups::release_holder(self, &stored).await,
-                DatabaseEngine::Kv => snapshots::release_holder(self, &stored).await,
-            };
-            if let Err(error) = released {
-                warnings.push(error);
-            }
             return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
         }
         // Deleting the snapshots deletes them for every copy of this

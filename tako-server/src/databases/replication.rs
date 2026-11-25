@@ -86,6 +86,89 @@ impl ServerState {
         Ok(())
     }
 
+    /// Exercise the production replica open and seed paths without a network listener.
+    #[cfg(test)]
+    pub(crate) async fn wait_for_test_leader(&self, generation: &str) -> Result<(), String> {
+        let g = self.databases.raft.group(generation)?;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !g.resource.leads() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(test)]
+    pub(crate) async fn create_test_database(
+        &self,
+        name: String,
+        engine: DatabaseEngine,
+        mut generation: String,
+        backup_key: String,
+        backup: Option<StorageBinding>,
+    ) -> Result<serde_json::Value, String> {
+        if self.databases.proxy.read().is_none() {
+            *self.databases.proxy.write() =
+                Some(crate::native_proxy::NativeProxy::loopback_storage(
+                    &self.runtime_config().data_dir,
+                    "test-founder".into(),
+                ));
+        }
+        if self.databases.is_registered(&name, engine) {
+            return Err(format!("database {name} already exists"));
+        }
+        if self
+            .state_store
+            .replication_groups()
+            .map_err(|e| e.to_string())?
+            .contains_key(&generation)
+        {
+            generation = hex::encode(&Sha256::digest(name.as_bytes())[..16]);
+        }
+        self.create_database(
+            name.clone(),
+            engine,
+            generation.clone(),
+            backup_key.clone(),
+            None,
+        )
+        .await?;
+        let config = GroupConfig {
+            name: Some(name.clone()),
+            key: backup_key,
+            local: 1,
+            founders: BTreeMap::from([(1, "[::1]:1".parse().unwrap())]),
+        };
+        self.state_store
+            .insert_replication_group(&generation, &config)
+            .map_err(|e| e.to_string())?;
+        let group = self.open_storage_group(&generation, &config).await?;
+        self.wait_for_test_leader(&generation).await?;
+        let path = match engine {
+            DatabaseEngine::Sqlite => self.databases.database_path(&name),
+            DatabaseEngine::Kv => self.databases.kv_path(&name),
+        };
+        tokio::task::spawn_blocking(move || group.resource.writer()?.seed(&path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        self.configure_database_backup(&name, backup).await
+    }
+
+    pub(super) async fn reopen_storage_group(&self, id: &str) -> Result<(), String> {
+        let _open = self.databases.raft.opening.lock().await;
+        let Some(config) = self
+            .state_store
+            .replication_groups()
+            .map_err(|e| e.to_string())?
+            .remove(id)
+        else {
+            return Ok(());
+        };
+        self.open_storage_group(id, &config).await?;
+        Ok(())
+    }
+
     fn storage_addresses(
         &self,
         ids: impl Iterator<Item = String>,
@@ -115,9 +198,48 @@ impl ServerState {
         .collect()
     }
 
+    async fn serve_storage_group(&self, id: &str, group: &Group) -> Result<(), String> {
+        if let Some(name) = &group.name {
+            let stored = self.hosted_database(name)?;
+            if stored.generation != id {
+                return Err("resource generation changed".to_owned());
+            }
+            let resource = group.resource.clone();
+            match stored.engine {
+                DatabaseEngine::Sqlite => {
+                    let database = DatabaseId::parse(name)?;
+                    if self.databases.host.is_registered(&database) {
+                        return Ok(());
+                    }
+                    self.databases
+                        .host
+                        .register_replicated(database, self.databases.database_path(name), resource)
+                        .map_err(|e| e.to_string())?;
+                }
+                DatabaseEngine::Kv => {
+                    let store = tako_kv::StoreId::parse(name)?;
+                    let host = self.databases.kv.clone();
+                    let path = self.databases.kv_path(name);
+                    tokio::task::spawn_blocking(move || {
+                        if host.is_registered(&store) {
+                            return Ok(());
+                        }
+                        host.register_replicated(store, path, resource)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn open_storage_group(&self, id: &str, config: &GroupConfig) -> Result<Group, String> {
         let storage = &self.databases.raft;
-        if let Some(group) = storage.groups.read().get(id).cloned() {
+        let existing = storage.groups.read().get(id).cloned();
+        if let Some(group) = existing {
+            self.serve_storage_group(id, &group).await?;
             return Ok(group);
         }
         let dir = self.runtime_config().data_dir.join("raft").join(id);
@@ -194,47 +316,7 @@ impl ServerState {
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            if let Some(name) = &config.name {
-                let stored = self.hosted_database(name)?;
-                if stored.generation != id {
-                    return Err("resource generation changed".to_owned());
-                }
-                let resource = group.resource.clone();
-                match stored.engine {
-                    DatabaseEngine::Sqlite => {
-                        let database = DatabaseId::parse(name)?;
-                        if self.databases.host.is_registered(&database) {
-                            self.databases
-                                .host
-                                .unregister(&database)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                        }
-                        self.databases
-                            .host
-                            .register_replicated(
-                                database,
-                                self.databases.database_path(name),
-                                resource,
-                            )
-                            .map_err(|e| e.to_string())?;
-                    }
-                    DatabaseEngine::Kv => {
-                        let store = tako_kv::StoreId::parse(name)?;
-                        let host = self.databases.kv.clone();
-                        let path = self.databases.kv_path(name);
-                        tokio::task::spawn_blocking(move || {
-                            if host.is_registered(&store) {
-                                host.unregister(&store)?;
-                            }
-                            host.register_replicated(store, path, resource)
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
+            self.serve_storage_group(id, &group).await?;
             Ok::<(), String>(())
         }
         .await;
@@ -434,7 +516,7 @@ impl ServerState {
                             .mark_withdrawing(&generation)
                             .map_err(|e| e.to_string())?;
                     }
-                    self.delete_database_inner(&name, Some(&generation), true, true)
+                    self.purge_database_replica(&name, Some(&generation), true)
                         .await?;
                 }
                 if let Some(group) = storage.groups.write().remove(&generation)

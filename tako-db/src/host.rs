@@ -101,8 +101,6 @@ pub struct HostConfig {
     /// store together.
     pub max_stored_sql_bytes: usize,
     pub max_condition_depth: usize,
-    /// Idle connections kept per database for stateless requests.
-    pub pool_size: usize,
     /// Requests executing at once on one database.
     pub max_concurrent_per_database: usize,
     /// How long `pause` waits for in-flight requests.
@@ -117,9 +115,6 @@ pub struct HostConfig {
     /// its connection is closed: a client that stops reading must not hold
     /// the response, and the memory reserved for it, forever.
     pub write_stall_timeout: Duration,
-    /// SQLite's memory across this process, past which page caches stop
-    /// growing; see [`crate::engine::set_soft_heap_limit`].
-    pub sqlite_soft_heap_limit_bytes: usize,
 }
 
 impl Default for HostConfig {
@@ -139,12 +134,10 @@ impl Default for HostConfig {
             max_stored_sql_bytes_per_stream: 1024 * 1024,
             max_stored_sql_bytes: 64 * 1024 * 1024,
             max_condition_depth: 32,
-            pool_size: 8,
             max_concurrent_per_database: 32,
             max_connections: 1024,
             idle_connection_timeout: Duration::from_secs(30),
             write_stall_timeout: Duration::from_secs(30),
-            sqlite_soft_heap_limit_bytes: 256 * 1024 * 1024,
             pause_timeout: Duration::from_secs(30),
         }
     }
@@ -217,14 +210,12 @@ pub(crate) struct Database {
     pub(crate) id: DatabaseId,
     path: PathBuf,
     engine: EngineConfig,
-    pool_size: usize,
     buffered: Arc<Semaphore>,
     storage: Storage,
     primary: Mutex<Option<Arc<crate::mvcc::Owner>>>,
     replica: Mutex<Option<(Arc<tempfile::NamedTempFile>, Arc<crate::mvcc::Owner>)>>,
     state: Mutex<DatabaseState>,
     idle: Notify,
-    pool: Mutex<Vec<engine::Connection>>,
     /// Changed since the last snapshot. Starts set: the history is unknown.
     changed: AtomicBool,
     pub(crate) permits: Arc<Semaphore>,
@@ -234,8 +225,7 @@ pub(crate) struct Database {
 
 #[derive(Clone)]
 enum Storage {
-    Sqlite,
-    Development,
+    Local,
     Replicated(tako_raft::Resource),
 }
 
@@ -253,7 +243,7 @@ impl Database {
             Storage::Replicated(resource) => {
                 return self.replicated_connection(resource, read_only, &self.engine);
             }
-            Storage::Development => {
+            Storage::Local => {
                 return engine::Connection::development(
                     &self.path,
                     &self.engine,
@@ -261,15 +251,7 @@ impl Database {
                     self.buffered.clone(),
                 );
             }
-            Storage::Sqlite => {}
         }
-        {
-            let mut pool = self.pool.lock();
-            if let Some(index) = pool.iter().rposition(|c| c.read_only == read_only) {
-                return Ok(pool.swap_remove(index));
-            }
-        }
-        engine::Connection::open_mode(&self.path, &self.engine, read_only)
     }
 
     fn replicated_connection(
@@ -305,16 +287,8 @@ impl Database {
         engine::Connection::hosted(owner, config, read_only, self.buffered.clone())
     }
 
-    /// Returns a connection for reuse when it carries no stream state.
     pub(crate) fn release(&self, mut conn: engine::Connection) {
         conn.rollback();
-        if !matches!(self.storage, Storage::Sqlite) || conn.is_dirty() || !conn.is_autocommit() {
-            return;
-        }
-        let mut pool = self.pool.lock();
-        if pool.len() < self.pool_size {
-            pool.push(conn);
-        }
     }
 
     pub(crate) fn mark_changed(&self) {
@@ -548,7 +522,6 @@ pub enum HostError {
 
 impl DatabaseHost {
     pub fn new(config: HostConfig) -> Self {
-        crate::engine::set_soft_heap_limit(config.sqlite_soft_heap_limit_bytes);
         let stored_sql = Arc::new(StoredSqlBudget::new(config.max_stored_sql_bytes));
         let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
         Self {
@@ -578,18 +551,12 @@ impl DatabaseHost {
         engine::create_database(path).map_err(HostError::Engine)
     }
 
-    /// Serves an existing database file. Takes a shared lock on
-    /// `<path>.lock` so a swap in another process waits for this one.
-    pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
-        self.register_inner(id, path, Storage::Sqlite)
-    }
-
     /// Register a persistent, local Turso binding without keeping an idle owner.
-    pub fn register_development(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
+    pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
         if !path.try_exists()? {
             crate::mvcc::Owner::local(&path, self.inner.config.engine.busy_timeout)?;
         }
-        self.register_inner(id, path, Storage::Development)
+        self.register_inner(id, path, Storage::Local)
     }
     pub fn register_replicated(
         &self,
@@ -619,7 +586,6 @@ impl DatabaseHost {
                 id,
                 path,
                 engine: config.engine.clone(),
-                pool_size: config.pool_size,
                 buffered: self.inner.buffered.clone(),
                 storage,
                 primary: Mutex::new(None),
@@ -631,7 +597,6 @@ impl DatabaseHost {
                     streams: 0,
                 }),
                 idle: Notify::new(),
-                pool: Mutex::new(Vec::new()),
                 changed: AtomicBool::new(true),
                 permits: Arc::new(Semaphore::new(config.max_concurrent_per_database)),
                 lock: Mutex::new(Some(lock)),
@@ -757,23 +722,15 @@ impl DatabaseHost {
         let storage = database.storage.clone();
         let dest = dest.to_path_buf();
         let busy = self.inner.config.engine.busy_timeout;
-        let result = tokio::task::spawn_blocking(move || {
-            let image = match storage {
-                Storage::Development => {
-                    return crate::mvcc::Owner::snapshot_local(&path, &dest, busy)
-                        .map_err(|e| e.to_string());
-                }
-                Storage::Sqlite => None,
-                Storage::Replicated(resource) => {
-                    resource.leader_barrier().map_err(|e| e.to_string())?;
-                    Some(resource.local_file().map_err(|e| e.to_string())?)
-                }
-            };
-            let source = image.as_ref().map_or(path.as_path(), |image| image.path());
-            if image.is_some() && crate::mvcc::export(source, &dest).map_err(|e| e.to_string())? {
-                return Ok(());
+        let result = tokio::task::spawn_blocking(move || match storage {
+            Storage::Local => {
+                crate::mvcc::Owner::snapshot_local(&path, &dest, busy).map_err(|e| e.to_string())
             }
-            engine::snapshot_database(source, &dest, busy)
+            Storage::Replicated(resource) => {
+                resource.leader_barrier().map_err(|e| e.to_string())?;
+                let image = resource.local_file().map_err(|e| e.to_string())?;
+                engine::snapshot_database(image.path(), &dest)
+            }
         })
         .await
         .map_err(|e| HostError::Engine(e.to_string()))?;
@@ -816,7 +773,6 @@ impl DatabaseHost {
             }
         }
         let streams = self.take_streams(|entry| &entry.database == id);
-        let pool = std::mem::take(&mut *database.pool.lock());
         database.primary.lock().take();
         database.replica.lock().take();
         let lock_path = lock_path(&database.path);
@@ -824,7 +780,6 @@ impl DatabaseHost {
         let timeout = self.inner.config.pause_timeout;
         let exclusive = tokio::task::spawn_blocking(move || {
             drop(streams);
-            drop(pool);
             drop(lock);
             exclusive_lock(&lock_path, timeout)
         })
@@ -1043,13 +998,12 @@ impl DatabaseHost {
                 Storage::Replicated(resource) => {
                     database.replicated_connection(resource, false, &config)
                 }
-                Storage::Development => engine::Connection::development(
+                Storage::Local => engine::Connection::development(
                     &database.path,
                     &config,
                     false,
                     database.buffered.clone(),
                 ),
-                Storage::Sqlite => engine::Connection::open(&database.path, &config),
             }
             .map_err(|e| HostError::Engine(e.message))?;
             let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
@@ -1073,7 +1027,7 @@ impl DatabaseHost {
         let mut wal = path.clone().into_os_string();
         wal.push("-wal");
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        let log = if matches!(db.storage, Storage::Development) {
+        let log = if matches!(db.storage, Storage::Local) {
             size(&path.with_extension("db-log"))
         } else {
             0
@@ -1279,7 +1233,6 @@ impl DatabaseHost {
 
 /// Drops a closed database's connections and its file lock.
 fn release(database: &Database) {
-    database.pool.lock().clear();
     database.lock.lock().take();
 }
 

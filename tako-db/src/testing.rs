@@ -29,6 +29,46 @@ pub struct TestDatabase {
     pub token: String,
 }
 
+/// An operator session on a local test database, sharing the host's native owner.
+pub struct TestSql {
+    connection: std::sync::Arc<turso_core::Connection>,
+    _owner: std::sync::Arc<crate::mvcc::Owner>,
+}
+
+impl TestSql {
+    pub fn open(path: &std::path::Path) -> Self {
+        let owner = crate::mvcc::Owner::local(path, std::time::Duration::from_secs(5)).unwrap();
+        let connection = owner.connect().unwrap();
+        connection.set_busy_timeout(std::time::Duration::from_secs(5));
+        Self {
+            connection,
+            _owner: owner,
+        }
+    }
+    pub fn execute_batch(&self, sql: &str) -> turso_core::Result<()> {
+        self.connection.execute(sql)
+    }
+    pub fn integers<const N: usize>(
+        &self,
+        sql: &str,
+        args: &[&str],
+    ) -> turso_core::Result<[i64; N]> {
+        let mut stmt = self.connection.prepare(sql)?;
+        for (index, arg) in args.iter().enumerate() {
+            stmt.bind_at(
+                std::num::NonZeroUsize::new(index + 1).unwrap(),
+                turso_core::Value::from_text((*arg).to_owned()),
+            );
+        }
+        let rows = stmt.run_collect_rows()?;
+        let [row] = rows.as_slice() else {
+            panic!("expected one operator query row")
+        };
+        assert_eq!(row.len(), N);
+        Ok(std::array::from_fn(|i| row[i].as_int().unwrap()))
+    }
+}
+
 impl TestServer {
     /// Serves an empty host with app access.
     pub fn start() -> Self {

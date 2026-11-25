@@ -290,11 +290,16 @@ impl Store {
         config: StoreConfig,
         resource: tako_raft::Resource,
     ) -> Result<Self> {
+        let empty = resource.file_size().map_err(storage)? == 0;
         let replicated = Arc::new(Replicated {
             resource,
             reader: Default::default(),
         });
-        Self::open_inner(path, config, Some(replicated))
+        let store = Self::open_inner(path, config, Some(replicated))?;
+        if empty {
+            store.clear_changed();
+        }
+        Ok(store)
     }
 
     fn open_inner(

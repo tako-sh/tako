@@ -41,7 +41,6 @@ openssl.workspace = true
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 getrandom = "0.4"
 redb = "5"
-rusqlite.workspace = true
 tako-storage = { path = "../tako-storage" }
 object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }
 futures-util = "0.3"
@@ -82,6 +81,7 @@ socket2 = "0.6"
 hickory-proto = "0.26.1"
 
 [dev-dependencies]
+rusqlite.workspace = true
 tako-db = { path = "../tako-db", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true

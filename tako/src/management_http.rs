@@ -397,8 +397,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::SecretsDigest { .. }
         // Snapshots, restores, transfers, and queries can outlast a probe.
         | Command::CoordinateStorage { .. }
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
+
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }
         | Command::SnapshotDatabase { .. }

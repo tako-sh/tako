@@ -196,12 +196,11 @@ mod tests {
         assert!(store.read_after("chat", None, 10).unwrap().is_empty());
         assert_eq!(
             db.sql()
-                .query_row(
+                .integers::<1>(
                     "SELECT window_ms FROM tako_replay_streams WHERE channel = ?1",
-                    [a.stream.key()],
-                    |row| row.get::<_, i64>(0)
+                    &[a.stream.key()]
                 )
-                .unwrap(),
+                .unwrap()[0],
             1000
         );
     }

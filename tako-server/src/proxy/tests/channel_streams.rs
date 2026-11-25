@@ -317,12 +317,11 @@ async fn undeclared_params_are_rejected_before_they_start_a_stream() {
     let streams = || {
         replay
             .sql()
-            .query_row(
+            .integers::<1>(
                 "SELECT COUNT(*) FROM tako_replay_streams WHERE channel LIKE 'tako.stream:%'",
-                [],
-                |row| row.get::<_, i64>(0),
+                &[],
             )
-            .unwrap_or(0)
+            .unwrap_or([0])[0]
     };
     assert_eq!(streams(), 0, "no stream bookkeeping for rejected params");
 

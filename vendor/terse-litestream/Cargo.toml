@@ -14,12 +14,14 @@ version = "v0.5.17"
 revision = "ccd326c175b583b5e82893a6078f06dcef5fba3f"
 
 [features]
-upstream-tests = []
+default = ["wal-capture"]
+wal-capture = ["dep:rusqlite"]
+upstream-tests = ["wal-capture"]
 
 [dependencies]
 anyhow = "1"
 crc = "3.3"
-rusqlite = { version = "0.43", features = ["bundled"], default-features = false }
+rusqlite = { version = "0.43", features = ["bundled"], default-features = false, optional = true }
 tempfile = "3"
 terse-ltx = { version = "0.1.0", git = "https://github.com/TerseAI/terse-ltx", rev = "fdc27e08f09a532b8f0b8d72971de4b2772ef86b" }
 

@@ -95,9 +95,6 @@ pub enum KvCommands {
         /// Snapshot ID from `tako kv backups`
         #[arg(long)]
         snapshot: Option<String>,
-        /// Recover onto another server, which becomes the store's server
-        #[arg(long)]
-        server: Option<String>,
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -127,10 +124,6 @@ pub enum KvCommands {
     Delete {
         /// Store name
         name: String,
-        /// Delete only the copy left on this server after
-        /// `restore --server` moved the store elsewhere
-        #[arg(long)]
-        server: Option<String>,
         /// Skip the confirmation
         #[arg(long, short)]
         yes: bool,
@@ -223,20 +216,8 @@ async fn run_async(
             name,
             latest: _,
             snapshot,
-            server,
             yes,
-        } => {
-            db::restore(
-                &ctx,
-                &name,
-                snapshot,
-                None,
-                server.as_deref(),
-                yes,
-                DatabaseEngine::Kv,
-            )
-            .await
-        }
+        } => db::restore(&ctx, &name, snapshot, None, yes, DatabaseEngine::Kv).await,
         KvCommands::Import { name, file, yes } => {
             ctx.require_admin()?;
             let (_, home) = ctx.resource(&name, DatabaseEngine::Kv).await?;
@@ -264,12 +245,7 @@ async fn run_async(
             }
             db::transfer::export(&home, &name, &file, DatabaseEngine::Kv).await
         }
-        KvCommands::Delete { name, server, yes } => match server {
-            Some(server) => {
-                db::delete_old_copy(&ctx, &name, &server, yes, DatabaseEngine::Kv).await
-            }
-            None => db::delete(&ctx, &name, yes, DatabaseEngine::Kv).await,
-        },
+        KvCommands::Delete { name, yes } => db::delete(&ctx, &name, yes, DatabaseEngine::Kv).await,
     }
 }
 

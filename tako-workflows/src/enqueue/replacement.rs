@@ -2,7 +2,8 @@
 //! restore, an import or a reset, before the server swaps it in under
 //! workflow runtimes that keep the database open.
 
-use rusqlite::{Connection, params};
+use std::io;
+use tako_db::PortableDatabase;
 
 /// SQL that creates the workflow store's tables in a database file.
 /// Idempotent.
@@ -18,92 +19,87 @@ pub fn schema_sql() -> String {
 /// stay until each app's next deploy. The revision counter must not go back
 /// either: a later deploy could then take a revision an app's running
 /// release already holds and lose to it.
-pub fn keep_live_schedules(live: &Connection, replacement: &Connection) -> rusqlite::Result<()> {
-    let complete: bool = live.query_row(
-        "SELECT count(*) = 3 FROM main.sqlite_schema WHERE type = 'table' AND name IN
-             ('tako_workflow_meta', 'tako_workflow_schedule_releases', 'tako_workflow_schedules')",
-        [],
-        |row| row.get(0),
+pub fn keep_live_schedules(
+    live: &PortableDatabase,
+    replacement: &PortableDatabase,
+) -> io::Result<()> {
+    let complete = live.query(
+        "SELECT count(*) FROM main.sqlite_schema WHERE type = 'table' AND rootpage > 0 AND name IN
+        ('tako_workflow_meta', 'tako_workflow_schedule_releases', 'tako_workflow_schedules')",
+        &[],
     )?;
-    if !complete {
+    if complete[0][0].as_int() != Some(3) {
         return Ok(());
     }
-    let revision: i64 = live
-        .query_row(
-            "SELECT MAX(
-                 COALESCE((SELECT value FROM tako_workflow_meta WHERE name = 'schedule_revision'), 0),
-                 COALESCE((SELECT MAX(revision) FROM tako_workflow_schedule_releases), 0))",
-            [],
-            |row| row.get(0),
-        )?;
-    let releases: Vec<(String, String, i64)> = live
-        .prepare("SELECT app, build, revision FROM tako_workflow_schedule_releases")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    type Schedule = (String, String, String, Option<i64>, Option<i64>);
-    let schedules: Vec<Schedule> = live
-        .prepare("SELECT app, name, cron, last_run_at, max_attempts FROM tako_workflow_schedules")?
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
-    let tx = replacement.unchecked_transaction()?;
-    tx.execute(
-        "UPDATE tako_workflow_meta
-         SET value = MAX(value, ?1,
-             COALESCE((SELECT MAX(revision) FROM tako_workflow_schedule_releases), 0))
-         WHERE name = 'schedule_revision'",
-        params![revision],
+    let revision = live.query(
+        "SELECT MAX(
+        COALESCE((SELECT value FROM tako_workflow_meta WHERE name = 'schedule_revision'), 0),
+        COALESCE((SELECT MAX(revision) FROM tako_workflow_schedule_releases), 0))",
+        &[],
     )?;
-    tx.execute("DELETE FROM tako_workflow_schedule_releases", [])?;
-    tx.execute("DELETE FROM tako_workflow_schedules", [])?;
-    {
-        let mut insert = tx.prepare(
-            "INSERT INTO tako_workflow_schedule_releases (app, build, revision) VALUES (?1, ?2, ?3)",
+    let releases = live.query(
+        "SELECT app, build, revision FROM tako_workflow_schedule_releases",
+        &[],
+    )?;
+    let schedules = live.query(
+        "SELECT app, name, cron, last_run_at, max_attempts FROM tako_workflow_schedules",
+        &[],
+    )?;
+    replacement.execute_batch("BEGIN IMMEDIATE")?;
+    let update = || -> io::Result<()> {
+        replacement.query(
+            "UPDATE tako_workflow_meta SET value = MAX(value, ?1,
+             COALESCE((SELECT MAX(revision) FROM tako_workflow_schedule_releases), 0))
+             WHERE name = 'schedule_revision'",
+            &revision[0],
         )?;
-        for (app, build, revision) in &releases {
-            insert.execute(params![app, build, revision])?;
-        }
-        let mut insert = tx.prepare(
-            "INSERT INTO tako_workflow_schedules (app, name, cron, last_run_at, max_attempts)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+        replacement.execute_batch(
+            "DELETE FROM tako_workflow_schedule_releases; DELETE FROM tako_workflow_schedules",
         )?;
-        for (app, name, cron, last_run_at, max_attempts) in &schedules {
-            insert.execute(params![app, name, cron, last_run_at, max_attempts])?;
+        for row in releases {
+            replacement.query("INSERT INTO tako_workflow_schedule_releases (app, build, revision) VALUES (?1, ?2, ?3)", &row)?;
         }
+        for row in schedules {
+            replacement.query(
+                "INSERT INTO tako_workflow_schedules (app, name, cron, last_run_at, max_attempts)
+                VALUES (?1, ?2, ?3, ?4, ?5)",
+                &row,
+            )?;
+        }
+        replacement.execute_batch("COMMIT")
+    };
+    if let Err(error) = update() {
+        replacement.execute_batch("ROLLBACK")?;
+        return Err(error);
     }
-    tx.commit()
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn store() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
+    fn store() -> (tempfile::TempDir, PortableDatabase) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.db");
+        tako_db::DatabaseHost::create_file(&path).unwrap();
+        let conn = PortableDatabase::open(&path).unwrap();
         conn.execute_batch(&schema_sql()).unwrap();
-        conn
+        (dir, conn)
     }
 
-    fn revision(conn: &Connection) -> i64 {
-        conn.query_row(
+    fn revision(conn: &PortableDatabase) -> i64 {
+        conn.query(
             "SELECT value FROM tako_workflow_meta WHERE name = 'schedule_revision'",
-            [],
-            |row| row.get(0),
+            &[],
         )
-        .unwrap()
+        .unwrap()[0][0]
+            .as_int()
+            .unwrap()
     }
-
     #[test]
     fn a_replacement_keeps_the_running_releases_schedules_and_revision() {
-        let live = store();
+        let (_live_dir, live) = store();
         live.execute_batch(
             "UPDATE tako_workflow_meta SET value = 12 WHERE name = 'schedule_revision';
              INSERT INTO tako_workflow_schedule_releases VALUES ('shop', 'b2', 12);
@@ -111,7 +107,7 @@ mod tests {
         )
         .unwrap();
         // An older copy: a lower counter, an earlier build's schedules.
-        let old = store();
+        let (_old_dir, old) = store();
         old.execute_batch(
             "UPDATE tako_workflow_meta SET value = 4 WHERE name = 'schedule_revision';
              INSERT INTO tako_workflow_schedule_releases VALUES ('shop', 'b1', 4);
@@ -122,28 +118,29 @@ mod tests {
         keep_live_schedules(&live, &old).unwrap();
 
         assert_eq!(revision(&old), 12);
-        let release: (String, i64) = old
-            .query_row(
+        let release = old
+            .query(
                 "SELECT build, revision FROM tako_workflow_schedule_releases WHERE app = 'shop'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                &[],
             )
             .unwrap();
-        assert_eq!(release, ("b2".to_string(), 12));
-        let names: Vec<String> = old
-            .prepare("SELECT name FROM tako_workflow_schedules WHERE app = 'shop'")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+        assert_eq!(release.len(), 1);
+        assert_eq!(release[0][0].to_text(), Some("b2"));
+        assert_eq!(release[0][1].as_int(), Some(12));
+        let names = old
+            .query(
+                "SELECT name FROM tako_workflow_schedules WHERE app = 'shop'",
+                &[],
+            )
             .unwrap();
-        assert_eq!(names, ["nightly"]);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0][0].to_text(), Some("nightly"));
     }
 
     #[test]
     fn a_replacement_never_lowers_the_revision_counter() {
-        let live = store();
-        let newer = store();
+        let (_live_dir, live) = store();
+        let (_new_dir, newer) = store();
         newer
             .execute_batch(
                 "UPDATE tako_workflow_meta SET value = 30 WHERE name = 'schedule_revision';",

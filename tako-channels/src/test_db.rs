@@ -80,8 +80,8 @@ impl TestDb {
     }
 
     /// Direct access to the database file, as an operator's tools have.
-    pub(crate) fn sql(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.path).unwrap()
+    pub(crate) fn sql(&self) -> tako_db::testing::TestSql {
+        tako_db::testing::TestSql::open(&self.path)
     }
 
     pub(crate) fn execute(&self, sql: &str) {
@@ -89,7 +89,7 @@ impl TestDb {
     }
 
     pub(crate) fn query_i64(&self, sql: &str) -> i64 {
-        self.sql().query_row(sql, [], |row| row.get(0)).unwrap()
+        self.sql().integers::<1>(sql, &[]).unwrap()[0]
     }
 
     /// Moves every stored message time and stream activity `ms` into the

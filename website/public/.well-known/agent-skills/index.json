@@ -20,7 +20,7 @@
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "5678963139a789eede9e24e94cbeb22d3b6108f43f7227d04ac0dda4cd1e7980"
+      "sha256": "f46042dcfbe1713fa730fb2f05de36b49c2c09bb7f4c876711975f11465ba043"
     },
     {
       "name": "tako-sdk-rust",

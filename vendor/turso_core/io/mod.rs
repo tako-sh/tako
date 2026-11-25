@@ -410,7 +410,7 @@ impl DiskTempFile {
         let path = path.to_str().ok_or_else(|| {
             crate::LimboError::InternalError("temp file path is not valid UTF-8".to_string())
         })?;
-        let file = self.io.open_file(path, OpenFlags::Create, false)?;
+        let file = self.io.open_sorter_temp_file(path)?;
         Ok(&self
             .created
             .get_or_init(|| CreatedTempFile { file, dir })
@@ -512,6 +512,11 @@ impl Default for OpenFlags {
 
 pub trait IO: Clock + Send + Sync {
     fn open_file(&self, path: &str, flags: OpenFlags, direct: bool) -> Result<Arc<dyn File>>;
+
+    /// Open a scratch file inside the sorter's freshly allocated private TempDir.
+    fn open_sorter_temp_file(&self, path: &str) -> Result<Arc<dyn File>> {
+        self.open_file(path, OpenFlags::Create, false)
+    }
 
     fn open_shared_wal_file(&self, path: &str) -> Result<Arc<dyn File>> {
         self.open_file(path, OpenFlags::Create | OpenFlags::NoLock, false)

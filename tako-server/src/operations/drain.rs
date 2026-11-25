@@ -86,8 +86,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         // Database operations neither start app processes nor touch
         // releases; restores pause the database themselves.
         | Command::CoordinateStorage { .. }
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
+
         | Command::DatabaseStatus { .. }
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }

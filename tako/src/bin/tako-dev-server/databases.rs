@@ -103,12 +103,10 @@ pub(crate) async fn connect(
                 let register_path = path.clone();
                 let register_id = id.clone();
                 // Creating and locking the file blocks.
-                tokio::task::spawn_blocking(move || {
-                    host.register_development(register_id, register_path)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| format!("open {}: {e}", path.display()))?;
+                tokio::task::spawn_blocking(move || host.register(register_id, register_path))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("open {}: {e}", path.display()))?;
                 registrations.files.insert(path.clone(), id.clone());
                 id
             }
