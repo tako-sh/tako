@@ -516,12 +516,12 @@ impl HostedChannelStore {
                     ],
                 ));
             }
-            if has_idle != 0 {
-                writes.push(Statement::new(format!(
+            // Deleting the last retained message can make a stream eligible
+            // for release even when the initial read found no idle streams.
+            writes.push(Statement::new(format!(
                 "DELETE FROM tako_replay_streams WHERE app = ?1
                  AND (SELECT epoch FROM tako_replay_apps WHERE app = ?1) = ?2 AND channel IN ({idle})"
             ), vec![self.app.as_str().into(), hex.into()]));
-            }
             self.client.maintenance_batch(&writes)?;
         }
         // Freeze a pass's high-water mark so new arrivals cannot indefinitely
