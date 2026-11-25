@@ -1,4 +1,4 @@
-//! Continuous backups of SQLite databases.
+//! Point-in-time backups of committed Turso databases.
 //!
 //! [`CommittedSpool`] encodes quorum-committed snapshots and deltas as LTX segments.
 //! [`Replica`] uploads them, encrypted, to object storage, restores a
@@ -49,11 +49,6 @@ pub const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// A changing database gets a new full image this often, so a restore
 /// replays at most about a day of captures.
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// How far above the existing history a capture with an empty spool starts.
-/// A previous owner that has not yet noticed it lost the database can keep
-/// uploading for a while; its transactions stay below this owner's, so no
-/// restore chain mixes the two.
-pub const OWNER_JUMP: u64 = 1 << 32;
 /// Segments downloaded at once by a restore.
 const DOWNLOADS: usize = 8;
 /// Segments larger than this are uploaded in parts: single requests are
@@ -84,17 +79,6 @@ fn lock_file(path: &Path, owner: &str) -> Result<CaptureLock> {
     lock.try_lock()
         .with_context(|| format!("spool already has {owner}"))?;
     Ok(CaptureLock(lock))
-}
-
-/// Whether a spool holds any segment, so capture resumes its position.
-pub fn spool_has_segments(directory: &Path) -> Result<bool> {
-    let spool = FileStore::new(directory);
-    for level in 0..=9 {
-        if !spool.list(level)?.is_empty() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// A segment in the remote store.
@@ -307,22 +291,6 @@ impl Replica {
         ))
     }
 
-    /// The position a capture with the spool in `directory` must start
-    /// above: none when the spool already has a position, otherwise far past
-    /// the remote history ([`OWNER_JUMP`]).
-    pub async fn floor(&self, directory: &Path) -> Result<u64> {
-        if spool_has_segments(directory)? {
-            return Ok(0);
-        }
-        Ok(self
-            .segments()
-            .await?
-            .iter()
-            .map(Stored::txid)
-            .max()
-            .map_or(0, |max| max.saturating_add(OWNER_JUMP)))
-    }
-
     /// Uploads pending segments in transaction order, recording each only
     /// once the remote object is durable, then removes uploaded segments from
     /// the spool except the newest, which holds the capture's position.
@@ -433,9 +401,8 @@ impl Replica {
         let key = self.segment_key(segment, captured_at_ms);
         let stored = if bytes.len() as u64 > self.multipart_threshold {
             // A multipart write cannot be create-only, so an existing object
-            // is looked for first. Two owners never write one key (see
-            // `OWNER_JUMP` and the callers' holder checks); this catches a
-            // retry after a lost acknowledgement.
+            // is looked for first. A retry, including a new leader resuming
+            // capture, can upload the same committed segment.
             match self.raw.head(&key).await {
                 Ok(_) => Err(object_store::Error::AlreadyExists {
                     path: key.to_string(),

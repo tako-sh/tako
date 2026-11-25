@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc, sync::atomic::Orderi
 use anyhow::Result;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjectPath};
 use rusqlite::Connection;
-use tako_backup::{OWNER_JUMP, Point, RETENTION, Replica, Target, encryption::Key, windows};
+use tako_backup::{Point, RETENTION, Replica, Target, encryption::Key, windows};
 use terse_litestream::{FileStore, ReplicaStore};
 
 use support::{Process, Remote, capture::Capture};
@@ -122,11 +122,6 @@ async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> R
     fs::remove_file(format!("{}-wal", database.display())).ok();
     fs::remove_file(format!("{}-shm", database.display())).ok();
     fs::rename(&restored, &database)?;
-    assert_eq!(
-        replica.floor(&spool).await?,
-        0,
-        "the spool keeps its position"
-    );
     let mut capture = Capture::open(&database, &spool, 0)?;
     let reopened = capture.snapshot()?;
     assert!(reopened > newer);
@@ -142,7 +137,7 @@ async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> R
 }
 
 #[tokio::test]
-async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result<()> {
+async fn restores_each_history_when_independent_ltx_sources_leave_a_gap() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -160,8 +155,7 @@ async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result
     let new = dir.path().join("new.db");
     restore(&replica, Target::Latest, &new).await?;
     let new_spool = dir.path().join("new-spool");
-    let floor = replica.floor(&new_spool).await?;
-    assert_eq!(floor, moved_at + OWNER_JUMP);
+    let floor = moved_at + 100;
     let mut new_capture = Capture::open(&new, &new_spool, floor)?;
     let base = new_capture.snapshot()?;
     assert_eq!(base, floor + 1);

@@ -1,17 +1,16 @@
-# Continuous SQLite backups
+# Continuous Turso backups
 
-Run from the repository root:
+Run these checks from the repository root.
 
 ```sh
 just test terse
 cargo clippy --locked -p tako-backup --all-targets -- -D warnings
 ```
 
-This crate backs up hosted databases continuously. `Capture` turns committed
-WAL pages into LTX files in a local spool, using the vendored
-`terse-litestream` port of Litestream (see `vendor/README.md`). `Replica`
-uploads them to object storage, encrypted with the database's key, restores
-any captured transaction, and applies retention.
+The resource’s Raft leader captures committed Turso transactions. `CommittedSpool`
+encodes snapshots and changes as LTX segments. `Replica` encrypts them with
+the database’s key and uploads them to object storage. The vendored
+`terse-litestream` library reads and restores LTX histories.
 
 ## Layout
 
@@ -28,9 +27,8 @@ downloaded and compared before it is accepted, so a lost acknowledgement is
 retried safely and a conflicting writer is detected. Segments over 1 GiB go
 up in 64 MiB parts, since single requests are limited to 5 GiB. An object is
 one AES-GCM message, so a segment over 64 GiB is refused. A multipart
-write cannot be conditional, so for those an existing object is looked for
-first; two owners never write one key, because a new owner starts above the
-history and a fenced one stops uploading.
+write checks for an existing segment before uploading. Successive leaders
+use the same Raft transaction ID and capture time for a committed change.
 
 ## Behavior
 
@@ -42,10 +40,9 @@ history and a fenced one stops uploading.
 - Opening capture writes a full image. A changing database gets another every
   24 hours, so a restore downloads one base and at most about a day of
   captures.
-- A capture with an empty spool starts 2^32 transactions above the existing
-  history. A previous owner that keeps uploading for a while (a server the
-  database moved away from) never shares a transaction ID with it, so no
-  restore chain mixes the two.
+- After an election the new leader resumes from the latest local or uploaded
+  transaction. If the committed deltas it needs have been compacted, it
+  starts a new restore window with a full image.
 - A restore targets the latest transaction, a transaction ID, or a time: the
   newest capture at or before it, found from the capture times in the
   listing without downloading anything. It downloads only the segments it

@@ -13,7 +13,7 @@ pub struct Capture {
 
 impl Capture {
     /// Opens capture with its spool in `directory`, at a position of at
-    /// least `floor` (see [`Replica::floor`]). Keep one spool and one remote
+    /// least `floor`. Keep one spool and one remote
     /// prefix per database. The first capture after opening is a full image.
     pub fn open(database: &Path, directory: &Path, floor: u64) -> Result<Self> {
         let source = fs::canonicalize(database)?;

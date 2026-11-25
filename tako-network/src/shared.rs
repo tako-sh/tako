@@ -27,11 +27,6 @@ pub const MAX_SHARED_BYTES: usize = 8 * 1024 * 1024;
 // ciphertext sizes remain independently bounded by Ciphertext::validate.
 pub const MAX_SHARED_RECORD_BYTES: usize = MAX_SHARED_BYTES;
 
-pub const SHARED_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_shared_records (\n\
-    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',\n\
-    PRIMARY KEY (kind, record_id, digest)\n\
-);";
-
 /// A record's content. The content of a secret exists in the clear only inside
 /// authorized clients and server agents. It has no Debug implementation and is
 /// never a public RPC field.
