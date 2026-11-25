@@ -650,9 +650,13 @@ mod tests {
     #[test]
     fn database_administration_requires_server_administrator_permission() {
         let id = "shop";
+        let generation = "0123456789abcdef0123456789abcdef";
         for command in [
-            json!({"command":"create_database","name":id,"generation":"0123456789abcdef0123456789abcdef","backup_key_base64":"a2V5"}),
-            json!({"command":"delete_database","name":id}),
+            json!({"command":"coordinate_storage","request":{"operation":"claim","candidate":{
+                "name":id, "engine":"sqlite", "generation":generation, "created_at_unix_secs":1,
+                "founders":["a".repeat(64)]
+            }}}),
+            json!({"command":"coordinate_storage","request":{"operation":"retire_name","name":id,"generation":generation}}),
             json!({"command":"database_status"}),
             json!({"command":"configure_database_backup","name":id,"backup":null}),
             json!({"command":"grant_databases","app":"demo/staging","databases":[id]}),
