@@ -188,7 +188,7 @@ async fn kv_stores_are_created_queried_and_deleted() {
     assert!(info["size_bytes"].as_u64().unwrap() > 0);
     assert!(info["backup"].is_null());
 
-    // SQL and migrations are SQLite's.
+    // KV bindings reject SQL requests.
     assert!(
         error(
             &state,
@@ -206,7 +206,7 @@ async fn kv_stores_are_created_queried_and_deleted() {
             .await
             .error_message()
             .unwrap()
-            .contains("SQLite database")
+            .contains("SQL database")
     );
     // Names are unique across engines.
     let duplicate = state
@@ -499,9 +499,9 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         "{wrong}"
     );
 
-    let sqlite = state.databases.connections(&bindings);
+    let sql = state.databases.connections(&bindings);
     let stores = crate::databases::kv_connections(&bindings);
-    assert_eq!(sqlite.keys().collect::<Vec<_>>(), vec!["main"]);
+    assert_eq!(sql.keys().collect::<Vec<_>>(), vec!["main"]);
     assert_eq!(stores.keys().collect::<Vec<_>>(), vec!["auth"]);
     let token = bindings["auth"].token.clone();
     assert_eq!(stores["auth"].token, token);
@@ -529,7 +529,7 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         json!(r#""v""#)
     );
     // The token is the environment's: another app cannot use it, and the
-    // SQLite binding's token is not a KV credential.
+    // SQL binding's token is not a KV credential.
     assert!(
         call(
             &state,
@@ -540,12 +540,12 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
         .await
         .is_err()
     );
-    let sqlite_token = bindings["main"].token.clone();
+    let sql_token = bindings["main"].token.clone();
     assert!(
         call(
             &state,
             "web/production",
-            &sqlite_token,
+            &sql_token,
             KvRequest::Get { key: "k".into() }
         )
         .await
