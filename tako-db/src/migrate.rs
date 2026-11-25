@@ -389,21 +389,23 @@ pub fn prepare_reset(
     app: Option<&str>,
     migrations: &[Migration],
 ) -> Result<Option<MigrationReport>, String> {
+    if migrations.is_empty() {
+        crate::mvcc::create_empty_portable(path).map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    let app = app.ok_or("migrations must name the app they belong to")?;
     let parent = path.parent().ok_or("database has no parent directory")?;
     let directory = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
     let db = directory.path().join("data.db");
     let config = config(&EngineConfig::default());
     let owner = crate::mvcc::Owner::local(&db, config.busy_timeout).map_err(|e| e.to_string())?;
-    let report = if let Some(app) = app.filter(|_| !migrations.is_empty()) {
-        let buffered = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_value_bytes));
-        let mut conn =
-            Connection::hosted(owner.clone(), &config, false, buffered).map_err(engine_error)?;
-        Some(run(&mut conn, app, migrations, false)?)
-    } else {
-        None
-    };
+    let buffered = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_value_bytes));
+    let mut conn =
+        Connection::hosted(owner.clone(), &config, false, buffered).map_err(engine_error)?;
+    let report = run(&mut conn, app, migrations, false)?;
+    drop(conn);
     crate::mvcc::export_copy(&owner, path).map_err(|e| e.to_string())?;
-    Ok(report)
+    Ok(Some(report))
 }
 
 #[cfg(test)]

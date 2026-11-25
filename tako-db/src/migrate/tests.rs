@@ -287,3 +287,27 @@ fn migrations_can_rebuild_referenced_tables_but_not_break_references() {
         "the breaking migration rolled back"
     );
 }
+
+#[test]
+fn reset_builds_one_portable_file_with_every_migration_write() {
+    let (dir, path) = database();
+    assert_eq!(prepare_reset(&path, None, &[]).unwrap(), None);
+    let portable = |path: &Path, sql: &str| -> i64 {
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(portable(&path, "SELECT count(*) FROM sqlite_schema"), 0);
+    let migrated = dir.path().join("migrated.sqlite");
+    prepare_reset(
+        &migrated,
+        Some("shop"),
+        &[migration(
+            "001_items.sql",
+            "CREATE TABLE items (id INTEGER PRIMARY KEY); INSERT INTO items VALUES (1);",
+        )],
+    )
+    .unwrap();
+    assert_eq!(portable(&migrated, "SELECT count(*) FROM items"), 1);
+}

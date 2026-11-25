@@ -134,6 +134,22 @@ impl Owner {
     }
 }
 
+/// A reset with no migrations needs only an empty portable file. Opening
+/// it in WAL mode avoids installing private MVCC replay metadata.
+pub(crate) fn create_empty_portable(path: &Path) -> io::Result<()> {
+    let file = File::create_new(path)?;
+    let io = Arc::new(directory_io::DirectoryIo::new(path).map_err(other)?);
+    let opts = OpenOptions::new(Arc::new(SqliteDialect)).flags(OpenFlags::Create);
+    let db = Database::open(io, text(path)?, opts).map_err(other)?;
+    let conn = db
+        .connect(ConnectOpts::new(SessionRole::Superuser))
+        .map_err(other)?;
+    conn.execute("PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(other)?;
+    conn.close().map_err(other)?;
+    file.sync_all()
+}
+
 /// Check an import on a private native copy before publishing it to Raft.
 pub fn verify_hosted_import(path: &Path) -> Result<(), String> {
     let sql =

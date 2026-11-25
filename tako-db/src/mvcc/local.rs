@@ -12,14 +12,19 @@ use std::{
 static OWNERS: LazyLock<Mutex<HashMap<PathBuf, Weak<Owner>>>> = LazyLock::new(Default::default);
 
 fn path_and_lock(path: &Path) -> io::Result<(PathBuf, File)> {
+    let filename = path
+        .file_name()
+        .ok_or_else(|| other("database has no name"))?;
     let parent = path
         .parent()
-        .ok_or_else(|| other("database path has no parent"))?;
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
-    let path = parent.canonicalize()?.join(
-        path.file_name()
-            .ok_or_else(|| other("database has no name"))?,
-    );
+    let path = match fs::symlink_metadata(path) {
+        Ok(_) => path.canonicalize()?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => parent.canonicalize()?.join(filename),
+        Err(e) => return Err(e),
+    };
     let name = directory_io::with_suffix(&path, ".owner.lock");
     let lock = File::options()
         .read(true)
