@@ -251,27 +251,41 @@ fn concurrent_publishers_share_changes_order_and_retention() {
             })
         })
         .collect();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut after = initial;
     let mut received = Vec::new();
-    while received.len() < 200 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "concurrent publisher replay lost messages"
-        );
-        for message in reader.read_after("events", after, 25).unwrap() {
+    loop {
+        // Once both publishers finish, an empty read must be the end of the log.
+        let finished = handles.iter().all(std::thread::JoinHandle::is_finished);
+        let batch = reader.read_after("events", after, 25).unwrap();
+        if batch.is_empty() {
+            if finished {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for message in batch {
             let id = message.id.parse::<ReplayCursor>().unwrap();
             assert!(after.is_none_or(|previous| id.position > previous.position));
             after = Some(id);
             received.push(message.data);
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    let writer = handles
+    let writers: Vec<_> = handles
         .into_iter()
         .map(|handle| handle.join().unwrap())
-        .next()
-        .unwrap();
+        .collect();
+    assert_eq!(received.len(), 200);
+    for writer in 0..writers.len() {
+        let actual: Vec<_> = received
+            .iter()
+            .filter(|event| event[0] == writer)
+            .cloned()
+            .collect();
+        let expected: Vec<_> = (0..100)
+            .map(|index| serde_json::json!([writer, index]))
+            .collect();
+        assert_eq!(actual, expected, "publisher {writer} replay differs");
+    }
     wait_until("the reader was not notified", || {
         changes.has_changed().unwrap()
     });
@@ -279,6 +293,7 @@ fn concurrent_publishers_share_changes_order_and_retention() {
     drop(changes);
     let auth: ChannelAuthResponse =
         serde_json::from_value(serde_json::json!({ "ok": true, "replayWindowMs": 20 })).unwrap();
+    let writer = &writers[0];
     writer.sync_channel("expires", &auth).unwrap();
     let expired = writer.append("expires", &event(1.into())).unwrap();
     let latest = writer.append("expires", &event(2.into())).unwrap();

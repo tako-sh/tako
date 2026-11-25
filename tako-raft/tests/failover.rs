@@ -175,6 +175,18 @@ async fn cluster() {
     first.stop().await;
     let db_leader = await_leader(&second.db.0).await;
     let kv_leader = await_leader(&second.kv.0).await;
+    for (id, server) in [(2, &second), (3, &third)] {
+        for (group, leader) in [(&server.db, db_leader), (&server.kv, kv_leader)] {
+            group
+                .0
+                .wait(Some(Duration::from_secs(3)))
+                .current_leader(leader, "new leader")
+                .await
+                .unwrap();
+            let resource = tako_raft::Resource::new(group.0.clone(), group.1.clone(), &server.dir);
+            assert_eq!(resource.leadership(), Some((leader, leader == id)));
+        }
+    }
     let db_server = if db_leader == 2 { &second } else { &third };
     let kv_server = if kv_leader == 2 { &second } else { &third };
     let (sql, dbid) = sql_host(db_server);
