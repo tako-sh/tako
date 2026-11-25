@@ -53,7 +53,7 @@ async function setupProject(
 test("local SQL restore can select a retired generation while every server is offline", async () => {
   await setupProject({ env: "staging", servers: { offline: { host: "192.0.2.75" } } });
   const generation = "a".repeat(32);
-  const file = join(tempDir, "recovered.sqlite");
+  const file = join(tempDir, "recovered.db");
   const args = [
     TAKO_BIN,
     "--dry-run",

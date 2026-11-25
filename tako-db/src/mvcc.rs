@@ -320,7 +320,7 @@ pub(crate) fn export_copy(mut owner: Owner, dest: &Path) -> io::Result<()> {
 pub fn materialize_recovery_image(path: &Path) -> Result<(), String> {
     let dir = tempfile::tempdir_in(path.parent().ok_or("database has no parent directory")?)
         .map_err(|e| e.to_string())?;
-    let portable = dir.path().join("portable.sqlite");
+    let portable = dir.path().join("portable.db");
     if export(path, &portable).map_err(|e| e.to_string())? {
         fs::rename(portable, path).map_err(|e| e.to_string())?;
     }
@@ -336,7 +336,7 @@ mod tests {
     fn portable_export_preserves_schema_and_refuses_to_overwrite() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("data.db");
-        let output = dir.path().join("O'Brien.sqlite");
+        let output = dir.path().join("O'Brien.export");
         let owner = Owner::scratch(&db).unwrap();
         let conn = owner.connect().unwrap();
         conn.execute(
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn hosted_import_checks_the_native_schema_before_replacement() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("upload.sqlite");
+        let path = dir.path().join("upload.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("CREATE TABLE items(k TEXT PRIMARY KEY) STRICT")
             .unwrap();
@@ -466,7 +466,7 @@ mod tests {
                 )
                 .unwrap();
             for (index, txid) in [point.txid, tip].into_iter().enumerate() {
-                let dest = dir.path().join(format!("restored-{txid}.sqlite"));
+                let dest = dir.path().join(format!("restored-{txid}.db"));
                 tokio::runtime::Handle::current()
                     .block_on(tako_backup::Replica::apply(&spool_dir, txid, &dest))
                     .unwrap();
@@ -490,7 +490,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(rows.len(), i + 1);
                 assert_eq!(rows[i][0].as_int(), Some((i + 1) as i64));
-                let portable = dir.path().join(format!("point-{i}.sqlite"));
+                let portable = dir.path().join(format!("point-{i}.db"));
                 assert!(export(file.path(), &portable).unwrap());
                 let sql = rusqlite::Connection::open(portable).unwrap();
                 assert_eq!(

@@ -79,7 +79,7 @@ describe("tako run with a database binding", () => {
     const report = await runClients();
 
     expect(report["url"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(existsSync(join(project, ".tako", "data", "databases", "app-db.sqlite"))).toBe(true);
+    expect(existsSync(join(project, ".tako", "data", "databases", "app-db.db"))).toBe(true);
     expect(report["previousRows"]).toBe(0);
     expect(report["replicaRead"]).toBe(42);
     expect(report["replicaWrite"]).toBe("SQLITE_READONLY");
@@ -152,7 +152,7 @@ describe("tako run with a database binding", () => {
     expect(code).toBe(0);
     expect(JSON.parse(out.trim())).toEqual({});
     expect(err).toContain("reachable only from deployed apps");
-    expect(existsSync(join(project, ".tako", "data", "databases", "prod-db.sqlite"))).toBe(false);
+    expect(existsSync(join(project, ".tako", "data", "databases", "prod-db.db"))).toBe(false);
   });
 
   test("Drizzle migrations and queries run over @libsql/client", async () => {

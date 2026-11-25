@@ -95,7 +95,7 @@ async fn recover(replica: &Replica, target: Target, output_file: &Path) -> Resul
     #[cfg(unix)]
     scratch.permissions(fs::Permissions::from_mode(0o700));
     let work = scratch.tempdir_in(parent)?;
-    let recovered = work.path().join("recovered.sqlite");
+    let recovered = work.path().join("recovered.db");
     let segments = replica.segments().await?;
     let txid = Replica::resolve(&segments, target)?;
     replica
@@ -129,7 +129,7 @@ mod tests {
     #[tokio::test]
     async fn recover_time_to_a_private_file_without_contacting_a_resource_group() {
         let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("source.sqlite");
+        let source = root.path().join("source.db");
         fs::File::create_new(&source).unwrap();
         let sql = tako_db::PortableDatabase::open(&source).unwrap();
         sql.execute_batch(
@@ -154,7 +154,7 @@ mod tests {
         let replica = Replica::database(remote.clone(), "orders", "generation", [42; 32]).unwrap();
         replica.upload(&spool_dir).await.unwrap();
 
-        let output = root.path().join("restored.sqlite");
+        let output = root.path().join("orders.recovered");
         assert_eq!(
             recover(&replica, Target::Time(1500), &output)
                 .await
@@ -176,7 +176,7 @@ mod tests {
             );
         }
         let incorrect_key = Replica::database(remote, "orders", "generation", [7; 32]).unwrap();
-        let missing = root.path().join("unverified.sqlite");
+        let missing = root.path().join("unverified.db");
         assert!(
             recover(&incorrect_key, Target::Latest, &missing)
                 .await

@@ -116,7 +116,7 @@ impl TestServer {
     /// Creates a database and binds a new token to it in `scope`.
     pub fn database(&self, scope: &str) -> TestDatabase {
         let id = DatabaseId::generate();
-        let path = self.dir.path().join(format!("{id}.sqlite"));
+        let path = self.dir.path().join(format!("{id}.db"));
         DatabaseHost::create_file(&path).expect("create test database");
         self.host
             .register(id.clone(), path.clone())
@@ -130,7 +130,7 @@ impl TestServer {
     pub fn replicated_database(&self, scope: &str) -> TestDatabase {
         use std::{collections::BTreeMap, time::Duration};
         let id = DatabaseId::generate();
-        let path = self.dir.path().join(format!("{id}.sqlite"));
+        let path = self.dir.path().join(format!("{id}.db"));
         DatabaseHost::create_file(&path).unwrap();
         let runtime = self.runtime.as_ref().unwrap();
         let group = self.dir.path().join(id.as_str());

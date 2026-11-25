@@ -251,7 +251,7 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 
 `tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. Channel and presence subscriptions are authorized the same way.
 
-The dev daemon keeps notifications in the project's dev replay database, `.tako/data/tako/channels.sqlite`. In production, invalidations use the environment's [channel replay database](/channels/#deploy-replay-storage), a hosted SQLite database. Every server running the app reads the same bounded history from its home. Two apps selecting one database still have separate invalidations. This database stores notifications, not loader results or application records. After a cutover, restore, or missed notification, the client reconnects and reloads the authorized snapshot from your loader.
+The dev daemon keeps notifications in the project's dev replay database, `.tako/data/tako/channels.db`. In production, invalidations use the environment's [channel replay database](/channels/#deploy-replay-storage), a hosted SQLite database. Every server running the app reads the same bounded history from its home. Two apps selecting one database still have separate invalidations. This database stores notifications, not loader results or application records. After a cutover, restore, or missed notification, the client reconnects and reloads the authorized snapshot from your loader.
 
 Use [Channels](/channels/) for application events, [Presence](/presence/) for current membership, and Stores for live data reads with optional offline caching.
 

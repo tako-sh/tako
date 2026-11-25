@@ -398,7 +398,7 @@ A client written without the JavaScript SDK can use dedicated SSE/WS endpoints: 
 
 ## Deploy Replay Storage
 
-Durable channels and Store invalidations use the environment's replay database, a [hosted Turso database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.sqlite`, and never connects to the production database.
+Durable channels and Store invalidations use the environment's replay database, a [hosted Turso database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.db`, and never connects to the production database.
 
 | Production configuration                                  | What deploy does                                                                                                                                                                                                                         |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

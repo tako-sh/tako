@@ -1,7 +1,7 @@
 //! Local databases and KV stores for `tako dev` and `tako run`.
 //!
 //! Each database a project binds gets a Turso database under
-//! `.tako/data/databases/<name>.sqlite`, and each KV store a redb file under
+//! `.tako/data/databases/<name>.db`, and each KV store a redb file under
 //! `.tako/data/kv/<name>.redb`, served over the same protocols as on servers
 //! (KV through the internal socket, like the cache), so app code is identical
 //! in development and production.
@@ -242,7 +242,7 @@ pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
 fn environment_database_path(project_dir: &Path, database: &str, environment: &str) -> PathBuf {
     data_root(project_dir, environment)
         .join("databases")
-        .join(format!("{database}.sqlite"))
+        .join(format!("{database}.db"))
 }
 
 /// A stable local ID for a database file.

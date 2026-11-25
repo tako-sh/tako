@@ -1276,7 +1276,7 @@ async fn restore_from(
     let work = fresh_work_dir(state, &stored.name, "restore")?;
     let downloads = reserve_restore(state, stored, &work, downloaded.saturating_mul(2))?;
     let segments_dir = work.path.join("segments");
-    let restored = work.path.join("restored.sqlite");
+    let restored = work.path.join("restored.db");
     // A large restore can outlast the age at which interrupted work is
     // cleaned up.
     let _restored_space = keeping_fresh(&work, async {
@@ -1350,7 +1350,7 @@ fn reserve_restore(
 /// requests are paused. When backups are configured, the contents being
 /// replaced are captured and uploaded first and named with a restore point.
 /// Returns warnings about that backup; the replaced file is also kept as
-/// `previous.sqlite`.
+/// `previous.db`.
 pub(crate) async fn replace(
     state: &ServerState,
     stored: &StoredDatabase,
@@ -1422,7 +1422,7 @@ async fn replace_inner(
         .await;
         if let Err(error) = backed_up {
             warnings.push(format!(
-                "could not back up the replaced contents (kept as previous.sqlite on the server): {error}"
+                "could not back up the replaced contents (kept as previous.db on the server): {error}"
             ));
         }
     }
@@ -1437,7 +1437,7 @@ async fn replace_inner(
     let previous = state
         .databases
         .database_dir(&stored.name)
-        .join("previous.sqlite");
+        .join("previous.db");
     let resource = state
         .databases
         .raft

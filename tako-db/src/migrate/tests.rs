@@ -9,7 +9,7 @@ fn migration(name: &str, sql: &str) -> Migration {
 
 fn database() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
+    let path = dir.path().join("db.db");
     (dir, path)
 }
 
@@ -60,7 +60,7 @@ fn names_need_an_order_number() {
 #[test]
 fn previews_create_no_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("data").join("shop.sqlite");
+    let path = dir.path().join("data").join("shop.db");
     let migrations = [
         migration("0002_items.sql", "SELECT 1;"),
         migration("0001_users.sql", "SELECT 1;"),
@@ -299,7 +299,7 @@ fn reset_builds_one_portable_file_with_every_migration_write() {
             .unwrap()
     };
     assert_eq!(portable(&path, "SELECT count(*) FROM sqlite_schema"), 0);
-    let migrated = dir.path().join("migrated.sqlite");
+    let migrated = dir.path().join("migrated.db");
     prepare_reset(
         &migrated,
         Some("shop"),

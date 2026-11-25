@@ -21,7 +21,7 @@ struct Harness {
 
 fn harness(config: HostConfig) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
+    let path = dir.path().join("db.db");
     DatabaseHost::create_file(&path).unwrap();
     let host = DatabaseHost::new(config);
     let id = DatabaseId::generate();
@@ -747,7 +747,7 @@ async fn requests_waiting_for_a_slot_do_not_start_once_closing_begins() {
         .unwrap();
     let reopened = DatabaseHost::new(HostConfig::default());
     reopened
-        .register(h.id.clone(), h._dir.path().join("db.sqlite"))
+        .register(h.id.clone(), h._dir.path().join("db.db"))
         .unwrap();
     let result = reopened
         .admin_query(
@@ -766,7 +766,7 @@ async fn a_database_busy_past_the_timeout_keeps_its_lock_until_its_requests_end(
         pause_timeout: Duration::from_millis(200),
         ..HostConfig::default()
     });
-    let lock = h._dir.path().join("db.sqlite.lock");
+    let lock = h._dir.path().join("db.db.lock");
     let exclusive = || {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -1142,7 +1142,7 @@ async fn snapshots_track_changes() {
         "a fresh host does not know the history"
     );
     h.host
-        .snapshot(&h.id, &dir.path().join("a.sqlite"))
+        .snapshot(&h.id, &dir.path().join("a.db"))
         .await
         .unwrap();
     assert!(!h.host.has_changes(&h.id));

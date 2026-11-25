@@ -8,7 +8,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
+    let path = dir.path().join("db.db");
     create_database(&path).unwrap();
     Fixture { _dir: dir, path }
 }
@@ -248,7 +248,7 @@ fn enforces_foreign_keys_by_default() {
 fn refuses_to_reach_files_outside_the_database() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let outside = fixture.path.with_file_name("stolen.sqlite");
+    let outside = fixture.path.with_file_name("stolen.db");
     let into = run(&mut conn, &format!("VACUUM INTO '{}'", outside.display())).unwrap_err();
     assert_eq!(into.code, "SQLITE_AUTH", "{into:?}");
     assert!(!outside.exists());
@@ -590,7 +590,7 @@ fn snapshots_are_consistent_verified_copies() {
     run(&mut conn, "INSERT INTO t VALUES (1), (2)").unwrap();
     run(&mut conn, "BEGIN").unwrap();
     run(&mut conn, "INSERT INTO t VALUES (3)").unwrap();
-    let dest = fixture.path.with_file_name("copy.sqlite");
+    let dest = fixture.path.with_file_name("copy.db");
     conn.rollback();
     drop(conn);
     crate::mvcc::Owner::snapshot_local(&fixture.path, &dest, Duration::from_secs(1)).unwrap();
@@ -608,7 +608,7 @@ fn snapshots_are_consistent_verified_copies() {
 #[test]
 fn verify_rejects_files_that_are_not_databases() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("junk.sqlite");
+    let path = dir.path().join("junk.db");
     std::fs::write(
         &path,
         b"definitely not sqlite, just a long enough header to look at",
@@ -626,14 +626,14 @@ fn replacing_keeps_the_previous_file_and_drops_stale_sidecars() {
             .unwrap();
         db.checkpoint().unwrap();
     }
-    let replacement = fixture.path.with_file_name("new.sqlite");
+    let replacement = fixture.path.with_file_name("new.db");
     create_database(&replacement).unwrap();
     {
         let conn = rusqlite::Connection::open(&replacement).unwrap();
         conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('new');")
             .unwrap();
     }
-    let previous = fixture.path.with_file_name("previous.sqlite");
+    let previous = fixture.path.with_file_name("previous.db");
     replace_database(&fixture.path, &replacement, &previous).unwrap();
     let read = |path: &std::path::Path| -> String {
         rusqlite::Connection::open(path)
@@ -672,7 +672,7 @@ fn response_budget_counts_text_as_json_encodes_it() {
 #[test]
 fn reset_empties_a_database_that_others_hold_open() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("db.sqlite");
+    let path = directory.path().join("db.db");
     let mut conn = Connection::development(
         &path,
         &Default::default(),
@@ -719,7 +719,7 @@ fn reset_empties_a_database_that_others_hold_open() {
 fn computed_attach_targets_are_refused() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let other = fixture.path.with_file_name("other.sqlite");
+    let other = fixture.path.with_file_name("other.db");
     let error = run_args(
         &mut conn,
         "ATTACH DATABASE ? AS other",
@@ -727,7 +727,7 @@ fn computed_attach_targets_are_refused() {
     )
     .unwrap_err();
     assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
-    let error = run(&mut conn, "ATTACH DATABASE 'x' || '.sqlite' AS other").unwrap_err();
+    let error = run(&mut conn, "ATTACH DATABASE 'x' || '.db' AS other").unwrap_err();
     assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
     assert!(!other.exists());
     assert_eq!(run(&mut conn, "VACUUM").unwrap_err().code, "SQLITE_AUTH");

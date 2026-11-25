@@ -239,7 +239,7 @@ Only active reachable subscriptions receive events; subscriber buffers hold 64 m
 
 ### Hosted channel replay
 
-An explicit `[envs.<env>.channels].db` names the hosted SQLite database of the channel runtime, including Store invalidations. Otherwise the CLI selects an app/environment-owned database for a channel-capable release (JavaScript definition files under `app_root`, dynamically registering native runtimes, SDK-enabled containers, or Compose with an SDK service). The generated name is deterministic; the directory record must identify the same owner, not merely match by name. All app servers use the recorded home. Local development serves the project's `.tako/data/tako/channels.sqlite` from the dev daemon's database host.
+An explicit `[envs.<env>.channels].db` names the hosted SQLite database of the channel runtime, including Store invalidations. Otherwise the CLI selects an app/environment-owned database for a channel-capable release (JavaScript definition files under `app_root`, dynamically registering native runtimes, SDK-enabled containers, or Compose with an SDK service). The generated name is deterministic; the directory record must identify the same owner, not merely match by name. All app servers use the recorded home. Local development serves the project's `.tako/data/tako/channels.db` from the dev daemon's database host.
 
 The server persists hosted replay as `Deploy.databases["@channels"]`, a `DatabaseBinding` that cannot be named by an app SQL alias. The loopback database host authenticates its server-only token; remote forwarding uses a distinct `<app>/<env>#channels` grant and peer key. `RunRelease` cannot request this binding. No SDK bootstrap, worker, release command, or app migration receives it. Replay access alone does not authorize an app-scoped SQL migration or release snapshot. If an operator explicitly grants ordinary SQL on the same user-selected database, that grant covers the entire database, including all replay tables.
 
@@ -415,7 +415,7 @@ The leader spools Raft-committed Turso images and changes as LTX segments. The b
 
 The server starts the app-facing listener on 127.0.0.1:9845. Once the private network is available it reopens each persisted Raft group and registers its resource with the SQL or KV host. A local seed alone cannot serve an application binding. Drain closes the old owner before its successor serves writes.
 
-`tako dev` and `tako run` serve Turso bindings from `.tako/data/databases/<name>.sqlite` with the hosted dialect and permissions over the same protocol on a random loopback port, without consulting the network state. Dev registration carries `databases` as binding name → absolute file path; the daemon serves them for the registration and keeps their tokens across re-registration.
+`tako dev` and `tako run` serve Turso bindings from `.tako/data/databases/<name>.db` with the hosted dialect and permissions over the same protocol on a random loopback port, without consulting the network state. Dev registration carries `databases` as binding name → absolute file path; the daemon serves them for the registration and keeps their tokens across re-registration.
 
 ## Hosted KV stores
 

@@ -39,7 +39,7 @@ fn bind(
 async fn two_writers_and_a_remote_reader_share_one_ordered_history_but_other_apps_do_not() {
     let dir = tempfile::tempdir().unwrap();
     let db = DatabaseId::generate();
-    let path = dir.path().join("database.sqlite");
+    let path = dir.path().join("database.db");
     DatabaseHost::create_file(&path).unwrap();
     let home = DatabaseHost::new(HostConfig::default());
     home.register(db.clone(), path).unwrap();

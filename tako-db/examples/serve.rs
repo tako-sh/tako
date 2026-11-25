@@ -11,7 +11,7 @@ use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_toke
 #[tokio::main]
 async fn main() {
     let dir = tempfile::tempdir().expect("temporary directory");
-    let path = dir.path().join("database.sqlite");
+    let path = dir.path().join("database.db");
     DatabaseHost::create_file(&path).expect("create database");
 
     let mut config = HostConfig::default();

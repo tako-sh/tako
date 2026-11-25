@@ -77,7 +77,7 @@ direction: right
 
 enq: "POST /orders\n(enqueue run)" {style.fill: "#9BC4B6"; style.font-size: 14}
 worker1: "Worker\nclaims, runs steps,\nhits waitFor" {style.fill: "#E88783"; style.font-size: 14}
-park: "Run parked\n(row in workflows.sqlite)" {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 14}
+park: "Run parked\n(row in workflows.db)" {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 14}
 signal: "Admin clicks Approve\n→ signal()" {style.fill: "#9BC4B6"; style.font-size: 14}
 worker2: "Worker re-spawns,\nresumes after waitFor,\nships order" {style.fill: "#E88783"; style.font-size: 14}
 

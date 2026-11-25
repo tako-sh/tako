@@ -232,7 +232,7 @@ async fn cluster() {
 fn sql_host(follower: &Server) -> (tako_db::DatabaseHost, tako_db::DatabaseId) {
     let host = tako_db::DatabaseHost::new(Default::default());
     let database = tako_db::DatabaseId::parse("orders").unwrap();
-    let path = follower.dir.join("orders.sqlite");
+    let path = follower.dir.join("orders.db");
     if !path.exists() {
         tako_db::DatabaseHost::create_file(&path).unwrap();
     }
@@ -402,9 +402,9 @@ async fn measure_hosted_mutations() {
 async fn hosted_trial(first: &Server, replicated: bool, remote_app: bool, mode: &str) {
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let path = first.dir.join(if replicated {
-        "orders.sqlite"
+        "orders.db"
     } else {
-        "baseline.sqlite"
+        "baseline.db"
     });
     if !path.exists() {
         tako_db::DatabaseHost::create_file(&path).unwrap();

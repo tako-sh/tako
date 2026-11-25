@@ -66,7 +66,7 @@ fn local_segments(spool: &Path) -> Result<usize> {
 #[tokio::test]
 async fn separate_writers_and_external_checkpoints_restore_latest_and_history() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote.clone())?;
@@ -86,11 +86,11 @@ async fn separate_writers_and_external_checkpoints_restore_latest_and_history() 
     drop(capture);
     drop(writer);
 
-    let latest = dir.path().join("latest.sqlite");
+    let latest = dir.path().join("latest.db");
     restore(&replica, Target::Latest, &latest).await?;
     verify(&latest, 50)?;
     for (rows, txid) in history {
-        let output = dir.path().join(format!("at-{txid}.sqlite"));
+        let output = dir.path().join(format!("at-{txid}.db"));
         restore(&replica, Target::Txid(txid), &output).await?;
         verify(&output, rows)?;
     }
@@ -100,7 +100,7 @@ async fn separate_writers_and_external_checkpoints_restore_latest_and_history() 
 #[tokio::test]
 async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -117,7 +117,7 @@ async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> R
 
     // Replace the database with its older state, as a restore does while
     // the database is paused, then capture again with the same spool.
-    let restored = dir.path().join("restored.sqlite");
+    let restored = dir.path().join("restored.db");
     restore(&replica, Target::Txid(older), &restored).await?;
     fs::remove_file(format!("{}-wal", database.display())).ok();
     fs::remove_file(format!("{}-shm", database.display())).ok();
@@ -132,10 +132,10 @@ async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> R
     assert!(reopened > newer);
     replica.upload(&spool).await?;
 
-    let latest = dir.path().join("latest.sqlite");
+    let latest = dir.path().join("latest.db");
     assert_eq!(restore(&replica, Target::Latest, &latest).await?, reopened);
     verify(&latest, 5)?;
-    let before = dir.path().join("before.sqlite");
+    let before = dir.path().join("before.db");
     restore(&replica, Target::Txid(newer), &before).await?;
     verify(&before, 10)?;
     Ok(())
@@ -146,7 +146,7 @@ async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result
     let dir = tempfile::tempdir()?;
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
-    let old = dir.path().join("old.sqlite");
+    let old = dir.path().join("old.db");
     let old_spool = dir.path().join("old-spool");
     let mut old_writer = Process::start("writer", &old, &old_spool)?;
     let mut old_capture = Capture::open(&old, &old_spool, 0)?;
@@ -157,7 +157,7 @@ async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result
 
     // The new server restores the latest state into its own file and
     // captures it with an empty spool.
-    let new = dir.path().join("new.sqlite");
+    let new = dir.path().join("new.db");
     restore(&replica, Target::Latest, &new).await?;
     let new_spool = dir.path().join("new-spool");
     let floor = replica.floor(&new_spool).await?;
@@ -178,10 +178,10 @@ async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result
 
     let segments = replica.segments().await?;
     assert_eq!(windows(&segments).len(), 2);
-    let latest = dir.path().join("latest.sqlite");
+    let latest = dir.path().join("latest.db");
     restore(&replica, Target::Latest, &latest).await?;
     verify(&latest, 20)?;
-    let old_timeline = dir.path().join("old-timeline.sqlite");
+    let old_timeline = dir.path().join("old-timeline.db");
     restore(&replica, Target::Txid(stale), &old_timeline).await?;
     verify(&old_timeline, 8)?;
     Ok(())
@@ -190,7 +190,7 @@ async fn a_new_owner_starts_above_a_stale_owner_that_keeps_uploading() -> Result
 #[tokio::test]
 async fn a_time_restores_the_newest_capture_at_or_before_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -207,7 +207,7 @@ async fn a_time_restores_the_newest_capture_at_or_before_it() -> Result<()> {
         replica.upload(&spool).await?;
     }
     for (rows, at) in times {
-        let output = dir.path().join(format!("{rows}.sqlite"));
+        let output = dir.path().join(format!("{rows}.db"));
         restore(&replica, Target::Time(at), &output).await?;
         verify(&output, rows)?;
     }
@@ -223,7 +223,7 @@ async fn a_time_restores_the_newest_capture_at_or_before_it() -> Result<()> {
 #[tokio::test]
 async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -248,10 +248,10 @@ async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result
         .find(|stored| stored.txid() == base)
         .unwrap();
     assert!(stored.captured_at_ms <= base_at && stored.uploaded_at_ms > between);
-    let output = dir.path().join("between.sqlite");
+    let output = dir.path().join("between.db");
     restore(&replica, Target::Time(between), &output).await?;
     verify(&output, 6)?;
-    let early = dir.path().join("early.sqlite");
+    let early = dir.path().join("early.db");
     restore(&replica, Target::Time(base_at), &early).await?;
     verify(&early, 3)?;
     drop(capture);
@@ -262,7 +262,7 @@ async fn a_time_restores_from_a_base_uploaded_long_after_its_capture() -> Result
 #[tokio::test]
 async fn large_segments_upload_in_parts_and_restore() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     // Every segment counts as large here, in parts of 1 KiB.
@@ -284,7 +284,7 @@ async fn large_segments_upload_in_parts_and_restore() -> Result<()> {
     );
     drop(capture);
     drop(writer);
-    let output = dir.path().join("out.sqlite");
+    let output = dir.path().join("out.db");
     restore(&replica, Target::Latest, &output).await?;
     verify(&output, 210)?;
     Ok(())
@@ -300,7 +300,7 @@ fn chrono_millis() -> i64 {
 #[tokio::test]
 async fn failed_uploads_keep_segments_and_idle_uploads_make_no_requests() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote.clone())?;
@@ -325,7 +325,7 @@ async fn failed_uploads_keep_segments_and_idle_uploads_make_no_requests() -> Res
     );
     drop(capture);
     drop(writer);
-    let output = dir.path().join("out.sqlite");
+    let output = dir.path().join("out.db");
     restore(&replica, Target::Latest, &output).await?;
     verify(&output, 3)?;
     Ok(())
@@ -334,7 +334,7 @@ async fn failed_uploads_keep_segments_and_idle_uploads_make_no_requests() -> Res
 #[tokio::test]
 async fn a_lost_upload_acknowledgement_is_verified_before_the_receipt() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote.clone())?;
@@ -354,7 +354,7 @@ async fn a_lost_upload_acknowledgement_is_verified_before_the_receipt() -> Resul
 #[tokio::test]
 async fn a_conflicting_remote_object_is_not_overwritten_or_acknowledged() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote.clone())?;
@@ -394,7 +394,7 @@ async fn a_conflicting_remote_object_is_not_overwritten_or_acknowledged() -> Res
 #[tokio::test]
 async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote_dir = dir.path().join("remote");
     let remote = Arc::new(Remote::new(&remote_dir)?);
@@ -425,7 +425,7 @@ async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Resu
             Default::default(),
         )
         .await?;
-    let output = dir.path().join("corrupt.sqlite");
+    let output = dir.path().join("corrupt.db");
     assert!(restore(&replica, Target::Latest, &output).await.is_err());
     assert!(!output.exists());
 
@@ -440,7 +440,7 @@ async fn a_missing_or_corrupt_segment_fails_the_restore_without_output() -> Resu
 #[tokio::test]
 async fn a_capture_process_crash_keeps_pending_segments_and_writes_continue() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -455,7 +455,7 @@ async fn a_capture_process_crash_keeps_pending_segments_and_writes_continue() ->
     replica.upload(&spool).await?;
     drop(capture);
     drop(writer);
-    let output = dir.path().join("out.sqlite");
+    let output = dir.path().join("out.db");
     restore(&replica, Target::Latest, &output).await?;
     verify(&output, 9)?;
     Ok(())
@@ -464,7 +464,7 @@ async fn a_capture_process_crash_keeps_pending_segments_and_writes_continue() ->
 #[tokio::test]
 async fn a_writer_crash_publishes_no_uncommitted_rows() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -478,7 +478,7 @@ async fn a_writer_crash_publishes_no_uncommitted_rows() -> Result<()> {
     capture.sync()?;
     replica.upload(&spool).await?;
     drop(capture);
-    let output = dir.path().join("out.sqlite");
+    let output = dir.path().join("out.db");
     restore(&replica, Target::Latest, &output).await?;
     verify(&output, 3)?;
     Ok(())
@@ -487,8 +487,8 @@ async fn a_writer_crash_publishes_no_uncommitted_rows() -> Result<()> {
 #[test]
 fn a_spool_rejects_another_owner_or_database() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let first = dir.path().join("first.sqlite");
-    let second = dir.path().join("second.sqlite");
+    let first = dir.path().join("first.db");
+    let second = dir.path().join("second.db");
     for path in [&first, &second] {
         Connection::open(path)?.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x)")?;
     }
@@ -503,7 +503,7 @@ fn a_spool_rejects_another_owner_or_database() -> Result<()> {
 #[tokio::test]
 async fn retention_keeps_the_last_week_and_the_kept_bases() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let database = dir.path().join("app.sqlite");
+    let database = dir.path().join("app.db");
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote)?;
@@ -569,7 +569,7 @@ async fn retention_keeps_the_last_week_and_the_kept_bases() -> Result<()> {
     );
 
     for (txid, rows) in [(kept, 0), (anchor, 4), (recent, 6)] {
-        let output = dir.path().join(format!("{txid}.sqlite"));
+        let output = dir.path().join(format!("{txid}.db"));
         restore(&replica, Target::Txid(txid), &output).await?;
         verify(&output, rows)?;
     }

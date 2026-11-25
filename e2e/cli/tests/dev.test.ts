@@ -499,7 +499,7 @@ export default async function fetch(request: Request) {
       expect(read.status).toBe(200);
       const body = (await read.json()) as { data: { messages: { message: string }[] } };
       expect(body.data.messages.map((row) => row.message)).toContain(message);
-      expect(existsSync(join(pd, ".tako", "data", "databases", "messages.sqlite"))).toBe(true);
+      expect(existsSync(join(pd, ".tako", "data", "databases", "messages.db"))).toBe(true);
     } finally {
       try {
         process.kill(proc.pid, "SIGKILL");

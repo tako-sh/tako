@@ -198,7 +198,7 @@ impl Databases {
     }
 
     pub(crate) fn database_path(&self, id: &str) -> PathBuf {
-        self.database_dir(id).join("database.sqlite")
+        self.database_dir(id).join("database.db")
     }
 
     pub(crate) fn kv_path(&self, id: &str) -> PathBuf {
@@ -1584,7 +1584,7 @@ impl ServerState {
             .reserve(estimate, available, "the reset")
             .map_err(|error| format!("Cannot reset {id}: {error}."))?;
         let work = backups::fresh_work_dir(self, id, "reset")?;
-        let empty = work.path.join("empty.sqlite");
+        let empty = work.path.join("empty.db");
         let create = empty.clone();
         let migrations: Vec<tako_db::Migration> = migrations
             .into_iter()

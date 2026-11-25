@@ -257,7 +257,7 @@ backup = { storage = "r2" }
 #[test]
 fn backup_database_lists_point_to_hosted_databases() {
     for paths in [
-        r#"databases = ["app.sqlite"]"#,
+        r#"databases = ["app.db"]"#,
         r#"shared_databases = ["team/orders.db"]"#,
     ] {
         let err = TakoToml::parse(&format!(

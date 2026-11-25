@@ -234,7 +234,7 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 
 - `tako.db.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].db = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako db list` shows them. Apps on every server of the network can bind it. Its backups go to the environment's `backup.storage`, or to `[db.<database>].backup`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
-- `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
+- `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.db`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
 - Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako db migration new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
 - `tako db reset <name> --local` empties the local database and re-applies migrations; without `--local` it resets the hosted one after backing it up (a database the production environment binds also needs `--force`). `tako db migration list` shows what is pending.
 - Drizzle: `drizzle(createClient(tako.db.main))` from `drizzle-orm/libsql`. Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`.
@@ -367,7 +367,7 @@ interface TakoStatus {
 
 Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev, single-server production, and native server networks, using broker memory rather than the replay database. Native peers forward live events without per-event database access; disconnected peers miss events, acceptance is local best-effort fanout, and ordering is per originating broker rather than global. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
 
-Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); `tako dev` keeps it in the project's `.tako/data/tako/channels.sqlite`, served through the same Hrana HTTP protocol as production.
+Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); `tako dev` keeps it in the project's `.tako/data/tako/channels.db`, served through the same Hrana HTTP protocol as production.
 
 ### Defining channels (file-based)
 
@@ -788,7 +788,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Runs, steps, and schedules live in a hosted database that every server of the environment shares: a run enqueued on one server can run on another, and each schedule fires once per due time. `[envs.<env>.workflows].db = "<name>"` binds one explicitly; it may be the same database as `[envs.<env>.channels].db`, but do not also bind it as app SQL. Without it, a full-access deploy creates `workflows-<slug>-<hash>` and prepares its replicas on the selected targets. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`, served through the same Hrana HTTP protocol as production.
+Runs, steps, and schedules live in a hosted database that every server of the environment shares: a run enqueued on one server can run on another, and each schedule fires once per due time. `[envs.<env>.workflows].db = "<name>"` binds one explicitly; it may be the same database as `[envs.<env>.channels].db`, but do not also bind it as app SQL. Without it, a full-access deploy creates `workflows-<slug>-<hash>` and prepares its replicas on the selected targets. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.db`, served through the same Hrana HTTP protocol as production.
 
 ### Enqueuing
 

@@ -497,7 +497,7 @@ The setting applies to `succeeded`, `cancelled`, and `dead` runs. It does not de
 
 ## Development And Deployment
 
-`tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon keeps the durable state in the project's `.tako/data/tako/workflows.sqlite`, served over the same database protocol as on servers, and runs workflows in a separate scale-to-zero worker. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime.
+`tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon keeps the durable state in the project's `.tako/data/tako/workflows.db`, served over the same database protocol as on servers, and runs workflows in a separate scale-to-zero worker. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime.
 
 The first worker registers the schedules and retry settings of every group. Removing the last schedule from a release with workflow support clears its registered schedules. An older release restarting after a rollout cannot overwrite the newer registration.
 

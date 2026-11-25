@@ -64,6 +64,19 @@ impl Owner {
                 return Ok(owner);
             }
             if try_lock(&lock)? {
+                // Turso replaces the extension to name its log. A different main
+                // file with the same stem can therefore own this exact log.
+                let log = path.with_extension("db-log");
+                if !path.try_exists()? && log.try_exists()? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!(
+                            "Cannot create {}: {} already exists",
+                            path.display(),
+                            log.display()
+                        ),
+                    ));
+                }
                 let owner = Arc::new(Self::open_database(&path, None, Some(lock), None, None)?);
                 let mut owners = OWNERS.lock();
                 owners.retain(|_, previous| previous.strong_count() != 0);
@@ -144,6 +157,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn creating_a_database_preserves_an_existing_mvcc_log_with_the_same_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orders.db");
+        let log = dir.path().join("orders.db-log");
+        fs::write(&log, b"existing log").unwrap();
+
+        let err = Owner::local(&path, Duration::ZERO).err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!path.exists());
+        assert_eq!(fs::read(log).unwrap(), b"existing log");
+    }
+
+    #[test]
     fn local_owner_handoff_recovers_only_committed_transactions() {
         const TEST: &str =
             "mvcc::local::tests::local_owner_handoff_recovers_only_committed_transactions";
@@ -164,7 +190,7 @@ mod tests {
             std::process::exit(0);
         }
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sessions.sqlite");
+        let path = dir.path().join("sessions.db");
         let owner = Owner::local(&path, Duration::ZERO).unwrap();
         owner
             .connect()
@@ -190,7 +216,7 @@ mod tests {
                 .success()
         );
 
-        let dest = dir.path().join("export.sqlite");
+        let dest = dir.path().join("export.db");
         Owner::snapshot_local(&path, &dest, Duration::ZERO).unwrap();
         for file in [path, dest] {
             let db = Owner::local(&file, Duration::ZERO).unwrap();

@@ -107,7 +107,7 @@ fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
 /// The file extension of a database's copies: SQLite files, or KV exports.
 pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
     match stored.engine {
-        DatabaseEngine::Sqlite => "sqlite",
+        DatabaseEngine::Sqlite => "db",
         DatabaseEngine::Kv => "redb",
     }
 }
@@ -954,7 +954,7 @@ fn orphaned_data(objects: &[(ObjectPath, i64)], now: i64) -> Vec<ObjectPath> {
             key.filename()
                 .and_then(|name| {
                     // Either engine's data: SQLite copies or KV exports.
-                    name.strip_suffix(".sqlite.zst.enc")
+                    name.strip_suffix(".db.zst.enc")
                         .or_else(|| name.strip_suffix(".redb.zst.enc"))
                 })
                 .is_some_and(|id| !manifests.contains(id))
@@ -1266,11 +1266,11 @@ mod tests {
         let objects = vec![
             // A complete snapshot, however old.
             (key("1-a.json"), 0),
-            (key("1-a.sqlite.zst.enc"), 0),
+            (key("1-a.db.zst.enc"), 0),
             // Data whose manifest pruning deleted.
-            (key("2-b.sqlite.zst.enc"), now - 2 * day),
+            (key("2-b.db.zst.enc"), now - 2 * day),
             // An upload that may still be publishing its manifest.
-            (key("3-c.sqlite.zst.enc"), now - 60),
+            (key("3-c.db.zst.enc"), now - 60),
             // A manifest alone is not data.
             (key("4-d.json"), 0),
             // Something else written under the prefix.
@@ -1282,7 +1282,7 @@ mod tests {
         ];
         assert_eq!(
             orphaned_data(&objects, now),
-            vec![key("2-b.sqlite.zst.enc"), key("5-e.redb.zst.enc")]
+            vec![key("2-b.db.zst.enc"), key("5-e.redb.zst.enc")]
         );
     }
 

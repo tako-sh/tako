@@ -155,7 +155,7 @@ History is kept per app: apps that share a database each track their own migrati
 `tako dev` and `tako run` serve bound databases with the same Turso engine, SQL permissions, and SDK as a deployment. Each binding has a local file.
 
 ```text
-.tako/data/databases/<database-name>.sqlite
+.tako/data/databases/<database-name>.db
 ```
 
 Files are created on first use, and migrations are applied to them. Development uses `[envs.development].db` when it is set. Otherwise it binds every name used by any environment, taking the database from the first environment in name order, so most projects need no development bindings. To choose them yourself:
@@ -244,17 +244,19 @@ tako db restore main --latest
 - `--snapshot <id>`: a restore point from `backups`.
 - `--latest`: the newest transaction uploaded, which recovers a lost or damaged copy.
 
-A restore checks that the server has room, downloads only what it needs (the newest full snapshot at or before the target, then the transactions after it), verifies every checksum and the restored file's integrity before anything changes, then pauses the database and swaps it in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. Before the swap, the server captures and uploads exactly the contents it replaces and records them as a restore point with reason `restore`, so restoring that point's `--snapshot` ID undoes the restore; the replaced file is also kept beside the database as `previous.sqlite` until the next replacement. The restored state then continues the history: `--latest` and later times include it.
+A restore checks that the server has room, downloads only what it needs (the newest full snapshot at or before the target, then the transactions after it), verifies every checksum and the restored file's integrity before anything changes, then pauses the database and swaps it in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. Before the swap, the server captures and uploads exactly the contents it replaces and records them as a restore point with reason `restore`, so restoring that point's `--snapshot` ID undoes the restore; the replaced file is also kept beside the database as `previous.db` until the next replacement. The restored state then continues the history: `--latest` and later times include it.
 
 Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no backup. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
 
-For local inspection or disaster recovery, `tako db restore main --latest --output ./recovered.sqlite` creates a portable file directly from uploaded history. A synchronized full-access workstation can do this while the database group is offline. See [local recovery](/backups/#recover-sql-to-a-local-file).
+For local inspection or disaster recovery, `tako db restore main --latest --output ./recovered.db` creates a portable file directly from uploaded history. A synchronized full-access workstation can do this while the database group is offline. See [local recovery](/backups/#recover-sql-to-a-local-file).
 
 ### Import and export
 
+Tako uses `.db` for managed SQL files. You can choose any filename for an import, export, or local restore.
+
 ```bash
-tako db export main ./main.sqlite
-tako db import main ./main.sqlite
+tako db export main ./main.db
+tako db import main ./main.db
 ```
 
 `export` downloads a consistent copy without pausing apps and refuses to overwrite an existing file. `import` replaces the database with a local SQLite file after verifying it on the server; when backups are configured, the current contents are backed up first and named with a restore point (reason `restore`). Only the main file is uploaded: stop writers and checkpoint the file (`PRAGMA wal_checkpoint(TRUNCATE)`) before importing a database that uses WAL. Imports are limited to 64 GiB. An import or export in progress is held by the server process, so a restart or upgrade of the server ends it; run the command again.

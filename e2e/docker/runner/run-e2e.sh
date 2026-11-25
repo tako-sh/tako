@@ -675,7 +675,7 @@ run_database_checks() {
   local route_host=$2
   local status_json="$TMP_ROOT/sqlite-status-${server_host}.json"
   local query_json="$TMP_ROOT/sqlite-query-${server_host}.json"
-  local export_file="$TMP_ROOT/messages-${server_host}.sqlite"
+  local export_file="$TMP_ROOT/messages-${server_host}.db"
   local log="$TMP_ROOT/sqlite-${server_host}.log"
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
 

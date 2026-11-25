@@ -202,7 +202,7 @@ db = { main = "main" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].db` maps app-facing binding names, read as `tako.db.<binding>`, to database names in the environment's network. A full-access deploy creates the named Turso database and prepares a replica on each selected application target. Development uses local files in `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].db`, development binds the app SQL aliases from the other environments.
+`[envs.<env>].db` maps app-facing binding names, read as `tako.db.<binding>`, to database names in the environment's network. A full-access deploy creates the named Turso database and prepares a replica on each selected application target. Development uses local files in `.tako/data/databases/<database-name>.db`. Without `[envs.development].db`, development binds the app SQL aliases from the other environments.
 
 `[db.<name>]` is optional and has one field:
 
@@ -219,7 +219,7 @@ backup = "private_backups"
 db = "chat-prod-replay"
 ```
 
-The table is optional. When present, `db` is the name of a hosted Turso database used by the channel runtime, not an app SQL alias. Without it, channel-capable deploys use a generated app/environment database. A full-access deploy provisions it on the selected application targets. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in the project's `.tako/data/tako/channels.sqlite`. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's database.
+The table is optional. When present, `db` is the name of a hosted Turso database used by the channel runtime, not an app SQL alias. Without it, channel-capable deploys use a generated app/environment database. A full-access deploy provisions it on the selected application targets. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in the project's `.tako/data/tako/channels.db`. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's database.
 
 ## Workflow Storage
 
@@ -228,7 +228,7 @@ The table is optional. When present, `db` is the name of a hosted Turso database
 db = "shop-workflows"
 ```
 
-The table is optional. When present, `db` is the name of the hosted Turso database that holds the environment's workflow runs; it is not an app SQL alias and app code never receives its token. Without it, a deploy of a release that runs workflows uses a generated app/environment database, created by a full-access deploy on the selected targets. Channels and workflows may name the same database. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`. See [Workflows](/workflows/#storage-and-multiple-servers).
+The table is optional. When present, `db` is the name of the hosted Turso database that holds the environment's workflow runs; it is not an app SQL alias and app code never receives its token. Without it, a deploy of a release that runs workflows uses a generated app/environment database, created by a full-access deploy on the selected targets. Channels and workflows may name the same database. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.db`. See [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## KV Stores
 

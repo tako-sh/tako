@@ -14,7 +14,7 @@ bun install
 bun run dev
 ```
 
-The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, base artwork is served through `/_tako/image`, and the `mission` database binding is served from `.tako/data/databases/mission.sqlite`.
+The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, base artwork is served through `/_tako/image`, and the `mission` database binding is served from `.tako/data/databases/mission.db`.
 
 ## Database
 

@@ -322,7 +322,7 @@ history, and credential failures must not trigger a backend fallback.
 Workflow runs, steps, and schedules also live in a hosted database:
 `[envs.<env>.workflows].db` names it (it may be the channel database);
 otherwise a full-access deploy creates `workflows-<slug>-<hash>` on the selected targets. `tako dev` keeps both in the
-project's `.tako/data/tako/channels.sqlite` and `.tako/data/tako/workflows.sqlite`,
+project's `.tako/data/tako/channels.db` and `.tako/data/tako/workflows.db`,
 served through the same Hrana HTTP protocol as production. See
 https://tako.sh/docs/channels/#deploy-replay-storage and
 https://tako.sh/docs/workflows/#storage-and-multiple-servers. Test expired

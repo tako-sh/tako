@@ -458,7 +458,7 @@ async fn snapshots_restore_the_contents_they_captured() {
         state
             .databases
             .database_dir(ID)
-            .join("previous.sqlite")
+            .join("previous.db")
             .exists(),
         "the replaced file is kept"
     );
@@ -1335,7 +1335,7 @@ async fn import_and_export_round_trip_a_file() {
     state
         .databases
         .host
-        .snapshot(&db_id, &temp.path().join("copy.sqlite"))
+        .snapshot(&db_id, &temp.path().join("copy.db"))
         .await
         .unwrap();
     assert!(!state.databases.host.has_changes(&db_id));
@@ -1374,7 +1374,7 @@ async fn import_and_export_round_trip_a_file() {
     assert_eq!(hex::encode(Sha256::digest(&exported)), export["sha256"]);
 
     // Build a replacement locally and import it.
-    let replacement = temp.path().join("replacement.sqlite");
+    let replacement = temp.path().join("replacement.db");
     {
         let db = rusqlite::Connection::open(&replacement).unwrap();
         db.execute_batch(
@@ -1894,7 +1894,7 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     let state = state(&temp);
     // Something else already holds the name in the database host, so the
     // new file cannot be registered.
-    let other = temp.path().join("other.sqlite");
+    let other = temp.path().join("other.db");
     tako_db::DatabaseHost::create_file(&other).unwrap();
     let id = tako_db::DatabaseId::parse(ID).unwrap();
     state.databases.host.register(id.clone(), other).unwrap();
@@ -2039,7 +2039,7 @@ async fn interrupted_work_directories_are_removed_once_stale() {
     create(&state, ID, None).await;
     let root = state.databases.work_dir(ID);
     std::fs::create_dir_all(root.join("restore-left-behind")).unwrap();
-    std::fs::write(root.join("restore-left-behind/database.sqlite"), "partial").unwrap();
+    std::fs::write(root.join("restore-left-behind/database.db"), "partial").unwrap();
     let now = std::time::SystemTime::now();
     // A directory an operation may still be using stays.
     assert_eq!(

@@ -71,7 +71,7 @@ When a voting majority survives, add the replacement server to the environment's
 On a full-access workstation that has synchronized the network, recover an uploaded point directly from backup storage. The database servers can all be offline.
 
 ```bash
-tako db restore orders --at 15m --output ./orders-recovered.sqlite
+tako db restore orders --at 15m --output ./orders-recovered.db
 ```
 
 Tako uses the cached generation and recovery key, the project’s configured backup storage, and the storage credentials for `production`. Select another environment with `--env staging`. Use `--latest` or `--snapshot <id>` in place of `--at`. To recover a retired generation, pass its ID with `--generation <id>` and configure the storage that holds its backups.

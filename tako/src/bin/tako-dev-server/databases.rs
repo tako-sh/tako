@@ -201,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn registrations_share_files_and_keep_tokens() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("shop.sqlite").display().to_string();
+        let file = dir.path().join("shop.db").display().to_string();
         let bindings = HashMap::from([("db".to_string(), file.clone())]);
 
         let first = connect("/a/tako.toml", &bindings).await.unwrap();
@@ -233,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn relative_paths_are_rejected() {
-        let bindings = HashMap::from([("db".to_string(), "shop.sqlite".to_string())]);
+        let bindings = HashMap::from([("db".to_string(), "shop.db".to_string())]);
         assert!(connect("/c/tako.toml", &bindings).await.is_err());
     }
 }
