@@ -566,7 +566,7 @@ async fn concurrent_first_deploys_reuse_the_winning_bootstrap() {
         .unwrap();
     let candidate = |digit: &str| tako_raft::Claim {
         name: "orders".into(),
-        engine: tako_core::DatabaseEngine::Sqlite,
+        engine: tako_core::DatabaseEngine::Turso,
         generation: digit.repeat(32),
         created_at_unix_secs: 42,
         channel_owner: None,
@@ -846,15 +846,16 @@ async fn catalog_recovers_after_founder_loss_and_demotes_before_removal() {
         untrusted.close("catalog").await.unwrap();
         replicas[0].4.abort();
         replicas[0].0.close("catalog").await.unwrap();
-        let id = await_leader(&replicas[1].1).await;
-        let live = &replicas[id as usize - 1];
         assert_eq!(
-            live.0
+            replicas[1]
+                .0
                 .catalog_write(update(1, b"after election"))
                 .await
                 .unwrap(),
             tako_raft::Applied::Committed(2)
         );
+        let id = await_leader(&replicas[1].1).await;
+        let live = &replicas[id as usize - 1];
         let mut survivors = members;
         survivors.remove(&1);
         tako_raft::reconcile(&live.1, &survivors).await.unwrap();

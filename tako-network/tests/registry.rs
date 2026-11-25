@@ -761,9 +761,8 @@ fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data
     ];
     for pem in invalid {
         let mut changed = server.clone();
-        changed.https_certificate_pem = Some(pem.clone());
+        changed.https_certificate_pem = Some(pem);
         assert!(changed.validate().is_err());
-        let mut changed = server.clone();
     }
     let mut crlf = server;
     crlf.https_certificate_pem = Some(valid.replace('\n', "\r\n"));

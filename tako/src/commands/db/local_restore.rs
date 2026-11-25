@@ -31,7 +31,7 @@ pub(super) async fn run(
         Some(id) => id,
         None => {
             let records = databases::list_from(&alias, true)?;
-            find_record_of(&records, name, DatabaseEngine::Sqlite)?
+            find_record_of(&records, name, DatabaseEngine::Turso)?
                 .generation
                 .clone()
         }

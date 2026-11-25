@@ -50,7 +50,7 @@ fn record(name: &str, server: &str) -> DatabaseRecord {
         server: server.into(),
         generation: "g1".into(),
         created_at_unix_secs: 0,
-        engine: tako_core::DatabaseEngine::Sqlite,
+        engine: tako_core::DatabaseEngine::Turso,
         channel_owner: None,
         workflows_owner: None,
     }

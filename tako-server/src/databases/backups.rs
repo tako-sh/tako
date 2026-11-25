@@ -633,7 +633,7 @@ pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
     };
     // KV stores keep snapshot backups (see `super::snapshots`).
     for stored in databases {
-        if stored.engine == tako_core::DatabaseEngine::Sqlite {
+        if stored.engine == tako_core::DatabaseEngine::Turso {
             jobs.start(state, stored.name);
         }
     }

@@ -440,7 +440,28 @@ impl RaftStateMachine<Types> for Replica {
                             EntryPayload::Normal(crate::Proposal::RetireName {
                                 name,
                                 generation,
-                            }) => crate::catalog::retire(tx, &name, &generation)?,
+                                expected,
+                                shared,
+                            }) => {
+                                let revision = get(tx, "network_revision")?.unwrap_or(0u64);
+                                if revision != expected {
+                                    Applied::Stale {
+                                        current_revision: revision,
+                                    }
+                                } else if revision == u64::MAX
+                                    || shared.is_empty()
+                                    || shared.len() > 8 * 1024 * 1024
+                                {
+                                    Applied::Invalid
+                                } else {
+                                    let reply = crate::catalog::retire(tx, &name, &generation)?;
+                                    if reply == Applied::NoChange {
+                                        set(tx, "network_shared", &shared)?;
+                                        set(tx, "network_revision", &(revision + 1))?;
+                                    }
+                                    reply
+                                }
+                            }
                             EntryPayload::Normal(_)
                                 if get::<bool>(tx, "retired")?.unwrap_or(false) =>
                             {

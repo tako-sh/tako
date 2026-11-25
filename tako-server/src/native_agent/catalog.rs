@@ -115,6 +115,7 @@ impl Catalog {
         root: &Path,
         files: &Directory,
         stop: &AtomicBool,
+        bind: impl FnOnce(SocketAddr) -> io::Result<std::net::TcpListener>,
     ) -> Result<Self> {
         let rt = Handle::current();
         let peers = Arc::new(RwLock::new(peer_keys(keys, known, now()?)?));
@@ -162,7 +163,9 @@ impl Catalog {
         ))?;
         let trusted = peers.clone();
         let transport = peer.clone();
-        let socket = rt.block_on(tokio::net::TcpListener::bind(address))?;
+        let socket = bind(address)?;
+        socket.set_nonblocking(true)?;
+        let socket = tokio::net::TcpListener::from_std(socket)?;
         let listener = rt.spawn(async move {
             if let Err(error) = transport
                 .serve(socket, move |ip| trusted.read().contains_key(&ip))
@@ -488,6 +491,63 @@ impl Catalog {
             shared: serde_json::to_vec(&shared)?,
         })
     }
+    fn retire_name(&self, name: String, generation: String) -> RuntimeResult<Proposal> {
+        use tako_network::shared::{DATABASE_SCOPE, RecordAddress, RecordKind, RecordMutation};
+        let (expected, bytes) = self.document(true)?;
+        let mut shared: SharedSnapshot = serde_json::from_slice(&bytes)?;
+        let address = RecordAddress {
+            scope: DATABASE_SCOPE.parse()?,
+            kind: RecordKind::Database,
+            name: format!("live.{generation}"),
+        };
+        let current = shared
+            .latest()?
+            .get(&address)
+            .copied()
+            .ok_or(RuntimeError::Invalid("missing catalog directory entry"))?;
+        if let Some(plaintext) = &current.plaintext {
+            let record: serde_json::Value = serde_json::from_str(&plaintext.value)?;
+            if record["name"] != name || record["generation"] != generation {
+                return Err(RuntimeError::Invalid("retirement identity"));
+            }
+            let (version, bytes) = self.document(false)?;
+            if version != expected {
+                return Err(RuntimeError::Conflict("catalog changed; retry"));
+            }
+            let members = serde_json::from_slice::<Registry>(&bytes)?.current;
+            let time = now().map_err(|_| RuntimeError::Invalid("clock"))?;
+            let mutation = RecordMutation {
+                id: tako_network::RequestId::random()?,
+                observed_revision: current.revision,
+                expires_at: time,
+                address,
+                value: None,
+            };
+            let revision = current
+                .revision
+                .checked_add(1)
+                .ok_or(RuntimeError::Invalid("catalog revision overflow"))?;
+            let record = SharedRecord::create(
+                &mutation,
+                None,
+                revision,
+                self.config.server_id.clone(),
+                self.config.server_id.clone(),
+                &members,
+                time,
+            )?;
+            shared.merge(&SharedSnapshot {
+                network: members.network.id,
+                records: vec![record],
+            })?;
+        }
+        Ok(Proposal::RetireName {
+            name,
+            generation,
+            expected,
+            shared: serde_json::to_vec(&shared)?,
+        })
+    }
     pub(super) fn storage(
         &mut self,
         command: tako_core::StorageOperation,
@@ -508,7 +568,7 @@ impl Catalog {
                 self.confirm()?;
                 return Ok(serde_json::json!({}));
             }
-            Op::RetireName { name, generation } => Proposal::RetireName { name, generation },
+            Op::RetireName { name, generation } => self.retire_name(name, generation)?,
             Op::Retirement {
                 generation,
                 targets,
@@ -678,5 +738,105 @@ impl RegistryStore for Catalog {
             records: vec![record.clone()],
         })?;
         self.update(true, version, &shared)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn founder_reopens_committed_directory_and_refuses_erased_storage() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _entered = rt.enter();
+        let f = super::super::tests::Fixture::new();
+        let dir = crate::isolation::fixture::private_tempdir();
+        let files = Directory::open(dir.path(), true).unwrap();
+        let open = || {
+            Catalog::start(
+                &f.config,
+                &f.config.bootstrap,
+                &f.keys,
+                dir.path(),
+                &files,
+                &AtomicBool::new(false),
+                |_| std::net::TcpListener::bind("127.0.0.1:0"),
+            )
+        };
+        let candidate = tako_core::StorageClaim {
+            name: "orders".into(),
+            engine: tako_core::DatabaseEngine::Turso,
+            generation: "ab".repeat(16),
+            created_at_unix_secs: 1,
+            founders: [f.config.server_id.to_string()].into(),
+            workflows_owner: None,
+            channel_owner: None,
+        };
+        let mut catalog = open().unwrap();
+        catalog.begin_request().unwrap();
+        catalog
+            .storage(tako_core::StorageOperation::Claim {
+                candidate: candidate.clone(),
+            })
+            .unwrap();
+        catalog.end_request();
+        let shared = catalog.shared_snapshot().unwrap();
+        assert_eq!(shared.records.len(), 2);
+        let key = shared
+            .records
+            .iter()
+            .find(|r| r.address.kind == tako_network::shared::RecordKind::DatabaseKey)
+            .unwrap();
+        assert!(
+            key.open(&shared, &f.admin, &f.config.network.initial_admin)
+                .unwrap()
+                .is_some()
+        );
+        drop(catalog);
+        let mut catalog = open().unwrap();
+        assert_eq!(catalog.snapshot().unwrap(), f.config.bootstrap);
+        assert_eq!(catalog.shared_snapshot().unwrap(), shared);
+        catalog
+            .storage(tako_core::StorageOperation::Retirement {
+                generation: candidate.generation.clone(),
+                targets: Some(candidate.founders.clone()),
+            })
+            .unwrap();
+        let retire = || tako_core::StorageOperation::RetireName {
+            name: candidate.name.clone(),
+            generation: candidate.generation.clone(),
+        };
+        catalog.storage(retire()).unwrap();
+        catalog.storage(retire()).unwrap();
+        let retired = catalog.shared_snapshot().unwrap();
+        assert_eq!(retired.records.len(), 2);
+        assert!(retired.records.iter().any(|r| r.address.kind
+            == tako_network::shared::RecordKind::Database
+            && r.is_deletion()));
+        assert!(retired.records.iter().any(|r| r == key));
+        let mut replacement = candidate.clone();
+        replacement.generation = "cd".repeat(16);
+        catalog
+            .storage(tako_core::StorageOperation::Claim {
+                candidate: replacement,
+            })
+            .unwrap();
+        catalog.storage(retire()).unwrap();
+        assert_eq!(
+            catalog
+                .shared_snapshot()
+                .unwrap()
+                .records
+                .iter()
+                .filter(
+                    |r| r.address.kind == tako_network::shared::RecordKind::Database
+                        && !r.is_deletion()
+                )
+                .count(),
+            1
+        );
+        drop(catalog);
+        std::fs::remove_file(dir.path().join("catalog/raft.redb")).unwrap();
+        assert!(open().is_err());
     }
 }

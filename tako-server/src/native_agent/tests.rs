@@ -132,7 +132,8 @@ fn node_config_fullchain_unknown_fields_and_unsafe_paths() {
         "local-services-export.lock",
         "runtime.redb",
         "agent-process-lock",
-        "api-token",
+        "catalog",
+        "catalog-initialized",
     ] {
         let mut config = fixture.config.clone();
         config.files.keys = name.into();

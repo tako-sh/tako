@@ -2,7 +2,7 @@
 //! app SDKs.
 //!
 //! A database is a file owned by the server that hosts it (its home server):
-//! a SQLite database, or a key-value store of JSON values with optional
+//! a Turso SQL database, or a key-value store of JSON values with optional
 //! expiry. Its name identifies it: names are unique within a network, across
 //! both engines. Apps reach it through a binding: the server gives each bound
 //! app process a URL and token for the SQL over HTTP protocol, or a token the
@@ -99,20 +99,20 @@ pub fn validate_database_name(name: &str) -> Result<(), String> {
 pub enum DatabaseEngine {
     /// Turso SQL, served over the libSQL-compatible HTTP protocol.
     #[default]
-    Sqlite,
+    Turso,
     /// A key-value store, served through the internal socket.
     Kv,
 }
 
 impl DatabaseEngine {
-    pub fn is_sqlite(&self) -> bool {
-        *self == Self::Sqlite
+    pub fn is_sql(&self) -> bool {
+        *self == Self::Turso
     }
 
     /// How people call a database of this engine in messages.
     pub fn noun(self) -> &'static str {
         match self {
-            Self::Sqlite => "database",
+            Self::Turso => "database",
             Self::Kv => "KV store",
         }
     }
@@ -135,7 +135,7 @@ pub struct DatabaseBinding {
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_key: Option<String>,
-    #[serde(default, skip_serializing_if = "DatabaseEngine::is_sqlite")]
+    #[serde(default, skip_serializing_if = "DatabaseEngine::is_sql")]
     pub engine: DatabaseEngine,
 }
 
@@ -413,7 +413,7 @@ mod tests {
             generation: None,
             server: "s".into(),
             peer_key: None,
-            engine: DatabaseEngine::Sqlite,
+            engine: DatabaseEngine::Turso,
         };
         let json = serde_json::to_value(&binding).unwrap();
         assert_eq!(json, serde_json::json!({"name": "main", "server": "s"}));

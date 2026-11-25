@@ -232,17 +232,32 @@ impl Peer {
             .get("catalog")
             .cloned()
             .ok_or_else(|| error("catalog unavailable"))?;
-        let (index, result) = if let Some(target) = Self::leader_address(&group)? {
-            self.observe(
-                "catalog",
-                target,
-                group.secret,
-                Request::CatalogWrite(proposal),
-            )
-            .await?
-        } else {
-            Self::apply_catalog(&group, proposal).await?
-        };
+        // A follower can observe the new term just before its candidate can
+        // accept writes. Each catalog operation is revision-checked or
+        // idempotent, so it is safe to try the newly elected leader again.
+        let (index, result) = timeout(Duration::from_secs(10), async {
+            loop {
+                let reply = match Self::leader_address(&group) {
+                    Ok(Some(target)) => {
+                        self.observe(
+                            "catalog",
+                            target,
+                            group.secret,
+                            Request::CatalogWrite(proposal.clone()),
+                        )
+                        .await
+                    }
+                    Ok(None) => Self::apply_catalog(&group, proposal.clone()).await,
+                    Err(error) => Err(error),
+                };
+                if let Ok(reply) = reply {
+                    return reply;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .map_err(error)?;
         timeout(Duration::from_secs(10), async {
             loop {
                 if group.progress().applied.is_some_and(|i| i >= index) {

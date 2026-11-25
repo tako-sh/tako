@@ -238,7 +238,9 @@ impl Controller {
         process::apply(&config, &desired)?;
         let publisher = Publisher::open(&config, &data_dir)?;
         let startup = (|| -> Result<_> {
-            let store = Catalog::start(&config, &known, &keys, &root, &directory, &stop)?;
+            let store = Catalog::start(&config, &known, &keys, &root, &directory, &stop, |addr| {
+                std::net::TcpListener::bind(addr)
+            })?;
             let shared = Rc::new(RefCell::new(known.clone()));
             let mut guarded =
                 MonotonicStore::new(store, Directory::open(&root, true)?, shared.clone())

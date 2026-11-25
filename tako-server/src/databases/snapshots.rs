@@ -107,7 +107,7 @@ fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
 /// The file extension of a database's copies: SQLite files, or KV exports.
 pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
     match stored.engine {
-        DatabaseEngine::Sqlite => "db",
+        DatabaseEngine::Turso => "db",
         DatabaseEngine::Kv => "redb",
     }
 }
@@ -115,7 +115,7 @@ pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
 /// Whether the database may differ from its last snapshot.
 pub(crate) fn has_changes(state: &ServerState, stored: &StoredDatabase) -> bool {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             DatabaseId::parse(&stored.name).is_ok_and(|id| state.databases.host.has_changes(&id))
         }
         DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
@@ -126,7 +126,7 @@ pub(crate) fn has_changes(state: &ServerState, stored: &StoredDatabase) -> bool 
 /// Records that the database differs from its last snapshot.
 pub(crate) fn mark_changed(state: &ServerState, stored: &StoredDatabase) {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             if let Ok(id) = DatabaseId::parse(&stored.name) {
                 state.databases.host.mark_changed(&id);
             }
@@ -142,7 +142,7 @@ pub(crate) fn mark_changed(state: &ServerState, stored: &StoredDatabase) {
 /// The size of the database's file on disk.
 pub(crate) fn size_bytes(state: &ServerState, stored: &StoredDatabase) -> u64 {
     match stored.engine {
-        DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
+        DatabaseEngine::Turso => DatabaseId::parse(&stored.name)
             .ok()
             .and_then(|id| state.databases.host.size_bytes(&id)),
         DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
@@ -161,7 +161,7 @@ pub(crate) async fn copy_contents(
     backup: bool,
 ) -> Result<(), String> {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             let id = DatabaseId::parse(&stored.name)?;
             let copied = state.databases.host.snapshot(&id, dest).await;
             if !backup {
@@ -193,7 +193,7 @@ pub(crate) async fn copy_contents(
 /// Checks that `path` holds a usable copy for the database's engine. Blocks.
 pub(crate) fn verify_copy(engine: DatabaseEngine, path: &Path) -> Result<(), String> {
     match engine {
-        DatabaseEngine::Sqlite => tako_db::verify_database(path),
+        DatabaseEngine::Turso => tako_db::verify_database(path),
         DatabaseEngine::Kv => tako_kv::export::Reader::open(path)
             .and_then(|reader| reader.check())
             .map(drop)

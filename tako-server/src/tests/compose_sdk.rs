@@ -228,7 +228,7 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
     server
         .create_test_database(
             WORKFLOWS.into(),
-            tako_core::DatabaseEngine::Sqlite,
+            tako_core::DatabaseEngine::Turso,
             "0123456789abcdef0123456789abcdef".into(),
             base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
             None,

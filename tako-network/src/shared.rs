@@ -149,14 +149,6 @@ pub enum RecordKind {
     App,
     Credential,
     Storage,
-    /// Legacy: a key that encrypted an environment's app data archives,
-    /// which Tako no longer makes. Nothing reads or writes these records
-    /// any more; the variant stays so records already stored still decode.
-    BackupKey,
-    /// Legacy: the ID of the environment's active [`RecordKind::BackupKey`].
-    /// Not secret. Nothing reads or writes these records any more; the
-    /// variant stays so records already stored still decode.
-    BackupActive,
     /// A Tako-hosted database of the network, named by its name under
     /// [`DATABASE_SCOPE`]: its home server and generation. Not secret; every
     /// member that may deploy can read it, so deploys resolve databases by
@@ -172,7 +164,7 @@ impl RecordKind {
     /// Secret records are sealed to each reader. Other records are stored as
     /// plaintext, so they need no per-reader keys and every server can read them.
     pub fn is_secret(self) -> bool {
-        !matches!(self, Self::BackupActive | Self::Database)
+        self != Self::Database
     }
 }
 
@@ -455,9 +447,10 @@ impl SharedRecord {
             (Some(_), Some(_)) => {
                 return Err(RuntimeError::Invalid("sealed and plaintext record value"));
             }
-            // Records of a kind that is not secret were sealed before plaintext
-            // records existed, so a sealed value stays valid for every kind.
             (Some(value), None) => {
+                if !self.address.kind.is_secret() {
+                    return Err(RuntimeError::Invalid("sealed database directory entry"));
+                }
                 value.validate()?;
                 if !self.keys.contains_key(&self.issuer) {
                     return Err(RuntimeError::Invalid("missing issuer record key"));

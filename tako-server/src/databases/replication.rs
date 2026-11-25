@@ -9,7 +9,7 @@ const PORT: u16 = tako_core::STORAGE_PEER_PORT;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct GroupConfig {
-    name: Option<String>,
+    name: String,
     key: String,
     local: u128,
     founders: BTreeMap<u128, SocketAddr>,
@@ -17,7 +17,7 @@ pub(crate) struct GroupConfig {
 
 #[derive(Clone)]
 struct Group {
-    name: Option<String>,
+    name: String,
     membership: Arc<tokio::sync::Mutex<()>>,
     watcher: Arc<parking_lot::Mutex<Option<tokio::task::AbortHandle>>>,
     node: Node,
@@ -71,13 +71,11 @@ impl ServerState {
                 .map_err(|e| e.to_string())?
                 == Some(true)
             {
-                if let Some(name) = config.name {
-                    self.coordinate_storage(StorageOperation::PurgeReplica {
-                        name,
-                        generation: id,
-                    })
-                    .await?;
-                }
+                self.coordinate_storage(StorageOperation::PurgeReplica {
+                    name: config.name,
+                    generation: id,
+                })
+                .await?;
                 continue;
             }
             self.open_storage_group(&id, &config).await?;
@@ -93,12 +91,6 @@ impl ServerState {
         local_server: &str,
         standby: bool,
     ) -> Result<(), String> {
-        #[cfg(target_os = "linux")]
-        crate::native_agent::catalog_storage(
-            &self.runtime_config().data_dir,
-            StorageOperation::CatalogStatus,
-        )
-        .await?;
         let groups = self
             .state_store
             .replication_groups()
@@ -118,7 +110,7 @@ impl ServerState {
                 let config = groups
                     .get(generation)
                     .ok_or_else(|| format!("Missing local replica for {}", binding.name))?;
-                if config.name.as_ref() != Some(&binding.name) {
+                if config.name != binding.name {
                     return Err(format!(
                         "Local replica identity differs for {}",
                         binding.name
@@ -175,6 +167,12 @@ impl ServerState {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
+        #[cfg(target_os = "linux")]
+        crate::native_agent::catalog_storage(
+            &self.runtime_config().data_dir,
+            StorageOperation::CatalogStatus,
+        )
+        .await?;
         if proxy.server_address(local_server) != Some(proxy.address.into()) {
             return Err("Waiting for current network membership".into());
         }
@@ -229,7 +227,7 @@ impl ServerState {
         )
         .await?;
         let config = GroupConfig {
-            name: Some(name.clone()),
+            name: name.clone(),
             key: backup_key,
             local: 1,
             founders: BTreeMap::from([(1, "[::1]:1".parse().unwrap())]),
@@ -240,7 +238,7 @@ impl ServerState {
         let group = self.open_storage_group(&generation, &config).await?;
         self.wait_for_test_leader(&generation).await?;
         let path = match engine {
-            DatabaseEngine::Sqlite => self.databases.database_path(&name),
+            DatabaseEngine::Turso => self.databases.database_path(&name),
             DatabaseEngine::Kv => self.databases.kv_path(&name),
         };
         tokio::task::spawn_blocking(move || group.resource.writer()?.seed(&path))
@@ -294,37 +292,36 @@ impl ServerState {
     }
 
     async fn serve_storage_group(&self, id: &str, group: &Group) -> Result<(), String> {
-        if let Some(name) = &group.name {
-            let stored = self.hosted_database(name)?;
-            if stored.generation != id {
-                return Err("resource generation changed".to_owned());
+        let name = &group.name;
+        let stored = self.hosted_database(name)?;
+        if stored.generation != id {
+            return Err("resource generation changed".to_owned());
+        }
+        let resource = group.resource.clone();
+        match stored.engine {
+            DatabaseEngine::Turso => {
+                let database = DatabaseId::parse(name)?;
+                if self.databases.host.is_registered(&database) {
+                    return Ok(());
+                }
+                self.databases
+                    .host
+                    .register_replicated(database, self.databases.database_path(name), resource)
+                    .map_err(|e| e.to_string())?;
             }
-            let resource = group.resource.clone();
-            match stored.engine {
-                DatabaseEngine::Sqlite => {
-                    let database = DatabaseId::parse(name)?;
-                    if self.databases.host.is_registered(&database) {
+            DatabaseEngine::Kv => {
+                let store = tako_kv::StoreId::parse(name)?;
+                let host = self.databases.kv.clone();
+                let path = self.databases.kv_path(name);
+                tokio::task::spawn_blocking(move || {
+                    if host.is_registered(&store) {
                         return Ok(());
                     }
-                    self.databases
-                        .host
-                        .register_replicated(database, self.databases.database_path(name), resource)
-                        .map_err(|e| e.to_string())?;
-                }
-                DatabaseEngine::Kv => {
-                    let store = tako_kv::StoreId::parse(name)?;
-                    let host = self.databases.kv.clone();
-                    let path = self.databases.kv_path(name);
-                    tokio::task::spawn_blocking(move || {
-                        if host.is_registered(&store) {
-                            return Ok(());
-                        }
-                        host.register_replicated(store, path, resource)
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| e.to_string())?;
-                }
+                    host.register_replicated(store, path, resource)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -418,19 +415,17 @@ impl ServerState {
             return Err(error);
         }
         storage.groups.write().insert(id.to_owned(), group.clone());
-        if config.name.is_some() {
-            let databases = Arc::downgrade(&self.databases);
-            let node = group.node.clone();
-            let watcher = tokio::spawn(async move {
-                tako_raft::watch_leader(&node, || {
-                    if let Some(databases) = databases.upgrade() {
-                        databases.refresh_homes();
-                    }
-                })
-                .await;
-            });
-            *group.watcher.lock() = Some(watcher.abort_handle());
-        }
+        let databases = Arc::downgrade(&self.databases);
+        let node = group.node.clone();
+        let watcher = tokio::spawn(async move {
+            tako_raft::watch_leader(&node, || {
+                if let Some(databases) = databases.upgrade() {
+                    databases.refresh_homes();
+                }
+            })
+            .await;
+        });
+        *group.watcher.lock() = Some(watcher.abort_handle());
         Ok(group)
     }
 
@@ -526,7 +521,7 @@ impl ServerState {
                     .withdrawal(&generation)
                     .map_err(|e| e.to_string())?;
                 if let Some(config) = configs.get(&generation) {
-                    if config.name.as_deref() != Some(&name) {
+                    if config.name != name {
                         return Err("retirement name and generation disagree".into());
                     }
                     if withdrawal != Some(true)
@@ -610,10 +605,7 @@ impl ServerState {
                 enabled,
             } => {
                 let group = storage.group(&generation)?;
-                let name = group
-                    .name
-                    .as_ref()
-                    .ok_or("catalog is not an application resource")?;
+                let name = &group.name;
                 let stored = self.hosted_database(name)?;
                 if stored.generation != generation {
                     return Err("resource generation changed".into());
@@ -683,7 +675,7 @@ impl ServerState {
                     hash.update(b"tako/resource-raft/v1");
                     hash.update(secret);
                     let config = GroupConfig {
-                        name: Some(claim.name.clone()),
+                        name: claim.name.clone(),
                         key: BASE64.encode(hash.finalize()),
                         local,
                         founders: if self
@@ -764,7 +756,7 @@ impl ServerState {
                 }
                 let group = storage.group(&generation)?;
                 let path = match stored.engine {
-                    DatabaseEngine::Sqlite => self.databases.database_path(&name),
+                    DatabaseEngine::Turso => self.databases.database_path(&name),
                     DatabaseEngine::Kv => self.databases.kv_path(&name),
                 };
                 if group.replica.revision().await.map_err(|e| e.to_string())? == 0 {
@@ -827,7 +819,7 @@ impl Storage {
         self.groups
             .read()
             .get(id)
-            .is_some_and(|group| group.name.as_deref() == Some(name))
+            .is_some_and(|group| group.name == name)
     }
     pub(super) fn leader(&self, id: &str) -> Option<std::net::Ipv6Addr> {
         let groups = self.groups.read();
@@ -866,7 +858,7 @@ mod tests {
         let addr: std::net::Ipv6Addr = "fd33:a91f:72b1:7231::efdc".parse().unwrap();
         let local = u128::from(addr);
         let config = GroupConfig {
-            name: Some("main".into()),
+            name: "main".into(),
             key: "test".into(),
             local,
             founders: BTreeMap::from([(local, SocketAddr::new(addr.into(), PORT))]),

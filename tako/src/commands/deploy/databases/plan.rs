@@ -245,10 +245,8 @@ pub(in crate::commands::deploy) fn plan(
                 "'{name}' is bound as both a SQLite database and a KV store in {env}. Use separate resource names."
             ));
         }
-        plan.sql.insert(
-            binding.clone(),
-            resolve(name, DatabaseEngine::Sqlite, None)?,
-        );
+        plan.sql
+            .insert(binding.clone(), resolve(name, DatabaseEngine::Turso, None)?);
     }
     for (binding, name) in &environment.kv {
         plan.kv
@@ -270,7 +268,7 @@ pub(in crate::commands::deploy) fn plan(
             ServicePlan {
                 binding: Some(resolve(
                     &name,
-                    DatabaseEngine::Sqlite,
+                    DatabaseEngine::Turso,
                     Some((service, implicit)),
                 )?),
                 implicit,
@@ -326,7 +324,7 @@ mod tests {
             server: "a".repeat(64),
             generation: "c".repeat(32),
             created_at_unix_secs: 1,
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
             channel_owner: owner.map(str::to_owned),
             workflows_owner: None,
         }

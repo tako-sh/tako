@@ -151,9 +151,7 @@ fn prepare_answer_sign_install_and_retry_preserve_identity() {
     let config = NodeConfig::load(&f.data).unwrap();
     assert_eq!(config.files.keys, "device-keys.json");
     assert_eq!(config.wireguard_listen_port, 51820);
-    for path in [
-        f.data.join(NODE_CONFIG_FILE),
-    ] {
+    for path in [f.data.join(NODE_CONFIG_FILE), f.network_dir().join("device-keys.json")] {
         let metadata = fs::metadata(path).unwrap();
         assert_eq!(metadata.mode() & 0o7777, 0o600);
         assert_eq!(metadata.nlink(), 1);
@@ -377,11 +375,13 @@ fn host_key_comments_are_stripped_and_rotation_blocks_install() {
 
 #[test]
 fn protected_identity_and_config_reject_links_and_permissions() {
-    for token_case in [true, false] {
+    for identity_case in [true, false] {
         let f = Fixture::new();
         let snapshot = f.snapshot();
-        let target = if token_case {
-            f.network_dir().join(NodeConfig::load(&f.data).unwrap().files.keys)
+        let target = if identity_case {
+            let key = f.network_dir().join("device-keys.json");
+            fs::remove_file(&key).unwrap();
+            key
         } else {
             f.data.join(NODE_CONFIG_FILE)
         };

@@ -413,14 +413,11 @@ fn deployers_pull_database_records_but_not_snapshot_keys() {
         (RecordKind::DatabaseKey, "a2V5"),
     ] {
         let mutation = secret_mutation(&fixture, DATABASE_SCOPE, kind, "shop", Some(value));
-        fixture
-            .call(
-                &mut runtime,
-                &fixture.admin,
-                RpcRequest::PublishRecord(Box::new(mutation)),
-                10,
-            )
-            .unwrap();
+        assert!(matches!(fixture.call(&mut runtime, &fixture.admin, RpcRequest::PublishRecord(Box::new(mutation.clone())), 10),Err(RuntimeError::Denied)));
+        let content = serde_json::to_vec(&RecordContent {value: value.to_owned().into(),expires_on:None}).unwrap();
+        let mut store = fixture.store.0.borrow_mut();
+        let record = crate::shared::SharedRecord::create(&mutation,Some(&content),1,fixture.config.server_id.clone(),fixture.config.server_id.clone(),&store.snapshot,10).unwrap();
+        crate::shared::SharedStore::append_record(&mut store.shared,&record).unwrap();
     }
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
@@ -454,7 +451,7 @@ fn deployers_pull_database_records_but_not_snapshot_keys() {
         .unwrap();
     let content: RecordContent = serde_json::from_slice(&plaintext).unwrap();
     assert_eq!(&*content.value, r#"{"name":"shop"}"#);
-    // Only administrators publish database records.
+    // Deploy credentials cannot forge a catalog entry.
     let forged = secret_mutation(
         &fixture,
         DATABASE_SCOPE,
@@ -665,36 +662,6 @@ fn expired_receipts_are_collected_and_deadlines_and_observations_are_authenticat
             .is_err()
     );
     assert_eq!(fixture.store.0.borrow().shared.records.len(), 1);
-}
-
-#[test]
-fn backup_key_selection_is_published_as_plaintext() {
-    use crate::shared::RecordKind;
-    let fixture = Fixture::new();
-    let mut runtime = fixture.open();
-    let mutation = secret_mutation(
-        &fixture,
-        "shop/production",
-        RecordKind::BackupActive,
-        "active",
-        Some("backup-key-0123456789abcdef"),
-    );
-    fixture
-        .call(
-            &mut runtime,
-            &fixture.admin,
-            RpcRequest::PublishRecord(Box::new(mutation)),
-            10,
-        )
-        .unwrap();
-    let store = fixture.store.0.borrow();
-    let record = &store.shared.records[0];
-    assert!(record.value.is_none());
-    assert!(record.keys.is_empty());
-    assert_eq!(
-        record.plaintext.as_ref().unwrap().value,
-        "backup-key-0123456789abcdef"
-    );
 }
 
 #[test]

@@ -274,7 +274,7 @@ mod tests {
         let (_dir, store) = store();
         let database = StoredDatabase {
             name: "main".into(),
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 7,
             secrets: DatabaseSecrets {

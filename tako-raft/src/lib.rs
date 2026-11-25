@@ -61,6 +61,9 @@ pub enum Proposal {
     RetireName {
         name: String,
         generation: String,
+        expected: u64,
+        #[serde(with = "serde_bytes")]
+        shared: Vec<u8>,
     },
     BackupSettings {
         track: bool,
@@ -168,6 +171,18 @@ pub async fn reconcile_voters(
             break;
         }
         voters.insert(id);
+    }
+    if before != voters
+        || targets.len() != membership.membership().nodes().count()
+        || targets
+            .iter()
+            .any(|(id, addr)| membership.membership().get_node(id) != Some(addr))
+    {
+        // OpenRaft permits membership changes after the new leader has
+        // committed its first entry for this term.
+        raft.ensure_linearizable(openraft::ReadPolicy::ReadIndex)
+            .await
+            .map_err(disk::error)?;
     }
     for (&id, &address) in targets {
         if membership.membership().get_node(&id) != Some(&address)

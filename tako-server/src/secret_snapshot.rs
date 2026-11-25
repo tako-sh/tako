@@ -115,8 +115,6 @@ impl Resolved {
                         (stored.access_key_id.value, stored.secret_access_key.value),
                     );
                 }
-                // Legacy app data archive keys, which nothing uses any more.
-                RecordKind::BackupKey | RecordKind::BackupActive => {}
                 RecordKind::Database | RecordKind::DatabaseKey => {}
             }
         }

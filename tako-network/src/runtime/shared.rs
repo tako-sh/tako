@@ -79,6 +79,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
         mutation.address.validate()?;
+        if matches!(
+            mutation.address.kind,
+            crate::shared::RecordKind::Database | crate::shared::RecordKind::DatabaseKey
+        ) {
+            return Err(RuntimeError::Denied);
+        }
         if !mutation
             .address
             .writable(registry.permissions(author, now)?)

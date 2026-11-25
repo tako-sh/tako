@@ -54,7 +54,7 @@ pub(crate) use manifest::resolve_deploy_main;
 fn creation_json(creation: &crate::commands::db::target::PlannedBinding) -> serde_json::Value {
     let mut value =
         serde_json::json!({"name": creation.database_name, "server": creation.home.name});
-    if !creation.binding.engine.is_sqlite() {
+    if !creation.binding.engine.is_sql() {
         value["engine"] = serde_json::json!(creation.binding.engine);
     }
     value

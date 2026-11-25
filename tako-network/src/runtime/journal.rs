@@ -115,11 +115,6 @@ impl NoncePool {
         expiry.insert((expires, signer, nonce), ())?;
         Ok(())
     }
-
-    /// Rows and expiry index entries.
-    fn len(self, txn: &impl Tables) -> RuntimeResult<(u64, u64)> {
-        Ok((txn.rows(self.0)?, txn.rows(self.1)?))
-    }
 }
 
 /// Payloads by ID with an expiry fixed at insert, indexed by expiry so
@@ -183,26 +178,6 @@ impl Expiring {
             rows.remove(key.value().1)?;
         }
         Ok(())
-    }
-
-    fn len(self, txn: &impl Tables) -> RuntimeResult<(u64, u64)> {
-        Ok((txn.rows(self.0)?, txn.rows(self.1)?))
-    }
-}
-
-/// Row counts of read and write transactions alike.
-trait Tables {
-    fn rows<K: redb::Key + 'static, V: redb::Value + 'static>(
-        &self,
-        table: TableDefinition<K, V>,
-    ) -> RuntimeResult<u64>;
-}
-impl Tables for redb::ReadTransaction {
-    fn rows<K: redb::Key + 'static, V: redb::Value + 'static>(
-        &self,
-        table: TableDefinition<K, V>,
-    ) -> RuntimeResult<u64> {
-        Ok(self.open_table(table)?.len()?)
     }
 }
 

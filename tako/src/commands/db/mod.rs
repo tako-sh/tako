@@ -240,7 +240,7 @@ pub(crate) fn env_bindings(
     engine: DatabaseEngine,
 ) -> &std::collections::HashMap<String, String> {
     match engine {
-        DatabaseEngine::Sqlite => &env.databases,
+        DatabaseEngine::Turso => &env.databases,
         DatabaseEngine::Kv => &env.kv,
     }
 }
@@ -248,7 +248,7 @@ pub(crate) fn env_bindings(
 /// The CLI command that manages databases of `engine`.
 pub(crate) fn command_name(engine: DatabaseEngine) -> &'static str {
     match engine {
-        DatabaseEngine::Sqlite => "db",
+        DatabaseEngine::Turso => "db",
         DatabaseEngine::Kv => "kv",
     }
 }
@@ -347,7 +347,7 @@ fn database_users<'a>(
                 .environments
                 .insert(env);
         }
-        if engine != DatabaseEngine::Sqlite {
+        if engine != DatabaseEngine::Turso {
             continue;
         }
         if let Some(name) =
@@ -455,7 +455,7 @@ impl Context {
         &self,
         name: &str,
     ) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
-        self.resource(name, DatabaseEngine::Sqlite).await
+        self.resource(name, DatabaseEngine::Turso).await
     }
 
     /// A database of `engine` and its home server.
@@ -575,15 +575,15 @@ async fn run_async(
     match args.command {
         DbCommands::Create { name, server } => {
             let ctx = Context::load(config_path, network).await?;
-            create(&ctx, &name, server.as_deref(), DatabaseEngine::Sqlite).await
+            create(&ctx, &name, server.as_deref(), DatabaseEngine::Turso).await
         }
         DbCommands::List => {
             let ctx = Context::load(config_path, network).await?;
-            list(&ctx, DatabaseEngine::Sqlite)
+            list(&ctx, DatabaseEngine::Turso)
         }
         DbCommands::Status { name } => {
             let ctx = Context::load(config_path, network).await?;
-            status(&ctx, name.as_deref(), DatabaseEngine::Sqlite).await
+            status(&ctx, name.as_deref(), DatabaseEngine::Turso).await
         }
         DbCommands::Shell { name, sql } => {
             let ctx = Context::load(config_path, network).await?;
@@ -612,11 +612,11 @@ async fn run_async(
         },
         DbCommands::Backup { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backup_now(&ctx, &name, DatabaseEngine::Sqlite).await
+            backup_now(&ctx, &name, DatabaseEngine::Turso).await
         }
         DbCommands::Backups { name } => {
             let ctx = Context::load(config_path, network).await?;
-            backups(&ctx, &name, DatabaseEngine::Sqlite).await
+            backups(&ctx, &name, DatabaseEngine::Turso).await
         }
         DbCommands::Restore {
             name,
@@ -643,7 +643,7 @@ async fn run_async(
                 .await;
             }
             let ctx = Context::load(config_path, network).await?;
-            restore(&ctx, &name, snapshot, at, yes, DatabaseEngine::Sqlite).await
+            restore(&ctx, &name, snapshot, at, yes, DatabaseEngine::Turso).await
         }
         DbCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
@@ -660,7 +660,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::import(&home, &name, &file, DatabaseEngine::Sqlite).await
+            transfer::import(&home, &name, &file, DatabaseEngine::Turso).await
         }
         DbCommands::Export { name, file } => {
             let ctx = Context::load(config_path, network).await?;
@@ -672,7 +672,7 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::export(&home, &name, &file, DatabaseEngine::Sqlite).await
+            transfer::export(&home, &name, &file, DatabaseEngine::Turso).await
         }
         DbCommands::Reset {
             name,
@@ -688,7 +688,7 @@ async fn run_async(
         }
         DbCommands::Delete { name, yes } => {
             let ctx = Context::load(config_path, network).await?;
-            delete(&ctx, &name, yes, DatabaseEngine::Sqlite).await
+            delete(&ctx, &name, yes, DatabaseEngine::Turso).await
         }
     }
 }
@@ -736,14 +736,14 @@ pub(crate) async fn create(
         .find(|record| record.name == name)
     {
         let key = match existing.engine {
-            DatabaseEngine::Sqlite => "db",
+            DatabaseEngine::Turso => "db",
             DatabaseEngine::Kv => "kv",
         };
         return Err(format!(
             "The network already has a {} named '{name}'. To use it, add `{key} = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml{}.",
             existing.engine.noun(),
             match existing.engine {
-                DatabaseEngine::Sqlite => format!(
+                DatabaseEngine::Turso => format!(
                     "; for channel replay, set `db = \"{name}\"` under [envs.<env>.channels]"
                 ),
                 DatabaseEngine::Kv => String::new(),
@@ -777,7 +777,7 @@ pub(crate) async fn create(
         }));
     }
     output::hint(&match engine {
-        DatabaseEngine::Sqlite => format!(
+        DatabaseEngine::Turso => format!(
             "To use it for app data, add `db = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.db.<binding>`). For channel replay, set `db = \"{name}\"` under [envs.<env>.channels] instead. Then deploy."
         ),
         DatabaseEngine::Kv => format!(
@@ -890,7 +890,7 @@ pub(crate) fn list(
     }
     if records.is_empty() {
         output::info(&match engine {
-            DatabaseEngine::Sqlite => {
+            DatabaseEngine::Turso => {
                 "No databases yet. Create one with `tako db create <name>`.".to_string()
             }
             DatabaseEngine::Kv => {
@@ -900,7 +900,7 @@ pub(crate) fn list(
         return Ok(());
     }
     output::section(match engine {
-        DatabaseEngine::Sqlite => "Databases",
+        DatabaseEngine::Turso => "Databases",
         DatabaseEngine::Kv => "KV stores",
     });
     for record in &records {
@@ -1024,7 +1024,7 @@ fn backup_status_line(engine: DatabaseEngine, backup: &tako_core::DatabaseBackup
         .as_ref()
         .map(|s| format_time(s.created_at_unix_secs));
     match engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             let replicated = backup
                 .replicated_at_unix_secs
                 .map(|at| format!("backed up through {}", format_time(at)))
@@ -1178,7 +1178,7 @@ pub(crate) async fn restore(
     confirm(
         &format!("Restore {name} from {which} on {}?", target.name),
         match engine {
-            DatabaseEngine::Sqlite => {
+            DatabaseEngine::Turso => {
                 "Apps' requests to the database pause while it is replaced. Writes after that point are replaced; the current contents are backed up first and named with a restore point, so the restore can be undone."
             }
             DatabaseEngine::Kv => {
@@ -1252,7 +1252,7 @@ pub(crate) async fn delete(
     ctx.require_admin()?;
     let noun = engine.noun();
     let record = ctx.record_of(name, engine)?;
-    if engine.is_sqlite() {
+    if engine.is_sql() {
         check_service_delete(
             &ctx.config,
             &ctx.network,
@@ -1272,8 +1272,8 @@ pub(crate) async fn delete(
             serde_json::json!({"database":name,"engine":engine}),
         );
     }
-    cleanup::delete_unused(&ctx.alias()?, &ctx.network_homes()?, &record).await?;
-    if engine.is_sqlite() {
+    cleanup::delete_unused(&ctx.network_homes()?, &record).await?;
+    if engine.is_sql() {
         TakoToml::remove_database_from_file(&ctx.config_path, name, &ctx.network)?;
     } else {
         TakoToml::remove_kv_from_file(&ctx.config_path, name, &ctx.network)?;
@@ -1297,7 +1297,7 @@ fn check_service_delete(
         std::slice::from_ref(record),
         needs_replay,
         needs_workflows,
-        DatabaseEngine::Sqlite,
+        DatabaseEngine::Turso,
     );
     let Some(db) = users.get(&record.name) else {
         return Ok(());
@@ -1365,7 +1365,7 @@ async fn migrate(
     database: Option<&str>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut bound = project_bindings(&ctx.config, DatabaseEngine::Sqlite);
+    let mut bound = project_bindings(&ctx.config, DatabaseEngine::Turso);
     if let Some(database) = database {
         let bindings = bound.remove(database).ok_or_else(|| {
             format!("No environment of this project binds database '{database}'.")
@@ -1383,7 +1383,7 @@ async fn migrate(
         let app = if full {
             None
         } else {
-            let deployable = binding_envs(&ctx.config, &database, DatabaseEngine::Sqlite)
+            let deployable = binding_envs(&ctx.config, &database, DatabaseEngine::Turso)
                 .into_iter()
                 .map(|env| tako_core::deployment_app_id(&owner, env))
                 .find(|app| {
@@ -1674,7 +1674,7 @@ async fn reset(
             std::slice::from_ref(&record),
             ctx.needs_replay,
             ctx.needs_workflows,
-            DatabaseEngine::Sqlite,
+            DatabaseEngine::Turso,
         )
         .get(name)
         .is_some_and(|db| db.environments.contains("production"))
@@ -1698,7 +1698,7 @@ async fn reset(
     // The project's migrations for this database are applied to the empty
     // one before it replaces the current contents.
     let owner = migration_owner(ctx)?;
-    let bindings = project_bindings(&ctx.config, DatabaseEngine::Sqlite)
+    let bindings = project_bindings(&ctx.config, DatabaseEngine::Turso)
         .remove(name)
         .unwrap_or_default();
     let selected = crate::database_migrations::by_database(
@@ -1793,7 +1793,7 @@ mod tests {
             "Snapshots to backups · no snapshots yet"
         );
         assert!(
-            backup_status_line(DatabaseEngine::Sqlite, &backup)
+            backup_status_line(DatabaseEngine::Turso, &backup)
                 .starts_with("Continuous backups to backups · not backed up yet")
         );
         backup.last_snapshot = Some(DatabaseSnapshot {
@@ -1869,14 +1869,14 @@ mod tests {
             "name = \"shop\"\n[envs.development]\ndb = { main = \"local\" }\n[envs.production]\nroute = \"a.example.com\"\ndb = { main = \"shop\", events = \"shop\" }\n[envs.staging]\nroute = \"b.example.com\"\ndb = { main = \"shop_staging\" }\n",
         )
         .unwrap();
-        let bound = project_bindings(&config, DatabaseEngine::Sqlite);
+        let bound = project_bindings(&config, DatabaseEngine::Turso);
         assert_eq!(
             bound["shop"],
             BTreeSet::from(["events".to_owned(), "main".to_owned()])
         );
         assert!(bound.contains_key("shop_staging") && !bound.contains_key("local"));
         assert_eq!(
-            binding_envs(&config, "shop", DatabaseEngine::Sqlite),
+            binding_envs(&config, "shop", DatabaseEngine::Turso),
             ["production"]
         );
     }
@@ -1889,12 +1889,12 @@ mod tests {
         .unwrap();
         let stores = project_bindings(&config, DatabaseEngine::Kv);
         assert_eq!(stores.keys().collect::<Vec<_>>(), ["sessions"]);
-        assert!(!project_bindings(&config, DatabaseEngine::Sqlite).contains_key("sessions"));
+        assert!(!project_bindings(&config, DatabaseEngine::Turso).contains_key("sessions"));
         assert_eq!(
             binding_envs(&config, "sessions", DatabaseEngine::Kv),
             ["production", "staging"]
         );
-        assert!(binding_envs(&config, "sessions", DatabaseEngine::Sqlite).is_empty());
+        assert!(binding_envs(&config, "sessions", DatabaseEngine::Turso).is_empty());
         assert_eq!(command_name(DatabaseEngine::Kv), "kv");
     }
 
@@ -1926,7 +1926,7 @@ channels.db = "local"
             server: "edge".into(),
             generation: "g".into(),
             created_at_unix_secs: 0,
-            engine: DatabaseEngine::Sqlite,
+            engine: DatabaseEngine::Turso,
             channel_owner: owner.map(str::to_owned),
             workflows_owner: None,
         };
@@ -1941,14 +1941,14 @@ channels.db = "local"
             &records,
             true,
             false,
-            DatabaseEngine::Sqlite,
+            DatabaseEngine::Turso,
         );
         assert_eq!(users.len(), 2);
         for (db, env) in [("events", "production"), ("generated", "staging")] {
             assert_eq!(users[db].environments, BTreeSet::from([env]));
             assert_eq!(users[db].channel_replay, BTreeSet::from([env]));
         }
-        assert!(project_bindings(&config, DatabaseEngine::Sqlite).is_empty());
+        assert!(project_bindings(&config, DatabaseEngine::Turso).is_empty());
         assert!(
             check_service_delete(&config, network, &records[0], true, false)
                 .unwrap_err()
@@ -1975,7 +1975,7 @@ channels.db = "local"
             std::slice::from_ref(&runs),
             false,
             true,
-            DatabaseEngine::Sqlite,
+            DatabaseEngine::Turso,
         );
         assert_eq!(users["runs"].workflows, BTreeSet::from(["staging"]));
         assert!(

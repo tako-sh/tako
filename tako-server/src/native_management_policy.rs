@@ -653,7 +653,7 @@ mod tests {
         let generation = "0123456789abcdef0123456789abcdef";
         for command in [
             json!({"command":"coordinate_storage","request":{"operation":"claim","candidate":{
-                "name":id, "engine":"sqlite", "generation":generation, "created_at_unix_secs":1,
+                "name":id, "engine":"turso", "generation":generation, "created_at_unix_secs":1,
                 "founders":["a".repeat(64)]
             }}}),
             json!({"command":"coordinate_storage","request":{"operation":"retire_name","name":id,"generation":generation}}),
@@ -718,7 +718,7 @@ mod tests {
             generation: None,
             server: "edge".into(),
             peer_key: None,
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
         };
         f.databases.insert("main".into(), binding("shop"));
         f.databases
@@ -759,7 +759,7 @@ mod tests {
                 generation: None,
                 server: "edge".into(),
                 peer_key: None,
-                engine: tako_core::DatabaseEngine::Sqlite,
+                engine: tako_core::DatabaseEngine::Turso,
             },
         );
         let databases = |command: &Command| match command {
@@ -793,7 +793,7 @@ mod tests {
                 generation: None,
                 server: "edge".into(),
                 peer_key: Some("issued-by-edge".into()),
-                engine: tako_core::DatabaseEngine::Sqlite,
+                engine: tako_core::DatabaseEngine::Turso,
             },
         );
         // Deployers without administration never see peer keys.

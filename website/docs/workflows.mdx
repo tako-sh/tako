@@ -464,7 +464,7 @@ If a worker exits with an error before it can claim any work, Tako stops the imm
 
 ## Storage And Multiple Servers
 
-Workflow runs live in a Tako-hosted SQLite [database](/databases/) that every server of the environment shares. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress. `tako-server` reads and writes the runs for its workers; app code never receives a token for this database.
+Workflow runs live in a Tako-hosted Turso SQL [database](/databases/) that every server of the environment shares. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress. `tako-server` reads and writes the runs for its workers; app code never receives a token for this database.
 
 A full-access deploy creates the workflow database the first time a release uses workflows and prepares a replica on each selected target. To choose the name, set it in `tako.toml`.
 

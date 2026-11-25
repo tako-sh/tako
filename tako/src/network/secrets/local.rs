@@ -79,12 +79,8 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
                 env.storages
                     .insert(row.key.name.clone(), serde_json::from_str(&row.value)?);
             }
-            // Database records belong to the network, not an environment, and
-            // legacy app data archive keys belong to nothing.
-            RecordKind::Database
-            | RecordKind::DatabaseKey
-            | RecordKind::BackupKey
-            | RecordKind::BackupActive => {}
+            // The catalog owns database records.
+            RecordKind::Database | RecordKind::DatabaseKey => {}
         }
     }
     Ok(env)

@@ -19,7 +19,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
                 generation: None,
                 server: "s1".into(),
                 peer_key: None,
-                engine: tako_core::DatabaseEngine::Sqlite,
+                engine: tako_core::DatabaseEngine::Turso,
             },
         )]),
         channel_database: Some(tako_core::DatabaseBinding {
@@ -27,7 +27,7 @@ fn release_command_payload_pins_the_secret_snapshot() {
             generation: None,
             server: "s2".into(),
             peer_key: None,
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
         }),
         workflows_database: None,
         ssl: tako_core::SslBinding::default(),

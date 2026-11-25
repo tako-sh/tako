@@ -85,7 +85,7 @@ async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
     state
         .create_test_database(
             id.into(),
-            tako_core::DatabaseEngine::Sqlite,
+            tako_core::DatabaseEngine::Turso,
             GENERATION.into(),
             key(),
             bucket.map(backup),
@@ -131,7 +131,7 @@ async fn replicated_sql_reopens_and_restores_a_committed_snapshot() {
     let coordinate = |request| ok(&server, Command::CoordinateStorage { request });
     let claim = StorageClaim {
         name: ID.to_owned(),
-        engine: tako_core::DatabaseEngine::Sqlite,
+        engine: tako_core::DatabaseEngine::Turso,
         generation: GENERATION.to_owned(),
         created_at_unix_secs: 1,
         founders: [founder.clone()].into(),
@@ -208,7 +208,7 @@ async fn replicated_storage_retirement_fences_both_engines_and_allows_name_reuse
         .await
         .unwrap();
     let call = |request| ok(&server, Command::CoordinateStorage { request });
-    for (index, engine) in [DatabaseEngine::Sqlite, DatabaseEngine::Kv]
+    for (index, engine) in [DatabaseEngine::Turso, DatabaseEngine::Kv]
         .into_iter()
         .enumerate()
     {
@@ -739,7 +739,7 @@ async fn committed_replay_bindings_survive_restart_without_authorizing_applicati
             generation: Some(GENERATION.into()),
             server: "test-founder".into(),
             peer_key: Some(key.clone()),
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
         },
     )]);
     config.databases = original
@@ -1432,7 +1432,7 @@ async fn deleting_a_database_revokes_its_grants() {
     let duplicate = state
         .create_test_database(
             ID.into(),
-            tako_core::DatabaseEngine::Sqlite,
+            tako_core::DatabaseEngine::Turso,
             GENERATION.into(),
             key(),
             None,
@@ -1876,7 +1876,7 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     let failed = state
         .create_test_database(
             ID.into(),
-            tako_core::DatabaseEngine::Sqlite,
+            tako_core::DatabaseEngine::Turso,
             GENERATION.into(),
             key(),
             None,
@@ -1917,7 +1917,7 @@ async fn only_bindings_to_this_server_count_for_its_copy() {
         generation: None,
         server: server.into(),
         peer_key: None,
-        engine: tako_core::DatabaseEngine::Sqlite,
+        engine: tako_core::DatabaseEngine::Turso,
     };
     assert!(state.databases.binds_here(&binding("server-a"), ID));
     // The database moved: a binding to it on server-b leaves the copy here
@@ -1936,7 +1936,7 @@ async fn bindings_keep_their_token_only_for_the_same_home() {
         generation: None,
         server: server.into(),
         peer_key: None,
-        engine: tako_core::DatabaseEngine::Sqlite,
+        engine: tako_core::DatabaseEngine::Turso,
     };
     let previous = HashMap::from([(
         "main".to_owned(),
@@ -2277,7 +2277,7 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
                 generation: None,
                 server: String::new(),
                 peer_key: None,
-                engine: tako_core::DatabaseEngine::Sqlite,
+                engine: tako_core::DatabaseEngine::Turso,
             },
             token: "old-instances".into(),
         },

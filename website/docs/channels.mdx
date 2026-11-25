@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and hosted SQLite replay storage."
+description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and hosted Turso SQL replay storage."
 ---
 
 Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only live delivery on one server or across native network servers.

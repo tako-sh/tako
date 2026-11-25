@@ -196,7 +196,7 @@ async fn kv_stores_are_created_queried_and_deleted() {
         .await
         .contains("is a KV store")
     );
-    create(&state, "main", DatabaseEngine::Sqlite).await;
+    create(&state, "main", DatabaseEngine::Turso).await;
     assert!(
         query(&state, "main", KvRequest::Get { key: "k".into() })
             .await
@@ -459,7 +459,7 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, "sessions", DatabaseEngine::Kv).await;
-    create(&state, "main", DatabaseEngine::Sqlite).await;
+    create(&state, "main", DatabaseEngine::Turso).await;
     let config = AppConfig::default();
     let bindings = state
         .databases
@@ -467,7 +467,7 @@ async fn bindings_split_by_engine_and_serve_apps_through_their_tokens() {
             &HashMap::new(),
             HashMap::from([
                 ("auth".to_owned(), binding("sessions", DatabaseEngine::Kv)),
-                ("main".to_owned(), binding("main", DatabaseEngine::Sqlite)),
+                ("main".to_owned(), binding("main", DatabaseEngine::Turso)),
             ]),
             &config,
         )
@@ -561,7 +561,7 @@ async fn grants_reach_the_kv_peer_listener() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, "sessions", DatabaseEngine::Kv).await;
-    create(&state, "main", DatabaseEngine::Sqlite).await;
+    create(&state, "main", DatabaseEngine::Turso).await;
     let granted = ok(
         &state,
         Command::CoordinateStorage {

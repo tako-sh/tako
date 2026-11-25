@@ -207,7 +207,7 @@ impl Databases {
 
     fn is_registered(&self, name: &str, engine: DatabaseEngine) -> bool {
         match engine {
-            DatabaseEngine::Sqlite => {
+            DatabaseEngine::Turso => {
                 DatabaseId::parse(name).is_ok_and(|id| self.host.is_registered(&id))
             }
             DatabaseEngine::Kv => {
@@ -290,7 +290,7 @@ impl Databases {
     fn home(&self, binding: &DatabaseBinding) -> Home {
         let server_id = self.server_id();
         let peer_port = match binding.engine {
-            DatabaseEngine::Sqlite => self.peer_port,
+            DatabaseEngine::Turso => self.peer_port,
             DatabaseEngine::Kv => self.kv_peer_port,
         };
         if let Some(id) = &binding.generation {
@@ -399,7 +399,7 @@ impl Databases {
                         .insert(tako_core::BindingTokenHashes::new(&binding.token).replica);
                 }
                 match binding.binding.engine {
-                    DatabaseEngine::Sqlite => {
+                    DatabaseEngine::Turso => {
                         let Ok(database) = DatabaseId::parse(&binding.binding.name) else {
                             continue;
                         };
@@ -491,7 +491,7 @@ impl Databases {
                 if name == CHANNEL_REPLAY_BINDING && !sdk {
                     return Err("Hosted channel replay requires an SDK-enabled release.".into());
                 }
-                if binding.engine != DatabaseEngine::Sqlite {
+                if binding.engine != DatabaseEngine::Turso {
                     return Err(format!(
                         "{needs} needs a SQLite database; {} is a KV store.",
                         binding.name
@@ -624,7 +624,7 @@ pub(crate) fn connections(
     bindings
         .iter()
         .filter(|(name, binding)| {
-            !tako_core::is_runtime_binding(name) && binding.binding.engine == DatabaseEngine::Sqlite
+            !tako_core::is_runtime_binding(name) && binding.binding.engine == DatabaseEngine::Turso
         })
         .map(|(name, binding)| (name.clone(), connection(binding)))
         .collect()
@@ -1068,11 +1068,11 @@ impl ServerState {
             let _ = std::fs::remove_dir_all(self.databases.database_dir(&id));
         };
         let create_path = match engine {
-            DatabaseEngine::Sqlite => self.databases.database_path(&id),
+            DatabaseEngine::Turso => self.databases.database_path(&id),
             DatabaseEngine::Kv => self.databases.kv_path(&id),
         };
         let created = tokio::task::spawn_blocking(move || match engine {
-            DatabaseEngine::Sqlite => {
+            DatabaseEngine::Turso => {
                 DatabaseHost::create_file(&create_path).map_err(|e| e.to_string())
             }
             DatabaseEngine::Kv => {
@@ -1140,7 +1140,7 @@ impl ServerState {
         // Unregistering can time out on a request in flight; the database is
         // then still hosted, so its grants stay until this succeeds.
         match stored.engine {
-            DatabaseEngine::Sqlite => {
+            DatabaseEngine::Turso => {
                 let database = DatabaseId::parse(id)?;
                 if self.databases.host.is_registered(&database) {
                     self.databases
@@ -1295,7 +1295,7 @@ impl ServerState {
             remote_grants.extend(resource.grant_scopes());
         }
         let size_bytes = match stored.engine {
-            DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
+            DatabaseEngine::Turso => DatabaseId::parse(&stored.name)
                 .ok()
                 .and_then(|id| self.databases.host.size_bytes(&id)),
             DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
@@ -1312,7 +1312,7 @@ impl ServerState {
             bindings: bindings.into_iter().collect(),
             remote_grants: remote_grants.into_iter().collect(),
             backup: match stored.engine {
-                DatabaseEngine::Sqlite => backups::status(self, stored),
+                DatabaseEngine::Turso => backups::status(self, stored),
                 DatabaseEngine::Kv => snapshots::status(self, stored),
             },
         })
@@ -1345,7 +1345,7 @@ impl ServerState {
             )
             .map_err(|e| e.to_string())?;
             resource
-                .set_backup_settings(stored.engine.is_sqlite() && backup.is_some(), sealed)
+                .set_backup_settings(stored.engine.is_sql() && backup.is_some(), sealed)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -1363,7 +1363,7 @@ impl ServerState {
             .map_err(|e| format!("store backup configuration: {e}"))?;
         if moved {
             match stored.engine {
-                DatabaseEngine::Sqlite => {
+                DatabaseEngine::Turso => {
                     // The history starts over at the new destination, with
                     // a full image on the next tick; the previous one keeps
                     // what it has.
@@ -1761,7 +1761,7 @@ mod tests {
             generation: None,
             server: server.into(),
             peer_key: key.map(str::to_owned),
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
         }
     }
 

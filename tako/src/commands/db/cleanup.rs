@@ -31,7 +31,6 @@ pub(crate) async fn collect(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     for record in records {
         if let Err(e) = one(
-            network,
             &homes,
             app,
             targets,
@@ -86,7 +85,6 @@ async fn at_barrier(home: &Home, generation: &str, server: &str) -> Result<()> {
 }
 
 async fn one(
-    network: &LocalNetwork,
     homes: &[Home],
     app: &str,
     targets: &[String],
@@ -113,7 +111,7 @@ async fn one(
             )
             .await?;
             if let Some(servers) = retiring {
-                return finish(network, homes, r, &registry, &servers).await;
+                return finish(homes, r, &registry, &servers).await;
             }
             return Err(e);
         }
@@ -199,7 +197,7 @@ async fn one(
             )
             .await?;
         }
-        return finish(network, homes, r, &registry, &placement.removing).await;
+        return finish(homes, r, &registry, &placement.removing).await;
     }
     for server in &placement.removing {
         let target = member(server)?;
@@ -246,11 +244,7 @@ async fn one(
 
 /// Manual deletion uses the same permanent retirement fence as the last
 /// release. A concurrent deploy alters the placement revision first.
-pub(super) async fn delete_unused(
-    network: &LocalNetwork,
-    homes: &[Home],
-    r: &DatabaseRecord,
-) -> Result<()> {
+pub(super) async fn delete_unused(homes: &[Home], r: &DatabaseRecord) -> Result<()> {
     let registry = catalog(homes).await?;
     let group = &r.generation;
     let recorded: Option<BTreeSet<String>> = command(
@@ -262,7 +256,7 @@ pub(super) async fn delete_unused(
     )
     .await?;
     if let Some(targets) = recorded {
-        return finish(network, homes, r, &registry, &targets).await;
+        return finish(homes, r, &registry, &targets).await;
     }
     let home = leader(homes, group).await?;
     let mut placement = change(&home, group, None).await?;
@@ -326,11 +320,10 @@ pub(super) async fn delete_unused(
         },
     )
     .await?;
-    finish(network, homes, r, &registry, &placement.removing).await
+    finish(homes, r, &registry, &placement.removing).await
 }
 
 async fn finish(
-    network: &LocalNetwork,
     homes: &[Home],
     r: &DatabaseRecord,
     registry: &Home,
@@ -360,6 +353,5 @@ async fn finish(
         },
     )
     .await?;
-    tokio::task::block_in_place(|| crate::network::databases::retire(network, r))?;
     Ok(())
 }

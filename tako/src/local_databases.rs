@@ -19,7 +19,7 @@ use crate::config::TakoToml;
 /// `[envs.development].db` when set, and otherwise every binding of
 /// every environment, so a project works locally without extra config.
 pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String> {
-    development_bindings_of(config, DatabaseEngine::Sqlite)
+    development_bindings_of(config, DatabaseEngine::Turso)
 }
 
 /// Binding name → KV store name for `tako dev` and `tako run`, chosen like
@@ -56,7 +56,7 @@ pub(crate) fn environment_bindings(
     config: &TakoToml,
     environment: &str,
 ) -> BTreeMap<String, String> {
-    environment_bindings_of(config, environment, DatabaseEngine::Sqlite)
+    environment_bindings_of(config, environment, DatabaseEngine::Turso)
 }
 
 fn environment_bindings_of(

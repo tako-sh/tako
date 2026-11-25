@@ -22,7 +22,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 
 - [Local development](/development/): start and inspect apps, use HTTPS routes, and run one-off scripts.
 - [Secrets](/secrets/): set app secrets, access them through an SDK, and rotate deployed values.
-- [Databases](/databases/): create Tako-hosted SQLite databases, bind them to apps, and back them up.
+- [Databases](/databases/): create Tako-hosted Turso SQL databases, bind them to apps, and back them up.
 - [KV stores](/kv/): get, put, and delete JSON values with optional expiry, shared by every server and backed up.
 - [Storage](/storage/): bind local or S3-compatible files and issue upload/download URLs.
 - [Images](/images/): optimize public images and generate responsive image URLs.
@@ -37,7 +37,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 | Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
 | Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |
 
-Native networks support bounded channel replication, presence leases, and store invalidation fanout. Durable channel replay and workflow runs live in hosted SQLite databases that every server of an environment shares; ephemeral channels use memory-only delivery. Each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
+Native networks support bounded channel replication, presence leases, and store invalidation fanout. Durable channel replay and workflow runs live in hosted Turso SQL databases that every server of an environment shares; ephemeral channels use memory-only delivery. Each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
 
 ## Deploy and operate
 
