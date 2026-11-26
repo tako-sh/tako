@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and hosted SQLite replay storage."
+description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and hosted Turso SQL replay storage."
 ---
 
 Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only live delivery on one server or across native network servers.
@@ -398,19 +398,15 @@ A client written without the JavaScript SDK can use dedicated SSE/WS endpoints: 
 
 ## Deploy Replay Storage
 
-Durable channels and Store invalidations use the environment's replay database, a [hosted SQLite database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.sqlite`, and never connects to the production database.
+Durable channels and Store invalidations use the environment's replay database, a [hosted Turso database](/databases/). Application publish and subscribe code stays the same. `tako dev` keeps replay in the project's dev database, `.tako/data/tako/channels.db`, and never connects to the production database.
 
 | Production configuration                                  | What deploy does                                                                                                                                                                                                                         |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[envs.<env>.channels].db` names a hosted SQLite database | Uses that database for channels.                                                                                                                                                                                                         |
-| Not configured; channel-capable release                   | Uses a generated database name owned by this app/environment. A full client's deploy creates it automatically if the network has exactly one trusted server. An existing matching record keeps its recorded home when the network grows. |
+| `[envs.<env>.channels].db` names a hosted Turso database | Uses that database for channels.                                                                                                                                                                                                         |
+| Not configured; channel-capable release                   | Uses a generated database name owned by this app/environment. A full-access deploy creates the missing database on the selected targets. |
 | Not configured; release without channels                  | Binds no replay database. Channel, Store, and Presence requests answer `503` with an error saying to deploy a release that uses channels, and server-side publishes fail with the same message.                                          |
 
-**On a network with several servers**, deploy won't guess where a missing database belongs, even when this app targets just one server. A full client chooses the home, configures the name, and deploys:
-
-```bash
-tako db create chat-prod-replay --network production --server edge-a
-```
+To choose an explicit network-wide database name, configure it in the environment.
 
 ```toml
 [envs.production.channels]
@@ -421,7 +417,7 @@ db = "chat-prod-replay"
 tako deploy --env production
 ```
 
-If the named database already exists on another server of the same network, use it there; no second copy is needed. A deploy-only CI client can reuse a provisioned backend but cannot create databases or grant access; without one, its deploy keeps the servers' current channel storage and says so. Have a full client deploy the configuration to every target first. `tako deploy --env production --dry-run --json` previews placement from cached network state. After deploy, `tako db list --json` shows the database and home; a full client can check actual usage and backup state with `tako db status <name> --json`.
+If the database already exists, the selected app servers join its group. A deploy-only CI client can reuse a provisioned backend but cannot create databases or grant access; without one, its deploy keeps the servers' current channel storage and says so. Have a full client deploy the configuration to every target first. `tako deploy --env production --dry-run --json` previews placement from cached network state. After deploy, `tako db list --json` shows the database and home; a full client can check actual usage and backup state with `tako db status <name> --json`.
 
 Deploy checks JavaScript `channels/`, `stores/`, and `presence/` definitions under `app_root` (default `src`). Other native releases register channels at runtime through an SDK, so deploy checks whether the app depends on one: `tako.sh` in `go.mod`, or the `tako` crate in `Cargo.toml`. For container releases it checks `container_options.sdk`; for Compose it checks whether any service has `x-tako.sdk: true`. An explicit channel database makes the choice independent of source discovery. The setting gives the runtime access; it does not expose a SQL binding in any SDK.
 

@@ -8,7 +8,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
+    let path = dir.path().join("db.db");
     create_database(&path).unwrap();
     Fixture { _dir: dir, path }
 }
@@ -38,11 +38,11 @@ fn run_args(conn: &mut Connection, sql: &str, args: &[Value]) -> Result<StmtResu
 #[test]
 fn created_databases_use_wal_and_refuse_to_overwrite() {
     let fixture = fixture();
-    let conn = rusqlite::Connection::open(&fixture.path).unwrap();
-    let mode: String = conn
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
+    let conn = crate::PortableDatabase::open(&fixture.path).unwrap();
+    assert_eq!(
+        conn.query("PRAGMA journal_mode", &[]).unwrap()[0][0].to_text(),
+        Some("wal")
+    );
     assert!(create_database(&fixture.path).is_err());
 }
 
@@ -248,7 +248,7 @@ fn enforces_foreign_keys_by_default() {
 fn refuses_to_reach_files_outside_the_database() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let outside = fixture.path.with_file_name("stolen.sqlite");
+    let outside = fixture.path.with_file_name("stolen.db");
     let into = run(&mut conn, &format!("VACUUM INTO '{}'", outside.display())).unwrap_err();
     assert_eq!(into.code, "SQLITE_AUTH", "{into:?}");
     assert!(!outside.exists());
@@ -262,11 +262,10 @@ fn refuses_to_reach_files_outside_the_database() {
     // SQLite reports denied functions as a plain error.
     let extension = run(&mut conn, "SELECT load_extension('x')").unwrap_err();
     assert!(
-        extension.message.contains("not authorized"),
+        extension.message.contains("extension loading is disabled"),
         "{extension:?}"
     );
-    // A plain VACUUM attaches only an anonymous temporary database.
-    run(&mut conn, "VACUUM").unwrap();
+    assert_eq!(run(&mut conn, "VACUUM").unwrap_err().code, "SQLITE_AUTH");
 }
 
 #[test]
@@ -394,7 +393,6 @@ fn temporary_objects_and_attachments_mark_the_connection() {
     for sql in [
         "CREATE TEMP TABLE scratch (x)",
         "CREATE TEMP VIEW recent AS SELECT 1",
-        "ATTACH DATABASE '' AS extra",
     ] {
         let mut conn = open(&fixture);
         assert!(!conn.is_dirty());
@@ -448,8 +446,8 @@ fn preparing_a_statement_counts_toward_the_time_limit() {
         "SQLITE_INTERRUPT"
     );
     assert_eq!(run(&mut conn, &sql).unwrap_err().code, "SQLITE_INTERRUPT");
-    // A statement that prepares and runs quickly still succeeds.
-    assert_eq!(run(&mut conn, "SELECT 1").unwrap().rows.len(), 1);
+    // A subsequent connection with the ordinary deadline remains usable.
+    assert_eq!(run(&mut open(&fixture), "SELECT 1").unwrap().rows.len(), 1);
 }
 
 #[test]
@@ -592,22 +590,26 @@ fn snapshots_are_consistent_verified_copies() {
     run(&mut conn, "INSERT INTO t VALUES (1), (2)").unwrap();
     run(&mut conn, "BEGIN").unwrap();
     run(&mut conn, "INSERT INTO t VALUES (3)").unwrap();
-    let dest = fixture.path.with_file_name("copy.sqlite");
-    snapshot_database(&fixture.path, &dest, Duration::from_secs(1)).unwrap();
+    let dest = fixture.path.with_file_name("copy.db");
     conn.rollback();
-    let copy = rusqlite::Connection::open(&dest).unwrap();
-    let count: i64 = copy
-        .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 2, "the open transaction is not part of the snapshot");
-    assert!(snapshot_database(&fixture.path, &dest, Duration::from_secs(1)).is_err());
+    drop(conn);
+    crate::mvcc::Owner::snapshot_local(&fixture.path, &dest, Duration::from_secs(1)).unwrap();
+    let copy = crate::PortableDatabase::open(&dest).unwrap();
+    assert_eq!(
+        copy.query("SELECT count(*) FROM t", &[]).unwrap()[0][0].as_int(),
+        Some(2),
+        "only committed rows belong in a snapshot"
+    );
+    assert!(
+        crate::mvcc::Owner::snapshot_local(&fixture.path, &dest, Duration::from_secs(1)).is_err()
+    );
     verify_database(&dest).unwrap();
 }
 
 #[test]
 fn verify_rejects_files_that_are_not_databases() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("junk.sqlite");
+    let path = dir.path().join("junk.db");
     std::fs::write(
         &path,
         b"definitely not sqlite, just a long enough header to look at",
@@ -620,24 +622,29 @@ fn verify_rejects_files_that_are_not_databases() {
 fn replacing_keeps_the_previous_file_and_drops_stale_sidecars() {
     let fixture = fixture();
     {
-        let mut conn = open(&fixture);
-        run(&mut conn, "CREATE TABLE t (x)").unwrap();
-        run(&mut conn, "INSERT INTO t VALUES ('old')").unwrap();
+        let db = crate::PortableDatabase::open(&fixture.path).unwrap();
+        db.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('old')")
+            .unwrap();
+        db.checkpoint().unwrap();
     }
-    let replacement = fixture.path.with_file_name("new.sqlite");
+    let replacement = fixture.path.with_file_name("new.db");
     create_database(&replacement).unwrap();
     {
-        let conn = rusqlite::Connection::open(&replacement).unwrap();
+        let conn = crate::PortableDatabase::open(&replacement).unwrap();
         conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('new');")
             .unwrap();
+        conn.checkpoint().unwrap();
     }
-    let previous = fixture.path.with_file_name("previous.sqlite");
+    let previous = fixture.path.with_file_name("previous.db");
     replace_database(&fixture.path, &replacement, &previous).unwrap();
     let read = |path: &std::path::Path| -> String {
-        rusqlite::Connection::open(path)
+        crate::PortableDatabase::open(path)
             .unwrap()
-            .query_row("SELECT x FROM t", [], |row| row.get(0))
+            .query("SELECT x FROM t", &[])
+            .unwrap()[0][0]
+            .to_text()
             .unwrap()
+            .to_owned()
     };
     assert_eq!(read(&fixture.path), "new");
     assert_eq!(read(&previous), "old");
@@ -669,8 +676,15 @@ fn response_budget_counts_text_as_json_encodes_it() {
 
 #[test]
 fn reset_empties_a_database_that_others_hold_open() {
-    let fixture = fixture();
-    let mut conn = open(&fixture);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db.db");
+    let mut conn = Connection::development(
+        &path,
+        &Default::default(),
+        false,
+        Arc::new(tokio::sync::Semaphore::new(1 << 20)),
+    )
+    .unwrap();
     run(&mut conn, "CREATE TABLE t (x)").unwrap();
     run(&mut conn, "INSERT INTO t VALUES (1)").unwrap();
     run(
@@ -679,37 +693,38 @@ fn reset_empties_a_database_that_others_hold_open() {
     )
     .unwrap();
     run(&mut conn, "CREATE VIEW v AS SELECT x FROM t").unwrap();
-    run(&mut conn, "CREATE VIRTUAL TABLE docs USING fts5(body)").unwrap();
+    run(
+        &mut conn,
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END",
+    )
+    .unwrap();
     run(&mut conn, "PRAGMA user_version = 7").unwrap();
-    super::reset_database_file(&fixture.path).unwrap();
+    crate::reset_database_file(&path).unwrap();
     let error = run(&mut conn, "SELECT * FROM t").unwrap_err();
     assert!(error.message.contains("no such table"), "{}", error.message);
     run(&mut conn, "CREATE TABLE t (x)").unwrap();
-    let raw = rusqlite::Connection::open(&fixture.path).unwrap();
-    let left: i64 = raw
-        .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name <> 't'",
-            [],
-            |row| row.get(0),
+    assert_eq!(
+        run(
+            &mut conn,
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '__turso_internal_*' AND name <> 't'"
         )
-        .unwrap();
-    assert_eq!(left, 0);
-    let version: i64 = raw
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 0);
-    let mode: String = rusqlite::Connection::open(&fixture.path)
         .unwrap()
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
+        .rows,
+        [[Value::Integer(0)]]
+    );
+    assert_eq!(
+        run(&mut conn, "PRAGMA user_version").unwrap().rows,
+        [[Value::Integer(0)]]
+    );
+    run(&mut conn, "BEGIN CONCURRENT").unwrap();
+    run(&mut conn, "ROLLBACK").unwrap();
 }
 
 #[test]
 fn computed_attach_targets_are_refused() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let other = fixture.path.with_file_name("other.sqlite");
+    let other = fixture.path.with_file_name("other.db");
     let error = run_args(
         &mut conn,
         "ATTACH DATABASE ? AS other",
@@ -717,11 +732,10 @@ fn computed_attach_targets_are_refused() {
     )
     .unwrap_err();
     assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
-    let error = run(&mut conn, "ATTACH DATABASE 'x' || '.sqlite' AS other").unwrap_err();
+    let error = run(&mut conn, "ATTACH DATABASE 'x' || '.db' AS other").unwrap_err();
     assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
     assert!(!other.exists());
-    // Plain VACUUM attaches an empty-named database and stays allowed.
-    run(&mut conn, "VACUUM").unwrap();
+    assert_eq!(run(&mut conn, "VACUUM").unwrap_err().code, "SQLITE_AUTH");
 }
 
 #[test]
@@ -789,51 +803,13 @@ fn with_updates_and_deletes_report_no_insert_rowid() {
     )
     .unwrap();
     assert_eq!(result.last_insert_rowid, Some(9));
-    // An insert into a WITHOUT ROWID table reports none, rather than the
-    // previous insert's.
-    run(
-        &mut conn,
-        "CREATE TABLE tags (name TEXT PRIMARY KEY) WITHOUT ROWID",
-    )
-    .unwrap();
-    for sql in [
-        "INSERT INTO tags VALUES ('a')",
-        "WITH c AS (SELECT 'b' AS name) INSERT INTO tags SELECT name FROM c",
-    ] {
-        let result = run(&mut conn, sql).unwrap();
-        assert_eq!(result.affected_row_count, 1, "{sql}");
-        assert_eq!(result.last_insert_rowid, None, "{sql}");
-    }
-    // Nor does one whose trigger inserts a row with the previous rowid
-    // elsewhere.
-    run(&mut conn, "CREATE TABLE log (id INTEGER PRIMARY KEY)").unwrap();
-    run(
-        &mut conn,
-        "CREATE TRIGGER tagged AFTER INSERT ON tags BEGIN INSERT INTO log VALUES (9); END",
-    )
-    .unwrap();
-    let result = run(&mut conn, "INSERT INTO tags VALUES ('c')").unwrap();
-    assert_eq!(result.last_insert_rowid, None);
-}
-
-#[test]
-fn insert_targets_name_the_written_table() {
-    for (sql, target) in [
-        ("INSERT INTO t VALUES (1)", Some("t")),
-        (
-            "insert or replace into main.items (a) values (1)",
-            Some("items"),
-        ),
-        ("REPLACE INTO \"odd name\" VALUES (1)", Some("odd name")),
-        (
-            "WITH c AS (SELECT 1) INSERT INTO [tags] SELECT * FROM c",
-            Some("tags"),
-        ),
-        ("UPDATE t SET a = 1", None),
-        ("INSERT t VALUES (1)", None),
-    ] {
-        assert_eq!(insert_target(sql), target, "{sql}");
-    }
+    assert!(
+        run(
+            &mut conn,
+            "CREATE TABLE tags (name TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -914,14 +890,6 @@ fn connections_keep_a_small_page_cache() {
     assert_eq!(result.rows, vec![vec![Value::Integer(-1024)]]);
     // Apps cannot raise it.
     assert!(run(&mut conn, "PRAGMA cache_size = -1000000").is_err());
-}
-
-#[test]
-fn the_soft_heap_limit_is_set_for_the_process() {
-    set_soft_heap_limit(256 * 1024 * 1024);
-    // SAFETY: a negative argument only reads the current limit.
-    let current = unsafe { ffi::sqlite3_soft_heap_limit64(-1) };
-    assert_eq!(current, 256 * 1024 * 1024);
 }
 
 #[test]

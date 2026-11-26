@@ -1,26 +1,13 @@
-//! Database records in the network state, for SQLite databases and KV
-//! stores alike.
-//!
-//! A database's name identifies it within the network. Each database has two
-//! records under its name: a directory record with its home server, which
-//! every member that may deploy can read, and its snapshot key,
-//! which only administrators can read. Deleting a database publishes
-//! tombstones for both.
+//! The network directory publishes catalog-reserved SQL and KV generations.
+//! Deploy identities can read the directory. Only administrators can read backup keys.
 
 use serde::{Deserialize, Serialize};
-use tako_network::api::{RpcRequest, RpcResponse};
-use tako_network::sealed::SealedValue;
-use tako_network::shared::{
-    DATABASE_SCOPE, RecordAddress, RecordContent, RecordKind, RecordMutation,
-};
-use tako_network::{AppEnv, LocalDeviceKeys, RequestId};
+use tako_network::shared::{DATABASE_SCOPE, RecordContent, RecordKind};
+use tako_network::{AppEnv, LocalDeviceKeys};
 use zeroize::Zeroizing;
 
 use super::Result;
 use crate::config::LocalNetwork;
-
-/// How long a publication may be retried before it expires.
-const PUBLICATION_SECONDS: u64 = 10 * 60;
 
 /// The server-owned service a generated database was created for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,13 +21,14 @@ pub(crate) enum ServiceOwner {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseRecord {
     pub name: String,
-    /// Device ID of the server that hosts the database.
+    /// Initial coordinator. Leadership can move to another member.
     pub server: String,
+    pub founders: std::collections::BTreeSet<String>,
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
-    /// SQLite or a KV store. Both share the network's names.
-    #[serde(default, skip_serializing_if = "tako_core::DatabaseEngine::is_sqlite")]
+    /// Turso SQL and KV share the network's resource names.
+    #[serde(default, skip_serializing_if = "tako_core::DatabaseEngine::is_sql")]
     pub engine: tako_core::DatabaseEngine,
     /// Set only when deploy creates an implicit replay database for this app/env.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,26 +82,24 @@ pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
 
 /// Dry runs consult the authenticated cache without contacting a server.
 pub(crate) fn list_from(alias: &LocalNetwork, cached: bool) -> Result<Vec<DatabaseRecord>> {
-    let mut records = Vec::new();
-    for (name, value) in read(alias, RecordKind::Database, cached)? {
-        let record: DatabaseRecord = serde_json::from_str(&value)?;
-        if record.name != name {
+    let values = read(alias, RecordKind::Database, cached)?;
+    let mut records = std::collections::BTreeMap::new();
+    for (address, value) in &values {
+        let record: DatabaseRecord = serde_json::from_str(value)?;
+        tako_core::validate_database_name(&record.name)?;
+        tako_core::validate_database_generation(&record.generation)?;
+        if record.founders.is_empty() || *address != format!("live.{}", record.generation) {
             return Err(format!(
-                "Database directory entry for '{name}' contains a different name."
+                "Database directory entry for '{address}' has an invalid generation or founding membership."
             )
             .into());
         }
-        records.push(record);
+        if records.insert(record.name.clone(), record).is_some() {
+            return Err("Database directory changes are still arriving. Retry after the network synchronizes.".into());
+        }
     }
+    let records = records.into_values().collect();
     Ok(records)
-}
-
-/// The key record of a database is named after its name and generation.
-/// Two records cannot be published together, so when the same name is
-/// created twice at once, each create's key keeps its own address and the
-/// directory record that wins still finds the key that matches it.
-fn key_name(record: &DatabaseRecord) -> String {
-    format!("{}.{}", record.name, record.generation)
 }
 
 /// The key that encrypts a database's snapshots. Administrators only.
@@ -121,111 +107,21 @@ pub(crate) fn backup_key(
     alias: &LocalNetwork,
     record: &DatabaseRecord,
 ) -> Result<Zeroizing<String>> {
-    read(alias, RecordKind::DatabaseKey, false)?
-        .remove(&key_name(record))
-        .ok_or_else(|| {
-            format!(
-                "The snapshot key of database '{}' is not available to this device; it needs full access.",
-                record.name
-            )
-            .into()
-        })
+    generation_key(alias, &record.name, &record.generation, false)
 }
 
-/// Publishes a database's records: the directory record and, when given,
-/// its snapshot key.
-pub(crate) fn publish(
+/// A local restore can use a previously synchronized key even after retirement.
+pub(crate) fn generation_key(
     alias: &LocalNetwork,
-    record: &DatabaseRecord,
-    backup_key_base64: Option<&str>,
-) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    if let Some(key) = backup_key_base64 {
-        mutate(alias, RecordKind::DatabaseKey, &key_name(record), Some(key))?;
-    }
-    mutate(
-        alias,
-        RecordKind::Database,
-        &record.name,
-        Some(&serde_json::to_string(record)?),
-    )
-}
-
-/// Publishes tombstones for a database's records. The directory record is
-/// removed only while it still names this generation: a database created
-/// again under the name meanwhile keeps its record.
-pub(crate) fn remove(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    let current = list(alias)?
-        .into_iter()
-        .find(|current| current.name == record.name);
-    if current.is_some_and(|current| current.generation == record.generation) {
-        mutate(alias, RecordKind::Database, &record.name, None)?;
-    }
-    remove_key(alias, record)
-}
-
-/// Publishes a tombstone for one generation's key record.
-pub(crate) fn remove_key(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
-    tako_core::validate_database_name(&record.name)?;
-    mutate(alias, RecordKind::DatabaseKey, &key_name(record), None)
-}
-
-fn mutate(alias: &LocalNetwork, kind: RecordKind, name: &str, value: Option<&str>) -> Result<()> {
-    let scope = scope()?;
-    let (profile, cache) = super::state::pull(alias, Some(scope.clone()))?;
-    let network = profile.snapshot().network.id.clone();
-    let issuer = super::client::available_server(&profile)?;
-    let members = profile.snapshot().effective_members(super::now()?)?;
-    let recipient = &members
-        .get(&issuer)
-        .ok_or("The publishing server is no longer a network member")?
-        .request
-        .encryption_public_key;
-    let address = RecordAddress {
-        scope: scope.clone(),
-        kind,
-        name: name.to_owned(),
-    };
-    let observed_revision = cache
-        .latest()?
-        .get(&address)
-        .map_or(0, |record| record.revision);
-    let mut mutation = RecordMutation {
-        id: RequestId::random()?,
-        observed_revision,
-        expires_at: super::now()?
-            .checked_add(PUBLICATION_SECONDS)
-            .ok_or("Publication deadline overflow")?,
-        address,
-        value: None,
-    };
-    if let Some(value) = value {
-        let content = RecordContent {
-            value: Zeroizing::new(value.to_owned()),
-            expires_on: None,
-        };
-        let bytes = Zeroizing::new(serde_json::to_vec(&content)?);
-        mutation.value = Some(SealedValue::seal(
-            recipient,
-            &bytes,
-            &mutation.context(&network)?,
-        )?);
-    }
-    let RpcResponse::RecordPublished(receipt) = super::client::call(
-        &profile,
-        &issuer,
-        RpcRequest::PublishRecord(Box::new(mutation.clone())),
-    )?
-    else {
-        return Err("Unexpected database record publication response".into());
-    };
-    if receipt.id != mutation.id || receipt.address != mutation.address {
-        return Err("Database record publication response does not match the request".into());
-    }
-    // Refresh the local cache so the next read sees the new record.
-    super::state::pull(alias, Some(scope))?;
-    Ok(())
+    name: &str,
+    generation: &str,
+    cached: bool,
+) -> Result<Zeroizing<String>> {
+    read(alias, RecordKind::DatabaseKey, cached)?
+        .remove(&format!("{name}.{generation}"))
+        .ok_or_else(|| {
+            format!("The recovery key for '{name}' generation {generation} is unavailable. Use a full-access workstation that has synchronized this network.").into()
+        })
 }
 
 #[cfg(test)]
@@ -236,10 +132,11 @@ mod tests {
     fn records_round_trip_and_reject_unknown_fields() {
         let record = DatabaseRecord {
             name: "main".into(),
+            founders: ["a".repeat(64)].into(),
             server: "a".repeat(64),
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
-            engine: tako_core::DatabaseEngine::Sqlite,
+            engine: tako_core::DatabaseEngine::Turso,
             channel_owner: None,
             workflows_owner: Some("shop/production".into()),
         };
@@ -248,7 +145,10 @@ mod tests {
             serde_json::from_str::<DatabaseRecord>(&json).unwrap(),
             record
         );
-        assert!(!json.contains("engine"), "SQLite records keep their shape");
+        assert!(
+            !json.contains("engine"),
+            "SQL is the default binding engine"
+        );
         let kv = DatabaseRecord {
             engine: tako_core::DatabaseEngine::Kv,
             ..record.clone()
@@ -259,6 +159,9 @@ mod tests {
             serde_json::from_str::<DatabaseRecord>(&kv_json).unwrap(),
             kv
         );
+        let mut without_founders: serde_json::Value = serde_json::from_str(&json).unwrap();
+        without_founders.as_object_mut().unwrap().remove("founders");
+        assert!(serde_json::from_value::<DatabaseRecord>(without_founders).is_err());
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value["extra"] = true.into();
         assert!(serde_json::from_value::<DatabaseRecord>(value).is_err());
@@ -271,10 +174,10 @@ mod tests {
             name: "a".repeat(63),
             ..record
         };
-        RecordAddress {
+        tako_network::shared::RecordAddress {
             scope: scope().unwrap(),
             kind: RecordKind::DatabaseKey,
-            name: key_name(&longest),
+            name: format!("{}.{}", longest.name, longest.generation),
         }
         .validate()
         .unwrap();

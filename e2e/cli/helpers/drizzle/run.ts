@@ -1,11 +1,11 @@
 /**
  * Runs under `tako run`: applies Drizzle migrations to the bound database
- * through `@libsql/client`, then reads and writes through the ORM.
+ * through the Hrana v2 HTTP stream, then reads and writes through the ORM.
  */
-import { createClient } from "@libsql/client";
+import { openHttp } from "@libsql/hrana-client";
 import { eq, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/libsql";
-import { migrate } from "drizzle-orm/libsql/migrator";
+import { drizzle } from "drizzle-orm/sqlite-proxy";
+import { migrate } from "drizzle-orm/sqlite-proxy/migrator";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const authors = sqliteTable("authors", {
@@ -27,9 +27,23 @@ const envelope = JSON.parse(process.env["TAKO_BOOTSTRAP_DATA"] ?? "{}") as {
 const main = envelope.databases?.["drizzle"];
 if (!main) throw new Error("no database is bound as drizzle");
 
-const client = createClient(main);
-const db = drizzle(client);
-await migrate(db, { migrationsFolder: new URL("./migrations", import.meta.url).pathname });
+const client = openHttp(main.url, main.authToken, undefined, undefined, 2);
+const stream = client.openStream();
+const db = drizzle(async (sql, args, method) => {
+  const result = await stream.query([sql, args]);
+  const rows = result.rows.map((row) => Array.from(row));
+  return { rows: method === "get" ? rows[0] ?? [] : rows };
+});
+await migrate(db, async (statements) => {
+  await stream.run("BEGIN IMMEDIATE");
+  try {
+    for (const sql of statements) await stream.run(sql);
+    await stream.run("COMMIT");
+  } catch (error) {
+    await stream.run("ROLLBACK");
+    throw error;
+  }
+}, { migrationsFolder: new URL("./migrations", import.meta.url).pathname });
 
 const [author] = await db.insert(authors).values({ name: "Ada" }).returning();
 await db.insert(posts).values([
@@ -37,7 +51,7 @@ await db.insert(posts).values([
   { authorId: author!.id, title: "Notes" },
 ]);
 const published = await db.select().from(posts).where(eq(posts.published, true));
-const applied = await client.execute("SELECT count(*) AS n FROM __drizzle_migrations");
+const applied = await stream.query("SELECT count(*) AS n FROM __drizzle_migrations");
 await db
   .transaction(async (tx) => {
     await tx.insert(posts).values({ authorId: author!.id, title: "Draft" });

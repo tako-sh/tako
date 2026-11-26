@@ -9,16 +9,17 @@ mod credentials;
 mod device_key;
 mod drain;
 pub(crate) use drain::{DrainLease, wait_for_lease};
-mod encryption;
+pub(crate) mod encryption;
 mod release_routing;
-mod schema;
+
 pub(crate) use release_routing::ReleaseRouting;
 mod upgrade;
+pub(crate) use upgrade::promotion_ready;
 
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 17;
+const STATE_FORMAT: i32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -34,8 +35,8 @@ pub(crate) struct PersistedRelease {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateStoreError {
-    #[error("sqlite error: {0}")]
-    Sqlite(String),
+    #[error("state store: {0}")]
+    Storage(String),
 
     #[error("invalid data: {0}")]
     InvalidData(String),
@@ -48,173 +49,223 @@ pub enum StateStoreError {
     WorkflowStoreUnavailable(String),
 }
 
-impl From<rusqlite::Error> for StateStoreError {
-    fn from(e: rusqlite::Error) -> Self {
-        StateStoreError::Sqlite(e.to_string())
+impl From<serde_json::Error> for StateStoreError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::InvalidData(e.to_string())
     }
 }
+fn storage(e: impl std::fmt::Display) -> StateStoreError {
+    StateStoreError::Storage(e.to_string())
+}
 
-pub struct SqliteStateStore {
+use redb::{Database, ReadOnlyTable, ReadableDatabase, ReadableTable, Table, TableDefinition};
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
+    sync::Arc,
+};
+type Key = (&'static str, &'static str, &'static str);
+type Rows<'a> = Table<'a, Key, &'static [u8]>;
+const RECORDS: TableDefinition<Key, &[u8]> = TableDefinition::new("state");
+
+fn builder() -> redb::Builder {
+    let mut b = Database::builder();
+    b.set_cache_size(8 << 20)
+        .set_concurrency_mode(redb::ConcurrencyMode::MultiWriter);
+    b
+}
+
+fn read_records<T>(
+    db: &impl ReadableDatabase,
+    f: impl FnOnce(&ReadOnlyTable<Key, &[u8]>) -> Result<T, StateStoreError>,
+) -> Result<T, StateStoreError> {
+    let tx = db.begin_read().map_err(storage)?;
+    let rows = tx.open_table(RECORDS).map_err(storage)?;
+    f(&rows)
+}
+
+fn inspect<T>(
+    path: &Path,
+    f: impl FnOnce(&ReadOnlyTable<Key, &[u8]>) -> Result<T, StateStoreError>,
+) -> Result<T, StateStoreError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(storage)?;
+    let db = builder()
+        .open_read_only_with_backend(redb::backends::FileBackend::new(file))
+        .map_err(storage)?;
+    read_records(&db, f)
+}
+fn bytes(
+    rows: &impl ReadableTable<Key, &'static [u8]>,
+    key: (&str, &str, &str),
+) -> Result<Option<Vec<u8>>, StateStoreError> {
+    Ok(rows.get(key).map_err(storage)?.map(|v| v.value().to_vec()))
+}
+fn get<T: serde::de::DeserializeOwned>(
+    rows: &impl ReadableTable<Key, &'static [u8]>,
+    key: (&str, &str, &str),
+) -> Result<Option<T>, StateStoreError> {
+    rows.get(key)
+        .map_err(storage)?
+        .map(|v| serde_json::from_slice(v.value()))
+        .transpose()
+        .map_err(Into::into)
+}
+fn put(
+    rows: &mut Rows<'_>,
+    key: (&str, &str, &str),
+    value: &impl serde::Serialize,
+) -> Result<(), StateStoreError> {
+    rows.insert(key, serde_json::to_vec(value)?.as_slice())
+        .map_err(storage)?;
+    Ok(())
+}
+fn remove(rows: &mut Rows<'_>, key: (&str, &str, &str)) -> Result<(), StateStoreError> {
+    rows.remove(key).map_err(storage)?;
+    Ok(())
+}
+fn scan<T>(
+    rows: &impl ReadableTable<Key, &'static [u8]>,
+    bucket: &str,
+    mut read: impl FnMut(&str, &str, &[u8]) -> Result<T, StateStoreError>,
+) -> Result<Vec<T>, StateStoreError> {
+    let end = format!("{bucket}\0");
+    rows.range((bucket, "", "")..(end.as_str(), "", ""))
+        .map_err(storage)?
+        .map(|item| {
+            let (key, value) = item.map_err(storage)?;
+            let (_, id, version) = key.value();
+            read(id, version, value.value())
+        })
+        .collect()
+}
+
+pub struct StateStore {
     path: PathBuf,
     encryption_key: [u8; 32],
-    conn: parking_lot::Mutex<Option<rusqlite::Connection>>,
+    db: parking_lot::Mutex<Option<Arc<Database>>>,
+    #[cfg(test)]
+    pub(crate) reject_reads: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    pub(crate) reject_writes: std::sync::atomic::AtomicBool,
 }
 
-/// Open the state database with WAL, so the old and new server processes can
-/// share it during a zero-downtime reload, plus a busy timeout, synchronous
-/// NORMAL, and foreign keys.
-fn open_local(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
-    let conn = rusqlite::Connection::open(path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    Ok(conn)
-}
-
-impl SqliteStateStore {
+impl StateStore {
     pub fn new(path: PathBuf, encryption_key: [u8; 32]) -> Self {
         Self {
             path,
             encryption_key,
-            conn: parking_lot::Mutex::new(None),
+            db: Default::default(),
+            #[cfg(test)]
+            reject_writes: Default::default(),
+            #[cfg(test)]
+            reject_reads: Default::default(),
         }
     }
-
     #[cfg(test)]
-    pub fn path(&self) -> &std::path::Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
-
-    /// Lock the store's cached connection, opening it on first use.
-    fn lock_conn(
-        &self,
-    ) -> Result<parking_lot::MappedMutexGuard<'_, rusqlite::Connection>, StateStoreError> {
-        let mut guard = self.conn.lock();
-        if guard.is_none() {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&self.path)
-                .map_err(|e| StateStoreError::Sqlite(format!("secure state database: {e}")))?;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| StateStoreError::Sqlite(format!("secure state database: {e}")))?;
-            for suffix in ["-wal", "-shm"] {
-                let sidecar = PathBuf::from(format!("{}{suffix}", self.path.display()));
-                match std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(sidecar)
-                {
-                    Ok(file) => file
-                        .set_permissions(std::fs::Permissions::from_mode(0o600))
-                        .map_err(|e| StateStoreError::Sqlite(e.to_string()))?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(e) => return Err(StateStoreError::Sqlite(e.to_string())),
-                }
-            }
-            *guard = Some(open_local(&self.path)?);
+    fn database(&self) -> Result<Arc<Database>, StateStoreError> {
+        let mut db = self.db.lock();
+        if let Some(db) = db.as_ref() {
+            return Ok(db.clone());
         }
-        Ok(parking_lot::MutexGuard::map(guard, |conn| {
-            conn.as_mut().expect("connection opened above")
-        }))
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(storage)?
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(&self.path)
+            .map_err(storage)?;
+        if !file.metadata().map_err(storage)?.is_file() {
+            return Err(storage("state must be a regular file"));
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(storage)?;
+        let opened = Arc::new(
+            builder()
+                .create_with_backend(redb::backends::FileBackend::new(file))
+                .map_err(storage)?,
+        );
+        *db = Some(opened.clone());
+        Ok(opened)
     }
-
-    /// Upsert an encrypted per-app blob row into one of the
-    /// `(app, encrypted_data)` tables.
+    fn read<T>(
+        &self,
+        f: impl FnOnce(&ReadOnlyTable<Key, &[u8]>) -> Result<T, StateStoreError>,
+    ) -> Result<T, StateStoreError> {
+        #[cfg(test)]
+        if self.reject_reads.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(storage("injected read failure"));
+        }
+        read_records(self.database()?.as_ref(), f)
+    }
+    fn write<T>(
+        &self,
+        f: impl FnOnce(&mut Rows<'_>) -> Result<T, StateStoreError>,
+    ) -> Result<T, StateStoreError> {
+        let db = self.database()?;
+        let tx = db.begin_write().map_err(storage)?;
+        let result = {
+            let mut rows = tx.open_table(RECORDS).map_err(storage)?;
+            f(&mut rows)?
+        };
+        #[cfg(test)]
+        if self
+            .reject_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(storage("injected commit failure"));
+        }
+        tx.commit().map_err(storage)?;
+        Ok(result)
+    }
+    pub fn init(&self) -> Result<(), StateStoreError> {
+        self.write(|rows| match get::<i32>(rows, ("format", "", ""))? {
+            Some(STATE_FORMAT) => Ok(()),
+            Some(found) => Err(StateStoreError::UnsupportedSchemaVersion { found }),
+            None => {
+                put(rows, ("format", "", ""), &STATE_FORMAT)?;
+                put(rows, ("mode", "", ""), &tako_core::UpgradeMode::Normal)
+            }
+        })
+    }
     #[cfg(test)]
     fn set_encrypted_row(
         &self,
-        table: &str,
-        app: &str,
-        plaintext: &[u8],
+        bucket: &str,
+        id: &str,
+        data: &[u8],
     ) -> Result<(), StateStoreError> {
-        let encrypted = encryption::encrypt_blob(&self.encryption_key, plaintext)?;
-        let conn = self.lock_conn()?;
-        conn.execute(
-            &format!(
-                "INSERT INTO {table} (app, encrypted_data)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;"
-            ),
-            (app, encrypted),
-        )?;
-        Ok(())
+        let blob = encryption::encrypt_blob(&self.encryption_key, data)?;
+        self.write(|r| {
+            r.insert((bucket, id, ""), blob.as_slice())
+                .map_err(storage)?;
+            Ok(())
+        })
     }
-
-    /// Read and decrypt a per-app blob row from one of the
-    /// `(app, encrypted_data)` tables. Returns `None` when absent.
     fn get_encrypted_row(
         &self,
-        table: &str,
-        app: &str,
+        bucket: &str,
+        id: &str,
     ) -> Result<Option<Vec<u8>>, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let blob = match conn.query_row(
-            &format!("SELECT encrypted_data FROM {table} WHERE app = ?1;"),
-            (app,),
-            |row| row.get::<_, Vec<u8>>(0),
-        ) {
-            Ok(blob) => Some(blob),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => return Err(e.into()),
-        };
-        match blob {
-            Some(encrypted) => Ok(Some(encryption::decrypt_blob(
-                &self.encryption_key,
-                &encrypted,
-            )?)),
-            None => Ok(None),
-        }
+        self.read(|r| bytes(r, (bucket, id, "")))?
+            .map(|v| encryption::decrypt_blob(&self.encryption_key, &v))
+            .transpose()
     }
-
     #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
-        let conn = self.lock_conn()?;
-        conn.execute("DELETE FROM app_secrets WHERE app = ?1;", (app,))?;
-        Ok(())
-    }
-
-    /// Test-only raw SQL escape hatches.
-    #[cfg(test)]
-    pub fn raw_execute(&self, sql: &str, params: impl rusqlite::Params) {
-        let conn = self.lock_conn().expect("open connection");
-        conn.execute(sql, params).expect("raw execute");
-    }
-
-    #[cfg(test)]
-    pub fn raw_execute_batch(&self, sql: &str) {
-        let conn = self.lock_conn().expect("open connection");
-        conn.execute_batch(sql).expect("raw execute batch");
-    }
-
-    #[cfg(test)]
-    pub fn raw_query_i64(&self, sql: &str, params: impl rusqlite::Params) -> i64 {
-        let conn = self.lock_conn().expect("open connection");
-        conn.query_row(sql, params, |row| row.get(0))
-            .expect("raw query i64")
-    }
-
-    #[cfg(test)]
-    pub fn raw_query_blob(&self, sql: &str, params: impl rusqlite::Params) -> Vec<u8> {
-        let conn = self.lock_conn().expect("open connection");
-        conn.query_row(sql, params, |row| row.get(0))
-            .expect("raw query blob")
-    }
-
-    /// Collect one string column (by index) across all rows.
-    #[cfg(test)]
-    pub fn raw_query_strings(&self, sql: &str, column: usize) -> Vec<String> {
-        let conn = self.lock_conn().expect("open connection");
-        let mut stmt = conn.prepare(sql).expect("raw prepare");
-        let rows = stmt
-            .query_map([], |row| row.get(column))
-            .expect("raw query strings");
-        rows.collect::<Result<Vec<_>, _>>()
-            .expect("raw query strings")
+        self.write(|r| remove(r, ("app_secrets", app, "")))
     }
 }
 

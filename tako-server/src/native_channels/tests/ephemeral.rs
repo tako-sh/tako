@@ -215,10 +215,8 @@ async fn request(commands: broker::Commands, request: Request) -> Response {
 #[tokio::test]
 async fn live_ipc_publication_progresses_while_durable_storage_is_locked() {
     let (replay, broker) = new_broker().await;
-    let mut db = replay.sql();
-    let transaction = db
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .unwrap();
+    let db = replay.sql();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let (commands, mut receiver) = broker::commands(8);
     let durable = tokio::spawn(request(
         commands.clone(),
@@ -253,7 +251,7 @@ async fn live_ipc_publication_progresses_while_durable_storage_is_locked() {
     .unwrap();
     assert!(matches!(live, Response::Published { message } if message.id.is_empty()));
     assert!(!durable.is_finished());
-    drop(transaction);
+    db.execute_batch("ROLLBACK").unwrap();
     assert!(matches!(durable.await.unwrap(), Response::Published { .. }));
     shutdown.send_replace(true);
     actor.await.unwrap().unwrap();

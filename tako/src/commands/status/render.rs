@@ -26,7 +26,6 @@ pub(super) fn render_global_status(
     servers: &ServerInventory,
     server_names: &[String],
     server_results: &mut std::collections::HashMap<String, GlobalServerStatusResult>,
-    project: Option<&crate::commands::project_resources::ProjectResources>,
 ) {
     for server_name in server_names {
         let Some(global) = server_results.remove(server_name.as_str()) else {
@@ -38,10 +37,7 @@ pub(super) fn render_global_status(
             .filter(|d| !d.trim().is_empty())
             .map(str::to_string);
 
-        let databases = super::server_databases(servers, server_name, project);
-        for line in
-            format_server_status_lines(server_name, description.as_deref(), &global, &databases)
-        {
+        for line in format_server_status_lines(server_name, description.as_deref(), &global) {
             eprintln!("{line}");
         }
         eprintln!();
@@ -52,7 +48,6 @@ fn format_server_status_lines(
     server_name: &str,
     description: Option<&str>,
     global: &GlobalServerStatusResult,
-    databases: &[(String, Vec<String>)],
 ) -> Vec<String> {
     let mut lines = vec![format!("Server {}", output::strong(server_name))];
 
@@ -62,7 +57,9 @@ fn format_server_status_lines(
             output::INDENT,
             colorize(err, Some(StatusColor::Error))
         ));
-        return lines;
+        if global.service_status == "unknown" {
+            return lines;
+        }
     }
 
     lines.push(format_server_summary(global));
@@ -90,10 +87,9 @@ fn format_server_status_lines(
         lines.extend(format_app_lines(&global.apps));
     }
 
-    if !databases.is_empty() {
-        lines.push(String::new());
-        lines.push(format!("{}Databases", output::INDENT));
-        lines.extend(format_database_lines(databases));
+    match &global.user_resources {
+        Ok(resources) => lines.extend(format_user_resources(resources)),
+        Err(error) => lines.push(format!("{}Bindings unavailable  {error}", output::INDENT)),
     }
 
     if let Some(desc) = description {
@@ -407,32 +403,56 @@ pub(super) fn app_state_summary(status: Option<&ServerStatusResult>) -> (String,
     }
 }
 
-/// One line per database homed on a server, naming the app environments of
-/// this project that bind it.
-fn format_database_lines(databases: &[(String, Vec<String>)]) -> Vec<String> {
-    let width = databases
-        .iter()
-        .map(|(name, _)| name.len())
-        .max()
-        .unwrap_or(0);
-    databases
-        .iter()
-        .map(|(name, bound_by)| {
-            let detail = if bound_by.is_empty() {
-                output::theme_muted("not used by this project").to_string()
-            } else {
-                let users: Vec<_> = bound_by
-                    .iter()
-                    .map(|scope| crate::commands::project_resources::database_user_label(scope))
-                    .collect();
-                format!("used by {}", users.join(", "))
+fn format_user_resources(resources: &tako_core::ServerUserResources) -> Vec<String> {
+    let mut lines = Vec::new();
+    let indent = output::INDENT.repeat(2);
+    for (engine, section) in [
+        (tako_core::DatabaseEngine::Turso, "Databases"),
+        (tako_core::DatabaseEngine::Kv, "KV stores"),
+    ] {
+        let mut replicas = resources
+            .databases
+            .iter()
+            .filter(|db| db.engine == engine)
+            .peekable();
+        if replicas.peek().is_none() {
+            continue;
+        }
+        lines.push(String::new());
+        lines.push(format!("{}{section}", output::INDENT));
+        for db in replicas {
+            let role = match (db.is_leader, &db.leader) {
+                (Some(true), _) => "leader".to_owned(),
+                (Some(false), Some(name)) => format!("replica · leader {name}"),
+                _ => "leader unknown".to_owned(),
             };
-            format!(
-                "{indent}{name:<width$}  {detail}",
-                indent = output::INDENT.repeat(2)
-            )
-        })
-        .collect()
+            lines.push(format!("{indent}{}  {role}", db.name));
+            for binding in &db.bindings {
+                let retained = if binding.retained { " (rollback)" } else { "" };
+                lines.push(format!(
+                    "{indent}{}{} · {}{retained}",
+                    output::INDENT,
+                    binding.app,
+                    binding.binding
+                ));
+            }
+        }
+    }
+    if !resources.storages.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("{}Storage", output::INDENT));
+        for storage in &resources.storages {
+            let provider = match storage.provider {
+                tako_core::StorageProvider::Local => "local",
+                tako_core::StorageProvider::S3 => "S3",
+            };
+            lines.push(format!(
+                "{indent}{} · {} → {} ({provider})",
+                storage.app, storage.binding, storage.resource
+            ));
+        }
+    }
+    lines
 }
 
 /// The project's app environments and what each holds, after the servers.
@@ -448,6 +468,21 @@ fn format_project_lines(
 ) -> Vec<String> {
     use crate::commands::project_resources::Access;
     let mut lines = vec![format!("App {}", output::strong(&project.app))];
+    let mut unbound: Vec<_> = project
+        .config
+        .storages
+        .keys()
+        .filter(|name| {
+            !project
+                .envs
+                .iter()
+                .any(|env| env.storages.iter().any(|s| &s.resource == *name))
+        })
+        .collect();
+    unbound.sort();
+    for name in unbound {
+        lines.push(format!("{}storage {name} (unbound)", output::INDENT));
+    }
     let width = project
         .envs
         .iter()
@@ -497,27 +532,23 @@ fn format_project_lines(
         if !held.is_empty() {
             lines.push(format!("{indent}{}", held.join("  ")));
         }
-        if !env.databases.is_empty() {
-            let databases: Vec<String> = env
-                .databases
+        for (label, bindings) in [("databases", &env.databases), ("kv", &env.kv)] {
+            if bindings.is_empty() {
+                continue;
+            }
+            let names = bindings
                 .iter()
-                .map(|db| match &db.server {
-                    Some(server) => format!("{} → {} on {server}", db.usage.label(), db.database),
-                    None => format!("{} → {} (no network record)", db.usage.label(), db.database),
+                .map(|db| {
+                    let target = format!("{} → {}", db.usage.label(), db.database);
+                    match &db.leader {
+                        Some(leader) => format!("{target} (leader {leader})"),
+                        None if env.network_id.is_none() => target,
+                        None if db.generation.is_some() => format!("{target} (leader unknown)"),
+                        None => format!("{target} (no network record)"),
+                    }
                 })
-                .collect();
-            lines.push(format!("{indent}databases {}", databases.join(", ")));
-        }
-        if !env.kv.is_empty() {
-            let stores: Vec<String> = env
-                .kv
-                .iter()
-                .map(|db| match &db.server {
-                    Some(server) => format!("{} → {} on {server}", db.usage.label(), db.database),
-                    None => format!("{} → {} (no network record)", db.usage.label(), db.database),
-                })
-                .collect();
-            lines.push(format!("{indent}kv {}", stores.join(", ")));
+                .collect::<Vec<_>>();
+            lines.push(format!("{indent}{label} {}", names.join(", ")));
         }
         if let Some(note) = &env.note {
             lines.push(format!("{indent}{}", output::theme_muted(note)));
@@ -539,6 +570,7 @@ mod tests {
             server_uptime: None,
             process_uptime: Some("4d 6h".to_string()),
             resources: None,
+            user_resources: Ok(Default::default()),
             routes: vec![
                 (
                     "web (production)".to_string(),
@@ -582,7 +614,7 @@ mod tests {
             error: None,
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global, &[]);
+        let lines = format_server_status_lines("prod-a", None, &global);
 
         assert_eq!(
             lines,
@@ -659,6 +691,7 @@ mod tests {
             server_uptime: None,
             process_uptime: None,
             resources: None,
+            user_resources: Ok(Default::default()),
             routes: Vec::new(),
             apps: vec![super::super::GlobalAppStatusResult {
                 app_name: "web".to_string(),
@@ -691,7 +724,7 @@ mod tests {
             error: None,
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global, &[]);
+        let lines = format_server_status_lines("prod-a", None, &global);
         assert_eq!(
             &lines[lines.len() - 2..],
             [
@@ -701,7 +734,7 @@ mod tests {
         );
 
         global.apps[0].status.app_status.as_mut().unwrap().recovery = None;
-        let lines = format_server_status_lines("prod-a", None, &global, &[]);
+        let lines = format_server_status_lines("prod-a", None, &global);
         assert_eq!(
             lines.last().unwrap(),
             "    web  healthy 0/0  production  abc123"
@@ -716,12 +749,13 @@ mod tests {
             server_uptime: None,
             process_uptime: None,
             resources: None,
+            user_resources: Ok(Default::default()),
             routes: Vec::new(),
             apps: Vec::new(),
             error: Some("Remote management failed".to_string()),
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global, &[]);
+        let lines = format_server_status_lines("prod-a", None, &global);
 
         assert_eq!(
             lines,
@@ -765,18 +799,82 @@ mod tests {
                         binding: "main".into(),
                     },
                     database: "orders".into(),
-                    server: Some("edge-a".into()),
+                    generation: Some("ga".into()),
+                    leader: Some("edge-a".into()),
                 },
                 ProjectDatabase {
                     usage: DatabaseUsage::ChannelReplay,
                     database: "events".into(),
-                    server: Some("edge-b".into()),
+                    generation: Some("gb".into()),
+                    leader: Some("edge-b".into()),
                 },
             ],
             kv: vec![],
             note: (!readable).then(|| DEPLOY_CLIENT_NOTE.into()),
             access,
         }
+    }
+
+    #[test]
+    fn project_leaders_require_agreement_for_the_same_network_and_generation() {
+        use crate::commands::project_resources::Access;
+        use crate::config::{LocalNetwork, ServerEntry};
+        use crate::management_http::NativeTarget;
+        let mut project = project_with(vec![env("production", Access::Full)]);
+        let network = project.envs[0].network_id.clone().unwrap();
+        let mut servers = ServerInventory::default();
+        let mut results = std::collections::HashMap::new();
+        for (server, network, generation, leader) in [
+            ("west", network.as_str(), "ga", "west"),
+            ("east", network.as_str(), "ga", "east"),
+            (
+                "elsewhere",
+                "11111111111111111111111111111111",
+                "gb",
+                "elsewhere",
+            ),
+            ("removed", network.as_str(), "old", "removed"),
+        ] {
+            servers.servers.insert(
+                server.into(),
+                ServerEntry {
+                    native: Some(NativeTarget {
+                        network: LocalNetwork {
+                            id: network.into(),
+                            alias: "fleet".into(),
+                            name: "fleet".into(),
+                            device: "f".repeat(64),
+                        },
+                        server_id: "a".repeat(64).parse().unwrap(),
+                        server_name: server.parse().unwrap(),
+                    }),
+                    ..Default::default()
+                },
+            );
+            let mut result = active_server(None);
+            result.user_resources.as_mut().unwrap().databases.push(
+                tako_core::DatabaseReplicaStatus {
+                    name: "orders".into(),
+                    engine: tako_core::DatabaseEngine::Turso,
+                    generation: generation.into(),
+                    leader: Some(leader.into()),
+                    is_leader: Some(true),
+                    bindings: vec![],
+                },
+            );
+            results.insert(server.into(), result);
+        }
+        super::super::set_project_leaders(&mut project, &servers, &results);
+        assert!(
+            project.envs[0]
+                .databases
+                .iter()
+                .all(|db| db.leader.is_none())
+        );
+        results.remove("west");
+        super::super::set_project_leaders(&mut project, &servers, &results);
+        assert_eq!(project.envs[0].databases[0].leader.as_deref(), Some("east"));
+        assert!(project.envs[0].databases[1].leader.is_none());
     }
 
     #[test]
@@ -796,10 +894,10 @@ mod tests {
                 "App shop",
                 "  production  network main  servers edge-a",
                 "    3 secrets  credentials ssl.cloudflare  storage uploads → media (no credentials)",
-                "    databases main → orders on edge-a, channel replay → events on edge-b",
+                "    databases main → orders (leader edge-a), channel replay → events (leader edge-b)",
                 "  staging     network main (deploy client)  servers edge-a",
                 "    storage uploads → media",
-                "    databases main → orders on edge-a, channel replay → events on edge-b",
+                "    databases main → orders (leader edge-a), channel replay → events (leader edge-b)",
                 "    Secrets and credentials need a full client.",
             ]
         );
@@ -845,6 +943,7 @@ mod tests {
                 .map(format_duration_human),
             process_uptime: Some("4d 6h".into()),
             resources: host,
+            user_resources: Ok(Default::default()),
             routes: vec![],
             apps: vec![],
             error: None,
@@ -857,7 +956,6 @@ mod tests {
             "prod-a",
             None,
             &active_server(Some(host_stats())),
-            &[],
         ));
         assert_eq!(
             lines,
@@ -896,8 +994,7 @@ mod tests {
             ..Default::default()
         };
         assert!(format_resource_lines(&only_uptime).is_empty());
-        let lines =
-            format_server_status_lines("prod-a", None, &active_server(Some(only_uptime)), &[]);
+        let lines = format_server_status_lines("prod-a", None, &active_server(Some(only_uptime)));
         assert_eq!(lines.len(), 2, "{lines:?}");
     }
 
@@ -927,36 +1024,54 @@ mod tests {
     }
 
     #[test]
-    fn server_lines_list_the_databases_homed_there() {
-        let global = GlobalServerStatusResult {
-            service_status: "active".into(),
-            server_version: None,
-            server_uptime: None,
-            process_uptime: None,
-            resources: None,
-            routes: vec![],
-            apps: vec![],
-            error: None,
-        };
-        let databases = vec![
-            ("audit".to_string(), vec![]),
-            (
-                "orders".to_string(),
-                vec!["shop/production#channels".to_string()],
-            ),
-        ];
-        let lines: Vec<String> = format_server_status_lines("edge-a", None, &global, &databases)
-            .into_iter()
-            .map(|line| console::strip_ansi_codes(&line).to_string())
-            .collect();
-        assert_eq!(
-            &lines[2..],
-            &[
-                String::new(),
-                "  Databases".to_string(),
-                "    audit   not used by this project".to_string(),
-                "    orders  used by shop/production (channel replay)".to_string(),
-            ]
+    fn server_inventory_displays_replica_roles_aliases_and_retained_bindings() {
+        let mut global = active_server(None);
+        global.user_resources = Ok(tako_core::ServerUserResources {
+            databases: vec![
+                tako_core::DatabaseReplicaStatus {
+                    name: "orders".into(),
+                    generation: "g".into(),
+                    engine: tako_core::DatabaseEngine::Turso,
+                    leader: Some("edge-b".into()),
+                    is_leader: Some(false),
+                    bindings: vec![tako_core::ResourceBindingStatus {
+                        app: "shop/production".into(),
+                        binding: "history".into(),
+                        retained: true,
+                    }],
+                },
+                tako_core::DatabaseReplicaStatus {
+                    name: "sessions".into(),
+                    generation: "k".into(),
+                    engine: tako_core::DatabaseEngine::Kv,
+                    leader: Some("edge-a".into()),
+                    is_leader: Some(true),
+                    bindings: vec![],
+                },
+            ],
+            storages: vec![tako_core::StorageBindingStatus {
+                app: "shop/production".into(),
+                binding: "uploads".into(),
+                resource: "media".into(),
+                provider: tako_core::StorageProvider::S3,
+            }],
+        });
+        let lines = plain(format_server_status_lines("edge-a", None, &global));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("orders  replica · leader edge-b"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("shop/production · history (rollback)"))
+        );
+        assert!(lines.iter().any(|line| line.contains("sessions  leader")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("uploads → media (S3)"))
         );
     }
 }

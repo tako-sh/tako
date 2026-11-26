@@ -1,0 +1,534 @@
+use thiserror::Error;
+
+use crate::storage::page_cache::CacheError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintKind {
+    PrimaryKey,
+    Unique,
+    ForeignKey,
+    NotNull,
+    Check,
+    /// A trigger's RAISE(ABORT | FAIL | ROLLBACK, ...).
+    Trigger,
+    /// A value whose type does not match a STRICT table's column type.
+    Datatype,
+    Other,
+}
+
+impl ConstraintKind {
+    pub fn sqlite_extended_result_code(self) -> usize {
+        match self {
+            Self::PrimaryKey => SQLITE_CONSTRAINT_PRIMARYKEY,
+            Self::Unique => SQLITE_CONSTRAINT_UNIQUE,
+            Self::ForeignKey => SQLITE_CONSTRAINT_FOREIGNKEY,
+            Self::NotNull => SQLITE_CONSTRAINT_NOTNULL,
+            Self::Check => SQLITE_CONSTRAINT_CHECK,
+            Self::Trigger => SQLITE_CONSTRAINT_TRIGGER,
+            Self::Datatype => SQLITE_CONSTRAINT_DATATYPE,
+            Self::Other => SQLITE_CONSTRAINT,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstraintViolation {
+    pub kind: ConstraintKind,
+    pub message: String,
+    pub table_name: Option<String>,
+    pub constraint_name: Option<String>,
+    pub index_name: Option<String>,
+    pub column_names: Vec<String>,
+    pub values: Vec<crate::Value>,
+    pub row_values: bool,
+    pub parent_table: Option<String>,
+}
+
+impl ConstraintViolation {
+    pub fn new(kind: ConstraintKind, message: String) -> Self {
+        Self {
+            kind,
+            message,
+            table_name: None,
+            constraint_name: None,
+            index_name: None,
+            column_names: Vec::new(),
+            values: Vec::new(),
+            row_values: false,
+            parent_table: None,
+        }
+    }
+}
+
+/// An error that code of a dialect raised, which the engine carries without
+/// change. `code` is an error code that the dialect defines.
+#[derive(Debug, Clone)]
+pub struct DialectError {
+    pub code: &'static str,
+    pub message: String,
+    /// More about the error, which a dialect may report apart from the
+    /// message, such as the objects that keep it from dropping something.
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Error, miette::Diagnostic)]
+pub enum LimboError {
+    #[error("Corrupt database: {0}")]
+    Corrupt(String),
+    #[error("file is not a database")]
+    NotADB,
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    #[error("{0}")]
+    IoBackendUnavailable(String),
+    /// An error raised by emitted bytecode (`Insn::Halt` with SQLITE_ERROR),
+    /// e.g. ALTER TABLE validation or window-function argument checks.
+    /// Displayed bare, like sqlite3_errmsg. Kept distinct from `Constraint`
+    /// so `abort()` does not apply ON CONFLICT resolution to it.
+    #[error("{0}")]
+    SqlError(String),
+    #[error(transparent)]
+    CacheError(#[from] CacheError),
+    #[error("database or disk is full")]
+    DatabaseFull,
+    #[error("nextval: reached {} value of sequence \"{name}\"", sequence_bound(.ascending))]
+    SequenceExhausted { name: String, ascending: bool },
+    #[error("{0}")]
+    ParseError(String),
+    /// Boxed: the parser error is ~96 bytes inline and would dominate
+    /// `LimboError`'s size, which rides in every hot-path `Result`.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    LexerError(#[from] Box<turso_parser::error::Error>),
+    #[error("Conversion error: {0}")]
+    ConversionError(String),
+    #[error("Env variable error: {0}")]
+    EnvVarError(#[from] std::env::VarError),
+    #[error("{0}")]
+    TxError(String),
+    #[error("cannot {op} - no transaction is active")]
+    NoActiveTransaction { op: &'static str },
+    #[error("cannot start a transaction within a transaction")]
+    TransactionAlreadyActive,
+    #[error(transparent)]
+    CompletionError(#[from] CompletionError),
+    #[error("Locking error: {0}")]
+    LockingError(String),
+    #[error("Parse error: {0}")]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("Parse error: {0}")]
+    ParseFloatError(#[from] std::num::ParseFloatError),
+    #[error("Parse error: {0}")]
+    InvalidDate(String),
+    /// A date or time field is out of range, such as `2024-02-30`.
+    #[error("Parse error: {0}")]
+    DatetimeFieldOverflow(String),
+    #[error("Parse error: {0}")]
+    InvalidTime(String),
+    #[error("Modifier parsing error: {0}")]
+    InvalidModifier(String),
+    #[error("{0}")]
+    InvalidArgument(String),
+    #[error("Invalid formatter supplied: {0}")]
+    InvalidFormatter(String),
+    /// The current role may not do what the statement needs.
+    #[error("{0}")]
+    PermissionDenied(Box<crate::security::permission::PermissionDenied>),
+    #[error("{0}")]
+    Constraint(String),
+    #[error("{}", .0.message)]
+    ConstraintViolation(Box<ConstraintViolation>),
+    #[error("{0}")]
+    /// We need to specify for ROLLBACK|FAIL resolve types when to roll the tx back
+    /// so instead of matching on the string, we introduce a specific ForeignKeyConstraint error
+    ForeignKeyConstraint(String),
+    /// An error that halts the statement with its own resolve type (RAISE, a
+    /// constraint-level ON CONFLICT clause, or a trigger step's OR clause).
+    #[error("{1}")]
+    Raise(turso_parser::ast::ResolveType, Box<LimboError>),
+    #[error("RaiseIgnore")]
+    RaiseIgnore,
+    #[error("Extension error: {0}")]
+    ExtensionError(String),
+    #[error("integer overflow")]
+    IntegerOverflow,
+    #[error("division by zero")]
+    DivisionByZero,
+    #[error("invalid input syntax for type numeric: \"{0}\"")]
+    InvalidTextRepresentation(String),
+    #[error("string or blob too big")]
+    TooBig,
+    #[error("database table is locked")]
+    TableLocked,
+    #[error("attempt to write a readonly database")]
+    ReadOnly,
+    #[error("Database is busy")]
+    Busy,
+    /// A transaction-control or savepoint operation, or a second concurrent
+    /// write statement, was rejected because another statement on the same
+    /// connection is still in progress. This carries SQLITE_BUSY semantics at
+    /// the API surface (SQLite reports these as SQLITE_BUSY, e.g. "cannot
+    /// commit transaction - SQL statements in progress"), but unlike `Busy`
+    /// it is not retryable in place and must never invoke the busy handler:
+    /// waiting cannot help, only the application finishing or resetting its
+    /// own statement can. The payload names the rejected operation.
+    #[error("{0} - SQL statements in progress")]
+    StatementsInProgress(&'static str),
+    #[error("interrupt")]
+    Interrupt,
+    #[error("Database snapshot is stale. You must rollback and retry the whole transaction.")]
+    BusySnapshot,
+    #[error("Conflict: {0}")]
+    Conflict(String),
+    #[error("Database schema changed")]
+    SchemaUpdated,
+    #[error("Database schema conflict")]
+    SchemaConflict,
+    #[error(
+        "Database is empty, header does not exist - page 1 should've been allocated before this"
+    )]
+    Page1NotAlloc,
+    #[error("Transaction terminated")]
+    TxTerminated,
+    #[error("Write-write conflict")]
+    WriteWriteConflict,
+    #[error("Commit dependency aborted")]
+    CommitDependencyAborted,
+    #[error("No such transaction ID: {0}")]
+    NoSuchTransactionID(String),
+    #[error("Null value")]
+    NullValue,
+    #[error("invalid column type")]
+    InvalidColumnType,
+    #[error("Invalid blob size, expected {0}")]
+    InvalidBlobSize(usize),
+    /// An incremental-blob handle was invalidated because the row it points to
+    /// (or its table) was modified after the handle was opened. Mirrors SQLite's
+    /// expired blob handles: every subsequent read/write must fail with
+    /// SQLITE_ABORT until the handle is closed.
+    #[error("blob handle expired")]
+    BlobHandleExpired,
+    #[error("Planning error: {0}")]
+    PlanningError(String),
+    #[error("Checkpoint failed: {0}")]
+    CheckpointFailed(String),
+    #[error("Unsupported text encoding: {0}. Only UTF-8 is supported.")]
+    UnsupportedEncoding(String),
+    #[error("Out of memory")]
+    OutOfMemory,
+    /// An error that code of a dialect raised, for example one of its
+    /// functions. Boxed, so that it does not make every `LimboError` larger.
+    #[error("{}", .0.message)]
+    Dialect(Box<DialectError>),
+}
+
+/// `?` in functions returning boxed errors (see `InsnResult`) composes
+/// `From<X> for LimboError` with the boxing. One impl per source error type
+/// that crosses that boundary; a blanket impl would overlap std's
+/// `From<T> for Box<T>`.
+macro_rules! boxed_from {
+    ($ty:ty) => {
+        impl From<$ty> for Box<LimboError> {
+            fn from(err: $ty) -> Self {
+                Box::new(LimboError::from(err))
+            }
+        }
+    };
+}
+boxed_from!(crate::alloc::TryReserveError);
+boxed_from!(std::collections::TryReserveError);
+boxed_from!(turso_parser::error::Error);
+boxed_from!(CompletionError);
+boxed_from!(CacheError);
+boxed_from!(bumpalo::AllocErr);
+boxed_from!(crate::alloc::AllocError);
+
+impl From<Box<LimboError>> for LimboError {
+    fn from(err: Box<LimboError>) -> Self {
+        *err
+    }
+}
+
+impl From<turso_parser::error::Error> for LimboError {
+    fn from(err: turso_parser::error::Error) -> Self {
+        LimboError::LexerError(Box::new(err))
+    }
+}
+
+impl LimboError {
+    /// The primary SQLite result code for this error, e.g. what the sqlite3
+    /// shell appends after a runtime error message ("... (19)").
+    pub fn sqlite_result_code(&self) -> i32 {
+        match self {
+            Self::Constraint(_)
+            | Self::ConstraintViolation(_)
+            | Self::ForeignKeyConstraint(_)
+            | Self::Raise(..) => 19,
+            Self::Busy | Self::BusySnapshot | Self::StatementsInProgress(_) => 5,
+            Self::TableLocked => 6,
+            Self::ReadOnly => 8,
+            Self::Interrupt => 9,
+            Self::Corrupt(_) => 11,
+            Self::DatabaseFull | Self::SequenceExhausted { .. } => 13,
+            Self::CompletionError(CompletionError::IOError(_, "open")) => 14,
+            Self::SchemaUpdated | Self::SchemaConflict => 17,
+            Self::TooBig => 18,
+            Self::PermissionDenied(_) => 23,
+            Self::NotADB => 26,
+            Self::BlobHandleExpired => 4,
+            _ => 1,
+        }
+    }
+
+    /// The extended SQLite result code for this error, e.g. what
+    /// sqlite3_extended_errcode reports. Only constraint violations of a
+    /// known kind have a code more specific than the primary one.
+    pub fn sqlite_extended_result_code(&self) -> i32 {
+        let code = match self {
+            Self::ConstraintViolation(violation) => violation.kind.sqlite_extended_result_code(),
+            Self::ForeignKeyConstraint(_) => SQLITE_CONSTRAINT_FOREIGNKEY,
+            Self::Raise(_, error) => return error.sqlite_extended_result_code(),
+            _ => return self.sqlite_result_code(),
+        };
+        code as i32
+    }
+}
+
+fn sequence_bound(ascending: &bool) -> &'static str {
+    if *ascending {
+        "maximum"
+    } else {
+        "minimum"
+    }
+}
+
+impl From<crate::alloc::AllocError> for LimboError {
+    fn from(_: crate::alloc::AllocError) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+impl From<crate::alloc::TryReserveError> for LimboError {
+    fn from(_: crate::alloc::TryReserveError) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+#[cfg(not(nightly))]
+impl From<allocator_api2::collections::TryReserveError> for LimboError {
+    fn from(_: allocator_api2::collections::TryReserveError) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+impl From<std::collections::TryReserveError> for LimboError {
+    fn from(_: std::collections::TryReserveError) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+impl From<bumpalo::AllocErr> for LimboError {
+    fn from(_: bumpalo::AllocErr) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+impl From<bumpalo::collections::CollectionAllocErr> for LimboError {
+    fn from(_: bumpalo::collections::CollectionAllocErr) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+#[cfg(target_family = "unix")]
+impl From<rustix::io::Errno> for LimboError {
+    fn from(value: rustix::io::Errno) -> Self {
+        CompletionError::from(value).into()
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "io_uring"))]
+impl From<&'static str> for LimboError {
+    fn from(value: &'static str) -> Self {
+        CompletionError::UringIOError(value).into()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Error)]
+pub enum CompletionError {
+    #[error("I/O error ({1}): {0}")]
+    IOError(std::io::ErrorKind, &'static str),
+    #[cfg(target_family = "unix")]
+    #[error("I/O error: {0}")]
+    RustixIOError(#[from] rustix::io::Errno),
+    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[error("I/O error: {0}")]
+    // TODO: if needed create an enum for IO Uring errors so that we don't have to pass strings around
+    UringIOError(&'static str),
+    #[error("Completion was aborted")]
+    Aborted,
+    #[error("Decryption failed for page={page_idx}")]
+    DecryptionError { page_idx: usize },
+    #[error("Page codec failed for page={page_idx}")]
+    PageCodecError { page_idx: usize },
+    #[error("I/O error: partial write")]
+    ShortWrite,
+    #[error("I/O error: short read on page {page_idx}: expected {expected} bytes, got {actual}")]
+    ShortRead {
+        page_idx: usize,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("I/O error: short read on WAL frame at offset {offset}: expected {expected} bytes, got {actual}")]
+    ShortReadWalFrame {
+        offset: u64,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("WAL frame page mismatch at frame {frame_id}: expected page {expected}, got {actual}")]
+    WalFramePageMismatch {
+        frame_id: u64,
+        expected: usize,
+        actual: u32,
+    },
+    #[error("Checksum mismatch on page {page_id}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        page_id: usize,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("tursodb not compiled with checksum feature")]
+    ChecksumNotEnabled,
+}
+
+/// Convert a `std::io::Error` into a `LimboError` with an operation label.
+pub fn io_error(e: std::io::Error, op: &'static str) -> LimboError {
+    LimboError::CompletionError(CompletionError::IOError(e.kind(), op))
+}
+
+#[cold]
+// makes all branches that return errors marked as unlikely
+pub(crate) const fn cold_return<T>(v: T) -> T {
+    v
+}
+
+/// Builds the error for [bail_parse_error!]. The message is formatted here, out
+/// of line, so that the many functions that can fail with a parse error do not
+/// each hold the formatting temporaries in their stack frames. This matters
+/// for the functions that translate expressions, which recurse once per level
+/// of an expression.
+#[doc(hidden)]
+#[cold]
+#[inline(never)]
+pub fn parse_error(message: std::fmt::Arguments<'_>) -> LimboError {
+    LimboError::ParseError(std::fmt::format(message))
+}
+
+#[macro_export]
+macro_rules! bail_parse_error {
+    ($($arg:tt)*) => {
+        return $crate::error::cold_return(Err($crate::error::parse_error(format_args!($($arg)*)).into()))
+    };
+}
+
+#[macro_export]
+macro_rules! bail_corrupt_error {
+    ($($arg:tt)*) => {
+        return $crate::error::cold_return(Err($crate::error::LimboError::Corrupt(format!($($arg)*)).into()))
+    };
+}
+
+/// Bounds-checked buffer slicing that returns `LimboError::Corrupt` on out-of-bounds.
+///
+/// Accepts any range expression: `buf, pos..`, `buf, start..end`, etc.
+#[macro_export]
+macro_rules! slice_in_bounds_or_corrupt {
+    ($buf:expr, $range:expr) => {
+        $buf.get($range).ok_or_else(|| {
+            $crate::error::cold_return($crate::error::LimboError::Corrupt(format!(
+                "range {:?} out of bounds for buffer size {}",
+                $range,
+                $buf.len()
+            )))
+        })?
+    };
+}
+
+/// Asserts a condition or bails with `LimboError::Corrupt`.
+///
+/// Usage:
+///   `assert_or_bail_corrupt!(condition, "message {}", arg)`
+#[macro_export]
+macro_rules! assert_or_bail_corrupt {
+    ($cond:expr, $($arg:tt)*) => {
+        if !($cond) {
+            $crate::bail_corrupt_error!($($arg)*);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! bail_constraint_error {
+    ($($arg:tt)*) => {
+        return $crate::error::cold_return(Err($crate::error::LimboError::Constraint(format!($($arg)*)).into()))
+    };
+}
+
+impl From<turso_ext::ResultCode> for LimboError {
+    fn from(err: turso_ext::ResultCode) -> Self {
+        cold_return(LimboError::ExtensionError(err.to_string()))
+    }
+}
+
+pub const SQLITE_ERROR: usize = 1;
+pub const SQLITE_CONSTRAINT: usize = 19;
+pub const SQLITE_CONSTRAINT_CHECK: usize = SQLITE_CONSTRAINT | (1 << 8);
+pub const SQLITE_CONSTRAINT_PRIMARYKEY: usize = SQLITE_CONSTRAINT | (6 << 8);
+pub const SQLITE_CONSTRAINT_FOREIGNKEY: usize = SQLITE_CONSTRAINT | (3 << 8);
+pub const SQLITE_CONSTRAINT_NOTNULL: usize = SQLITE_CONSTRAINT | (5 << 8);
+pub const SQLITE_CONSTRAINT_TRIGGER: usize = SQLITE_CONSTRAINT | (7 << 8);
+pub const SQLITE_CONSTRAINT_DATATYPE: usize = SQLITE_CONSTRAINT | (12 << 8);
+pub const SQLITE_FULL: usize = 13; // we want this in autoincrement - incase if user inserts max allowed int
+pub const SQLITE_CONSTRAINT_UNIQUE: usize = 2067;
+
+// Standard SQLite error code; kept for documentation and potential
+// reuse. The sequence inner-tx wrap used to emit Insn::Halt with this
+// code, but halt()'s constraint catch-all mis-wrapped it; Busy is now
+// returned directly via Err(LimboError::Busy) from
+// op_sequence_commit_inner_tx.
+#[allow(dead_code)]
+pub const SQLITE_BUSY: usize = 5;
+
+impl LimboError {
+    pub fn into_sqlite_error(self) -> Self {
+        match self {
+            Self::ConstraintViolation(violation) => {
+                if violation.kind == ConstraintKind::ForeignKey {
+                    Self::ForeignKeyConstraint(violation.message)
+                } else {
+                    Self::Constraint(violation.message)
+                }
+            }
+            error => error,
+        }
+    }
+
+    pub(crate) fn into_structured_constraint(self) -> Self {
+        match self {
+            Self::Constraint(message) => Self::ConstraintViolation(Box::new(
+                ConstraintViolation::new(ConstraintKind::Other, message),
+            )),
+            Self::ForeignKeyConstraint(message) => Self::ConstraintViolation(Box::new(
+                ConstraintViolation::new(ConstraintKind::ForeignKey, message),
+            )),
+            error => error,
+        }
+    }
+
+    pub(crate) fn is_foreign_key_constraint(&self) -> bool {
+        match self {
+            Self::ForeignKeyConstraint(_) => true,
+            Self::ConstraintViolation(violation) => violation.kind == ConstraintKind::ForeignKey,
+            _ => false,
+        }
+    }
+}

@@ -335,8 +335,10 @@ volumes:
     assert_eq!(assert_replicas(&server, runtime, 5).await, five);
 
     // A late durable commit failure must restore old containers and old override.
-    let db = rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_scale BEFORE DELETE ON app_compose_pending BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    server
+        .state_store
+        .reject_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     for count in [7, 2] {
         assert!(matches!(
             server.handle_command(scale(Some(count), None)).await,
@@ -350,7 +352,10 @@ volumes:
             .compose_replicas["web"],
         5
     );
-    db.execute_batch("DROP TRIGGER fail_scale;").unwrap();
+    server
+        .state_store
+        .reject_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
     deploy(&server, dir.path(), "v2").await;
     assert_eq!(assert_replicas(&server, runtime, 5).await, five);
@@ -699,7 +704,10 @@ services:
         Response::Error { .. }
     ));
     // A failed start cannot clear durable stop intent or affect siblings.
-    rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap().execute_batch("CREATE TRIGGER fail_lifecycle BEFORE UPDATE ON app_lifecycle BEGIN SELECT RAISE(ABORT, 'injected lifecycle failure'); END;").unwrap();
+    server
+        .state_store
+        .reject_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(matches!(
         server
             .handle_command(Command::Start {
@@ -709,10 +717,10 @@ services:
             .await,
         Response::Error { .. }
     ));
-    rusqlite::Connection::open(dir.path().join("state.sqlite"))
-        .unwrap()
-        .execute_batch("DROP TRIGGER fail_lifecycle;")
-        .unwrap();
+    server
+        .state_store
+        .reject_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(
         server
             .app_manager

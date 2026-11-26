@@ -52,7 +52,7 @@ tako: "Tako workflows" {
   direction: down
   app2: "HTTP app"
   server: "tako-server"
-  db: "data/tako/workflows.sqlite"
+  db: "data/tako/workflows.db"
   worker2: "workflow worker"
 
   app2 -> server: "unix socket"

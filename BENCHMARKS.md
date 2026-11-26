@@ -56,8 +56,8 @@ timed from the client. In process is `bun:sqlite` on a WAL file with
 | Insert one row | 352 µs (p50) | — | 132 µs |
 
 The protocol adds roughly 100–250 µs per request on loopback. Apps that issue
-many small queries per request should batch them (`batch`, transactions)
-rather than expect in-process latency. Reproduce with:
+many small queries per request can batch them. The current benchmark compares
+Turso’s in-process Rust engine with its HTTP driver on the same workload. Run it with
 
 ```bash
 cargo build --release -p tako-db --example serve

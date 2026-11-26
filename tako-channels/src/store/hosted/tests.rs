@@ -14,8 +14,8 @@ impl Db {
         HostedChannelStore::open(&self.url, &self.token, app, reader).unwrap()
     }
 
-    fn sql(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.path).unwrap()
+    fn sql(&self) -> tako_db::testing::TestSql {
+        tako_db::testing::TestSql::open(&self.path)
     }
 }
 
@@ -46,12 +46,11 @@ async fn appends_delete_their_own_expired_history_and_leave_other_streams_and_ap
         let other = db.open("two", false);
         let sql = db.sql();
         let rows = |app: &str, channel: &str| -> i64 {
-            sql.query_row(
+            sql.integers::<1>(
                 "SELECT COUNT(*) FROM tako_replay_messages WHERE app = ?1 AND channel = ?2",
-                [app, channel],
-                |r| r.get(0),
+                &[app, channel],
             )
-            .unwrap()
+            .unwrap()[0]
         };
         for _ in 0..3 {
             app.publish("a", &event("old"), None).unwrap();
@@ -74,22 +73,20 @@ async fn appends_delete_their_own_expired_history_and_leave_other_streams_and_ap
         assert_eq!(rows("one", "b"), 0);
         // Another app's identical stream keeps its own history.
         assert_eq!(other.read_after("a", None, 10).unwrap(), [other_event]);
-        let totals: (i64, i64) = sql
-            .query_row(
+        let totals: [i64; 2] = sql
+            .integers(
                 "SELECT message_count, message_bytes FROM tako_replay_apps WHERE app = 'one'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                &[],
             )
             .unwrap();
-        assert_eq!(totals.0, 1);
+        assert_eq!(totals[0], 1);
         assert_eq!(
-            totals.1,
-            sql.query_row(
+            totals[1],
+            sql.integers::<1>(
                 "SELECT bytes FROM tako_replay_messages WHERE app = 'one'",
-                [],
-                |r| r.get::<_, i64>(0)
+                &[]
             )
-            .unwrap()
+            .unwrap()[0]
         );
     })
     .await;
@@ -106,7 +103,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
         };
         let start = app.replay_cursor("room", None).unwrap();
         let _old = app.publish("room", &event("old"), Some(&policy)).unwrap().0;
-        sql.execute("UPDATE tako_replay_streams SET activity_ms = 0", [])
+        sql.execute_batch("UPDATE tako_replay_streams SET activity_ms = 0")
             .unwrap();
         assert!(app.read_after("room", None, 100).unwrap().is_empty());
         assert!(matches!(
@@ -122,7 +119,7 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             inactivity_ttl_ms: 0,
             ..Default::default()
         };
-        sql.execute("UPDATE tako_replay_streams SET activity_ms = 1", [])
+        sql.execute_batch("UPDATE tako_replay_streams SET activity_ms = 1")
             .unwrap();
         assert!(matches!(
             app.publish("room", &event("late"), Some(&rejected)),
@@ -134,19 +131,17 @@ async fn expired_rows_do_not_resurface_and_closed_rejections_leave_lifecycle_alo
             (marker, false)
         );
         assert_eq!(app.close_marker("room").unwrap(), None);
-        let old: (i64, i64) = sql
-            .query_row(
+        let old: [i64; 2] = sql
+            .integers(
                 "SELECT activity_ms, inactivity_ms FROM tako_replay_streams",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                &[],
             )
             .unwrap();
-        assert_eq!(old, (1, 60_000));
+        assert_eq!(old, [1, 60_000]);
         app.prune().unwrap();
         assert_eq!(
-            sql.query_row("SELECT stream_count FROM tako_replay_apps", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
+            sql.integers::<1>("SELECT stream_count FROM tako_replay_apps", &[])
+                .unwrap()[0],
             0
         );
         assert!(app.publish("room", &event("reopened"), None).unwrap().1);
@@ -190,10 +185,7 @@ async fn range_reads_fence_stream_and_live_restore_epoch_and_fill_logical_pages(
             Err(ChannelError::StaleCursor)
         ));
         db.sql()
-            .execute(
-                "UPDATE tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
-                [],
-            )
+            .execute_batch("UPDATE tako_replay_apps SET epoch = lower(hex(randomblob(16)))")
             .unwrap();
         assert!(matches!(
             reader.read_after("a", Some(seen), 8),
@@ -229,10 +221,10 @@ async fn concurrent_closers_get_one_marker_and_metadata_admission_is_atomic() {
         assert_eq!(b.read_after("a", None, 2).unwrap(), [first.0]);
 
         db.sql()
-            .execute(
-                "UPDATE tako_replay_apps SET stream_count = ? WHERE app = 'one'",
-                [MAX_STREAMS - 1],
-            )
+            .execute_batch(&format!(
+                "UPDATE tako_replay_apps SET stream_count = {} WHERE app = 'one'",
+                MAX_STREAMS - 1
+            ))
             .unwrap();
         let result = std::thread::scope(|s| {
             let one = s.spawn(|| {
@@ -317,4 +309,14 @@ async fn writers_recreate_replaced_state_and_head_polls_report_the_new_epoch() {
         db.open("one", true);
     })
     .await;
+}
+
+#[test]
+fn replicated_host_persists_and_replays_a_channel_message() {
+    let server = TestServer::start();
+    let db = server.replicated_database("test#channels");
+    let store = HostedChannelStore::open(&server.url, &db.token, "shop", false).unwrap();
+    let (message, appended) = store.publish("orders", &event("placed"), None).unwrap();
+    assert!(appended);
+    assert_eq!(store.read_after("orders", None, 10).unwrap(), [message]);
 }

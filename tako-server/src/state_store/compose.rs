@@ -1,8 +1,8 @@
-use super::{SqliteStateStore, StateStoreError, app_registry::upsert_app_on, encryption};
+use super::{StateStore, StateStoreError, app_registry::upsert_app_on, encryption};
+use super::{get, put, remove, scan, storage};
 use crate::instances::AppConfig;
-use rusqlite::OptionalExtension;
 
-impl SqliteStateStore {
+impl StateStore {
     /// The schedule revision of the app's committed release, replaced when a
     /// failed deployment restores that release's runtime.
     pub(crate) fn set_workflow_schedule_revision(
@@ -10,58 +10,33 @@ impl SqliteStateStore {
         app: &str,
         revision: i64,
     ) -> Result<(), StateStoreError> {
-        self.lock_conn()?.execute(
-            "INSERT INTO app_schedule_revisions (app, revision) VALUES (?1, ?2)
-             ON CONFLICT (app) DO UPDATE SET revision = excluded.revision",
-            (app, revision),
-        )?;
-        Ok(())
+        self.write(|r| put(r, ("app_schedule_revisions", app, ""), &revision))
     }
-
     pub(crate) fn workflow_schedule_revision(
         &self,
         app: &str,
     ) -> Result<Option<i64>, StateStoreError> {
-        Ok(self
-            .lock_conn()?
-            .query_row(
-                "SELECT revision FROM app_schedule_revisions WHERE app = ?1",
-                [app],
-                |row| row.get(0),
-            )
-            .optional()?)
+        self.read(|r| get(r, ("app_schedule_revisions", app, "")))
     }
-
     pub(crate) fn begin_compose_deployment(
         &self,
         app: &str,
         project: &str,
     ) -> Result<(), StateStoreError> {
-        self.lock_conn()?.execute(
-            "INSERT INTO app_compose_pending (app, project) VALUES (?1, ?2)
-             ON CONFLICT(app) DO UPDATE SET project = excluded.project;",
-            (app, project),
-        )?;
-        Ok(())
+        self.write(|r| put(r, ("app_compose_pending", app, ""), &project))
     }
-
     pub(crate) fn pending_compose_deployments(
         &self,
     ) -> Result<Vec<(String, String)>, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let mut statement =
-            conn.prepare("SELECT app, project FROM app_compose_pending ORDER BY app;")?;
-        Ok(statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?)
+        self.read(|r| {
+            scan(r, "app_compose_pending", |app, _, v| {
+                Ok((app.to_owned(), serde_json::from_slice(v)?))
+            })
+        })
     }
-
     pub(crate) fn clear_compose_deployment(&self, app: &str) -> Result<(), StateStoreError> {
-        self.lock_conn()?
-            .execute("DELETE FROM app_compose_pending WHERE app = ?1;", [app])?;
-        Ok(())
+        self.write(|r| remove(r, ("app_compose_pending", app, "")))
     }
-
     /// The deployment's single durable commit point. Until this commits,
     /// recovery sees the previous release AND its previous credentials.
     pub(crate) fn commit_deployment(
@@ -103,32 +78,33 @@ impl SqliteStateStore {
             .map(|token| encryption::encrypt_blob(&self.encryption_key, token.as_bytes()))
             .transpose()?;
         let app = config.deployment_id();
-        let mut conn = self.lock_conn()?;
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        upsert_app_on(&tx, config, routes)?;
-        tx.execute("DELETE FROM app_schedule_revisions WHERE app = ?1", [&app])?;
-        if let Some(revision) = schedule_revision {
-            tx.execute(
-                "INSERT INTO app_schedule_revisions (app, revision) VALUES (?1, ?2)",
-                (&app, revision),
-            )?;
-        }
-        for (table, blob) in blobs {
-            match blob {
-                Some(bytes) => {
-                    tx.execute(&format!("INSERT INTO {table} (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;"), (&app, bytes))?;
-                }
-                None => {
-                    tx.execute(&format!("DELETE FROM {table} WHERE app = ?1;"), [&app])?;
+        self.write(|r| {
+            upsert_app_on(r, config, routes)?;
+            match schedule_revision {
+                Some(rev) => put(r, ("app_schedule_revisions", &app, ""), &rev)?,
+                None => remove(r, ("app_schedule_revisions", &app, ""))?,
+            }
+            for (bucket, blob) in blobs {
+                if let Some(blob) = blob {
+                    if bucket == "app_databases" {
+                        r.insert(
+                            ("release_databases", app.as_str(), config.version.as_str()),
+                            blob.as_slice(),
+                        )
+                        .map_err(storage)?;
+                    }
+                    r.insert((bucket, app.as_str(), ""), blob.as_slice())
+                        .map_err(storage)?;
+                } else {
+                    remove(r, (bucket, &app, ""))?;
                 }
             }
-        }
-        if let Some(bytes) = compose_token {
-            tx.execute("INSERT INTO app_compose_tokens (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;", (&app, bytes))?;
-        }
-        tx.execute("DELETE FROM app_compose_pending WHERE app = ?1;", [&app])?;
-        tx.commit()?;
-        Ok(())
+            if let Some(token) = compose_token {
+                r.insert(("app_compose_tokens", app.as_str(), ""), token.as_slice())
+                    .map_err(storage)?;
+            }
+            remove(r, ("app_compose_pending", &app, ""))
+        })
     }
 }
 
@@ -140,7 +116,7 @@ mod tests {
     fn compose_token_commits_encrypted_survives_restarts_and_is_deleted_with_the_app() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
-        let store = SqliteStateStore::new(path.clone(), [7; 32]);
+        let store = StateStore::new(path.clone(), [7; 32]);
         store.init().unwrap();
         let mut config = AppConfig {
             name: "app".into(),
@@ -149,25 +125,20 @@ mod tests {
             compose_token: Some("group-token-value".into()),
             ..Default::default()
         };
-        let commit = |store: &SqliteStateStore, config: &AppConfig| {
+        let commit = |store: &StateStore, config: &AppConfig| {
             store.commit_deployment(config, &[], None, None).unwrap()
         };
         commit(&store, &config);
-        let raw: Vec<u8> = store
-            .lock_conn()
+        let raw = store
+            .read(|r| super::super::bytes(r, ("app_compose_tokens", "app/production", "")))
             .unwrap()
-            .query_row(
-                "SELECT encrypted_data FROM app_compose_tokens WHERE app = 'app/production'",
-                [],
-                |row| row.get(0),
-            )
             .unwrap();
         assert!(!raw.windows(17).any(|w| w == b"group-token-value"));
         // A release without SDK services keeps the group's token.
         config.compose_token = None;
         config.version = "v2".into();
         commit(&store, &config);
-        let reopened = SqliteStateStore::new(path, [7; 32]);
+        let reopened = StateStore::new(path, [7; 32]);
         reopened.init().unwrap();
         assert_eq!(
             reopened
@@ -183,7 +154,7 @@ mod tests {
     #[test]
     fn release_routes_credentials_and_pending_marker_commit_atomically() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteStateStore::new(dir.path().join("state.db"), [7; 32]);
+        let store = StateStore::new(dir.path().join("state.db"), [7; 32]);
         store.init().unwrap();
         let mut config = AppConfig {
             name: "app".into(),
@@ -209,7 +180,9 @@ mod tests {
         config.secrets.insert("TOKEN".into(), "next".into());
         // A late SQL failure must roll back the app row, routes, and every secret
         // write, leaving the marker for recovery.
-        store.lock_conn().unwrap().execute_batch("CREATE TRIGGER fail_commit BEFORE DELETE ON app_compose_pending BEGIN SELECT RAISE(ABORT, 'injected commit failure'); END;").unwrap();
+        store
+            .reject_writes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(
             store
                 .commit_deployment(&config, &["new.example".into()], None, Some(2),)
@@ -232,10 +205,8 @@ mod tests {
         );
         assert_eq!(store.pending_compose_deployments().unwrap().len(), 1);
         store
-            .lock_conn()
-            .unwrap()
-            .execute_batch("DROP TRIGGER fail_commit;")
-            .unwrap();
+            .reject_writes
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         store
             .commit_deployment(&config, &["new.example".into()], None, Some(2))
             .unwrap();
@@ -266,32 +237,5 @@ mod tests {
                 .compose_replicas
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn upgrade_from_schema_nine_preserves_apps_without_overrides() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.db");
-        let store = SqliteStateStore::new(path.clone(), [7; 32]);
-        store.init().unwrap();
-        let config = AppConfig {
-            name: "app".into(),
-            environment: "production".into(),
-            version: "v1".into(),
-            ..Default::default()
-        };
-        store.upsert_app(&config, &["old.example".into()]).unwrap();
-        store
-            .lock_conn()
-            .unwrap()
-            .execute_batch("DROP TABLE app_compose_scales; PRAGMA user_version = 9;")
-            .unwrap();
-        drop(store);
-        let store = SqliteStateStore::new(path, [7; 32]);
-        store.init().unwrap();
-        let apps = store.load_apps().unwrap();
-        assert_eq!(apps[0].config.version, "v1");
-        assert_eq!(apps[0].routes, ["old.example"]);
-        assert!(apps[0].config.compose_replicas.is_empty());
     }
 }

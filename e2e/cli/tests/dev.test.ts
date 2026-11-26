@@ -44,12 +44,12 @@ function prepareFixture(name: string) {
   const sdkLink = join(pd, "node_modules", "tako.sh");
   rmSync(sdkLink, { recursive: true, force: true });
   symlinkSync(SDK_DIR, sdkLink);
-  // Fixtures reach their database bindings through @libsql/client.
-  mkdirSync(join(pd, "node_modules", "@libsql"), { recursive: true });
-  symlinkSync(
-    join(CLI_MODULES, "@libsql", "client"),
-    join(pd, "node_modules", "@libsql", "client"),
-  );
+  // Fixtures reach their database bindings through @tursodatabase/serverless/compat.
+  const tursoScope = join(pd, "node_modules", "@tursodatabase");
+  mkdirSync(tursoScope, { recursive: true });
+  const driverLink = join(tursoScope, "serverless");
+  rmSync(driverLink, { recursive: true, force: true });
+  symlinkSync(join(CLI_MODULES, "@tursodatabase", "serverless"), driverLink);
   const lf = join(tempDir, "dev.log");
   return { tempDir, pd, lf };
 }
@@ -223,7 +223,7 @@ db = { main = "same-name" }
       join(pd, "index.ts"),
       `
 import { tako } from "tako.sh";
-import { createClient } from "@libsql/client";
+import { createClient } from "@tursodatabase/serverless/compat";
 export default async function fetch(request: Request) {
   const db = createClient(tako.db.main);
   try {
@@ -499,7 +499,7 @@ export default async function fetch(request: Request) {
       expect(read.status).toBe(200);
       const body = (await read.json()) as { data: { messages: { message: string }[] } };
       expect(body.data.messages.map((row) => row.message)).toContain(message);
-      expect(existsSync(join(pd, ".tako", "data", "databases", "messages.sqlite"))).toBe(true);
+      expect(existsSync(join(pd, ".tako", "data", "databases", "messages.db"))).toBe(true);
     } finally {
       try {
         process.kill(proc.pid, "SIGKILL");

@@ -10,7 +10,7 @@ use http::{Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use serde_json::{Value, json};
 use tako_db::http::{Access, DATABASE_HEADER, KEY_HEADER, SCOPE_HEADER, handle};
-use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token};
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -21,7 +21,7 @@ struct Harness {
 
 fn harness(config: HostConfig) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
+    let path = dir.path().join("db.db");
     DatabaseHost::create_file(&path).unwrap();
     let host = DatabaseHost::new(config);
     let id = DatabaseId::generate();
@@ -30,7 +30,7 @@ fn harness(config: HostConfig) -> Harness {
     host.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: id.clone(),
             home: Home::Local,
         }],
@@ -88,6 +88,56 @@ async fn pipeline(h: &Harness, baton: Value, requests: Vec<Value>) -> Value {
 
 fn rows(result: &Value) -> &Value {
     &result["response"]["result"]["rows"]
+}
+
+#[tokio::test]
+async fn local_read_credentials_are_read_only_across_streams_and_pool_reuse() {
+    let mut h = harness(HostConfig::default());
+    let create = pipeline(
+        &h,
+        Value::Null,
+        vec![
+            execute("CREATE TABLE t(x)"),
+            execute("INSERT INTO t VALUES (1)"),
+            execute("BEGIN"),
+        ],
+    )
+    .await;
+    let writable = h.token.clone();
+    h.token = tako_core::replica_token(&writable);
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton":create["baton"],"requests":[execute("SELECT 1")]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let body = pipeline(
+        &h,
+        Value::Null,
+        vec![
+            execute("SELECT x FROM t"),
+            execute("WITH v AS (SELECT 2) INSERT INTO t SELECT * FROM v RETURNING x"),
+            execute("CREATE TEMP TABLE scratch(x)"),
+            execute("PRAGMA query_only = OFF"),
+        ],
+    )
+    .await;
+    assert_eq!(rows(&body["results"][0])[0][0]["value"], "1");
+    for i in [1, 2] {
+        assert_eq!(body["results"][i]["error"]["code"], "SQLITE_READONLY");
+    }
+    assert!(body["results"][3]["error"].is_object());
+    h.token = writable;
+    let body = pipeline(
+        &h,
+        create["baton"].clone(),
+        vec![execute("INSERT INTO t VALUES(2)"), execute("COMMIT")],
+    )
+    .await;
+    assert_eq!(body["results"][1]["type"], "ok");
+    let body = pipeline(&h, Value::Null, vec![execute("INSERT INTO t VALUES(3)")]).await;
+    assert_eq!(body["results"][0]["type"], "ok");
 }
 
 #[tokio::test]
@@ -695,15 +745,19 @@ async fn requests_waiting_for_a_slot_do_not_start_once_closing_begins() {
         .await
         .expect("closing finishes")
         .unwrap();
-    let connection = rusqlite::Connection::open(h._dir.path().join("db.sqlite")).unwrap();
-    let tables: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name = 'late'",
-            [],
-            |row| row.get(0),
-        )
+    let reopened = DatabaseHost::new(HostConfig::default());
+    reopened
+        .register(h.id.clone(), h._dir.path().join("db.db"))
         .unwrap();
-    assert_eq!(tables, 0, "the waiting request never ran");
+    let result = reopened
+        .admin_query(
+            &h.id,
+            "SELECT name FROM sqlite_schema WHERE name='late'".into(),
+            1,
+        )
+        .await
+        .unwrap();
+    assert!(result.rows.is_empty(), "the waiting request never ran");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -712,7 +766,7 @@ async fn a_database_busy_past_the_timeout_keeps_its_lock_until_its_requests_end(
         pause_timeout: Duration::from_millis(200),
         ..HostConfig::default()
     });
-    let lock = h._dir.path().join("db.sqlite.lock");
+    let lock = h._dir.path().join("db.db.lock");
     let exclusive = || {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -1088,7 +1142,7 @@ async fn snapshots_track_changes() {
         "a fresh host does not know the history"
     );
     h.host
-        .snapshot(&h.id, &dir.path().join("a.sqlite"))
+        .snapshot(&h.id, &dir.path().join("a.db"))
         .await
         .unwrap();
     assert!(!h.host.has_changes(&h.id));
@@ -1474,13 +1528,26 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     edge.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: home.id.clone(),
             home: Home::Remote {
                 upstream,
                 key: key.clone(),
             },
         }],
+    );
+    let replica_request = Request::post("/v3/pipeline")
+        .header(
+            "authorization",
+            format!("Bearer {}", tako_core::replica_token(&token)),
+        )
+        .body(Full::new(Bytes::from(
+            json!({"requests":[execute("SELECT 1")]}).to_string(),
+        )))
+        .unwrap();
+    assert_eq!(
+        send(&edge, &Access::Apps, replica_request).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
     );
     let request = |body: Value| {
         Request::post("/v3/pipeline")
@@ -1513,7 +1580,7 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     edge.set_bindings(
         "shop/production#release",
         vec![Binding {
-            token_hash: hash_token(&release_token),
+            tokens: tako_core::BindingTokenHashes::new(&release_token),
             database: home.id.clone(),
             home: Home::Remote {
                 upstream,
@@ -1568,7 +1635,7 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
         edge.set_bindings(
             scope,
             vec![Binding {
-                token_hash: hash_token(&token),
+                tokens: tako_core::BindingTokenHashes::new(&token),
                 database: home.id.clone(),
                 home: Home::Remote {
                     upstream,
@@ -1646,7 +1713,7 @@ async fn unreachable_home_servers_return_bad_gateway() {
     edge.set_bindings(
         "shop/production",
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: DatabaseId::generate(),
             home: Home::Remote {
                 upstream,

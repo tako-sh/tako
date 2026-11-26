@@ -576,18 +576,24 @@ fn maintenance_work_per_tick_is_bounded() {
     const PER_TICK: i64 = 4_096;
     let db = TestDb::start();
     let store = db.without_maintenance();
-    // Thousands of streams with one expired message each, inserted directly:
-    // the triggers keep heads and counters as appends would.
-    db.execute(&format!(
-        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {STREAMS})
+    // Start with a populated store. The counters and heads match one expired
+    // message per stream. Set activity in the future until the idle phase.
+    db.sql()
+        .load_fixture(&format!(
+            "BEGIN IMMEDIATE;
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {STREAMS})
          INSERT INTO tako_replay_streams(app, channel, head, floor, activity_ms, window_ms,
-             inactivity_ms, lifetime_ms)
-         SELECT 'app', 'tako.stream:' || i, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER),
-             1000, 0, 1000 FROM n;
+             inactivity_ms, lifetime_ms, message_count, message_bytes)
+         SELECT 'app', 'tako.stream:' || i, i, 0, unixepoch('2100-01-01') * 1000,
+             1000, 0, 1000, 1, 1 FROM n;
          WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {STREAMS})
          INSERT INTO tako_replay_messages(app, channel, id, type, data_json, bytes, created_ms)
-         SELECT 'app', 'tako.stream:' || i, i, 'msg', '1', 1, 0 FROM n;"
-    ));
+         SELECT 'app', 'tako.stream:' || i, i, 'msg', '1', 1, 0 FROM n;
+         UPDATE tako_replay_apps SET seq = {STREAMS}, stream_count = {STREAMS},
+             message_count = {STREAMS}, message_bytes = {STREAMS} WHERE app = 'app';
+         COMMIT;"
+        ))
+        .unwrap();
     let rows = |table: &str| db.query_i64(&format!("SELECT COUNT(*) FROM {table}"));
     assert_eq!(rows("tako_replay_messages"), STREAMS);
     // One tick deletes the first rows; the next continues after them.
@@ -597,7 +603,7 @@ fn maintenance_work_per_tick_is_bounded() {
     assert_eq!(rows("tako_replay_messages"), 0);
     assert_eq!(rows("tako_replay_streams"), STREAMS);
     // Idle release is bounded the same way.
-    db.age(1_000 + 60_000 + 2_000);
+    db.execute("UPDATE tako_replay_streams SET activity_ms = 0");
     store.prune();
     assert_eq!(rows("tako_replay_streams"), STREAMS - PER_TICK);
     store.prune();

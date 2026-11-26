@@ -134,7 +134,7 @@ impl std::fmt::Debug for Home {
 /// A binding of one app environment on this server.
 #[derive(Clone, Debug)]
 pub struct Binding {
-    pub token_hash: TokenHash,
+    pub tokens: tako_core::BindingTokenHashes,
     pub store: StoreId,
     pub home: Home,
 }
@@ -262,6 +262,22 @@ impl KvHost {
 
     /// Opens a store file, creating it if needed, and serves it. Blocks.
     pub fn register(&self, id: StoreId, path: PathBuf) -> Result<(), HostError> {
+        self.register_inner(id, path, None)
+    }
+    pub fn register_replicated(
+        &self,
+        id: StoreId,
+        path: PathBuf,
+        resource: tako_raft::Resource,
+    ) -> Result<(), HostError> {
+        self.register_inner(id, path, Some(resource))
+    }
+    fn register_inner(
+        &self,
+        id: StoreId,
+        path: PathBuf,
+        resource: Option<tako_raft::Resource>,
+    ) -> Result<(), HostError> {
         if self.is_registered(&id) {
             return Err(HostError::AlreadyRegistered(id));
         }
@@ -278,7 +294,11 @@ impl KvHost {
             caches.insert(id.clone(), cache);
             cache
         };
-        let opened = Store::open(&path, self.inner.config.store_config(cache));
+        let config = self.inner.config.store_config(cache);
+        let opened = match resource {
+            Some(resource) => Store::open_replicated(&path, config, resource),
+            None => Store::open(&path, config),
+        };
         let mut stores = self.inner.stores.write();
         match opened {
             Ok(store) if !stores.contains_key(&id) => {
@@ -342,16 +362,32 @@ impl KvHost {
 
     /// Replaces the bindings of one app environment on this server.
     pub fn set_bindings(&self, scope: &str, bindings: Vec<Binding>) {
+        self.set_bindings_with_replicas(scope, bindings, &BTreeSet::new());
+    }
+
+    pub fn set_bindings_with_replicas(
+        &self,
+        scope: &str,
+        bindings: Vec<Binding>,
+        replicas: &BTreeSet<TokenHash>,
+    ) {
         let mut all = self.inner.bindings.write();
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
             for binding in previous {
-                by_token.remove(&binding.token_hash);
+                by_token.remove(&binding.tokens.primary);
+                by_token.remove(&binding.tokens.replica);
             }
         }
         if !bindings.is_empty() {
             for binding in &bindings {
-                by_token.insert(binding.token_hash, (scope.to_owned(), binding.clone()));
+                for hash in [binding.tokens.primary, binding.tokens.replica] {
+                    let mut route = binding.clone();
+                    if replicas.contains(&hash) {
+                        route.home = Home::Local;
+                    }
+                    by_token.insert(hash, (scope.to_owned(), route));
+                }
             }
             all.insert(scope.to_owned(), bindings);
         }
@@ -380,6 +416,12 @@ impl KvHost {
     /// address, but only that server knows the key.
     pub(crate) fn granted(&self, scope: &str, store: &StoreId, key: &str) -> bool {
         let presented = hash_token(key);
+        if let Some(allowed) = self
+            .store(store)
+            .and_then(|s| s.replica_grant(scope, &presented))
+        {
+            return allowed;
+        }
         self.inner
             .remote_grants
             .read()
@@ -399,18 +441,34 @@ impl KvHost {
         request: KvRequest,
     ) -> Result<serde_json::Value, KvError> {
         request.validate().map_err(KvError::invalid)?;
+        let hash = hash_token(token);
         let (scope, binding) = self
             .inner
             .by_token
             .read()
-            .get(&hash_token(token))
+            .get(&hash)
             .cloned()
             .ok_or_else(|| KvError::unavailable(REBOUND))?;
         // A token is only good for the app environment it was issued to.
         if environment_scope(&scope) != app {
             return Err(KvError::unavailable(REBOUND));
         }
+        let replica = hash == binding.tokens.replica;
+        if replica && request.writes() {
+            return Err(KvError::invalid("the local replica is read-only"));
+        }
+        if replica
+            && binding.home == Home::Local
+            && let KvRequest::Get { key } = &request
+            && let Some(store) = self.store(&binding.store)
+            && store.is_replicated()
+        {
+            return Ok(reply(store.get_local(key)?));
+        }
         match binding.home {
+            Home::Remote { .. } if replica => {
+                Err(KvError::unavailable("this server has no ready KV replica"))
+            }
             Home::Local => self.serve(&binding.store, request),
             Home::Remote { upstream, key } => self.inner.peers.request(
                 upstream,

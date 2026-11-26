@@ -257,7 +257,7 @@ backup = { storage = "r2" }
 #[test]
 fn backup_database_lists_point_to_hosted_databases() {
     for paths in [
-        r#"databases = ["app.sqlite"]"#,
+        r#"databases = ["app.db"]"#,
         r#"shared_databases = ["team/orders.db"]"#,
     ] {
         let err = TakoToml::parse(&format!(
@@ -643,7 +643,7 @@ fn kv_bindings_parse_and_share_names_with_databases() {
     .unwrap_err()
     .to_string();
     assert!(
-        replay.contains("channel replay needs a SQLite database"),
+        replay.contains("channel replay needs a SQL database"),
         "{replay}"
     );
 }

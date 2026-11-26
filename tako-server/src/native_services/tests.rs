@@ -132,7 +132,6 @@ pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys, ServiceDirectory)
                     ssh_host_key: keys.ssh_public_key().unwrap(),
                     ssh_port: 22,
                     https_certificate_pem: None,
-                    corrosion_ca_certificate_pem: None,
                     https_spki_sha256: None,
                     https_port: 443,
                 }),
@@ -315,7 +314,7 @@ fn compose_may_relay_but_wireguard_requests_cannot_loop() {
     let (mut registry, keys, mut directory) = fixture();
     let remote_keys = LocalDeviceKeys::generate().unwrap();
     let request = remote_keys
-        .enrollment_request(None, DeviceKind::Server, "remote".parse().unwrap())
+        .enrollment_request(None, DeviceKind::Server, "Remote.fra".parse().unwrap())
         .unwrap();
     let (challenge, pending) =
         WgChallenge::begin(&request, registry.network.id.clone(), 2, 60).unwrap();
@@ -347,6 +346,10 @@ fn compose_may_relay_but_wireguard_requests_cannot_loop() {
         .network
         .id
         .address(&remote_keys.wg_public_key().unwrap());
+    assert_eq!(
+        directory.server_name_at(remote_ip, 10).as_deref(),
+        Some("Remote.fra")
+    );
     assert_eq!(
         directory.route(&host, local_ip, IpAddr::V6(remote_ip), 10),
         PrivateRoute::Unavailable

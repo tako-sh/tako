@@ -7,7 +7,7 @@ mod support;
 use std::{cell::RefCell, rc::Rc};
 use tako_network::{
     api::{RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
-    corrosion::RegistryStore,
+    catalog::RegistryStore,
     runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
     *,
 };
@@ -70,7 +70,6 @@ impl Fixture {
                         ssh_port: 22,
                         https_port: 443,
                         https_certificate_pem: Some(support::certificate_pem()),
-                        corrosion_ca_certificate_pem: None,
                         https_spki_sha256: None,
                     }),
                     permissions: support::admin(),
@@ -119,7 +118,7 @@ impl Fixture {
             self.store.clone(),
             LocalDeviceKeys::load(&self.dir.path().join("keys")).unwrap(),
             self.config.clone(),
-            &self.dir.path().join("runtime.db"),
+            &self.dir.path().join("runtime.redb"),
         )
         .unwrap()
     }
@@ -352,7 +351,7 @@ fn observed_authority_cannot_be_replaced_after_reopen() {
             fixture.store.clone(),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db")
+            &fixture.dir.path().join("runtime.redb")
         ),
         Err(RuntimeError::Conflict("observed registry record"))
     ));
@@ -365,7 +364,7 @@ fn oversized_store_failure_remains_closed_after_rollback_and_reopen() {
     let mut runtime = fixture.open();
     let member = original.members[2].clone();
     fixture.store.0.borrow_mut().members =
-        vec![member; tako_network::corrosion::MAX_REGISTRY_ROWS + 1];
+        vec![member; tako_network::catalog::MAX_REGISTRY_ROWS + 1];
     assert!(matches!(
         runtime.desired_host_state(10),
         Err(RuntimeError::Capacity(_))
@@ -381,7 +380,7 @@ fn oversized_store_failure_remains_closed_after_rollback_and_reopen() {
             fixture.store.clone(),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db")
+            &fixture.dir.path().join("runtime.redb")
         ),
         Err(RuntimeError::Capacity(_))
     ));
@@ -443,7 +442,7 @@ fn failed_denial_publication_retains_local_intent_and_retries_after_reopen() {
         Unavailable(fixture.store.clone()),
         LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
         fixture.config.clone(),
-        &fixture.dir.path().join("runtime.db"),
+        &fixture.dir.path().join("runtime.redb"),
     )
     .unwrap();
     let request = RpcRequest::Revoke {
@@ -524,7 +523,7 @@ fn candidate_capacity_rejection_does_not_latch_the_runtime() {
             FailingStore(fixture.store.clone(), fault),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db"),
+            &fixture.dir.path().join("runtime.redb"),
         )
         .unwrap();
         let applicant = LocalDeviceKeys::generate().unwrap();
@@ -609,7 +608,7 @@ fn hard_capacity_in_denial_or_ack_publication_latches_before_rollback() {
             FailingStore(fixture.store.clone(), fault),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db"),
+            &fixture.dir.path().join("runtime.redb"),
         )
         .unwrap();
         let command = RpcRequest::Revoke {
@@ -658,7 +657,7 @@ fn hard_capacity_in_denial_or_ack_publication_latches_before_rollback() {
                 fixture.store.clone(),
                 LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
                 fixture.config.clone(),
-                &fixture.dir.path().join("runtime.db")
+                &fixture.dir.path().join("runtime.redb")
             ),
             Err(RuntimeError::Capacity(_))
         ));
@@ -772,7 +771,7 @@ fn failed_serving_server_denial_can_retry_without_authority() {
             FailPublication(fixture.store.clone()),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db"),
+            &fixture.dir.path().join("runtime.redb"),
         )
         .unwrap();
         let signed = SignedRequest::sign(
@@ -916,7 +915,7 @@ fn snapshot_capacity_always_latches_even_with_a_candidate_quota_label() {
         FailingRead(fixture.store.clone(), true),
         LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
         fixture.config.clone(),
-        &fixture.dir.path().join("runtime.db"),
+        &fixture.dir.path().join("runtime.redb"),
     )
     .unwrap();
     assert!(matches!(
@@ -933,7 +932,7 @@ fn snapshot_capacity_always_latches_even_with_a_candidate_quota_label() {
             fixture.store.clone(),
             LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
             fixture.config.clone(),
-            &fixture.dir.path().join("runtime.db")
+            &fixture.dir.path().join("runtime.redb")
         ),
         Err(RuntimeError::Capacity("registry requires local recovery"))
     ));
@@ -984,7 +983,7 @@ fn local_republication_is_exact_and_does_not_require_fresh_authority_or_store_re
         },
         LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
         fixture.config.clone(),
-        &fixture.dir.path().join("runtime.db"),
+        &fixture.dir.path().join("runtime.redb"),
     )
     .unwrap();
     let id = RevocationId::random().unwrap();

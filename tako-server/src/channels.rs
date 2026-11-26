@@ -76,7 +76,7 @@ impl ChannelTarget {
     /// The app's committed replay binding. An app none of whose deployed
     /// releases uses channels has none, and its channels are unavailable.
     pub(crate) fn for_app(
-        store: &crate::state_store::SqliteStateStore,
+        store: &crate::state_store::StateStore,
         app: &str,
     ) -> Result<Self, ChannelError> {
         let hosted = store
@@ -183,8 +183,8 @@ pub(crate) mod test_replay {
         }
 
         /// Direct access to the database file, as an operator's tools have.
-        pub(crate) fn sql(&self) -> rusqlite::Connection {
-            rusqlite::Connection::open(&self.path).unwrap()
+        pub(crate) fn sql(&self) -> tako_db::testing::TestSql {
+            tako_db::testing::TestSql::open(&self.path)
         }
     }
 
@@ -590,6 +590,7 @@ mod tests {
         let token = tako_db::generate_token();
         let connection = tako_core::DatabaseConnection {
             url: ChannelTarget::hosted_url(&token),
+            replica_auth_token: None,
             auth_token: token,
         };
         let target = ChannelTarget::resolve(Some(connection.clone())).unwrap();

@@ -57,6 +57,7 @@ struct GlobalServerStatusResult {
     server_uptime: Option<String>,
     process_uptime: Option<String>,
     resources: Option<tako_core::HostStats>,
+    user_resources: Result<tako_core::ServerUserResources, String>,
     routes: Vec<(String, String)>,
     apps: Vec<GlobalAppStatusResult>,
     error: Option<String>,
@@ -90,7 +91,7 @@ pub async fn run(
     }
 
     let project = load_project(config, &servers);
-    run_global_status(&servers, project.as_ref(), json).await
+    run_global_status(&servers, project, json).await
 }
 
 /// The networks to show. With several and no `--network`, an interactive
@@ -147,7 +148,7 @@ fn load_project(
 
 async fn run_global_status(
     servers: &ServerInventory,
-    project: Option<&super::project_resources::ProjectResources>,
+    mut project: Option<super::project_resources::ProjectResources>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if servers.is_empty() {
@@ -156,7 +157,7 @@ async fn run_global_status(
                 "ok": true,
                 "command": "status",
                 "servers": [],
-                "project": project.map(json_project),
+                "project": project.as_ref().map(json_project),
             }))?;
         } else {
             output::warning("No servers configured.");
@@ -165,9 +166,9 @@ async fn run_global_status(
                 "Run {} to add one.",
                 output::strong("tako network server add")
             ));
-        }
-        if let Some(project) = project {
-            render::render_project(project);
+            if let Some(project) = &project {
+                render::render_project(project);
+            }
         }
         return Ok(());
     }
@@ -175,11 +176,14 @@ async fn run_global_status(
     let server_names = sorted_server_names(servers);
 
     let mut results = collect_global_status_results(servers, &server_names, !json).await?;
+    if let Some(project) = &mut project {
+        set_project_leaders(project, servers, &results);
+    }
     if json {
-        render_global_status_json(servers, &server_names, &results, project)?;
+        render_global_status_json(servers, &server_names, &results, project.as_ref())?;
     } else {
-        render_global_status(servers, &server_names, &mut results, project);
-        if let Some(project) = project {
+        render_global_status(servers, &server_names, &mut results);
+        if let Some(project) = &project {
             render::render_project(project);
         }
     }
@@ -197,7 +201,7 @@ fn render_global_status_json(
         .iter()
         .filter_map(|name| {
             let result = server_results.get(name)?;
-            Some(server_status_json(servers, name, result, project))
+            Some(server_status_json(servers, name, result))
         })
         .collect::<Vec<_>>();
 
@@ -213,9 +217,27 @@ fn server_status_json(
     servers: &ServerInventory,
     name: &str,
     result: &GlobalServerStatusResult,
-    project: Option<&super::project_resources::ProjectResources>,
 ) -> serde_json::Value {
     let entry = servers.get(name);
+    let databases = result.user_resources.as_ref().ok().map(|resources| {
+        resources
+            .databases
+            .iter()
+            .map(|db| {
+                let scopes: std::collections::BTreeSet<_> = db
+                    .bindings
+                    .iter()
+                    .map(|binding| {
+                        tako_core::runtime_grant_scope(&binding.binding, &binding.app)
+                            .unwrap_or_else(|| binding.app.clone())
+                    })
+                    .collect();
+                let mut value = serde_json::json!(db);
+                value["bound_by"] = serde_json::json!(scopes);
+                value
+            })
+            .collect::<Vec<_>>()
+    });
     serde_json::json!({
         "name": name,
         "host": entry.map(|entry| entry.host.as_str()),
@@ -233,37 +255,51 @@ fn server_status_json(
             })
         }).collect::<Vec<_>>(),
         "apps": &result.apps,
-        "databases": server_databases(servers, name, project)
-            .into_iter()
-            .map(|(name, bound_by)| serde_json::json!({
-                "name": name,
-                "bound_by": bound_by,
-            }))
-            .collect::<Vec<_>>(),
+        "databases": databases,
+        "storages": result.user_resources.as_ref().ok().map(|r| &r.storages),
+        "resource_error": result.user_resources.as_ref().err(),
         "error": &result.error,
     })
 }
 
-/// The project's databases homed on server `name`, with their binders.
-pub(super) fn server_databases(
+fn set_project_leaders(
+    project: &mut super::project_resources::ProjectResources,
     servers: &ServerInventory,
-    name: &str,
-    project: Option<&super::project_resources::ProjectResources>,
-) -> Vec<(String, Vec<String>)> {
-    let Some(project) = project else {
-        return Vec::new();
-    };
-    servers
-        .get(name)
-        .and_then(|entry| entry.native.as_ref())
-        .map(|target| project.databases_on(&target.server_id.to_string()))
-        .unwrap_or_default()
+    results: &HashMap<String, GlobalServerStatusResult>,
+) {
+    let mut observed = std::collections::BTreeMap::new();
+    for (server, result) in results {
+        let Some(native) = servers.get(server).and_then(|s| s.native.as_ref()) else {
+            continue;
+        };
+        if let Ok(resources) = &result.user_resources {
+            for db in &resources.databases {
+                if let Some(leader) = db.leader.as_deref() {
+                    observed
+                        .entry((native.network.id.as_str(), db.generation.as_str()))
+                        .or_insert_with(std::collections::BTreeSet::new)
+                        .insert(leader);
+                }
+            }
+        }
+    }
+    for env in &mut project.envs {
+        for db in env.databases.iter_mut().chain(&mut env.kv) {
+            let key = env.network_id.as_deref().zip(db.generation.as_deref());
+            db.leader = key
+                .and_then(|k| observed.get(&k))
+                .filter(|leaders| leaders.len() == 1)
+                .and_then(|leaders| leaders.first())
+                .map(|leader| (*leader).to_owned());
+        }
+    }
 }
 
 fn json_project(project: &super::project_resources::ProjectResources) -> serde_json::Value {
     serde_json::json!({
         "app": project.app,
         "environments": project.envs,
+        "storage_resources": project.config.storages.iter().map(|(name, s)| (name, s.provider)).collect::<std::collections::BTreeMap<_, _>>(),
     })
 }
 
@@ -715,6 +751,7 @@ servers = ["second"]
                 server_uptime: None,
                 process_uptime: None,
                 resources: None,
+                user_resources: Err(err.to_string()),
                 routes: Vec::new(),
                 apps: Vec::new(),
                 error: Some(format!("Status task failed: {}", err)),
@@ -754,17 +791,18 @@ servers = ["second"]
                 uptime_secs: Some(86_400),
                 ..Default::default()
             }),
+            user_resources: Ok(Default::default()),
             routes: Vec::new(),
             apps: Vec::new(),
             error: None,
         };
 
-        let json = server_status_json(&servers, "prod-a", &result, None);
+        let json = server_status_json(&servers, "prod-a", &result);
         assert_eq!(json["host"], "203.0.113.7");
         assert_eq!(json["resources"]["uptime_secs"], 86_400);
 
         result.resources = None;
-        let json = server_status_json(&servers, "prod-a", &result, None);
+        let json = server_status_json(&servers, "prod-a", &result);
         assert_eq!(json["host"], "203.0.113.7");
         assert!(json["resources"].is_null());
     }

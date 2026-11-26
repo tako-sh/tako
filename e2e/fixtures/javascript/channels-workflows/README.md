@@ -39,9 +39,7 @@ The `/enqueue` JSON body accepts an optional `id`. Repeated requests with the sa
 
 `src/stores/messages.ts` defines an authenticated Store with nested chat params,
 backed by the `messages` database binding. `tako dev` serves it from a local
-file; the deployment harness creates it with `tako db create` on the first
-server with network access, so the second server reaches it over the private
-network. `GET /_tako/stores/messages?params={"chat":{"id":"chat-a"}}`
+Turso file. A full-access deploy provisions the binding and prepares its replicas. `GET /_tako/stores/messages?params={"chat":{"id":"chat-a"}}`
 requires `Authorization: Bearer e2e` and returns the trusted subject and current
 messages. `POST /store/messages` with that header and `{ "chatId": "chat-a", "message": "hello" }`
 commits a row, then invalidates only that chat's Store subscription. The deployment
@@ -50,7 +48,7 @@ refreshed read. Store loaders are never called during type generation.
 
 `just e2e e2e/fixtures/javascript/channels-workflows` deploys `cw-e2e/production`
 first to Ubuntu, then to AlmaLinux in the same two-member network. The full client
-creates `channel-replay` and `workflow-runs` on Ubuntu once (`tako db create <name> --server server-ubuntu`).
+provisions the named databases on the first deploy and prepares replicas on the second.
 `[envs.production.channels].db` and `[envs.production.workflows].db` select them
 on both deployments, so both servers share replay and workflow runs. App
 instances and release commands see only the `messages` SQL binding. After the

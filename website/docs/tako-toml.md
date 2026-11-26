@@ -202,7 +202,7 @@ db = { main = "main" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].db` maps app-facing binding names, read as `tako.db.<binding>`, to database names in the environment's network. On a one-server network a full client's deploy creates missing databases there. On a larger network, first run `tako db create <name> --server <server>` with full access; the database can live outside this app's target servers. Development uses local files in `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].db`, development binds the app SQL aliases from the other environments.
+`[envs.<env>].db` maps app-facing binding names, read as `tako.db.<binding>`, to database names in the environment's network. A full-access deploy creates the named Turso database and prepares a replica on each selected application target. Development uses local files in `.tako/data/databases/<database-name>.db`. Without `[envs.development].db`, development binds the app SQL aliases from the other environments.
 
 `[db.<name>]` is optional and has one field:
 
@@ -219,7 +219,7 @@ backup = "private_backups"
 db = "chat-prod-replay"
 ```
 
-The table is optional. When present, `db` is the name of a hosted SQLite database used by the channel runtime, not an app SQL alias. Without it, channel-capable deploys use a generated app/environment database. The same single-server creation and multi-server placement rules apply as for app databases. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in the project's `.tako/data/tako/channels.sqlite`. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's database.
+The table is optional. When present, `db` is the name of a hosted Turso database used by the channel runtime, not an app SQL alias. Without it, channel-capable deploys use a generated app/environment database. A full-access deploy provisions it on the selected application targets. Multiple environments can explicitly name one database without sharing rooms. `tako dev` keeps replay in the project's `.tako/data/tako/channels.db`. See [Deploy Replay Storage](/channels/#deploy-replay-storage) before changing a running environment's database.
 
 ## Workflow Storage
 
@@ -228,7 +228,7 @@ The table is optional. When present, `db` is the name of a hosted SQLite databas
 db = "shop-workflows"
 ```
 
-The table is optional. When present, `db` is the name of the hosted SQLite database that holds the environment's workflow runs; it is not an app SQL alias and app code never receives its token. Without it, a deploy of a release that runs workflows uses a generated app/environment database, created by a full client on a one-server network. On a larger network, create the database with `tako db create <name> --server <server>` and name it here. Channels and workflows may name the same database. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.sqlite`. See [Workflows](/workflows/#storage-and-multiple-servers).
+The table is optional. When present, `db` is the name of the hosted Turso database that holds the environment's workflow runs; it is not an app SQL alias and app code never receives its token. Without it, a deploy of a release that runs workflows uses a generated app/environment database, created by a full-access deploy on the selected targets. Channels and workflows may name the same database. `tako dev` keeps runs in the project's `.tako/data/tako/workflows.db`. See [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## KV Stores
 
@@ -245,7 +245,7 @@ kv = { auth = "sessions_staging" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to the names of KV stores created with `tako kv create`. Databases and KV stores share the network's records, so a deploy fails when the bound name is missing from the network or belongs to a database. An environment's `db` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
+`[envs.<env>].kv` maps app-facing binding names, read as `tako.kv.<binding>` (Go `tako.GetKV`, Rust `tako::kv`), to network KV store names. A full-access deploy creates missing stores and prepares replicas on the selected application targets. A KV binding that names a SQL database fails validation. An environment's `db` and `kv` share one set of binding names: binding a name in both is a validation error. Binding and store names follow the database naming rules.
 
 Development uses `[envs.development].kv` when it is set; otherwise it binds every `kv` name used by any environment, taking the store from the first environment in name order. `tako dev` and `tako run` serve those stores from `.tako/data/kv/<store-name>.redb`.
 
@@ -300,7 +300,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-Workflow runs live in a hosted database that every server of the environment shares. On a one-server network a full client's deploy creates it; on a larger network, create it with `tako db create <name> --server <server>` and name it in `[envs.<env>.workflows].db`. See [Workflows](/workflows/#storage-and-multiple-servers).
+Workflow runs live in a hosted database that every server of the environment shares. A full-access deploy creates the workflow database on the selected targets. To choose its name, set `[envs.<env>.workflows].db`. See [Workflows](/workflows/#storage-and-multiple-servers).
 
 ## Complete Example
 

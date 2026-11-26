@@ -16,8 +16,7 @@ pub(crate) fn read_cache(alias: &LocalNetwork) -> Result<Option<SharedSnapshot>>
     if !path.try_exists()? {
         return Ok(None);
     }
-    let stored: serde_json::Value = super::read_json(&path)?;
-    let cache = SharedSnapshot::from_persisted(&serde_json::to_vec(&stored)?)?;
+    let cache: SharedSnapshot = super::read_json(&path)?;
     if cache.network.to_string() != alias.id {
         return Err("Network state cache belongs to another network".into());
     }
@@ -135,8 +134,8 @@ mod tests {
             )
             .unwrap()
         };
-        let selection = serde_json::to_vec(&RecordContent {
-            value: zeroize::Zeroizing::new("backup-key-0123456789abcdef".into()),
+        let directory_entry = serde_json::to_vec(&RecordContent {
+            value: zeroize::Zeroizing::new("live.0123456789abcdef0123456789abcdef".into()),
             expires_on: None,
         })
         .unwrap();
@@ -145,8 +144,7 @@ mod tests {
         cache.records = vec![
             sealed.clone(),
             record(RecordKind::Credential, None),
-            // A legacy plaintext record, still stored in older networks.
-            record(RecordKind::BackupActive, Some(&selection)),
+            record(RecordKind::Database, Some(&directory_entry)),
         ];
         assert!(!missing_keys(&cache, &device, None));
         let mut unkeyed = sealed;

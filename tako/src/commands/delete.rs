@@ -164,6 +164,22 @@ async fn run_async(
         return Err(format!("Delete failed on {}: {}", target.server_name, error).into());
     }
 
+    if let Some(native) = &server.native
+        && super::helpers::is_full_client(&native.network.id)?
+    {
+        let scope = tako_core::deployment_app_id(&target.app, &target.env);
+        if let Err(e) = super::db::cleanup::collect(
+            &native.network,
+            &servers,
+            &scope,
+            std::slice::from_ref(&target.server_name),
+            &Default::default(),
+        )
+        .await
+        {
+            output::warning(&format!("Storage cleanup is pending: {e}"));
+        }
+    }
     if interactive {
         output::success("Delete");
     }

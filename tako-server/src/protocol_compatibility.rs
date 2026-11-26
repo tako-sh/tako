@@ -13,7 +13,7 @@ pub(crate) fn validate_active_release_protocols(
     data_dir: &Path,
     allow_incompatible: bool,
 ) -> Result<(), String> {
-    let state_path = data_dir.join("state.sqlite");
+    let state_path = data_dir.join("state.redb");
     let active_releases = crate::state_store::load_persisted_releases_read_only(&state_path)
         .map_err(|error| {
             format!(
@@ -79,7 +79,7 @@ fn validate_protocol_version(
 mod tests {
     use super::*;
     use crate::instances::AppConfig;
-    use crate::state_store::SqliteStateStore;
+    use crate::state_store::StateStore;
     use tempfile::TempDir;
 
     fn write_manifest(release_dir: &Path, protocol_version: u32) {
@@ -98,7 +98,7 @@ mod tests {
     }
 
     fn persist_active_release(data_dir: &Path, name: &str, environment: &str, version: &str) {
-        let store = SqliteStateStore::new(data_dir.join("state.sqlite"), [0; 32]);
+        let store = StateStore::new(data_dir.join("state.redb"), [0; 32]);
         store.init().unwrap();
         store
             .upsert_app(

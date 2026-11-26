@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@libsql/client": "^0.18.0",
+    "@libsql/hrana-client": "^0.10.0",
     "@tsconfig/strictest": "catalog:dev",
+    "@tursodatabase/database": "0.8.4",
     "@tursodatabase/serverless": "^1.4.1",
     "@types/bun": "catalog:dev",
     "@xterm/headless": "^6.0.0",

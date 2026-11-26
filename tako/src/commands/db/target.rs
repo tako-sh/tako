@@ -16,17 +16,6 @@ pub(crate) struct Home {
     pub name: String,
 }
 
-/// The network ID of an environment, as this command resolved it.
-pub(crate) fn env_network(env: &str) -> Result<String, String> {
-    crate::commands::env_network::resolved(env)
-        .map(|network| network.id)
-        .ok_or_else(|| {
-            format!(
-                "Environment '{env}' has no network. Databases are hosted on native network servers; deploy it to a network first."
-            )
-        })
-}
-
 /// Resolves a server name or device ID to a trusted server of the network.
 pub(crate) fn resolve_home(
     servers: &ServerInventory,
@@ -69,30 +58,41 @@ pub(crate) fn inventory_home(servers: &ServerInventory, key: &str) -> Result<Hom
 pub(crate) struct PlannedBinding {
     pub database_name: String,
     pub home: Home,
-    pub binding: tako_core::DatabaseBinding,
+    pub engine: tako_core::DatabaseEngine,
+    pub generation: Option<String>,
+    pub peer_key: Option<String>,
 }
 
 impl PlannedBinding {
     pub(crate) fn new(name: &str, home: Home, engine: tako_core::DatabaseEngine) -> Self {
         Self {
             database_name: name.to_owned(),
-            binding: tako_core::DatabaseBinding {
-                name: name.to_owned(),
-                server: home.device_id.clone(),
-                peer_key: None,
-                engine,
-            },
             home,
+            engine,
+            generation: None,
+            peer_key: None,
         }
+    }
+
+    pub(crate) fn wire(&self) -> Result<tako_core::DatabaseBinding, String> {
+        Ok(tako_core::DatabaseBinding {
+            name: self.database_name.clone(),
+            generation: self
+                .generation
+                .clone()
+                .ok_or_else(|| format!("No catalog generation for {}", self.database_name))?,
+            engine: self.engine,
+            peer_key: self.peer_key.clone(),
+        })
     }
 }
 
 /// The bindings to send with `RunRelease` and `Deploy`.
 pub(crate) fn wire_bindings(
     planned: &HashMap<String, PlannedBinding>,
-) -> HashMap<String, tako_core::DatabaseBinding> {
+) -> Result<HashMap<String, tako_core::DatabaseBinding>, String> {
     planned
         .iter()
-        .map(|(name, planned)| (name.clone(), planned.binding.clone()))
+        .map(|(name, planned)| Ok((name.clone(), planned.wire()?)))
         .collect()
 }

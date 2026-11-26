@@ -51,7 +51,6 @@ fn member(network: &NetworkId, keys: &LocalDeviceKeys) -> Member {
             ssh_port: 22,
             https_port: 443,
             https_certificate_pem: None,
-            corrosion_ca_certificate_pem: None,
             https_spki_sha256: None,
         }),
         request,
@@ -565,13 +564,13 @@ async fn unknown_remote_app_never_creates_database_state() {
             .unwrap();
     }
     assert_eq!(broker.apps.len(), 1);
-    let apps: i64 = replay
-        .sql()
-        .query_row("SELECT COUNT(*) FROM tako_replay_apps", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(apps, 1);
+    assert_eq!(
+        replay
+            .sql()
+            .integers::<1>("SELECT COUNT(*) FROM tako_replay_apps", &[])
+            .unwrap(),
+        [1]
+    );
 }
 #[tokio::test]
 async fn queue_overflow_commits_successfully_and_fences_live_subscribers() {

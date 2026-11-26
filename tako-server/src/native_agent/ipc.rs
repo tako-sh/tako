@@ -158,6 +158,20 @@ pub async fn scope_secrets(
     ))
 }
 
+pub async fn catalog_storage(
+    data_dir: &Path,
+    catalog: tako_core::StorageOperation,
+) -> std::result::Result<serde_json::Value, String> {
+    let response = exchange(data_dir, AgentCommand::Catalog { catalog })
+        .await
+        .map_err(|e| e.to_string())?;
+    response.catalog.ok_or_else(|| {
+        response
+            .error
+            .unwrap_or_else(|| "network catalog unavailable".into())
+    })
+}
+
 pub fn recovery_config(data_dir: &Path) -> Result<NodeConfig> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(AgentError::Invalid(
@@ -276,9 +290,11 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     let data_dir = data_dir.to_owned();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let runtime = tokio::runtime::Handle::current();
     let worker = std::thread::Builder::new()
         .name("tako-network-agent".into())
         .spawn(move || {
+            let _runtime = runtime.enter();
             let outcome = controller::worker(config, data_dir, worker_boot, rx, worker_control);
             let _ = finished_tx.send(outcome);
         })?;
@@ -427,7 +443,7 @@ fn validate_command(request: &AgentCommand, peer_uid: u32) -> Result<()> {
         }
         AgentCommand::Recovery(_) => Ok(()),
         // The listener already admits only root and the service account.
-        AgentCommand::Secrets(_) => Ok(()),
+        AgentCommand::Secrets(_) | AgentCommand::Catalog { .. } => Ok(()),
         AgentCommand::Rpc(request) => {
             if request.method.len() > 16 || request.path.len() > 256 {
                 return Err(AgentError::Invalid("IPC route exceeds limit"));

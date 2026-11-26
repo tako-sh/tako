@@ -31,6 +31,7 @@ tako-images = { path = "../tako-images" }
 tako-runtime = { path = "../tako-runtime" }
 tako-socket = { path = "../tako-socket" }
 tako-storage = { path = "../tako-storage" }
+tako-backup = { path = "../tako-backup" }
 tako-spawn = { path = "../tako-spawn" }
 tako-workflows = { path = "../tako-workflows" }
 clap = { version = "4.6", features = ["derive", "env"] }
@@ -110,7 +111,7 @@ zeroize = "1"
 
 # Dev daemon registrations
 redb = "5"
-rusqlite.workspace = true
+turso_parser = "=0.9.0-pre.6"
 # Hosts local databases for `tako dev` and `tako run`
 tako-db = { path = "../tako-db" }
 tako-kv = { path = "../tako-kv" }

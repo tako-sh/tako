@@ -119,7 +119,7 @@ Returns the KV store bound as `name` in `[envs.<env>].kv`, or `false` when the e
 
 ## Databases
 
-Tako-hosted SQLite databases are created with `tako db create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
+Declare databases in `[envs.<env>].db`. A full-access deploy provisions Turso replicas on the selected targets. Apps connect through the libSQL HTTP protocol. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
 
 ```go
 import (
@@ -137,11 +137,13 @@ if !ok {
 db, err := sql.Open("libsql", main.DSN())
 ```
 
-Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+Formatting a `Database` with `%v` or `%#v`, or encoding it as JSON, redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.db`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+
+Use `db.ReadReplica()` and `store.ReadReplica()` for read-only access to the latest locally applied state on a deployment target or in local development. Each returns the handle and whether the runtime supplied credentials. A request on a server without a local copy returns unavailable.
 
 ## KV stores
 
-Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on one server of the network, reachable from apps on every server. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Create one with `tako kv create <name> --server <server>` (administrator permission) and bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
+Tako-hosted KV stores hold JSON values by key, each with an optional TTL, on the selected deployment targets. Use them for values any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. A full-access deploy creates the store and prepares a replica on each selected target. Bind it with `kv = { sessions = "<name>" }` under `[envs.<env>]`; an environment can bind several stores, and several apps can bind one. `*tako.KV` has `Get`, `Put`, and `Delete`, sent through the internal socket with the binding's token:
 
 ```go
 import (
@@ -312,12 +314,10 @@ writers must explicitly invalidate; no SQL dependency tracking is performed.
 Invalidation failure does not undo or retry the committed database write. Use
 an application outbox for durable commit-and-notify. Params are limited to 16 KiB
 and read responses to 1 MiB. Invalidations use the environment's channel replay
-database (a Tako-hosted SQLite database), so they reach every server of the
+database (a Tako-hosted Turso database), so they reach every server of the
 network. Because `go.mod` depends on `tako.sh`, a deploy without
 `[envs.<env>.channels].db` uses a generated `channels-<slug>-<hash>` database,
-created automatically on a network with exactly one trusted server; on a larger
-network, create one with `tako db create <name>` and set
-`[envs.<env>.channels].db` first (see
+created automatically on the selected targets by a full-access deploy (see
 https://tako.sh/docs/channels/#deploy-replay-storage).
 See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
 

@@ -1,0 +1,26 @@
+[package]
+name = "tako-raft"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+tako-core = { path = "../tako-core" }
+futures-util = "0.3"
+subtle = "2"
+getrandom = "0.4"
+openraft = { version = "=0.10.1", default-features = false, features = ["tokio-rt", "serde", "type-alias"] }
+parking_lot = "0.13"
+postcard = { version = "1", features = ["alloc"] }
+serde.workspace = true
+serde_bytes = "0.11"
+tempfile = "=3.27.0"
+tokio.workspace = true
+
+redb = "5"
+
+[dev-dependencies]
+tako-db = { path = "../tako-db", features = ["testing"] }
+tako-kv = { path = "../tako-kv" }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+serde_json.workspace = true

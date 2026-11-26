@@ -95,12 +95,11 @@ class NetworkPolicyTests(unittest.TestCase):
             self.assertEqual(input_verdict(self.policy(peers=False), query), 'drop')
             self.assertEqual(input_verdict(self.policy(peers=False), reply), 'drop')
 
-    def test_gossip_and_its_replies_require_server_membership(self):
-        for packet in (self.packet(dport=8787, **{'meta l4proto': 'udp'}),
-                       self.packet(sport=8787, **{'meta l4proto': 'udp'})):
-            self.assertEqual(input_verdict(self.policy(kind='server'), packet), 'accept')
-            self.assertEqual(input_verdict(self.policy(kind='laptop'), packet), 'drop')
-            self.assertEqual(input_verdict(self.policy(peers=False), packet), 'drop')
+    def test_catalog_requires_a_server_peer(self):
+        packet = self.packet(dport=9851, **{'ct state': 'new', 'ct direction': 'original'})
+        self.assertEqual(input_verdict(self.policy(kind='server', ssh=False), packet), 'accept')
+        self.assertEqual(input_verdict(self.policy(), packet), 'drop')
+        self.assertEqual(input_verdict(self.policy(peers=False), packet), 'drop')
 
 
 if __name__ == '__main__':

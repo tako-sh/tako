@@ -101,8 +101,6 @@ pub struct HostConfig {
     /// store together.
     pub max_stored_sql_bytes: usize,
     pub max_condition_depth: usize,
-    /// Idle connections kept per database for stateless requests.
-    pub pool_size: usize,
     /// Requests executing at once on one database.
     pub max_concurrent_per_database: usize,
     /// How long `pause` waits for in-flight requests.
@@ -117,9 +115,6 @@ pub struct HostConfig {
     /// its connection is closed: a client that stops reading must not hold
     /// the response, and the memory reserved for it, forever.
     pub write_stall_timeout: Duration,
-    /// SQLite's memory across this process, past which page caches stop
-    /// growing; see [`crate::engine::set_soft_heap_limit`].
-    pub sqlite_soft_heap_limit_bytes: usize,
 }
 
 impl Default for HostConfig {
@@ -139,12 +134,10 @@ impl Default for HostConfig {
             max_stored_sql_bytes_per_stream: 1024 * 1024,
             max_stored_sql_bytes: 64 * 1024 * 1024,
             max_condition_depth: 32,
-            pool_size: 8,
             max_concurrent_per_database: 32,
             max_connections: 1024,
             idle_connection_timeout: Duration::from_secs(30),
             write_stall_timeout: Duration::from_secs(30),
-            sqlite_soft_heap_limit_bytes: 256 * 1024 * 1024,
             pause_timeout: Duration::from_secs(30),
         }
     }
@@ -189,7 +182,7 @@ struct Grant {
 /// A binding of one app environment on this server.
 #[derive(Clone, Debug)]
 pub struct Binding {
-    pub token_hash: TokenHash,
+    pub tokens: tako_core::BindingTokenHashes,
     pub database: DatabaseId,
     pub home: Home,
 }
@@ -205,23 +198,35 @@ struct ScopedBinding {
 pub(crate) enum Principal {
     /// An app on this server, identified by its binding token.
     Local(TokenHash),
+    Replica(TokenHash),
     /// An app on another server, forwarded by that server.
-    Remote { server: IpAddr, scope: String },
+    Remote {
+        server: IpAddr,
+        scope: String,
+    },
 }
 
 pub(crate) struct Database {
     pub(crate) id: DatabaseId,
     path: PathBuf,
     engine: EngineConfig,
-    pool_size: usize,
+    buffered: Arc<Semaphore>,
+    storage: Storage,
+    primary: Mutex<Option<Arc<crate::mvcc::Owner>>>,
+    replica: Mutex<Option<(Arc<tempfile::NamedTempFile>, Arc<crate::mvcc::Owner>)>>,
     state: Mutex<DatabaseState>,
     idle: Notify,
-    pool: Mutex<Vec<engine::Connection>>,
     /// Changed since the last snapshot. Starts set: the history is unknown.
     changed: AtomicBool,
     pub(crate) permits: Arc<Semaphore>,
     /// Shared while this process serves the file; exclusive during a swap.
     lock: Mutex<Option<File>>,
+}
+
+#[derive(Clone)]
+enum Storage {
+    Local,
+    Replicated(tako_raft::Resource),
 }
 
 struct DatabaseState {
@@ -233,23 +238,57 @@ struct DatabaseState {
 }
 
 impl Database {
-    pub(crate) fn acquire(&self) -> Result<engine::Connection, Error> {
-        if let Some(conn) = self.pool.lock().pop() {
-            return Ok(conn);
+    pub(crate) fn acquire(&self, read_only: bool) -> Result<engine::Connection, Error> {
+        match &self.storage {
+            Storage::Replicated(resource) => {
+                return self.replicated_connection(resource, read_only, &self.engine);
+            }
+            Storage::Local => {
+                return engine::Connection::development(
+                    &self.path,
+                    &self.engine,
+                    read_only,
+                    self.buffered.clone(),
+                );
+            }
         }
-        engine::Connection::open(&self.path, &self.engine)
     }
 
-    /// Returns a connection for reuse when it carries no stream state.
+    fn replicated_connection(
+        &self,
+        resource: &tako_raft::Resource,
+        read_only: bool,
+        config: &EngineConfig,
+    ) -> Result<engine::Connection, Error> {
+        let owner = if read_only {
+            let file = resource.local_file().map_err(engine::replication_error)?;
+            let mut cache = self.replica.lock();
+            if let Some((previous, owner)) = cache.as_ref()
+                && Arc::ptr_eq(previous, &file)
+            {
+                owner.clone()
+            } else {
+                let owner = Arc::new(
+                    crate::mvcc::Owner::replica(file.path()).map_err(engine::replication_error)?,
+                );
+                *cache = Some((file, owner.clone()));
+                owner
+            }
+        } else {
+            let mut primary = self.primary.lock();
+            if primary.as_ref().is_none_or(|p| !p.usable()) {
+                let writer = resource.writer().map_err(engine::replication_error)?;
+                *primary = Some(Arc::new(
+                    crate::mvcc::Owner::primary(writer).map_err(engine::replication_error)?,
+                ));
+            }
+            primary.as_ref().expect("writer opened").clone()
+        };
+        engine::Connection::hosted(owner, config, read_only, self.buffered.clone())
+    }
+
     pub(crate) fn release(&self, mut conn: engine::Connection) {
         conn.rollback();
-        if conn.is_dirty() || !conn.is_autocommit() {
-            return;
-        }
-        let mut pool = self.pool.lock();
-        if pool.len() < self.pool_size {
-            pool.push(conn);
-        }
     }
 
     pub(crate) fn mark_changed(&self) {
@@ -344,6 +383,7 @@ impl StoredSqlBudget {
 
 /// An open stream: one connection plus its stored SQL texts.
 pub(crate) struct Stream {
+    pub(crate) read_only: bool,
     pub(crate) conn: Option<engine::Connection>,
     pub(crate) stored_sql: HashMap<i32, String>,
     /// A statement may have changed the database since this was cleared.
@@ -356,6 +396,7 @@ impl Stream {
     pub(crate) fn new(budget: Arc<StoredSqlBudget>) -> Self {
         Self {
             conn: None,
+            read_only: false,
             stored_sql: HashMap::new(),
             wrote: false,
             budget,
@@ -481,7 +522,6 @@ pub enum HostError {
 
 impl DatabaseHost {
     pub fn new(config: HostConfig) -> Self {
-        crate::engine::set_soft_heap_limit(config.sqlite_soft_heap_limit_bytes);
         let stored_sql = Arc::new(StoredSqlBudget::new(config.max_stored_sql_bytes));
         let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
         Self {
@@ -511,9 +551,28 @@ impl DatabaseHost {
         engine::create_database(path).map_err(HostError::Engine)
     }
 
-    /// Serves an existing database file. Takes a shared lock on
-    /// `<path>.lock` so a swap in another process waits for this one.
+    /// Register a persistent, local Turso binding without keeping an idle owner.
     pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
+        if !path.try_exists()? {
+            crate::mvcc::Owner::local(&path, self.inner.config.engine.busy_timeout)?;
+        }
+        self.register_inner(id, path, Storage::Local)
+    }
+    pub fn register_replicated(
+        &self,
+        id: DatabaseId,
+        path: PathBuf,
+        resource: tako_raft::Resource,
+    ) -> Result<(), HostError> {
+        self.register_inner(id, path, Storage::Replicated(resource))
+    }
+
+    fn register_inner(
+        &self,
+        id: DatabaseId,
+        path: PathBuf,
+        storage: Storage,
+    ) -> Result<(), HostError> {
         let mut databases = self.inner.databases.write();
         if databases.contains_key(&id) {
             return Err(HostError::AlreadyRegistered(id));
@@ -527,7 +586,10 @@ impl DatabaseHost {
                 id,
                 path,
                 engine: config.engine.clone(),
-                pool_size: config.pool_size,
+                buffered: self.inner.buffered.clone(),
+                storage,
+                primary: Mutex::new(None),
+                replica: Mutex::new(None),
                 state: Mutex::new(DatabaseState {
                     paused: None,
                     closed: false,
@@ -535,7 +597,6 @@ impl DatabaseHost {
                     streams: 0,
                 }),
                 idle: Notify::new(),
-                pool: Mutex::new(Vec::new()),
                 changed: AtomicBool::new(true),
                 permits: Arc::new(Semaphore::new(config.max_concurrent_per_database)),
                 lock: Mutex::new(Some(lock)),
@@ -574,22 +635,38 @@ impl DatabaseHost {
 
     /// Replaces the bindings of one app environment on this server.
     pub fn set_bindings(&self, scope: &str, bindings: Vec<Binding>) {
+        self.set_bindings_with_replicas(scope, bindings, &BTreeSet::new());
+    }
+
+    pub fn set_bindings_with_replicas(
+        &self,
+        scope: &str,
+        bindings: Vec<Binding>,
+        replicas: &BTreeSet<TokenHash>,
+    ) {
         let mut all = self.inner.bindings.write();
         let mut by_token = self.inner.by_token.write();
         if let Some(previous) = all.remove(scope) {
             for binding in previous {
-                by_token.remove(&binding.token_hash);
+                by_token.remove(&binding.tokens.primary);
+                by_token.remove(&binding.tokens.replica);
             }
         }
         if !bindings.is_empty() {
             for binding in &bindings {
-                by_token.insert(
-                    binding.token_hash,
-                    ScopedBinding {
-                        scope: scope.to_owned(),
-                        binding: binding.clone(),
-                    },
-                );
+                for hash in [binding.tokens.primary, binding.tokens.replica] {
+                    let mut route = binding.clone();
+                    if replicas.contains(&hash) {
+                        route.home = Home::Local;
+                    }
+                    by_token.insert(
+                        hash,
+                        ScopedBinding {
+                            scope: scope.to_owned(),
+                            binding: route,
+                        },
+                    );
+                }
             }
             all.insert(scope.to_owned(), bindings);
         }
@@ -642,12 +719,21 @@ impl DatabaseHost {
         let database = self.database(id)?;
         let was_changed = database.changed.swap(false, Ordering::Relaxed);
         let path = database.path.clone();
+        let storage = database.storage.clone();
         let dest = dest.to_path_buf();
         let busy = self.inner.config.engine.busy_timeout;
-        let result =
-            tokio::task::spawn_blocking(move || engine::snapshot_database(&path, &dest, busy))
-                .await
-                .map_err(|e| HostError::Engine(e.to_string()))?;
+        let result = tokio::task::spawn_blocking(move || match storage {
+            Storage::Local => {
+                crate::mvcc::Owner::snapshot_local(&path, &dest, busy).map_err(|e| e.to_string())
+            }
+            Storage::Replicated(resource) => {
+                resource.leader_barrier().map_err(|e| e.to_string())?;
+                let image = resource.local_file().map_err(|e| e.to_string())?;
+                engine::snapshot_database(image.path(), &dest)
+            }
+        })
+        .await
+        .map_err(|e| HostError::Engine(e.to_string()))?;
         if result.is_err() && was_changed {
             database.mark_changed();
         }
@@ -687,13 +773,13 @@ impl DatabaseHost {
             }
         }
         let streams = self.take_streams(|entry| &entry.database == id);
-        let pool = std::mem::take(&mut *database.pool.lock());
+        database.primary.lock().take();
+        database.replica.lock().take();
         let lock_path = lock_path(&database.path);
         let lock = database.lock.lock().take();
         let timeout = self.inner.config.pause_timeout;
         let exclusive = tokio::task::spawn_blocking(move || {
             drop(streams);
-            drop(pool);
             drop(lock);
             exclusive_lock(&lock_path, timeout)
         })
@@ -828,7 +914,7 @@ impl DatabaseHost {
             let _active = active;
             let _permit = permit;
             let mut conn = database
-                .acquire()
+                .acquire(false)
                 .map_err(|e| HostError::Engine(e.message))?;
             let mut rows = Vec::new();
             let mut columns = Vec::new();
@@ -907,9 +993,19 @@ impl DatabaseHost {
             let _permit = permit;
             // A connection of its own, with migrations' longer limits; it is
             // not returned to the pool.
-            let mut conn =
-                engine::Connection::open(&database.path, &crate::migrate::config(&database.engine))
-                    .map_err(|e| HostError::Engine(e.message))?;
+            let config = crate::migrate::config(&database.engine);
+            let mut conn = match &database.storage {
+                Storage::Replicated(resource) => {
+                    database.replicated_connection(resource, false, &config)
+                }
+                Storage::Local => engine::Connection::development(
+                    &database.path,
+                    &config,
+                    false,
+                    database.buffered.clone(),
+                ),
+            }
+            .map_err(|e| HostError::Engine(e.message))?;
             let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
             if conn.take_wrote() {
                 database.mark_changed();
@@ -923,11 +1019,20 @@ impl DatabaseHost {
 
     /// Size of a database's files (database and write-ahead log) in bytes.
     pub fn size_bytes(&self, id: &DatabaseId) -> Option<u64> {
-        let path = self.path(id)?;
+        let db = self.database(id).ok()?;
+        if let Storage::Replicated(resource) = &db.storage {
+            return resource.file_size().ok();
+        }
+        let path = db.path.clone();
         let mut wal = path.clone().into_os_string();
         wal.push("-wal");
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        Some(size(&path) + size(Path::new(&wal)))
+        let log = if matches!(db.storage, Storage::Local) {
+            size(&path.with_extension("db-log"))
+        } else {
+            0
+        };
+        Some(size(&path) + size(Path::new(&wal)) + log)
     }
 
     pub fn open_streams(&self) -> usize {
@@ -976,11 +1081,16 @@ impl DatabaseHost {
     pub(crate) fn resolve_token(&self, token: &str) -> Option<Resolved> {
         let hash = hash_token(token);
         let ScopedBinding { scope, binding } = self.inner.by_token.read().get(&hash).cloned()?;
+        let replica = hash == binding.tokens.replica;
         match binding.home {
             Home::Local => Some(match self.database(&binding.database) {
                 Ok(database) => Resolved::Serve {
                     database,
-                    principal: Principal::Local(hash),
+                    principal: if replica {
+                        Principal::Replica(hash)
+                    } else {
+                        Principal::Local(hash)
+                    },
                 },
                 // The token is valid; this process just no longer serves the
                 // database (it handed it over, or is reopening it).
@@ -988,6 +1098,9 @@ impl DatabaseHost {
                     "this server is not serving the database right now; retry".into(),
                 ),
             }),
+            Home::Remote { .. } if replica => Some(Resolved::Unavailable(
+                "this server has no ready database replica".into(),
+            )),
             Home::Remote { upstream, key } => Some(Resolved::Forward {
                 database: binding.database,
                 upstream,
@@ -1009,14 +1122,25 @@ impl DatabaseHost {
         key: &str,
     ) -> Option<Resolved> {
         let presented = hash_token(key);
-        let allowed = self
-            .inner
-            .remote_grants
-            .read()
-            .get(scope)
-            .is_some_and(|grant| {
-                constant_time_eq(&grant.key_hash, &presented) && grant.databases.contains(database)
+        let resource = self
+            .database(database)
+            .ok()
+            .and_then(|db| match &db.storage {
+                Storage::Replicated(resource) => Some(resource.clone()),
+                _ => None,
             });
+        let allowed = if let Some(resource) = resource {
+            resource.grant_matches(scope, &presented)
+        } else {
+            self.inner
+                .remote_grants
+                .read()
+                .get(scope)
+                .is_some_and(|grant| {
+                    constant_time_eq(&grant.key_hash, &presented)
+                        && grant.databases.contains(database)
+                })
+        };
         if !allowed {
             return None;
         }
@@ -1109,7 +1233,6 @@ impl DatabaseHost {
 
 /// Drops a closed database's connections and its file lock.
 fn release(database: &Database) {
-    database.pool.lock().clear();
     database.lock.lock().take();
 }
 

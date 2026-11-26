@@ -9,6 +9,7 @@ use crate::tls::{AcmeClient, AcmeConfig, CertManager, ChallengeTokens};
 use tokio::runtime::Runtime;
 
 pub(super) struct StandbyPromotionConfig {
+    pub(super) database_network: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
     pub(super) socket_path: String,
     pub(super) state: Arc<ServerState>,
     pub(super) cert_manager: Arc<CertManager>,
@@ -119,10 +120,12 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                             }
                         }
 
-                        if let Err(error) = config.state.start_databases(None).await {
-                            tracing::error!(%error, "Failed to start hosted databases after promotion");
-                        }
+                        config
+                            .state
+                            .start_databases_after_handoff(config.database_network.clone())
+                            .await;
 
+                        config.state.serve_databases();
                         promoted = true;
                         consecutive_failures = 0;
                         tracing::info!("Promotion complete — standby now running as full server");

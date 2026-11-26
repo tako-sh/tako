@@ -1,7 +1,7 @@
 //! Workflow storage for `tako dev`.
 //!
 //! Each registered app keeps its runs in the project's
-//! `.tako/data/tako/workflows.sqlite`, served by the daemon's database host
+//! `.tako/data/tako/workflows.db`, served by the daemon's database host
 //! over the same protocol as on servers, so the workflow store behaves as it
 //! does in production.
 
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tako_workflows::{StoreResolver, WorkflowStoreConfig};
 
 #[cfg_attr(test, allow(dead_code))]
-const WORKFLOWS_FILE: &str = ".tako/data/tako/workflows.sqlite";
+const WORKFLOWS_FILE: &str = ".tako/data/tako/workflows.db";
 
 /// A registration's store, by the app name its workflow runtime uses.
 struct Store {

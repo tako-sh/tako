@@ -8,12 +8,13 @@ publish = false
 # A blocking client for Tako's own statements (channel replay, workflow runs).
 client = ["dep:reqwest"]
 # An in-process host on a loopback port, for tests of code that uses it.
-testing = ["client", "dep:tempfile"]
+testing = ["client"]
 
 [dependencies]
+tako-raft = { path = "../tako-raft" }
+tako-core = { path = "../tako-core" }
 base64 = "0.23"
 bytes = "1"
-fallible-iterator = "0.3"
 futures-util = "0.3"
 getrandom = "0.4"
 hex = "0.4"
@@ -24,16 +25,19 @@ hyper = { version = "1.11", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 parking_lot = "0.13"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"], optional = true }
-rusqlite = { workspace = true, features = ["hooks", "limits", "column_decltype"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 thiserror.workspace = true
 tokio.workspace = true
-tempfile = { version = "=3.27.0", optional = true }
+tempfile = "=3.27.0"
 tracing.workspace = true
+turso_core = { version = "=0.9.0-pre.6", default-features = false, features = ["fs", "json", "time", "uuid"] }
+turso_sqlite = "=0.9.0-pre.6"
+turso_parser = "=0.9.0-pre.6"
 
 [dev-dependencies]
+tako-backup = { path = "../tako-backup" }
 tako-db = { path = ".", features = ["testing"] }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

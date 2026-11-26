@@ -20,7 +20,7 @@ async fn state(dir: &Path) -> Arc<ServerState> {
         )
         .unwrap(),
     );
-    state.open_databases(None).await.unwrap();
+    state.start_databases(None).await.unwrap();
     state
 }
 
@@ -117,7 +117,7 @@ async fn deploy(state: &ServerState, dir: &Path, secret: &str) {
                 "command":"deploy", "app":APP, "version":"v1",
                 "path":crate::release::app_release_root(dir, APP, "v1"),
                 "routes":["sdk.localhost"], "secrets_digest":digest,
-                "databases": {"@workflows": {"name": WORKFLOWS, "server": "local"}}
+                "databases": {"@workflows": {"name": WORKFLOWS, "generation": "0123456789abcdef0123456789abcdef"}}
             }))
             .unwrap(),
         )
@@ -225,16 +225,16 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
     runtime.prepare("v1").await.unwrap();
 
     let server = state(dir.path()).await;
-    let created = server
-        .handle_command(Command::CreateDatabase {
-            name: WORKFLOWS.into(),
-            engine: tako_core::DatabaseEngine::Sqlite,
-            generation: "0123456789abcdef0123456789abcdef".into(),
-            backup_key_base64: base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
-            backup: None,
-        })
-        .await;
-    assert!(matches!(created, Response::Ok { .. }), "{created:?}");
+    server
+        .create_test_database(
+            WORKFLOWS.into(),
+            tako_core::DatabaseEngine::Turso,
+            "0123456789abcdef0123456789abcdef".into(),
+            base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+            None,
+        )
+        .await
+        .unwrap();
     deploy(&server, dir.path(), "first").await;
     let token = server.state_store.get_compose_token(APP).unwrap().unwrap();
     assert_eq!(token.len(), 64);

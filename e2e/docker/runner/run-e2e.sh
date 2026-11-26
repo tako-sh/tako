@@ -670,40 +670,12 @@ run_store_checks() {
   cleanup_store_sse
 }
 
-# Use the full network client to create the fixture's databases once. The
-# second server reaches the same generation over the private network.
-create_fixture_databases() {
-  local server_host=$1
-  local database databases
-  local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
-  databases=$(bun -e '
-    const env = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).envs.production;
-    console.log([...new Set([...Object.values(env.db ?? {}), env.channels?.db, env.workflows?.db].filter(Boolean))].join("\n"));
-  ' "$PROJECT_DIR/tako.toml")
-  [[ -n "$databases" ]] || return 0
-  while IFS= read -r database; do
-    "${tako[@]}" db create "$database" --server "$server_host"
-  done <<< "$databases"
-  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
-    "${tako[@]}" --json db list | jq -e --arg home "$server_host" '
-      (.databases | any(.name == "messages" and .in_project)) and
-      (.databases | any(.name == "channel-replay" and .server == $home and .channel_replay_envs == ["production"])) and
-      (.databases | any(.name == "workflow-runs" and .server == $home and .workflow_envs == ["production"]))
-    ' >/dev/null
-    "${tako[@]}" --dry-run --json deploy --env production | jq -e --arg home "$server_host" '
-      .dry_run and .create_databases == [] and
-      .channel_database == {name: "channel-replay", server: $home, implicit: false} and
-      .workflows_database == {name: "workflow-runs", server: $home, implicit: false}
-    ' >/dev/null
-  fi
-}
-
 run_database_checks() {
   local server_host=$1
   local route_host=$2
   local status_json="$TMP_ROOT/sqlite-status-${server_host}.json"
   local query_json="$TMP_ROOT/sqlite-query-${server_host}.json"
-  local export_file="$TMP_ROOT/messages-${server_host}.sqlite"
+  local export_file="$TMP_ROOT/messages-${server_host}.db"
   local log="$TMP_ROOT/sqlite-${server_host}.log"
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
 
@@ -712,13 +684,33 @@ run_database_checks() {
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
-  jq -e --arg server "$DATABASE_SERVER" '.databases[0].name == "messages" and .databases[0].server == $server' \
-    "$status_json" >/dev/null
-  if [[ "$server_host" == "$DATABASE_SERVER" ]]; then
-    jq -e '.databases[0].status.bindings | index("cw-e2e/production") != null' "$status_json" >/dev/null
-  else
-    # Instances on this server reach the database through its home server.
-    jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
+  local inventory="$TMP_ROOT/resources-${server_host}.json"
+  local expected=1
+  if [[ "$server_host" != "$DATABASE_SERVER" ]]; then expected=2; fi
+  local deadline=$((SECONDS + 60))
+  until "${tako[@]}" --json status >"$inventory" 2>>"$log" &&
+    jq -e --argjson expected "$expected" '
+      [.servers[].databases[]? | select(.name == "messages")] as $copies
+      | ($copies | length) == $expected
+        and ([$copies[] | select(.is_leader)] | length) == 1
+        and ([$copies[].leader] | unique) == [$copies[0].leader]
+        and all($copies[]; (.leader | type == "string") and any(.bindings[];
+          .app == "cw-e2e/production" and .binding == "messages" and (.retained | not)))
+    ' "$inventory" >/dev/null; do
+    if (( SECONDS >= deadline )); then
+      echo "Resource inventory did not report the messages replicas and their leader" >&2
+      cat "$inventory" "$log" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  # The catalog generation and the environment's replicated grant must survive
+  # the deploy on the second target, including an intervening leader election.
+  jq -e '.databases[0] | .name == "messages" and (.status.generation | length > 0)
+    and (.status.remote_grants | index("cw-e2e/production") != null)' "$status_json" >/dev/null
+  if [[ "$server_host" != "$DATABASE_SERVER" ]]; then
+    jq -es '.[0].databases[0].status.generation == .[1].databases[0].status.generation' \
+      "$TMP_ROOT/sqlite-status-${DATABASE_SERVER}.json" "$status_json" >/dev/null
   fi
 
   if ! "${tako[@]}" --json db shell messages "SELECT count(*) AS n FROM messages" \
@@ -737,18 +729,15 @@ run_database_checks() {
     cat "$log" >&2 || true
     exit 1
   fi
-  local exported
-  exported=$(bun -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.argv[1], { readonly: true }); console.log(db.query("SELECT count(*) AS n FROM messages").get().n)' "$export_file")
-  if [[ "$exported" != "$rows" ]]; then
-    echo "Exported database has $exported rows, expected $rows" >&2
-    exit 1
-  fi
-
-  # Replacing the database with its own export pauses and resumes app access.
+  # Change the live database so a no-op import cannot pass the round-trip check.
+  "${tako[@]}" db shell messages "CREATE TABLE after_export_probe (id INTEGER)" >"$log" 2>&1
   if ! "${tako[@]}" db import messages "$export_file" --yes >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
+  "${tako[@]}" --json db shell messages \
+    "SELECT (SELECT count(*) FROM messages), (SELECT count(*) FROM sqlite_schema WHERE name='after_export_probe')" >"$query_json"
+  jq -e --argjson rows "$rows" '.rows == [[$rows, 0]]' "$query_json" >/dev/null
   run_store_checks "$server_host" "$route_host"
 }
 
@@ -1273,7 +1262,7 @@ ssh_wait server-alma
 ssh-keyscan -H server-ubuntu >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 
-# Exercise real native enrollment, Corrosion replication, and pinned HTTPS.
+# Exercise real native enrollment, catalog replication, and pinned HTTPS.
 HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci network create e2e
 NETWORK_ID=$(HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --json network list | jq -r '.networks[0].id')
 ACTIVE_SERVERS=()
@@ -1398,9 +1387,6 @@ for entry in "${SERVERS[@]}"; do
   echo "=== Testing deploy on $server ($libc) ==="
 
   bind_fixture_target "$PROJECT_DIR/tako.toml" "$server"
-  if [[ "$server" == "$DATABASE_SERVER" ]]; then
-    create_fixture_databases "$server"
-  fi
 
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 

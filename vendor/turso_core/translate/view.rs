@@ -1,0 +1,815 @@
+use crate::dialect::RelationChange;
+use crate::namespace::is_reserved_object_name;
+use crate::namespace::{NamespaceId, NamespaceRef};
+use crate::schema::view::extract_view_columns;
+use crate::schema::{BTreeCharacteristics, BTreeTable, SchemaObjectType};
+use crate::storage::pager::CreateBTreeFlags;
+use crate::sync::Arc;
+use crate::translate::collate::CollationSeq;
+use crate::translate::{
+    emitter::Resolver,
+    schema::{
+        self, emit_drop_view_row, emit_schema_entry, open_sqlite_schema_for_write, SchemaEntryType,
+    },
+};
+use crate::util::{
+    escape_sql_string_literal, normalize_ident, PRIMARY_KEY_AUTOMATIC_INDEX_NAME_PREFIX,
+};
+use crate::vdbe::builder::ProgramBuilder;
+use crate::vdbe::insn::{CmpInsFlags, Cookie, Insn, RegisterOrLiteral};
+use crate::{bail_parse_error, Connection, Result};
+use turso_parser::ast;
+
+fn validate_materialized(
+    connection: &Arc<crate::Connection>,
+    namespace: NamespaceRef,
+    resolver: &Resolver,
+    normalized_view_name: &str,
+) -> Result<()> {
+    let database_id = namespace.database_id;
+    // Check if experimental views are enabled
+    if !connection.experimental_views_enabled() {
+        return Err(crate::LimboError::ParseError(
+            "CREATE MATERIALIZED VIEW is an experimental feature. Enable with --experimental-views flag"
+                .to_string(),
+        ));
+    }
+    // Compiled maintenance programs currently bind every persistent cursor to
+    // the main pager/schema. Block attached databases until those handles
+    // carry a database id.
+    if database_id != crate::MAIN_DB_ID {
+        crate::bail_parse_error!("materialized views are not supported on attached databases");
+    }
+    if is_reserved_object_name(
+        resolver.catalog.dialect.supports_namespaces(),
+        normalized_view_name,
+    ) && !connection.is_nested_stmt()
+    {
+        bail_parse_error!("Object name reserved for internal use: {normalized_view_name}",);
+    }
+
+    // Check if view already exists (including broken sqlite_schema rows,
+    // which must be dropped before the name can be reused)
+    if resolver.with_schema(database_id, |s| {
+        s.materialized_view_exists(namespace.id, normalized_view_name)
+            || s.is_broken_view(namespace.id, normalized_view_name)
+    }) {
+        return Err(crate::LimboError::ParseError(format!(
+            "View {normalized_view_name} already exists"
+        )));
+    }
+    Ok(())
+}
+
+pub fn translate_create_materialized_view(
+    view_name: &ast::QualifiedName,
+    resolver: &Resolver,
+    select_stmt: &ast::Select,
+    columns: &[ast::IndexedColumn],
+    if_not_exists: bool,
+    connection: Arc<Connection>,
+    program: &mut ProgramBuilder,
+) -> Result<()> {
+    if connection.mvcc_enabled() {
+        bail_parse_error!("Materialized views are not supported in MVCC mode");
+    }
+    let namespace = resolver.resolve_namespace_for_create(view_name)?;
+    let database_id = namespace.database_id;
+    let schema_cookie = resolver.with_schema(database_id, |s| s.schema_version);
+    program.begin_write_on_database(database_id, schema_cookie)?;
+    let normalized_view_name = normalize_ident(view_name.name.as_str());
+
+    if schema::relation_name_is_taken(resolver, namespace, &normalized_view_name, if_not_exists)? {
+        return Ok(());
+    }
+    if if_not_exists
+        && resolver.with_schema(database_id, |s| {
+            s.get_view(namespace.id, &normalized_view_name).is_some()
+                || s.materialized_view_exists(namespace.id, &normalized_view_name)
+                || s.is_broken_view(namespace.id, &normalized_view_name)
+        })
+    {
+        return Ok(());
+    }
+
+    // Validate the view can be created and extract its columns
+    // This validation happens before updating sqlite_master to prevent
+    // storing invalid view definitions
+    validate_materialized(&connection, namespace, resolver, &normalized_view_name)?;
+
+    // Check for cross-database table references first
+    crate::util::validate_select_for_views(select_stmt, resolver, database_id)?;
+
+    let mut view_column_schema = resolver.with_schema(database_id, |s| {
+        extract_view_columns(namespace.id, select_stmt, s)
+    })?;
+    // The parser checks the column count when it can count the SELECT's
+    // columns; a `*` is only expanded here.
+    if !columns.is_empty() && columns.len() != view_column_schema.columns.len() {
+        bail_parse_error!(
+            "expected {} columns for {} but got {}",
+            columns.len(),
+            view_name,
+            view_column_schema.columns.len()
+        );
+    }
+    view_column_schema.rename_columns(columns);
+    let view_columns = view_column_schema.flat_columns()?;
+
+    // One plan owns validation, the executable operator DAG, and the hidden
+    // storage derived from that DAG. CREATE must not independently classify
+    // the SQL and guess which tables codegen will later open.
+    //
+    // A materialized view's unqualified table names must resolve within its
+    // own database, the same way SQLite pins a plain view's unqualified
+    // names to the database it was created in rather than searching temp
+    // first (#9456): a TEMP table that happens to share a source table's
+    // name must not shadow it here.
+    // The maintenance machinery knows the view by its key, the stored
+    // name, which also names its hidden state tables in the root namespace.
+    let view_key = resolver.mangle_name(namespace, &normalized_view_name);
+    let maintenance_plan =
+        resolver.with_view_scope(namespace, normalized_view_name.clone(), || {
+            resolver.with_schema(database_id, |_| {
+                crate::incremental::vdbe_maintenance::plan_view(
+                    &view_key,
+                    select_stmt,
+                    resolver,
+                    &connection,
+                )
+            })
+        })?;
+    if maintenance_plan.output_arity() != view_columns.len() {
+        return Err(crate::LimboError::InternalError(format!(
+            "materialized view result schema has {} columns but its maintenance DAG emits {}",
+            view_columns.len(),
+            maintenance_plan.output_arity(),
+        )));
+    }
+    let hidden_tables = maintenance_plan
+        .hidden_tables()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    // Reconstruct the SQL string for storage
+    let sql = create_view_to_str(
+        "MATERIALIZED VIEW",
+        &view_name.name.as_ident(),
+        columns,
+        select_stmt,
+    );
+
+    // Create a btree for storing the materialized view state
+    // This btree will hold the materialized rows (row_id -> values)
+    let view_root_reg = program.alloc_register();
+
+    program.emit_insn(Insn::CreateBtree {
+        db: database_id,
+        root: view_root_reg,
+        flags: CreateBTreeFlags::new_table(),
+    });
+
+    // Create a proper BTreeTable for the cursor with the actual view columns
+    let view_table = Arc::new(BTreeTable::new(
+        0, // root_page, will be set to actual root page after creation
+        normalized_view_name.clone(),
+        crate::alloc::vec![], // primary_key_columns — materialized views use implicit rowid
+        view_columns,
+        BTreeCharacteristics::HAS_ROWID,
+        crate::alloc::vec![],
+        crate::alloc::vec![],
+        crate::alloc::vec![],
+        None,
+    ));
+
+    // Allocate a cursor for writing to the view's btree during population
+    let view_cursor_id =
+        program.alloc_cursor_id(crate::vdbe::builder::CursorType::BTreeTable(view_table));
+
+    // Open the cursor to the view's btree
+    program.emit_insn(Insn::OpenWrite {
+        cursor_id: view_cursor_id,
+        root_page: RegisterOrLiteral::Register(view_root_reg),
+        db: database_id,
+    });
+
+    // Clear any existing data in the btree
+    // This is important because if we're reusing a page that previously held
+    // a materialized view, there might be old data still there
+    // We need to start with a clean slate
+    let clear_loop_label = program.allocate_label();
+    let clear_done_label = program.allocate_label();
+
+    // Rewind to the beginning of the btree
+    program.emit_insn(Insn::Rewind {
+        cursor_id: view_cursor_id,
+        pc_if_empty: clear_done_label,
+    });
+
+    // Loop to delete all rows
+    program.preassign_label_to_next_insn(clear_loop_label);
+    program.emit_insn(Insn::Delete {
+        cursor_id: view_cursor_id,
+        table_name: normalized_view_name.clone(),
+        is_part_of_update: false,
+    });
+    program.emit_insn(Insn::Next {
+        cursor_id: view_cursor_id,
+        pc_if_next: clear_loop_label,
+        fullscan: false,
+        is_index: false,
+    });
+
+    program.preassign_label_to_next_insn(clear_done_label);
+
+    let sqlite_schema_cursor_id = open_sqlite_schema_for_write(program, resolver, database_id);
+
+    // Add the materialized view entry to sqlite_schema
+    emit_schema_entry(
+        program,
+        resolver,
+        sqlite_schema_cursor_id,
+        None, // cdc_table_cursor_id, no cdc for views
+        SchemaEntryType::View,
+        &view_key,
+        &view_key,
+        view_root_reg, // btree root for materialized view data
+        Some(sql),
+    )?;
+
+    // The view is a relation of the dialect's; its hidden state tables are
+    // engine objects and are not.
+    if schema::dialect_relation_hooks_apply(&connection, database_id)? {
+        resolver.catalog.dialect.translate_relation_changes(
+            program,
+            resolver.schema(),
+            &connection,
+            &[RelationChange::Created {
+                namespace: namespace.id,
+                name: &normalized_view_name,
+                kind: crate::schema::RelationKind::MaterializedView,
+                table: None,
+            }],
+        )?;
+    }
+
+    // Create the version marker and node-owned operator storage described by
+    // the maintenance plan. Stateful tables expose a primary-key index used by
+    // codegen; the marker only persists compatibility metadata.
+    let mut parse_schema_names = vec![escape_sql_string_literal(&view_key)];
+    for hidden in &hidden_tables {
+        let table_root_reg = program.alloc_register();
+        program.emit_insn(Insn::CreateBtree {
+            db: database_id,
+            root: table_root_reg,
+            flags: CreateBTreeFlags::new_table(),
+        });
+        emit_schema_entry(
+            program,
+            resolver,
+            sqlite_schema_cursor_id,
+            None,
+            SchemaEntryType::Table,
+            &hidden.table_name,
+            &hidden.table_name,
+            table_root_reg,
+            Some(hidden.create_sql.clone()),
+        )?;
+
+        parse_schema_names.push(escape_sql_string_literal(&hidden.table_name));
+        if hidden.primary_key_index {
+            let index_root_reg = program.alloc_register();
+            program.emit_insn(Insn::CreateBtree {
+                db: database_id,
+                root: index_root_reg,
+                flags: CreateBTreeFlags::new_index(),
+            });
+            let index_name = format!(
+                "{}{}_1",
+                PRIMARY_KEY_AUTOMATIC_INDEX_NAME_PREFIX, &hidden.table_name
+            );
+            emit_schema_entry(
+                program,
+                resolver,
+                sqlite_schema_cursor_id,
+                None,
+                SchemaEntryType::Index,
+                &index_name,
+                &hidden.table_name,
+                index_root_reg,
+                None,
+            )?;
+            parse_schema_names.push(escape_sql_string_literal(&index_name));
+        }
+    }
+
+    // Parse schema to load the new view (and its state table, if any)
+    let where_clause = parse_schema_names
+        .iter()
+        .map(|name| format!("name = '{name}'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    program.emit_insn(Insn::ParseSchema {
+        db: database_id,
+        where_clause: Some(where_clause),
+        trigger_target_database_id: None,
+    });
+
+    let schema_version = resolver.with_schema(database_id, |s| s.schema_version);
+    program.emit_insn(Insn::SetCookie {
+        db: database_id,
+        cookie: Cookie::SchemaVersion,
+        value: (schema_version + 1) as i32,
+        p5: 0,
+    });
+
+    // Populate the materialized view
+    let cursor_info = vec![(view_key, view_cursor_id)];
+    program.emit_insn(Insn::PopulateMaterializedViews {
+        cursors: cursor_info,
+    });
+
+    program.epilogue(resolver.schema());
+    Ok(())
+}
+
+fn validate_create_view(
+    connection: &Arc<crate::Connection>,
+    resolver: &Resolver,
+    namespace: NamespaceRef,
+    view_name: &ast::Name,
+    normalized_view_name: &str,
+) -> Result<()> {
+    // Check if view already exists. A broken view (unparseable sqlite_schema
+    // row) also counts: creating over it would produce a duplicate row, so
+    // the user must DROP VIEW it first.
+    if resolver.with_schema(namespace.database_id, |s| {
+        s.get_view(namespace.id, normalized_view_name).is_some()
+            || s.materialized_view_exists(namespace.id, normalized_view_name)
+            || s.is_broken_view(namespace.id, normalized_view_name)
+    }) {
+        return Err(crate::LimboError::ParseError(format!(
+            "view {} already exists",
+            crate::util::identifier_token_for_error(view_name)
+        )));
+    }
+    if is_reserved_object_name(
+        resolver.catalog.dialect.supports_namespaces(),
+        normalized_view_name,
+    ) && !connection.is_nested_stmt()
+    {
+        bail_parse_error!("Object name reserved for internal use: {normalized_view_name}",);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn translate_create_view(
+    view_name: &ast::QualifiedName,
+    resolver: &Resolver,
+    select_stmt: &ast::Select,
+    columns: &[ast::IndexedColumn],
+    temporary: bool,
+    if_not_exists: bool,
+    connection: &Arc<crate::Connection>,
+    program: &mut ProgramBuilder,
+) -> Result<()> {
+    // TEMP views always live in the temp schema. The parser rejects
+    // CREATE TEMP VIEW with a database name other than "temp".
+    let namespace = if temporary {
+        NamespaceRef::root_of(crate::TEMP_DB_ID)
+    } else {
+        resolver.resolve_namespace_for_create(view_name)?
+    };
+    let database_id = namespace.database_id;
+    let schema_cookie = resolver.with_schema(database_id, |s| s.schema_version);
+    program.begin_write_on_database(database_id, schema_cookie)?;
+    let normalized_view_name = normalize_ident(view_name.name.as_str());
+
+    if schema::relation_name_is_taken(resolver, namespace, &normalized_view_name, if_not_exists)? {
+        return Ok(());
+    }
+    if if_not_exists
+        && resolver.with_schema(database_id, |s| {
+            s.get_view(namespace.id, &normalized_view_name).is_some()
+                || s.materialized_view_exists(namespace.id, &normalized_view_name)
+                || s.is_broken_view(namespace.id, &normalized_view_name)
+        })
+    {
+        return Ok(());
+    }
+
+    validate_create_view(
+        connection,
+        resolver,
+        namespace,
+        &view_name.name,
+        &normalized_view_name,
+    )?;
+
+    // Check for name conflicts with existing schema objects
+    if let Some(object_type) = resolver.with_schema(database_id, |s| {
+        s.get_object_type(namespace.id, &normalized_view_name)
+    }) {
+        // IF NOT EXISTS suppresses errors for table/view conflicts, matching
+        // CREATE TABLE IF NOT EXISTS behavior
+        if if_not_exists
+            && matches!(
+                object_type,
+                SchemaObjectType::Table | SchemaObjectType::View
+            )
+        {
+            return Ok(());
+        }
+        // SQLite echoes the new view's name token as written, except when the
+        // name clashes with an index, which gets its own message shape.
+        let token = crate::util::identifier_token_for_error(&view_name.name);
+        return Err(crate::LimboError::ParseError(match object_type {
+            SchemaObjectType::Table => format!("table {token} already exists"),
+            SchemaObjectType::View => format!("view {token} already exists"),
+            SchemaObjectType::Index => format!(
+                "there is already an index named {}",
+                view_name.name.as_str()
+            ),
+        }));
+    }
+
+    crate::util::validate_select_for_views(select_stmt, resolver, database_id)?;
+
+    let stored_view_name = resolver.mangle_name(namespace, &normalized_view_name);
+    let sql = create_view_to_str(
+        "VIEW",
+        &resolver.name_in_sql(namespace, &view_name.name).as_ident(),
+        columns,
+        select_stmt,
+    );
+
+    let sqlite_schema_cursor_id = open_sqlite_schema_for_write(program, resolver, database_id);
+
+    // Add the view entry to sqlite_schema
+    emit_schema_entry(
+        program,
+        resolver,
+        sqlite_schema_cursor_id,
+        None, // cdc_table_cursor_id, no cdc for views
+        SchemaEntryType::View,
+        &stored_view_name,
+        &stored_view_name,
+        0, // Regular views don't have a btree
+        Some(sql),
+    )?;
+
+    if schema::dialect_relation_hooks_apply(connection, database_id)? {
+        resolver.catalog.dialect.translate_relation_changes(
+            program,
+            resolver.schema(),
+            connection,
+            &[RelationChange::Created {
+                namespace: namespace.id,
+                name: &normalized_view_name,
+                kind: crate::schema::RelationKind::View,
+                table: None,
+            }],
+        )?;
+    }
+
+    // Parse schema to load the new view
+    let escaped_view_name = escape_sql_string_literal(&stored_view_name);
+    program.emit_insn(Insn::ParseSchema {
+        db: database_id,
+        where_clause: Some(format!("name = '{escaped_view_name}'")),
+        trigger_target_database_id: None,
+    });
+
+    let schema_version = resolver.with_schema(database_id, |s| s.schema_version);
+    program.emit_insn(Insn::SetCookie {
+        db: database_id,
+        cookie: Cookie::SchemaVersion,
+        value: (schema_version + 1) as i32,
+        p5: 0,
+    });
+
+    Ok(())
+}
+
+fn create_view_to_str(
+    view_kind: &str,
+    view_name: &str,
+    columns: &[ast::IndexedColumn],
+    select_stmt: &ast::Select,
+) -> String {
+    let columns_str = columns
+        .iter()
+        .map(|col| col.col_name.as_ident())
+        .collect::<Vec<String>>()
+        .join(", ");
+    if !columns_str.is_empty() {
+        return format!("CREATE {view_kind} {view_name} ({columns_str}) AS {select_stmt}");
+    }
+    format!("CREATE {view_kind} {view_name} AS {select_stmt}")
+}
+
+pub fn translate_drop_view(
+    resolver: &Resolver,
+    view_name: &ast::QualifiedName,
+    if_exists: bool,
+    connection: &Arc<crate::Connection>,
+    program: &mut ProgramBuilder,
+) -> Result<()> {
+    // Unqualified names search the temp schema first, then main, then
+    // attached databases, so DROP VIEW finds temp views like SQLite does.
+    let normalized_view_name = normalize_ident(view_name.name.as_str());
+    let Some(namespace) = resolver.find_existing_table(view_name)? else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(crate::LimboError::ParseError(format!(
+            "no such view: {normalized_view_name}"
+        )));
+    };
+    let database_id = namespace.database_id;
+    let schema_cookie = resolver.with_schema(database_id, |s| s.schema_version);
+    program.begin_write_on_database(database_id, schema_cookie)?;
+
+    // Check if view exists: regular, materialized, or a broken sqlite_schema
+    // row whose stored SQL failed to parse at load time. Broken views have no
+    // in-memory representation, but DROP VIEW must still delete their row so
+    // affected databases can be cleaned up.
+    let (is_regular_view, is_materialized_view, is_broken_view) =
+        resolver.with_schema(database_id, |s| {
+            (
+                s.get_view(namespace.id, &normalized_view_name).is_some(),
+                s.materialized_view_exists(namespace.id, &normalized_view_name),
+                s.is_broken_view(namespace.id, &normalized_view_name),
+            )
+        });
+    let view_exists = is_regular_view || is_materialized_view || is_broken_view;
+
+    if !view_exists && !if_exists {
+        return Err(crate::LimboError::ParseError(format!(
+            "no such view: {normalized_view_name}"
+        )));
+    }
+
+    if !view_exists && if_exists {
+        // View doesn't exist but IF EXISTS was specified, nothing to do
+        return Ok(());
+    }
+
+    if is_materialized_view || is_regular_view {
+        let dependent_views = resolver.with_schema(database_id, |s| {
+            s.get_dependent_materialized_views(namespace.id, &normalized_view_name)
+        });
+        if !dependent_views.is_empty() {
+            let kind = if is_materialized_view {
+                "materialized view"
+            } else {
+                "view"
+            };
+            return Err(crate::LimboError::ParseError(format!(
+                "cannot drop {kind} \"{normalized_view_name}\": it has dependent materialized view(s): {}",
+                dependent_views.join(", ")
+            )));
+        }
+    }
+
+    // If this is a materialized view, we need to destroy its btree as well
+    // and also clean up its internal tables (aggregate state, MIN/MAX
+    // multiset) — those that exist for its shape.
+    let internal_table_names: Vec<String> = if is_materialized_view {
+        if let Some(table) = resolver.with_schema(database_id, |s| {
+            s.get_table(namespace.id, &normalized_view_name)
+        }) {
+            if let Some(btree_table) = table.btree() {
+                // Destroy the btree for the materialized view
+                program.emit_insn(Insn::Destroy {
+                    db: database_id,
+                    root: btree_table.root_page,
+                    former_root_reg: 0, // No autovacuum
+                    is_temp: 0,
+                });
+            }
+        } else if let Some(root_page) = resolver.with_schema(database_id, |s| {
+            s.incompatible_materialized_view_root(namespace.id, &normalized_view_name)
+        }) {
+            program.emit_insn(Insn::Destroy {
+                db: database_id,
+                root: root_page,
+                former_root_reg: 0,
+                is_temp: 0,
+            });
+        }
+
+        // Every node-owned hidden state/multiset table of this view, including
+        // incompatible older storage versions. They are tables of the root
+        // namespace named after the view's key. Ownership parses the complete
+        // node/branch suffix so similarly prefixed view names cannot steal
+        // each other's state.
+        let view_key = resolver.mangle_name(namespace, &normalized_view_name);
+        resolver.with_schema(database_id, |s| {
+            s.table_names(NamespaceId::ROOT)
+                .filter(|table_name| {
+                    crate::incremental::view::state_table_belongs_to_view(table_name, &view_key)
+                })
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+    } else {
+        Vec::new()
+    };
+
+    // Destroy the internal tables' btrees and indexes (those that exist).
+    for internal_table_name in &internal_table_names {
+        let internal_indexes: Vec<_> = resolver.with_schema(database_id, |s| {
+            s.get_indices(NamespaceId::ROOT, internal_table_name)
+                .cloned()
+                .collect()
+        });
+        for index in &internal_indexes {
+            program.emit_insn(Insn::Destroy {
+                db: database_id,
+                root: index.root_page,
+                former_root_reg: 0, // No autovacuum
+                is_temp: 0,
+            });
+        }
+
+        if let Some(internal_table) = resolver.with_schema(database_id, |s| {
+            s.get_table(NamespaceId::ROOT, internal_table_name)
+        }) {
+            if let Some(internal_btree) = internal_table.btree() {
+                program.emit_insn(Insn::Destroy {
+                    db: database_id,
+                    root: internal_btree.root_page,
+                    former_root_reg: 0, // No autovacuum
+                    is_temp: 0,
+                });
+            }
+        }
+    }
+
+    if schema::dialect_relation_hooks_apply(connection, database_id)? {
+        resolver.catalog.dialect.translate_relation_changes(
+            program,
+            resolver.schema(),
+            connection,
+            &[RelationChange::Dropped {
+                namespace: namespace.id,
+                name: &normalized_view_name,
+            }],
+        )?;
+    }
+
+    let sqlite_schema_cursor_id = open_sqlite_schema_for_write(program, resolver, database_id);
+
+    let rowid_reg = emit_drop_view_row(
+        program,
+        resolver,
+        namespace,
+        &normalized_view_name,
+        sqlite_schema_cursor_id,
+    )?;
+
+    // If this is a materialized view, delete internal table and index
+    // entries in a second pass, one loop per internal table. We do this in
+    // separate loops to ensure we catch all entries even if they come in
+    // different orders in sqlite_schema.
+    for dbsp_table_name in &internal_table_names {
+        // Set up registers for the table name and types (outside the loop for efficiency)
+        let dbsp_table_name_reg_2 = program.alloc_register();
+        program.emit_insn(Insn::String8 {
+            dest: dbsp_table_name_reg_2,
+            value: dbsp_table_name.clone(),
+        });
+        let table_type_reg_2 = program.alloc_register();
+        program.emit_insn(Insn::String8 {
+            dest: table_type_reg_2,
+            value: "table".to_string(),
+        });
+        let index_type_reg_2 = program.alloc_register();
+        program.emit_insn(Insn::String8 {
+            dest: index_type_reg_2,
+            value: "index".to_string(),
+        });
+        let dbsp_index_name_reg_2 = program.alloc_register();
+        let dbsp_index_name_2 =
+            format!("{PRIMARY_KEY_AUTOMATIC_INDEX_NAME_PREFIX}{dbsp_table_name}_1");
+        program.emit_insn(Insn::String8 {
+            dest: dbsp_index_name_reg_2,
+            value: dbsp_index_name_2,
+        });
+
+        // Allocate column registers once (outside the loop)
+        let dbsp_col0_reg = program.alloc_register();
+        let dbsp_col1_reg = program.alloc_register();
+
+        // Second pass: delete DBSP table and index entries
+        let dbsp_end_loop_label = program.allocate_label();
+        let dbsp_loop_start_label = program.allocate_label();
+
+        program.emit_insn(Insn::Rewind {
+            cursor_id: sqlite_schema_cursor_id,
+            pc_if_empty: dbsp_end_loop_label,
+        });
+        program.preassign_label_to_next_insn(dbsp_loop_start_label);
+
+        // Read columns for this row (reusing the same registers)
+        program.emit_column_or_rowid(sqlite_schema_cursor_id, 0, dbsp_col0_reg);
+        program.emit_column_or_rowid(sqlite_schema_cursor_id, 1, dbsp_col1_reg);
+
+        let dbsp_skip_delete_label = program.allocate_label();
+
+        // Check if this is the DBSP table entry (type='table' and name=dbsp_table_name)
+        let check_dbsp_index_label = program.allocate_label();
+        program.emit_insn(Insn::Ne {
+            lhs: dbsp_col0_reg,
+            rhs: table_type_reg_2,
+            target_pc: check_dbsp_index_label,
+            flags: CmpInsFlags::default(),
+            collation: CollationSeq::for_internal_values(),
+        });
+        program.emit_insn(Insn::Ne {
+            lhs: dbsp_col1_reg,
+            rhs: dbsp_table_name_reg_2,
+            target_pc: check_dbsp_index_label,
+            flags: CmpInsFlags::default(),
+            collation: CollationSeq::for_internal_values(),
+        });
+        // Matches DBSP table - delete it
+        program.emit_insn(Insn::RowId {
+            cursor_id: sqlite_schema_cursor_id,
+            dest: rowid_reg,
+        });
+        program.emit_insn(Insn::Delete {
+            cursor_id: sqlite_schema_cursor_id,
+            table_name: "sqlite_schema".to_string(),
+            is_part_of_update: false,
+        });
+        program.emit_insn(Insn::Goto {
+            target_pc: dbsp_skip_delete_label,
+        });
+
+        // Check if this is the DBSP index entry (type='index' and name=dbsp_index_name)
+        program.preassign_label_to_next_insn(check_dbsp_index_label);
+        program.emit_insn(Insn::Ne {
+            lhs: dbsp_col0_reg,
+            rhs: index_type_reg_2,
+            target_pc: dbsp_skip_delete_label,
+            flags: CmpInsFlags::default(),
+            collation: CollationSeq::for_internal_values(),
+        });
+        program.emit_insn(Insn::Ne {
+            lhs: dbsp_col1_reg,
+            rhs: dbsp_index_name_reg_2,
+            target_pc: dbsp_skip_delete_label,
+            flags: CmpInsFlags::default(),
+            collation: CollationSeq::for_internal_values(),
+        });
+        // Matches DBSP index - delete it
+        program.emit_insn(Insn::RowId {
+            cursor_id: sqlite_schema_cursor_id,
+            dest: rowid_reg,
+        });
+        program.emit_insn(Insn::Delete {
+            cursor_id: sqlite_schema_cursor_id,
+            table_name: "sqlite_schema".to_string(),
+            is_part_of_update: false,
+        });
+
+        program.preassign_label_to_next_insn(dbsp_skip_delete_label);
+
+        // Move to next row
+        program.emit_insn(Insn::Next {
+            cursor_id: sqlite_schema_cursor_id,
+            pc_if_next: dbsp_loop_start_label,
+            fullscan: false,
+            is_index: false,
+        });
+
+        program.preassign_label_to_next_insn(dbsp_end_loop_label);
+    }
+
+    // Remove the view from the in-memory schema
+    program.emit_insn(Insn::DropView {
+        db: database_id,
+        namespace: namespace.id,
+        view_name: normalized_view_name,
+    });
+
+    // Update schema version (increment schema cookie)
+    let schema_version = resolver.with_schema(database_id, |s| s.schema_version);
+    let schema_version_reg = program.alloc_register();
+    program.emit_insn(Insn::Integer {
+        dest: schema_version_reg,
+        value: (schema_version + 1) as i64,
+    });
+    program.emit_insn(Insn::SetCookie {
+        db: database_id,
+        cookie: Cookie::SchemaVersion,
+        value: (schema_version + 1) as i32,
+        p5: 1, // update version
+    });
+
+    program.epilogue(resolver.schema());
+    Ok(())
+}

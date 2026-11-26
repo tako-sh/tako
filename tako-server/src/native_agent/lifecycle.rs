@@ -192,7 +192,7 @@ pub(super) fn drain_timeout() -> ! {
     tracing::error!(
         "native agent shutdown deadline exceeded; forcing process exit with database owners still attached"
     );
-    // Corrosion/helper children have PR_SET_PDEATHSIG(SIGKILL), so forced agent
+    // Helper processes have PR_SET_PDEATHSIG(SIGKILL), so forced agent
     // exit cannot orphan them. The separately activated root helper is not ours.
     eprintln!(
         "native agent shutdown deadline exceeded; forced process termination (not a clean shutdown)"

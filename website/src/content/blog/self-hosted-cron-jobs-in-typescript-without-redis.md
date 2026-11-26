@@ -33,7 +33,7 @@ direction: right
 clock: "cron clock" {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 schedules: "schedules table" {style.fill: "#9BC4B6"; style.font-size: 16}
 ticker: "tako-server ticker" {style.fill: "#E88783"; style.font-size: 16}
-runs: "data/tako/workflows.sqlite" {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
+runs: "data/tako/workflows.db" {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 supervisor: "worker supervisor" {style.fill: "#9BC4B6"; style.font-size: 16}
 worker: "TypeScript workflow" {style.fill: "#E88783"; style.font-size: 16}
 

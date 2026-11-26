@@ -3,7 +3,7 @@ title: KV stores
 description: "Create Tako-hosted key-value stores of JSON values with optional expiry, bind them to apps, back them up, and share challenges, sessions, and flags across every server of a network."
 ---
 
-A Tako KV store is a key-value store that `tako-server` hosts on one server of a [native network](/networks/). Apps `get`, `put`, and `delete` JSON values by key, each with an optional TTL, through the Tako SDK in JavaScript, Go, and Rust. Apps on every server of the network use the same store, which makes it the place for state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Writes are on disk before they are acknowledged, stores are backed up like [hosted databases](/databases/), and the same code runs under `tako dev`.
+A Tako KV store is a key-value store that `tako-server` replicates across the deployment targets of a [native network](/networks/). Apps `get`, `put`, and `delete` JSON values by key, each with an optional TTL, through the Tako SDK in JavaScript, Go, and Rust. Apps on every server of the network use the same store, which makes it the place for state that any server may need next: login and WebAuthn challenges, one-time tokens, sessions, and feature flags. Writes are on disk before they are acknowledged, stores are backed up like [hosted databases](/databases/), and the same code runs under `tako dev`.
 
 | Need                                                           | Use                                   |
 | -------------------------------------------------------------- | ------------------------------------- |
@@ -15,26 +15,22 @@ A Tako KV store is a key-value store that `tako-server` hosts on one server of a
 
 ## Create and bind a store
 
-A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Creating one requires full access:
-
-```bash
-tako kv create sessions --server edge-a
-```
-
-`--server` can be omitted when the network has a single server. Bind the store in each environment that uses it; the key is the binding name the app reads, and the value is the store's name. An environment can bind several stores, and several apps and environments can bind the same store:
+A KV store belongs to the network, like a database. Names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_` (at most 63 characters), and are unique across the network's databases and KV stores. Bind each store in the environments that use it. The key is the binding name the app reads and the value is the store's network name. An environment can bind several stores, and several apps and environments can bind the same store:
 
 ```toml
 [envs.production]
 kv = { sessions = "auth-sessions", limits = "rate-limits" }
 ```
 
-Then deploy with `tako deploy --env production`. A deploy resolves each bound name in the network's records and fails when the network has no KV store with that name, or when the name belongs to a SQLite database. Deploys never create KV stores. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
+A full-access deploy creates missing stores and prepares a replica on each selected target. Several apps can share the same store. A name that already belongs to a SQL database fails validation. An environment's `kv` and `databases` bindings share one set of names, so a name is bound once per environment. Environments can bind different stores under the same name, such as `sessions = "auth-sessions-staging"` in staging. When an environment lacks a binding name that another environment has, `tako deploy` warns, since `tako.kv.<binding>` is then `undefined` there.
 
 `tako kv` commands find the network like `tako db` does: `--network` when given, else the network configured in the project's environments, else this machine's only network.
 
 ## Use it from application code
 
 Each binding has `get`, `put`, and `delete`. Values are anything that encodes as JSON. `get` returns nothing for a key that is not set or has expired; a stored JSON `null` is a value. `put` without a TTL keeps the key until it is deleted; putting a key again replaces its value and its TTL.
+
+Use `tako.kv.sessions.readReplica.get(key)` for a local read. Go exposes `store.ReadReplica()` and Rust exposes `store.read_replica()`. Each view exposes only reads. The server also rejects mutations with its replica token. On a server without a local copy, the call returns `unavailable`. The store's home and local development both serve this view.
 
 <CodeGroup>
 
@@ -177,7 +173,7 @@ tako kv import sessions sessions.redb
 - `restore` replaces every key with a snapshot's, all at once: apps keep reading the current keys until it finishes, and writes since the snapshot are lost. `--latest` restores the newest snapshot that was not taken before a restore or import, so repeating it does not undo itself.
 - `export` downloads every live key, with its expiry, as one file. `import` replaces every key with an export's, all at once; it refuses a file that is not a Tako KV export, and changes nothing then.
 - Before a restore or import replaces the keys, the server exports the exact contents it replaces to `previous.redb` in the store's directory, and uploads them as a "before restore" snapshot when backups are configured and the store changed since its last snapshot.
-- When a store's server is lost, `tako kv restore <name> --latest --server <new-server>` recovers it from its snapshots onto another server, keeping its name, as [for databases](/databases/#recover-on-another-server). Deploy every app that binds it afterwards. A copy the move left on a reachable old server is removed with `tako kv delete <name> --server <old-server>`.
+- When a voter fails and the group still has a majority, deploy the app to a replacement target. Preparing waits for its KV replica to catch up.
 
 The export file is a [redb](https://www.redb.org/) database with a versioned layout; treat it as opaque and move it only between Tako KV stores.
 
@@ -209,7 +205,7 @@ tako kv delete-key sessions challenge:42
 
 An app on another server than its store's calls its own server as usual. That server checks the token and forwards the request over the network's private WireGuard transport to the store's server on port 9848, which the network firewall opens only to other servers. The forwarded request carries the key of the grant that a full client's deploy gave the app environment on the store's server, so other processes on a granted server cannot act for the environment, and tokens are checked only on the app's server. Grants work as for [databases](/databases/#apps-on-other-servers): a deploy adds them before its rollout and narrows them once it succeeds.
 
-Each request to a store on another server adds a private-network round trip, so place a store on the server where most of its traffic runs. While a store's server is down, requests from every server fail with `unavailable`.
+The ordinary binding routes requests to the elected leader. A successful write is durable on a voting majority. With two voters, both must be available. With three, two can continue after an election. The read replica serves locally applied values and can lag recent writes. Use the ordinary binding for session revocation, single-use tokens, and other reads that require the newest committed value.
 
 ## Delete a store
 
@@ -217,7 +213,7 @@ Each request to a store on another server adds a private-network round trip, so 
 tako kv delete sessions
 ```
 
-`delete` (alias `rm`) removes the store, every key in it, and its snapshots from its server, its record in the network state, and the store's bindings and `[kv.<name>]` table from `tako.toml`. It asks for confirmation; `--yes` skips it. Apps on the store's server that still bind it block the delete; grants to app environments on other servers are revoked. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted store fails. When the store's server is no longer a member of the network, `delete` removes only its record and bindings, so the name can be created again; restore it onto another server instead when it has snapshots.
+For replicated resources, `delete` waits for the generation to have no active or retained release bindings. It then retires the generation and removes its replicas. Objects already uploaded to backup storage keep their original generation and recovery key. A later deployment that reuses the name creates a fresh generation. Use `tako delete --server <server>` to remove an application from a particular server and reconcile its storage there.
 
 ## Limits and security
 

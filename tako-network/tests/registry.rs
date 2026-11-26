@@ -489,7 +489,6 @@ fn endpoint_validation_rejects_loopback_broadcast_mapped_loopback_and_zero_ports
             ssh_port: 22,
             https_port: 443,
             https_certificate_pem: None,
-            corrosion_ca_certificate_pem: None,
             https_spki_sha256: None,
         };
         assert!(server.validate().is_err(), "{endpoint}");
@@ -762,10 +761,7 @@ fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data
     ];
     for pem in invalid {
         let mut changed = server.clone();
-        changed.https_certificate_pem = Some(pem.clone());
-        assert!(changed.validate().is_err());
-        let mut changed = server.clone();
-        changed.corrosion_ca_certificate_pem = Some(pem);
+        changed.https_certificate_pem = Some(pem);
         assert!(changed.validate().is_err());
     }
     let mut crlf = server;

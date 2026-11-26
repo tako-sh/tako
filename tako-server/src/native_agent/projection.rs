@@ -1,10 +1,7 @@
 use super::{AgentError, MAX_HELPER_BYTES, Result};
 use serde::Serialize;
-use std::collections::BTreeSet;
-use tako_network::{
-    DeviceId, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot,
-    node_config::protected::Directory,
-};
+
+use tako_network::{DeviceId, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot};
 use zeroize::Zeroizing;
 
 #[derive(Serialize)]
@@ -40,6 +37,27 @@ pub(super) fn desired(
     now: u64,
     isolate: bool,
 ) -> Result<Zeroizing<Vec<u8>>> {
+    projected(config, keys, snapshot, now, isolate, true)
+}
+
+/// Bring up only authenticated server peers while the catalog catches up. Client
+/// SSH and app authority remain withdrawn until a quorum confirms membership.
+pub(super) fn recovery(
+    config: &NodeConfig,
+    keys: &LocalDeviceKeys,
+    snapshot: &RegistrySnapshot,
+    now: u64,
+) -> Result<Zeroizing<Vec<u8>>> {
+    projected(config, keys, snapshot, now, false, false)
+}
+fn projected(
+    config: &NodeConfig,
+    keys: &LocalDeviceKeys,
+    snapshot: &RegistrySnapshot,
+    now: u64,
+    isolate: bool,
+    clients: bool,
+) -> Result<Zeroizing<Vec<u8>>> {
     if snapshot.network != config.network {
         return Err(AgentError::Invalid("snapshot network mismatch"));
     }
@@ -64,7 +82,10 @@ pub(super) fn desired(
     if serving && !isolate {
         for (id, member) in effective {
             // Deploy clients manage over pinned HTTPS only: no peer, no shell.
-            if id == config.server_id || !member.permissions.is_full() {
+            if id == config.server_id
+                || !member.permissions.is_full()
+                || (!clients && !matches!(member.kind, MemberKind::Server(_)))
+            {
                 continue;
             }
             // The host service grants only the service account, and only to
@@ -108,137 +129,4 @@ pub(super) fn desired(
         return Err(AgentError::Invalid("desired state exceeds limit"));
     }
     Ok(bytes)
-}
-
-/// CA trust and bootstrap addresses include effective servers only, in stable order.
-pub(super) fn gossip(
-    config: &NodeConfig,
-    snapshot: &RegistrySnapshot,
-    now: u64,
-) -> Result<(String, Vec<String>)> {
-    let mut cas = BTreeSet::new();
-    let mut seeds = Vec::new();
-    for (id, member) in snapshot.effective_members(now)? {
-        if let MemberKind::Server(server) = &member.kind {
-            let ca = server
-                .corrosion_ca_certificate_pem
-                .as_deref()
-                .ok_or(AgentError::Invalid("effective server lacks gossip CA"))?;
-            cas.insert(ca.to_owned());
-            if id != config.server_id {
-                seeds.push(format!(
-                    "[{}]:8787",
-                    config.network.id.address(&member.request.wg_public_key)
-                ));
-            }
-        }
-    }
-    if cas.is_empty() {
-        return Err(AgentError::Invalid("no effective gossip issuers"));
-    }
-    let bundle = cas
-        .into_iter()
-        .map(|pem| format!("{}\n", pem.trim()))
-        .collect();
-    Ok((bundle, seeds))
-}
-
-pub(super) fn write_corrosion(
-    config: &NodeConfig,
-    data_dir: &std::path::Path,
-    directory: &Directory,
-    keys: &LocalDeviceKeys,
-    bundle: &str,
-    seeds: &[String],
-    token: &str,
-) -> Result<()> {
-    write_corrosion_at(
-        config,
-        data_dir,
-        directory,
-        config.network.id.address(&keys.wg_public_key()?),
-        bundle,
-        seeds,
-        token,
-    )
-}
-
-/// No peer transport survives self-revocation. Keep the authenticated SQL API
-/// usable for exact durable-denial retries, without granting network authority.
-pub(super) fn write_repair_corrosion(
-    config: &NodeConfig,
-    data_dir: &std::path::Path,
-    directory: &Directory,
-    token: &str,
-) -> Result<()> {
-    let ca = directory.read(&config.files.gossip_ca_certificate, 16 * 1024)?;
-    let ca =
-        std::str::from_utf8(&ca).map_err(|_| AgentError::Invalid("invalid repair CA encoding"))?;
-    write_corrosion_at(
-        config,
-        data_dir,
-        directory,
-        std::net::Ipv6Addr::LOCALHOST,
-        ca,
-        &[],
-        token,
-    )
-}
-
-fn write_corrosion_at(
-    config: &NodeConfig,
-    data_dir: &std::path::Path,
-    directory: &Directory,
-    ip: std::net::Ipv6Addr,
-    bundle: &str,
-    seeds: &[String],
-    token: &str,
-) -> Result<()> {
-    let root = config.network_dir(data_dir);
-    let path = |name: &str| -> Result<String> {
-        Ok(root
-            .join(name)
-            .to_str()
-            .ok_or(AgentError::Invalid("non-UTF8 node path"))?
-            .to_owned())
-    };
-    // TOML quoted strings and arrays use JSON's compatible subset for these
-    // validated ASCII paths, IP literals and bearer bytes (not user snippets).
-    let q = |s: &str| serde_json::to_string(s);
-    let text = Zeroizing::new(format!(
-        "[db]\npath = {}\nschema_paths = [{}]\nsubscriptions_path = {}\n\
-         [api]\naddr = \"127.0.0.1:9834\"\nauthz.bearer-token = {}\n\
-         [gossip]\naddr = \"[{ip}]:8787\"\nclient_addr = \"[{ip}]:0\"\nbootstrap = {}\nplaintext = false\n\
-         idle_timeout_secs = {}\n\
-         [gossip.tls]\ncert_file = {}\nkey_file = {}\nca_file = {}\ninsecure = false\n\
-         [gossip.tls.client]\ncert_file = {}\nkey_file = {}\n\
-         [perf]\nmax_sync_backoff = {}\n\
-         [admin]\npath = {}\n[log]\nformat = \"json\"\n",
-        q(&path("corrosion.db")?)?,
-        q(&path("corrosion.schema.sql")?)?,
-        q(&path("subscriptions")?)?,
-        q(token)?,
-        serde_json::to_string(seeds)?,
-        tako_network::corrosion::GOSSIP_IDLE_TIMEOUT_SECS,
-        q(&path(&config.files.gossip_certificate)?)?,
-        q(&path(&config.files.gossip_private_key)?)?,
-        q(&path("corrosion-ca.pem")?)?,
-        q(&path(&config.files.gossip_certificate)?)?,
-        q(&path(&config.files.gossip_private_key)?)?,
-        tako_network::corrosion::MAX_SYNC_BACKOFF_SECS,
-        q(&path("corrosion-admin.sock")?)?
-    ));
-    directory.write("corrosion-ca.pem", bundle.as_bytes())?;
-    directory.write(
-        "corrosion.schema.sql",
-        format!(
-            "{}\n{}\n{}\n",
-            tako_network::corrosion::CORROSION_SCHEMA,
-            tako_network::services::SERVICE_SCHEMA,
-            tako_network::shared::SHARED_SCHEMA
-        )
-        .as_bytes(),
-    )?;
-    directory.write("corrosion.toml", text.as_bytes())?;
-    Ok(())
 }

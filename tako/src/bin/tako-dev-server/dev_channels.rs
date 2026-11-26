@@ -1,5 +1,5 @@
 //! Channel support for `tako dev`. Replay lives in each project's dev
-//! database, `.tako/data/tako/channels.sqlite`, which the daemon serves with
+//! database, `.tako/data/tako/channels.db`, which the daemon serves with
 //! its other local databases; presence stays in the daemon's memory.
 //!
 //! Subscribe and connect are authorized by the running app exactly as in
@@ -34,7 +34,7 @@ const DEV_PROXY_IS_HTTPS: bool = true;
 const INTERNAL_TOKEN_HEADER: &str = "x-tako-internal-token";
 
 /// The project's dev replay database, relative to its directory.
-const REPLAY_FILE: &str = ".tako/data/tako/channels.sqlite";
+const REPLAY_FILE: &str = ".tako/data/tako/channels.db";
 
 /// The daemon's channel stores, keyed by the app id channel requests and
 /// internal-socket publishes name. Each registered app gets its replay
@@ -736,7 +736,7 @@ mod tests {
             replay_bindings("/p"),
             HashMap::from([(
                 "@channels".to_string(),
-                "/p/.tako/data/tako/channels.sqlite".to_string()
+                "/p/.tako/data/tako/channels.db".to_string()
             )])
         );
     }

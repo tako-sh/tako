@@ -9,7 +9,25 @@ use async_trait::async_trait;
 use pingora_core::server::{ShutdownSignal, ShutdownSignalWatch};
 use tokio::runtime::Runtime;
 
-pub(super) fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<PathBuf>) {
+// The successor requests the database locks on a private, inherited socket.
+// The parent stays alive until the separate application-ready signal.
+const HANDOFF: &str = "TAKO_STORAGE_HANDOFF";
+pub(super) fn request_storage_handoff() -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::fd::{AsFd, OwnedFd};
+    if std::env::var_os(HANDOFF).is_some() {
+        let fd: OwnedFd = std::io::stdin().as_fd().try_clone_to_owned()?;
+        std::os::unix::net::UnixStream::from(fd).write_all(b"H")?;
+    }
+    Ok(())
+}
+
+pub(super) fn spawn_reload_signal_handlers(
+    rt: &Runtime,
+    startup_exe: Option<PathBuf>,
+    state: Arc<ServerState>,
+    network: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
+) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -37,13 +55,49 @@ pub(super) fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<Pat
                 },
             };
             let args: Vec<String> = std::env::args().skip(1).collect();
-            match std::process::Command::new(&exe)
+            let (parent, child_socket) = match std::os::unix::net::UnixStream::pair() {
+                Ok(pair) => pair,
+                Err(error) => {
+                    tracing::error!(%error, "Cannot create storage handoff socket");
+                    return;
+                }
+            };
+            match tokio::process::Command::new(&exe)
                 .args(&args)
+                .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                    child_socket,
+                )))
+                .env(HANDOFF, "1")
                 .env(SIGNAL_PARENT_ON_READY_ENV, "1")
                 .env_remove("TAKO_NATIVE_PROMOTION")
                 .spawn()
             {
-                Ok(child) => tracing::info!(pid = child.id(), "New server process spawned"),
+                Ok(mut child) => {
+                    if parent.set_nonblocking(true).is_err() {
+                        return;
+                    }
+                    let Ok(mut socket) = tokio::net::UnixStream::from_std(parent) else {
+                        return;
+                    };
+                    use tokio::io::AsyncReadExt;
+                    if socket.read_u8().await.ok() == Some(b'H') {
+                        state.stop_databases().await;
+                        // Exit of the successor before readiness returns ownership to this primary.
+                        if child.wait().await.is_ok() && !state.runtime_config().standby {
+                            state.start_databases_after_handoff(network.clone()).await;
+                            if let Some((id, proxy)) = &network {
+                                while state
+                                    .recover_assigned_storage(proxy, id, false)
+                                    .await
+                                    .is_err()
+                                {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                }
+                            }
+                            state.serve_databases();
+                        }
+                    }
+                }
                 Err(e) => tracing::error!("Failed to spawn new server: {e}"),
             }
         });

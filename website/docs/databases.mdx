@@ -1,9 +1,11 @@
 ---
 title: Databases
-description: "Create Tako-hosted SQLite databases on a network server, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
+description: "Deploy Turso databases on Tako servers, bind them to apps, migrate them, query them with libSQL drivers, and back them up continuously with point-in-time restore."
 ---
 
-A Tako database is a SQLite database that `tako-server` hosts on one server of a [native network](/networks/). Apps do not open the file. They reach it over the libSQL HTTP protocol (Hrana over HTTP, JSON encoding) with a per-binding token, so existing libSQL drivers work unchanged, the same code runs under `tako dev`, and Tako can back up, restore, and move the file without coordinating with app processes. Apps on every server of the network can use it.
+Tako runs the Turso SQL engine on the servers selected by an environment’s deploy. Applications use a libSQL-compatible HTTP driver through the Tako binding. Each database has one elected writer. On that server, independent `BEGIN CONCURRENT` transactions can update different rows. Conflicting transactions can return `SQLITE_BUSY` and require a retry of the whole transaction.
+
+Hosted databases use ordinary rowid tables. Use a primary key or a unique constraint for composite keys and omit `WITHOUT ROWID` from hosted migrations. Local bindings and migrations use the same Turso engine. Imports and exports use the portable SQLite file format.
 
 Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR` remain plain file directories; Tako does not discover, capture, or back up SQLite files placed there.
 
@@ -17,13 +19,7 @@ Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DAT
 
 ## Create and bind a database
 
-A database belongs to the network, not to an environment. Names are unique within a network, across its databases and [KV stores](/kv/), start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). On a network with **one trusted server**, a full client's `tako deploy` creates any missing databases declared by the environment (KV stores are always created with `tako kv create`). On a network with **several servers**, choose a home for each missing database first:
-
-```bash
-tako db create main --server edge-a
-```
-
-`create` makes the database file on `edge-a` and records it in the network state. `--server` can be omitted when the network has a single server. Bind the database in each environment that uses it, by name, in `tako.toml`; the key is the binding name the app reads, and the value is the database name:
+Database names are unique across a network’s databases and KV stores. A name starts with a lowercase letter and contains up to 63 lowercase letters, digits, hyphens, or underscores. Declare the database under the environment in `tako.toml`. The key is the binding name in application code and the value is the database name.
 
 ```toml
 [envs.production]
@@ -32,21 +28,27 @@ db = { main = "main" }
 
 Then deploy with `tako deploy --env production`.
 
-The network record determines the home, even if the app deploys elsewhere. An app targeting just `edge-a` on a two-server network still needs an explicit placement for a missing database. `tako deploy --env production --dry-run --json` previews creations from cached records. A successful `tako deploy --env production --json` reports newly created names and homes in `created_databases`; subsequent deployments reuse them. A deploy-only identity cannot create or grant a database. Use a full client for the first deploy that needs a new binding or target.
+A full-access deploy claims each missing name and prepares a replica on each selected server. A second app using the same name joins the same database. Adding a server to the network alone does not copy app data. Deploy with full access when introducing a binding or a new target. Preparing reports storage readiness per binding before the rollout.
 
-A deploy fails when a bound name belongs to a KV store rather than a database. `tako db list --json` shows the network's databases, their servers, and whether this project uses them (`in_project`).
+A SQL binding requires a name registered as a database. Run `tako status` to see which servers host replicas, which one is the current leader, and which apps bind to the database. `tako db list --json` lists the network's catalog entries and whether this project uses each one (`in_project`).
 
 Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. An environment's `db` and `kv` bindings share one set of names, so a binding name is used by one of them. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].db` is set.
 
 `tako db` commands use `--network` when given, else the network configured in the selected TOML file's environments, else this machine's only network, else they ask in an interactive terminal. When the environments configure several networks, pass `--network <alias-or-id>`.
 
-### Use a database for channel replay
+#### Read from the local database
+
+Pass `tako.db.main.readReplica` to the same libSQL client as `tako.db.main`. Tako grants the replica connection read-only access. Writes return `SQLITE_READONLY`. Interactive read transactions use the same connection for their lifetime. Go exposes `db.ReadReplica()` and Rust exposes `db.read_replica()`.
+
+The ordinary binding sends reads and writes to the elected leader. A successful write is durable on a voting majority. One voter commits locally, two require both, and three require two. With one voter in each of three regions, a healthy write pays the round trip to the fastest acknowledging follower, plus a round trip from the app to the leader if they run apart. An election or loss of quorum can delay requests. The read replica serves the last locally applied transaction. It can lag a successful write. Use the ordinary binding for read-after-write consistency.
+
+## Use a database for channel replay
 
 `[envs.production.channels]` with `database = "chat-prod-replay"` selects a database for Tako to use on behalf of the app. It does **not** create an app SQL alias, run the project's SQL migrations against a replay-only database, or give the app, its workers or its release command a SQL token for replay. The same setting works for an SDK-enabled Compose group, which cannot use ordinary app SQL bindings.
 
 Without that setting, a channel-capable deploy selects a generated app/environment database. The automatically owned database cannot be bound as app SQL. If you intentionally select an ordinary database for replay and also bind it for SQL, the SQL binding can read or change **every table**: channel namespace isolation is not a SQL access restriction. Prefer a dedicated replay database.
 
-`tako db list --json` shows the home, `in_project`, `channel_replay_envs`, and `channel_owner` for an automatically owned database. `tako db status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
+`tako db list --json` includes `channel_replay_envs` and the `channel_owner` of an automatically owned database. `tako db status <name> --json` shows actual local bindings and remote grants; `<app>/<env>#channels` identifies runtime use, distinct from `<app>/<env>` for app SQL. For provider selection, multi-server placement, and upgrading existing apps, see [Deploy Replay Storage](/channels/#deploy-replay-storage).
 
 ## Use it from application code
 
@@ -55,7 +57,7 @@ Each binding is a connection: a URL on the app's own server plus a token for tha
 <CodeGroup>
 
 ```ts JavaScript
-import { createClient } from "@libsql/client";
+import { createClient } from "@tursodatabase/serverless/compat";
 import { tako } from "tako.sh";
 
 const main = tako.db.main;
@@ -104,7 +106,7 @@ fn main_database() -> tako::Db {
 
 </CodeGroup>
 
-JavaScript also works with `connect` from `@tursodatabase/serverless`, which uses the v3 cursor endpoint for streaming large results. Tako's test suite exercises both JavaScript drivers: statements, positional and named arguments, blobs, 64-bit integers, batches, interactive transactions, `executeMultiple`, cursors, and error codes.
+JavaScript also works with `connect` from `@tursodatabase/serverless`, which uses the v3 cursor endpoint for streaming large results. Tako’s test suite exercises the v2 HTTP protocol and the Turso driver’s libSQL-compatible and streaming APIs, including statements, positional and named arguments, blobs, 64-bit integers, batches, interactive transactions, `executeMultiple`, cursors, and error codes.
 
 `tako generate` adds a `TakoDb` interface to `tako.d.ts`, so `tako.db.main` is typed for every bound name. Bindings are read when accessed. Logging or serializing a connection redacts its token; treat the token as a secret and never send it to a browser.
 
@@ -117,7 +119,7 @@ ORMs that run on `@libsql/client` reach Tako through it:
 - Drizzle: `drizzle(createClient(tako.db.main))` from `drizzle-orm/libsql`, with `migrate` from `drizzle-orm/libsql/migrator` for migrations run by app code.
 - Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`. Prisma Migrate cannot open a Tako database directly; generate SQL (for example with `prisma migrate diff --script`) into a [migration file](#migrations).
 
-Tako's test suite applies Drizzle migrations with `migrate` and queries through Drizzle, including a rolled-back transaction and a cascading delete; Prisma is not part of it. Migration tools that connect from your workstation cannot reach the database: the endpoint listens on the server's loopback interface. Use [Tako's migrations](#migrations), or run a tool's migrator as a [release command](/deployment/#release-commands) or through `tako run` in development.
+The Drizzle integration test uses `drizzle-orm/sqlite-proxy` over a Hrana v2 HTTP stream. It applies migrations, rolls back a transaction, and verifies a cascading delete. Migration tools that connect from your workstation cannot reach the database: the endpoint listens on the server's loopback interface. Use [Tako's migrations](#migrations), or run a tool's migrator as a [release command](/deployment/#release-commands) or through `tako run` in development.
 
 ## Migrations
 
@@ -150,10 +152,10 @@ History is kept per app: apps that share a database each track their own migrati
 
 ## Develop locally
 
-`tako dev` and `tako run` serve bound databases from local files with the same protocol and SDK surface, so code does not change between development and production:
+`tako dev` and `tako run` serve bound databases with the same Turso engine, SQL permissions, and SDK as a deployment. Each binding has a local file.
 
 ```text
-.tako/data/databases/<database-name>.sqlite
+.tako/data/databases/<database-name>.db
 ```
 
 Files are created on first use, and migrations are applied to them. Development uses `[envs.development].db` when it is set. Otherwise it binds every name used by any environment, taking the database from the first environment in name order, so most projects need no development bindings. To choose them yourself:
@@ -210,11 +212,11 @@ tako storage credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by a full client sends the destination and credentials to the database's server. Removing the backup storage and deploying stops backups. Moving to another storage starts a new history there, beginning with a full snapshot; the history in the earlier storage stays there (retention and `delete` reach only the current one), so remove `_tako/databases/<name>/` from it yourself once you no longer need it. A new database is not backed up until such a deploy. Without a backup storage, a lost server loses the database. Environments that bind the same database should use the same storage, since each full client's deploy sets it.
+A deploy by a full client sends the destination and credentials to the database's server. Removing the backup storage and deploying stops backups. Moving to another storage starts a new history there, beginning with a full snapshot; the history in the earlier storage stays there (retention applies to the current destination), so remove `_tako/databases/<name>/` from it yourself once you no longer need it. A new database is not backed up until such a deploy. Backups retain committed data independently of the replicas. Environments that bind the same database should use the same storage, because each full client's deploy sets it.
 
 ### Continuous backups
 
-The server backs the database up continuously, with an embedded port of [Litestream](https://litestream.io): every 10 seconds it captures the transactions committed since the last capture from SQLite's write-ahead log and uploads them. An idle database makes no requests. Losing the server loses at most the writes of the last few seconds, plus anything storage did not accept while it was failing. Any moment of the last 7 days can be restored, as of the newest capture before it: captures are at most 10 seconds apart while the database changes.
+For replicated databases, the elected leader uploads committed Turso recovery images and changes to backup storage. A Raft majority commits each write before the client receives success. Uploads run separately. The latest recovery point is the last committed transaction uploaded to storage. The default retention window is seven days.
 
 - **Full snapshots** restore on their own. The server captures one when backups start (after the server starts, a restore, import, or reset, or a new destination), once a day while the database changes, and on demand with `tako db backup <name>`.
 - **Restore points** name a transaction: the state before a deploy's release command, before pending migrations, and before a restore, import, or reset replaces the database. Every full snapshot is a restore point too.
@@ -224,7 +226,7 @@ Uploads are encrypted with AES-256-GCM using the database's own key, which also 
 
 When storage fails, the server keeps capturing on its own disk and retries with backoff, at most 15 minutes apart, uploading everything once storage accepts it again; `tako db status` shows the last error. Stopping or upgrading the server uploads what is left first, for up to 20 seconds, and the rest when it starts again. A database that changes all the time makes about 8,600 uploads a day and one full snapshot a day.
 
-Capture keeps two small control tables in the database, `_litestream_seq` and `_litestream_lock`. Leave them alone, and expect schema tools to list them.
+A hosted export or restore materializes a portable SQLite file from the committed base and transaction log.
 
 ### Restore
 
@@ -242,37 +244,28 @@ tako db restore main --latest
 - `--snapshot <id>`: a restore point from `backups`.
 - `--latest`: the newest transaction uploaded, which recovers a lost or damaged copy.
 
-A restore checks that the server has room, downloads only what it needs (the newest full snapshot at or before the target, then the transactions after it), verifies every checksum and the restored file's integrity before anything changes, then pauses the database and swaps it in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. Before the swap, the server captures and uploads exactly the contents it replaces and records them as a restore point with reason `restore`, so restoring that point's `--snapshot` ID undoes the restore; the replaced file is also kept beside the database as `previous.sqlite` until the next replacement. The restored state then continues the history: `--latest` and later times include it.
+A restore checks that the server has room, downloads only what it needs (the newest full snapshot at or before the target, then the transactions after it), verifies every checksum and the restored file's integrity before anything changes, then pauses the database and swaps it in. While a database is replaced, apps' requests to it get `503` responses. In-flight requests finish first; the replacement fails, leaving the database unchanged, if they take longer than 30 seconds. Before the swap, the server captures and uploads exactly the contents it replaces and records them as a restore point with reason `restore`, so restoring that point's `--snapshot` ID undoes the restore; the replaced file is also kept beside the database as `previous.db` until the next replacement. The restored state then continues the history: `--latest` and later times include it.
 
 Hosted channel replay uses this same backup destination and restore process. With no backup storage there is no backup. Restoring, importing or resetting a shared file affects all the apps that use it: their replay cursors reset and connected subscribers resync. It does not restore live presence or ephemeral messages. After moving its home, redeploy the affected environments with full access and have clients resync.
 
+For local inspection or disaster recovery, `tako db restore main --latest --output ./recovered.db` creates a portable file directly from uploaded history. A synchronized full-access workstation can do this while the database group is offline. See [local recovery](/backups/#recover-sql-to-a-local-file).
+
 ### Import and export
 
+Tako uses `.db` for managed SQL files. You can choose any filename for an import, export, or local restore.
+
 ```bash
-tako db export main ./main.sqlite
-tako db import main ./main.sqlite
+tako db export main ./main.db
+tako db import main ./main.db
 ```
 
 `export` downloads a consistent copy without pausing apps and refuses to overwrite an existing file. `import` replaces the database with a local SQLite file after verifying it on the server; when backups are configured, the current contents are backed up first and named with a restore point (reason `restore`). Only the main file is uploaded: stop writers and checkpoint the file (`PRAGMA wal_checkpoint(TRUNCATE)`) before importing a database that uses WAL. Imports are limited to 64 GiB. An import or export in progress is held by the server process, so a restart or upgrade of the server ends it; run the command again.
 
 To move an app from a SQLite file in its data directory, create a hosted database, copy the file to your machine during a write freeze, import it, bind the database, and deploy the code that uses `tako.db`.
 
-### Recover on another server
+### Replace a failed replica
 
-```bash
-tako db restore main --latest --server edge-b
-tako deploy --env production
-```
-
-With `--server`, Tako creates the database on `edge-b` from its backups and records `edge-b` as its server in the network; `tako.toml` does not change. `--latest` restores everything the old server uploaded, so at most its last few seconds of writes are lost; `--at` and `--snapshot` work too. It reads the backups from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
-
-When the old server is still running, its copy stays, and Tako stops its backups so it cannot prune the new copy's history. An old server that was unreachable during the move stops uploading on its own once it is back: the restore recorded `edge-b` as the database's holder in the backup storage. Until it notices, anything it still uploads stays apart from the new copy's history, which starts far above it, so a restore never mixes the two; once it notices, it stops capturing, also across restarts. The copy a move creates on `edge-b` uploads nothing until its restore has finished, so its empty file never becomes the latest state. Once every app is deployed, remove the old copy:
-
-```bash
-tako db delete main --server edge-a
-```
-
-That deletes only the copy on `edge-a`; the database, its network record, and its backups stay. If `edge-a` holds an earlier database of the same name instead (one deleted from the network while `edge-a` was unreachable), the command says so before deleting it, together with that database's backups. If the recovery itself fails, Tako removes the new copy on `edge-b` without touching the backups. If the move stops after the restore (for example, the network record could not be published), run the same command again: it finds its copy on `edge-b`, restores it again, and finishes the move. If that second restore fails, the copy on `edge-b` stays as it was, so the command can be run again. To abandon the move instead, remove that copy with `tako db delete main --server edge-b`, which gives the backups back to the copy the network still names; `tako db delete main` also removes such leftover copies from every reachable server of the network.
+Deploy the app to the replacement server while the group has a voting majority. Preparing catches the new replica up to the committed state. Other targets can keep serving during this operation. A point-in-time restore rolls back every replica of the database.
 
 ## Reset a database
 
@@ -289,26 +282,26 @@ tako db reset main --local
 tako db delete main
 ```
 
-`delete` (alias `rm`) removes the file from its server, its backups from its current backup storage, its records in the network state, and the database's bindings and `[db.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. A small `holder` marker stays under the database's prefix, so that a copy on a server the delete could not reach uploads nothing when it comes back. When backup storage cannot be reached the database is still deleted, and a warning names the prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm. Imports and exports of the database still in progress end with it.
+For replicated resources, `delete` waits for the generation to have no active or retained release bindings. It then retires the generation and removes its replicas. Objects already uploaded to backup storage keep their original generation and recovery key. A later deployment that reuses the name creates a fresh generation. Use `tako delete --server <server>` to remove an application from a particular server and reconcile its storage there.
 
 ## Apps on other servers
 
 An app on another server than its database's connects to its own server as usual. That server forwards the request over the network's private WireGuard transport to the database's server on port 9847, which the network firewall opens only to other servers. A full client's deploy grants the app environment the database on its server, and revokes grants the new release no longer uses only after its rollout succeeds, so the previous release keeps working until then; the grant comes with a key that the deploy hands to the app's servers, and forwarded requests must carry it, so other processes on a granted server cannot act for the environment. Tokens never leave the app's server. A deploy client keeps the bindings and keys a full client provisioned.
 
-Each remote query adds a private-network round trip, so place a database on the server where most of its traffic runs. The database is unavailable to every server while its home server is down; forwarded requests then fail with `502`. Writes are serialized on one server: there is no replication or failover.
+Targets share the same committed history. Tako elects a leader automatically. After an election, the ordinary binding follows the new leader. An in-flight operation can fail with an unknown commit outcome. Use idempotency keys for operations an application retries.
 
 ## Limits and security
 
 - Each binding has its own random token. A token works only on the server that issued it and only for the databases its app environment binds. Binding tokens stay stable across deploys while a binding names the same database on the same server.
 - During a rolling deploy, the old and new release's bindings are both active, so old instances keep working until they drain. A release command receives temporary bindings that are revoked when it finishes.
 - SQL cannot reach other files or load code: `ATTACH` (including `VACUUM INTO '<path>'` and attachments named at run time), `load_extension`, and `fts3_tokenizer` are refused. Plain `VACUUM` works.
-- Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako runs WAL with `synchronous = FULL`.
+- Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako manages durability through Turso and Raft.
 - `foreign_keys` is on for every connection. A statement may take at most 30 seconds to prepare and run, and the statements of one `sequence` (such as `executeMultiple`) share that limit; a statement waits up to 5 seconds for the write lock. A migration file's statements may run for 5 minutes together and wait up to 30 seconds for the write lock. Interactive transactions idle for 10 seconds are rolled back.
 - Requests are limited to 32 MiB and 65,536 statements and batch steps, and a request's body must arrive within 30 seconds (otherwise `408`); a request that waits 30 seconds for one of the database's 32 request slots, or for room in the server's 256 MiB of buffered requests and cursor output, gets `503`, as does a pipeline whose results find no room left in that buffer (results stay counted until the response is sent); a connection that sends no request for 30 seconds, or stops reading its response for 30 seconds, is closed, and a server holds at most 1,024 connections per listener; responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
 - App SQL bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them; their SDK-enabled services can use hosted replay through the channel runtime.
 - A deploy client cannot change an environment's database bindings; a full client must deploy the change.
 - Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys), record the restore point before their own release, and apply their own app's migrations; backup keys are readable only by full clients.
-- `create` refuses a name the network already has, including a KV store's. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako db delete <name> --server <server>` removes.
+- Concurrent first deploys use the network catalog to reserve one generation for a name. An engine or service ownership conflict stops the deploy. Existing data groups commit independently of the catalog.
 
 ## Verify
 

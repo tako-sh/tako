@@ -11,7 +11,6 @@
 //! from async contexts.
 
 mod hosted;
-pub(crate) mod legacy;
 pub(crate) mod operator;
 mod replacement;
 
@@ -179,37 +178,7 @@ struct ScheduleRegistration {
 impl RunsDb {
     /// Import `app`'s runs from the per-server SQLite store an earlier
     /// release kept at `path`, then rename that file. A store that cannot
-    /// be read is left in place, and the import is tried again on the next
-    /// deploy or restart.
-    pub(crate) fn import_legacy_store(&self, path: &std::path::Path) {
-        let imported = legacy::read(path)
-            .map_err(|error| error.to_string())
-            .and_then(|rows| {
-                self.store
-                    .import_legacy(&rows)
-                    .map(|()| rows.len())
-                    .map_err(|error| error.to_string())
-            })
-            .and_then(|count| {
-                legacy::retire(path)
-                    .map(|()| count)
-                    .map_err(|error| error.to_string())
-            });
-        match imported {
-            Ok(rows) => tracing::info!(
-                path = %path.display(),
-                rows,
-                "Imported workflow runs from this server's earlier store"
-            ),
-            Err(error) => tracing::warn!(
-                path = %path.display(),
-                %error,
-                "Could not import workflow runs from this server's earlier store; retrying on the next start"
-            ),
-        }
-    }
-
-    /// Opens the store, creating its tables when they are missing.
+    /// be read is left in place, and the import is tried again on the next    /// Opens the store, creating its tables when they are missing.
     pub fn open(config: WorkflowStoreConfig) -> Result<Self, RunsDbError> {
         Ok(Self::with_store(HostedRunsDb::open(
             &config.url,

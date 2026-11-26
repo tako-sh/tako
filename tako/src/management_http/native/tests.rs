@@ -20,7 +20,6 @@ fn identity() -> Identity {
         ssh_port: 22,
         https_port: 8443,
         https_certificate_pem: Some(certificate),
-        corrosion_ca_certificate_pem: None,
         https_spki_sha256: None,
     };
     Identity {

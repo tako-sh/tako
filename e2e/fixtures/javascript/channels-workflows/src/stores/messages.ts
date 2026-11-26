@@ -1,4 +1,4 @@
-import { createClient, type Client } from "@libsql/client";
+import { createClient, type Client } from "@tursodatabase/serverless/compat";
 import { defineStore, tako } from "tako.sh";
 
 let database: Promise<Client> | undefined;

@@ -1,0 +1,883 @@
+use crate::alloc::TursoVecExt;
+use crate::translate::expr_context::ExprContext;
+use turso_parser::ast;
+
+use crate::{
+    function::{AccumulatorFunc, AggFunc},
+    schema::Table,
+    sync::Arc,
+    translate::collate::CollationSeq,
+    vdbe::{
+        builder::ProgramBuilder,
+        insn::{AggStepData, Insn},
+    },
+    LimboError, Result,
+};
+
+use super::{
+    emitter::{OperationMode, Resolver, TranslateCtx},
+    expr::{
+        resolve_expr, translate_condition_expr, translate_expr, translate_expr_no_constant_opt,
+        ConditionMetadata, NoConstantOptReason,
+    },
+    plan::{
+        Aggregate, Distinctness, EvalAt, NonFromClauseSubquery, SelectPlan, SubqueryEvalPhase,
+        SubqueryOrigin, SubqueryState, TableReferences,
+    },
+    result_row::emit_select_result,
+    subquery::emit_non_from_clause_subqueries_for_phase,
+};
+
+/// Emits the bytecode for processing an aggregate without a GROUP BY clause.
+/// This is called when the main query execution loop has finished processing,
+/// and we can now materialize the aggregate results.
+pub fn emit_ungrouped_aggregation<'a>(
+    program: &mut ProgramBuilder,
+    t_ctx: &mut TranslateCtx<'a>,
+    plan: &'a SelectPlan,
+    output_subqueries: &mut [NonFromClauseSubquery],
+) -> Result<()> {
+    let agg_start_reg = t_ctx.reg_agg_start.unwrap();
+
+    for (i, agg) in plan.aggregates.iter().enumerate() {
+        let agg_result_reg = agg_start_reg + i;
+        emit_aggregate_final(
+            program,
+            &plan.table_references,
+            agg,
+            agg_result_reg,
+            &t_ctx.resolver,
+        )?;
+    }
+    // we now have the agg results in (agg_start_reg..agg_start_reg + aggregates.len() - 1)
+    // we need to call translate_expr on each result column, but replace the expr with a register copy in case any part of the
+    // result column expression matches a) a group by column or b) an aggregation result.
+    for (i, agg) in plan.aggregates.iter().enumerate() {
+        t_ctx.resolver.cache_expr_reg(
+            std::borrow::Cow::Borrowed(&agg.original_expr),
+            agg_start_reg + i,
+            false,
+        );
+    }
+    t_ctx.resolver.enable_expr_to_reg_cache();
+
+    // Subqueries that read an aggregate this query computes need the
+    // aggregate's finalized register, so they must be emitted now — after
+    // AggFinal and the cache population above, and before the result row that
+    // reads them.
+    emit_non_from_clause_subqueries_for_phase(
+        program,
+        &t_ctx.resolver,
+        output_subqueries,
+        &plan.join_order,
+        Some(&plan.table_references),
+        SubqueryEvalPhase::UngroupedAggregateOutput,
+        |_| true,
+    )?;
+
+    // Allocate a label for the end (used by both HAVING and OFFSET to skip row emission)
+    let end_label = program.allocate_label();
+
+    // Handle HAVING clause without GROUP BY for ungrouped aggregation
+    if let Some(group_by) = &plan.group_by {
+        if group_by.exprs.is_empty() {
+            if let Some(having) = &group_by.having {
+                for expr in having.iter() {
+                    let if_true_target = program.allocate_label();
+                    translate_condition_expr(
+                        program,
+                        &plan.table_references,
+                        expr,
+                        ConditionMetadata {
+                            jump_if_condition_is_true: false,
+                            jump_target_when_false: end_label,
+                            jump_target_when_true: if_true_target,
+                            // treat null result as false
+                            jump_target_when_null: end_label,
+                        },
+                        &t_ctx.resolver,
+                    )?;
+                    program.preassign_label_to_next_insn(if_true_target);
+                }
+            }
+        }
+    }
+
+    // Handle OFFSET for ungrouped aggregates
+    // Since we only have one result row, either skip it (offset > 0) or emit it
+    if let Some(offset_reg) = t_ctx.reg_offset {
+        // If offset > 0, jump to end (skip the single row)
+        program.emit_insn(Insn::IfPos {
+            reg: offset_reg,
+            target_pc: end_label,
+            decrement_by: 0,
+        });
+    }
+
+    // If the loop never ran (once-flag is still 0), we need to evaluate non-aggregate columns now.
+    // This ensures literals return their values and column references return NULL (since no
+    // rows matched). The once-flag mechanism normally evaluates non-agg columns on first
+    // iteration, but if there were no iterations, we must do it here.
+    //
+    // We must emit NullRow for all table cursors first, because after a WHERE-filter
+    // jump-out the cursor may still be positioned on a valid (but non-matching) row.
+    // Without NullRow, Column instructions would read stale data from that row instead
+    // of returning NULL.
+    if let Some(once_flag) = t_ctx.reg_nonagg_emit_once_flag {
+        let skip_nonagg_eval = program.allocate_label();
+        // If once-flag is non-zero (loop ran at least once), skip evaluation
+        program.emit_insn(Insn::If {
+            reg: once_flag,
+            target_pc: skip_nonagg_eval,
+            jump_if_null: false,
+        });
+        // Set all table cursors to NullRow so that Column instructions return NULL
+        // instead of leaking stale values from the last scanned (but non-matching) row.
+        // Also null out coroutine output registers for CTEs/subqueries.
+        for table_ref in plan.table_references.joined_tables() {
+            let (table_cursor_id, index_cursor_id) =
+                table_ref.resolve_cursors(program, OperationMode::SELECT)?;
+            for cursor_id in [table_cursor_id, index_cursor_id].into_iter().flatten() {
+                program.emit_insn(Insn::NullRow { cursor_id });
+            }
+            if let Table::FromClauseSubquery(subquery) = &table_ref.table {
+                if let Some(start_reg) = subquery.result_columns_start_reg {
+                    let num_cols = subquery.columns.len();
+                    if num_cols > 0 {
+                        program.emit_insn(Insn::Null {
+                            dest: start_reg,
+                            dest_end: if num_cols > 1 {
+                                Some(start_reg + num_cols - 1)
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        // A result column subquery that runs inside the loop last ran for a
+        // row that never reached the aggregate. Run it again so that it reads
+        // the NULL row too.
+        for subquery in output_subqueries.iter() {
+            if let SubqueryState::Evaluated {
+                evaluated_at: EvalAt::Loop(_),
+                subroutine: Some(subroutine),
+                ..
+            } = &subquery.state
+            {
+                if subquery.origin == SubqueryOrigin::SelectList {
+                    program.emit_insn(Insn::Gosub {
+                        target_pc: subroutine.label,
+                        return_reg: subroutine.return_reg,
+                    });
+                }
+            }
+        }
+        // Evaluate non-aggregate columns now (with cursor in invalid state, columns return NULL)
+        // Must use no_constant_opt to prevent constant hoisting which would place the label
+        // after the hoisted constants, causing infinite loops in compound selects.
+        let col_start = t_ctx.reg_result_cols_start.unwrap();
+        for (i, rc) in plan.result_columns.iter().enumerate() {
+            if !rc.contains_aggregates {
+                translate_expr_no_constant_opt(
+                    program,
+                    Some(&plan.table_references),
+                    &rc.expr,
+                    col_start + i,
+                    &t_ctx.resolver,
+                    NoConstantOptReason::RegisterReuse,
+                )?;
+            }
+        }
+        program.preassign_label_to_next_insn(skip_nonagg_eval);
+    }
+
+    // Emit the result row (if we didn't skip it due to HAVING or OFFSET)
+    emit_select_result(
+        program,
+        &t_ctx.resolver,
+        plan,
+        None,
+        None,
+        t_ctx.reg_nonagg_emit_once_flag,
+        None, // we've already handled offset
+        t_ctx.reg_result_cols_start.unwrap(),
+        t_ctx.limit_ctx,
+    )?;
+
+    // Resolve the SELECT DISTINCT label if present
+    // When a duplicate is found by the Found instruction, jump here to skip emitting the row
+    if let Distinctness::Distinct { ctx, .. } = &plan.distinctness {
+        let distinct_ctx = ctx.as_ref().expect("distinct context must exist");
+        program.preassign_label_to_next_insn(distinct_ctx.label_on_conflict);
+    }
+
+    program.preassign_label_to_next_insn(end_label);
+
+    Ok(())
+}
+
+/// Emits the bytecode for handling duplicates in a distinct aggregate.
+/// This is used in both GROUP BY and non-GROUP BY aggregations to jump over
+/// the AggStep that would otherwise accumulate the same value multiple times.
+pub fn handle_distinct(
+    program: &mut ProgramBuilder,
+    distinctness: &Distinctness,
+    agg_arg_reg: usize,
+) {
+    let Distinctness::Distinct { ctx, .. } = distinctness else {
+        return;
+    };
+    let distinct_ctx = ctx
+        .as_ref()
+        .expect("distinct aggregate context not populated");
+    distinct_ctx.emit_deduplication_insns(program, 1, agg_arg_reg);
+}
+
+/// Source of aggregate function arguments during bytecode emission.
+///
+/// * `Register`: arguments were pre-computed into contiguous registers
+///   (used for GROUP BY without a sorter, where the main loop is already sorted).
+/// * `Expression`: arguments are evaluated on-the-fly from the original AST
+///   (used for ungrouped aggregates, window functions, and for the GROUP BY sorter
+///   path where leaf columns are cached in `expr_to_reg_cache` before evaluation).
+pub enum AggArgumentSource<'a> {
+    Register {
+        src_reg_start: usize,
+        aggregate: &'a Aggregate,
+    },
+    Expression {
+        func: &'a AggFunc,
+        args: &'a Vec<ast::Expr>,
+        distinctness: &'a Distinctness,
+    },
+}
+
+impl<'a> AggArgumentSource<'a> {
+    pub fn new_from_registers(src_reg_start: usize, aggregate: &'a Aggregate) -> Self {
+        Self::Register {
+            src_reg_start,
+            aggregate,
+        }
+    }
+
+    pub fn new_from_expression(
+        func: &'a AggFunc,
+        args: &'a Vec<ast::Expr>,
+        distinctness: &'a Distinctness,
+    ) -> Self {
+        Self::Expression {
+            func,
+            args,
+            distinctness,
+        }
+    }
+
+    pub fn distinctness(&self) -> &Distinctness {
+        match self {
+            AggArgumentSource::Register { aggregate, .. } => &aggregate.distinctness,
+            AggArgumentSource::Expression { distinctness, .. } => distinctness,
+        }
+    }
+
+    pub fn agg_func(&self) -> &AggFunc {
+        match self {
+            AggArgumentSource::Register { aggregate, .. } => &aggregate.func,
+            AggArgumentSource::Expression { func, .. } => func,
+        }
+    }
+
+    pub fn arg_at(&self, idx: usize) -> &ast::Expr {
+        match self {
+            AggArgumentSource::Register { aggregate, .. } => &aggregate.args[idx],
+            AggArgumentSource::Expression { args, .. } => &args[idx],
+        }
+    }
+
+    pub fn num_args(&self) -> usize {
+        match self {
+            AggArgumentSource::Register { aggregate, .. } => aggregate.args.len(),
+            AggArgumentSource::Expression { args, .. } => args.len(),
+        }
+    }
+
+    /// Emit bytecode to read an aggregate function argument into a register.
+    pub fn translate(
+        &self,
+        program: &mut ProgramBuilder,
+        referenced_tables: &TableReferences,
+        resolver: &Resolver,
+        arg_idx: usize,
+    ) -> Result<usize> {
+        match self {
+            AggArgumentSource::Register {
+                src_reg_start: start_reg,
+                ..
+            } => Ok(*start_reg + arg_idx),
+            AggArgumentSource::Expression { args, .. } => {
+                resolve_expr(program, Some(referenced_tables), &args[arg_idx], resolver)
+            }
+        }
+    }
+}
+
+pub fn emit_aggregate_step(
+    program: &mut ProgramBuilder,
+    tables: &TableReferences,
+    aggregate: &Aggregate,
+    source: AggArgumentSource,
+    target_register: usize,
+    resolver: &Resolver,
+) -> Result<usize> {
+    let Some(cursor_id) = aggregate.order_cursor else {
+        return translate_aggregation_step(
+            program,
+            tables,
+            source,
+            target_register,
+            resolver,
+            aggregate.fraction_reg,
+        );
+    };
+    let span_idx = program.constant_spans_next_idx();
+    let key_count = aggregate.order_by().len();
+    let column_count = key_count + 1 + 2 * aggregate.args.len();
+    let start = program.alloc_registers(column_count);
+    let args_start = start + key_count + 1;
+    for (i, term) in aggregate.order_by().iter().enumerate() {
+        translate_expr(program, Some(tables), &term.expr, start + i, resolver)?;
+    }
+    program.emit_insn(Insn::Sequence {
+        cursor_id,
+        target_reg: start + key_count,
+    });
+    for i in 0..aggregate.args.len() {
+        let src_reg = if aggregate.distinct_uses_order_key() {
+            start
+        } else {
+            source.translate(program, tables, resolver, i)?
+        };
+        program.emit_insn(Insn::Copy {
+            src_reg,
+            dst_reg: args_start + i,
+            extra_amount: 0,
+        });
+    }
+    for i in 0..aggregate.args.len() {
+        program.emit_insn(Insn::GetSubtype {
+            src_reg: args_start + i,
+            dest_reg: args_start + aggregate.args.len() + i,
+        });
+    }
+    if !aggregate.distinct_uses_order_key() {
+        handle_distinct(program, &aggregate.distinctness, args_start);
+    }
+    let record_reg = program.alloc_register();
+    super::order_by::sorter_insert(program, start, column_count, cursor_id, record_reg);
+    program.constant_spans_invalidate_after(span_idx);
+    Ok(target_register)
+}
+
+pub fn emit_aggregate_final(
+    program: &mut ProgramBuilder,
+    tables: &TableReferences,
+    aggregate: &Aggregate,
+    target_register: usize,
+    resolver: &Resolver,
+) -> Result<()> {
+    if let Some(cursor_id) = aggregate.order_cursor {
+        let key_count = aggregate.order_by().len();
+        let column_count = key_count + 1 + 2 * aggregate.args.len();
+        let pseudo_cursor = super::group_by::group_by_create_pseudo_table(program, column_count);
+        let record_reg = program.alloc_register();
+        let args_start = program.alloc_registers(aggregate.args.len().max(1));
+        let end = program.allocate_label();
+        let next = program.allocate_label();
+        program.emit_insn(Insn::OpenPseudo {
+            cursor_id: pseudo_cursor,
+            content_reg: record_reg,
+            num_fields: column_count,
+        });
+        program.emit_insn(Insn::SorterSort {
+            cursor_id,
+            pc_if_empty: end,
+        });
+        program.preassign_label_to_next_insn(next);
+        program.emit_insn(Insn::SorterData {
+            cursor_id,
+            dest_reg: record_reg,
+            pseudo_cursor,
+        });
+        for i in 0..aggregate.args.len() {
+            program.emit_column_or_rowid(pseudo_cursor, key_count + 1 + i, args_start + i);
+        }
+        let subtype_reg = program.alloc_register();
+        for i in 0..aggregate.args.len() {
+            program.emit_column_or_rowid(
+                pseudo_cursor,
+                key_count + 1 + aggregate.args.len() + i,
+                subtype_reg,
+            );
+            program.emit_insn(Insn::SetSubtype {
+                subtype_reg,
+                dest_reg: args_start + i,
+            });
+        }
+        let mut sorted_aggregate = aggregate.clone();
+        let duplicate = if aggregate.distinct_uses_order_key() {
+            let label = program.allocate_label();
+            let Distinctness::Distinct { ctx: Some(ctx), .. } = &mut sorted_aggregate.distinctness
+            else {
+                unreachable!("ordered DISTINCT requires a distinct context");
+            };
+            ctx.label_on_conflict = label;
+            Some(label)
+        } else {
+            sorted_aggregate.distinctness = Distinctness::NonDistinct;
+            None
+        };
+        translate_aggregation_step(
+            program,
+            tables,
+            AggArgumentSource::new_from_registers(args_start, &sorted_aggregate),
+            target_register,
+            resolver,
+            aggregate.fraction_reg,
+        )?;
+        if let Some(label) = duplicate {
+            program.preassign_label_to_next_insn(label);
+        }
+        program.emit_insn(Insn::SorterNext {
+            cursor_id,
+            pc_if_next: next,
+        });
+        program.preassign_label_to_next_insn(end);
+        open_aggregate_sorter(program, tables, resolver, aggregate)?;
+    }
+    program.emit_insn(Insn::AggFinal {
+        register: target_register,
+        func: AccumulatorFunc::Agg(aggregate.func.clone()),
+    });
+    Ok(())
+}
+
+pub(crate) fn open_aggregate_sorter(
+    program: &mut ProgramBuilder,
+    tables: &TableReferences,
+    resolver: &Resolver,
+    aggregate: &Aggregate,
+) -> Result<()> {
+    let mut data = super::order_by::sorter_open_data(
+        aggregate
+            .order_cursor
+            .expect("ordered aggregate cursor must exist"),
+        aggregate.order_by().iter().map(|term| {
+            (
+                term.expr.as_ref(),
+                term.order.unwrap_or(ast::SortOrder::Asc),
+                term.nulls,
+            )
+        }),
+        tables,
+        resolver,
+    )?;
+    data.order_collations_nulls.try_push((
+        if aggregate.distinct_uses_order_key() {
+            ast::SortOrder::Desc
+        } else {
+            ast::SortOrder::Asc
+        },
+        CollationSeq::BINARY,
+        None,
+    ))?;
+    data.columns = aggregate.order_by().len() + 1 + 2 * aggregate.args.len();
+    program.emit_insn(Insn::SorterOpen {
+        data: Box::new(data),
+    });
+    Ok(())
+}
+
+/// Emits the bytecode for processing an aggregate step.
+///
+/// This is distinct from the final step, which is called after a single group has been entirely accumulated,
+/// and the actual result value of the aggregation is materialized.
+///
+/// Ungrouped aggregation is a special case of grouped aggregation that involves a single group.
+///
+/// Examples:
+/// * In `SELECT SUM(price) FROM t`, `price` is evaluated for each row and added to the accumulator.
+/// * In `SELECT product_category, SUM(price) FROM t GROUP BY product_category`, `price` is evaluated for
+///   each row in the group and added to that group’s accumulator.
+pub fn translate_aggregation_step(
+    program: &mut ProgramBuilder,
+    referenced_tables: &TableReferences,
+    agg_arg_source: AggArgumentSource,
+    target_register: usize,
+    resolver: &Resolver,
+    // For `percentile_cont` / `percentile_disc`: register pre-evaluated by
+    // `InitLoop::emit`. `None` for any other aggregate.
+    fraction_reg: Option<usize>,
+) -> Result<usize> {
+    let num_args = agg_arg_source.num_args();
+    let func = agg_arg_source.agg_func();
+    let dest = match func {
+        AggFunc::Avg => {
+            if num_args != 1 {
+                crate::bail_parse_error!("avg bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Avg),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::Count0 => {
+            let expr = ast::Expr::Literal(ast::Literal::Numeric("1".to_string()));
+            let expr_reg = translate_const_arg(program, referenced_tables, resolver, &expr)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Count0),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::Count => {
+            if num_args != 1 {
+                crate::bail_parse_error!("count bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Count),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::GroupConcat => {
+            if num_args != 1 && num_args != 2 {
+                crate::bail_parse_error!("group_concat bad number of arguments");
+            }
+
+            let delimiter_reg = if num_args == 2 {
+                agg_arg_source.translate(program, referenced_tables, resolver, 1)?
+            } else {
+                let delimiter_expr =
+                    ast::Expr::Literal(ast::Literal::String(String::from("\",\"")));
+                translate_const_arg(program, referenced_tables, resolver, &delimiter_expr)?
+            };
+
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: delimiter_reg,
+                    func: AccumulatorFunc::Agg(AggFunc::GroupConcat),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+
+            target_register
+        }
+        AggFunc::Max => {
+            if num_args != 1 {
+                crate::bail_parse_error!("max bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            let expr = &agg_arg_source.arg_at(0);
+            let arg_collation =
+                ExprContext::new(Some(referenced_tables), resolver).expr_collation(expr)?;
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Max),
+                    collation: arg_collation,
+                }),
+            });
+            target_register
+        }
+        AggFunc::Min => {
+            if num_args != 1 {
+                crate::bail_parse_error!("min bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            let expr = &agg_arg_source.arg_at(0);
+            let arg_collation =
+                ExprContext::new(Some(referenced_tables), resolver).expr_collation(expr)?;
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Min),
+                    collation: arg_collation,
+                }),
+            });
+            target_register
+        }
+        #[cfg(feature = "json")]
+        AggFunc::JsonGroupObject | AggFunc::JsonbGroupObject => {
+            if num_args != 2 {
+                crate::bail_parse_error!("max bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            let value_reg = agg_arg_source.translate(program, referenced_tables, resolver, 1)?;
+
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: value_reg,
+                    func: AccumulatorFunc::Agg(AggFunc::JsonGroupObject),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        #[cfg(feature = "json")]
+        AggFunc::JsonGroupArray | AggFunc::JsonbGroupArray => {
+            if num_args != 1 {
+                crate::bail_parse_error!("max bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::JsonGroupArray),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::StringAgg => {
+            if num_args != 2 {
+                crate::bail_parse_error!("string_agg bad number of arguments");
+            }
+
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            let delimiter_reg =
+                agg_arg_source.translate(program, referenced_tables, resolver, 1)?;
+
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: delimiter_reg,
+                    func: AccumulatorFunc::Agg(AggFunc::StringAgg),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+
+            target_register
+        }
+        AggFunc::Sum => {
+            if num_args != 1 {
+                crate::bail_parse_error!("sum bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Sum),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::Total => {
+            if num_args != 1 {
+                crate::bail_parse_error!("total bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Total),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::ArrayAgg => {
+            resolver.require_custom_types("Array features")?;
+            if num_args != 1 {
+                crate::bail_parse_error!("array_agg bad number of arguments");
+            }
+            let expr_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            handle_distinct(program, agg_arg_source.distinctness(), expr_reg);
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::ArrayAgg),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+        AggFunc::Mode => {
+            // Planner rewrites `mode() WITHIN GROUP (ORDER BY x)` to a single arg `[x]`.
+            if num_args != 1 {
+                crate::bail_parse_error!("mode bad number of arguments");
+            }
+            let value_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            // Activate the value's collation so finalize can sort text correctly.
+            let expr = &agg_arg_source.arg_at(0);
+            let arg_collation = ordered_set_collation(
+                func,
+                expr,
+                &ExprContext::new(Some(referenced_tables), resolver),
+            )?;
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: value_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::Mode),
+                    collation: arg_collation,
+                }),
+            });
+            target_register
+        }
+        AggFunc::PercentileCont | AggFunc::PercentileDisc => {
+            // Planner rewrites `percentile_*(fraction) WITHIN GROUP (ORDER BY x)` to
+            // args `[x, fraction]`: the value goes in `col`, the fraction in `delimiter`.
+            // The fraction is evaluated and range-checked once before the row loop
+            // in `InitLoop::emit` — including the input-column / subquery rejection.
+            if num_args != 2 {
+                crate::bail_parse_error!("percentile bad number of arguments");
+            }
+            let value_reg = agg_arg_source.translate(program, referenced_tables, resolver, 0)?;
+            let fraction_reg =
+                fraction_reg.expect("percentile fraction register must be set by InitLoop::emit");
+            let expr = &agg_arg_source.arg_at(0);
+            let arg_collation = ordered_set_collation(
+                func,
+                expr,
+                &ExprContext::new(Some(referenced_tables), resolver),
+            )?;
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: value_reg,
+                    delimiter: fraction_reg,
+                    func: AccumulatorFunc::Agg(func.clone()),
+                    collation: arg_collation,
+                }),
+            });
+            target_register
+        }
+        AggFunc::External(ref func) => {
+            let registered_argc = func.agg_args().map_err(|_| {
+                LimboError::ExtensionError(
+                    "External aggregate function called with wrong number of arguments".to_string(),
+                )
+            })?;
+            if registered_argc >= 0 && registered_argc as usize != num_args {
+                crate::bail_parse_error!(
+                    "External aggregate function called with wrong number of arguments"
+                );
+            }
+            let argc = num_args;
+            let expr_reg = if argc == 0 {
+                0
+            } else {
+                agg_arg_source.translate(program, referenced_tables, resolver, 0)?
+            };
+            for i in 0..argc {
+                if i != 0 {
+                    let _ = agg_arg_source.translate(program, referenced_tables, resolver, i)?;
+                }
+                // invariant: distinct aggregates are only supported for single-argument functions
+                if argc == 1 {
+                    handle_distinct(program, agg_arg_source.distinctness(), expr_reg + i);
+                }
+            }
+            program.emit_insn(Insn::AggStep {
+                data: Box::new(AggStepData {
+                    acc_reg: target_register,
+                    col: expr_reg,
+                    delimiter: 0,
+                    func: AccumulatorFunc::Agg(AggFunc::External(if registered_argc < 0 {
+                        Arc::new(func.with_aggregate_arg_count(num_args))
+                    } else {
+                        func.clone()
+                    })),
+                    collation: CollationSeq::BINARY,
+                }),
+            });
+            target_register
+        }
+    };
+    Ok(dest)
+}
+
+/// The collation an ordered-set aggregate (mode, percentile) sorts its values
+/// with. The aggregate keeps it in its state as [CollationSeq::to_bits] until
+/// it sorts at finalize, and a custom collation has no bits.
+fn ordered_set_collation(
+    func: &AggFunc,
+    expr: &ast::Expr,
+    context: &ExprContext<'_, '_>,
+) -> Result<CollationSeq> {
+    let collation = context.expr_collation(expr)?;
+    if collation.is_custom() {
+        crate::bail_parse_error!(
+            "{}() does not support the custom collation {}",
+            func.as_str(),
+            collation.name()
+        );
+    }
+    Ok(collation)
+}
+
+fn translate_const_arg(
+    program: &mut ProgramBuilder,
+    referenced_tables: &TableReferences,
+    resolver: &Resolver,
+    expr: &ast::Expr,
+) -> Result<usize> {
+    let target_register = program.alloc_register();
+    translate_expr(
+        program,
+        Some(referenced_tables),
+        expr,
+        target_register,
+        resolver,
+    )
+}

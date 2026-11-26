@@ -37,7 +37,6 @@ liveness.
 ```sh
 cargo run -p tako-channels --example notification_bench
 cargo run -p tako-workflows --example sqlite_commit_bench
-python3 test-support/sqlite-commit-bench.py
 ```
 
 The Rust examples measure store operations against an in-process database host,
@@ -46,9 +45,6 @@ append, notification, and replay. They exclude TLS, the private network, and
 browser delivery. Workflow measurements cover enqueue, claim, one checkpoint, and
 completion.
 
-The Python experiment isolates SQLite transaction amortization with 256-byte
-records. It excludes batch-formation latency, application queries, admission
-control, and fan-in scheduling; it is not an application throughput benchmark.
-Measure those costs before adopting a batched writer. All three commands use
-temporary local databases and print JSON. Results depend on the filesystem,
-device, build profile, and host load; compare revisions on the same machine.
+Both commands use temporary local databases and print JSON. For the SQL driver
+and commit benchmarks, see [BENCHMARKS.md](../BENCHMARKS.md). Compare revisions
+on the same device with the same filesystem and build profile.

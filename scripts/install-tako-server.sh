@@ -906,33 +906,6 @@ install_pkgs() {
   fi
 }
 
-install_native_corrosion() {
-  case "$arch" in
-    x86_64) corrosion_archive_sha256=3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194 ;;
-    aarch64) corrosion_archive_sha256=b00b5c6996dee89c36e51e1d4196602bb7e12bbb25abc9b68390e062bdd13be3 ;;
-    *) echo "error: unsupported Corrosion architecture: $arch" >&2; exit 1 ;;
-  esac
-  corrosion_archive="$tmp_extract/corrosion.tar.gz"
-  download_file "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-$arch-unknown-linux-gnu.tar.gz" "$corrosion_archive"
-  corrosion_actual="$(sha256sum "$corrosion_archive" | awk '{print $1}')"
-  [ "$corrosion_actual" = "$corrosion_archive_sha256" ] || {
-    echo 'error: Corrosion archive checksum mismatch' >&2; exit 1;
-  }
-  mkdir "$tmp_extract/corrosion-release"
-  tar -xzf "$corrosion_archive" -C "$tmp_extract/corrosion-release" -- corrosion
-  corrosion_source="$tmp_extract/corrosion-release/corrosion"
-  [ -f "$corrosion_source" ] && [ ! -L "$corrosion_source" ] && [ -s "$corrosion_source" ] || {
-    echo 'error: Corrosion archive must contain a regular executable' >&2; exit 1;
-  }
-  sha256sum "$corrosion_source" | awk '{print $1}' > "$tmp_extract/corrosion.sha256"
-  # Rename preserves a running agent's executable during install-refresh.
-  install -o root -g root -m 0755 "$corrosion_source" /usr/local/libexec/tako/corrosion.new
-  install -o root -g root -m 0644 "$tmp_extract/corrosion.sha256" /usr/local/libexec/tako/corrosion.sha256.new
-  mv -f /usr/local/libexec/tako/corrosion.new /usr/local/libexec/tako/corrosion
-  mv -f /usr/local/libexec/tako/corrosion.sha256.new /usr/local/libexec/tako/corrosion.sha256
-  echo 'OK installed checksum-verified Corrosion v1.0.0 and executable digest'
-}
-
 install_native_network() {
   [ "$TAKO_VPN" = native ] || { echo "error: only native Tako networking is supported" >&2; return 1; }
   [ "$TAKO_USER:$TAKO_HOME" = tako:/opt/tako ] || {
@@ -950,7 +923,6 @@ install_native_network() {
     need_cmd "$native_command" || { echo "error: missing $native_command" >&2; exit 1; }
   done
 
-  install_native_corrosion
 
   native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
   if [ -n "$native_source" ]; then
@@ -965,7 +937,7 @@ install_native_network() {
     cp "$native_source" "$tmp_extract/native-helper.py"
     native_source="$tmp_extract/native-helper.py"
   else
-    native_expected="2cf8aeed2c9eef7e14351e03b698e0b31aff363a8e16383b7dd5616969daa3fa"
+    native_expected="94e0fa4a898f4d756b317138e90bde6fcc3a23d64d66098bd6763a87b2f2edb9"
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
@@ -1239,12 +1211,7 @@ ExecStart=/usr/local/libexec/tako/tako-network-helper %i isolate
 RequiredBy=tako-network.target
 EOF
 
-  if [ -f /etc/systemd/system/tako-corrosion.service ]; then
-    if [ "$SERVICE_MANAGER" = systemd ]; then
-      systemctl disable --now tako-corrosion.service
-    fi
-    rm -f /etc/systemd/system/tako-corrosion.service
-  fi
+
   cat > /etc/systemd/system/tako-network-agent.service <<'EOF'
 [Unit]
 Description=Tako native network agent
@@ -1252,7 +1219,6 @@ Requires=tako-network-helper.socket
 After=network-online.target tako-network.target tako-network-helper.socket
 Wants=network-online.target tako-network.target
 Before=tako-server.service tako-server-standby.service
-ConditionFileIsExecutable=/usr/local/libexec/tako/corrosion
 ConditionPathExists=/opt/tako/native-network.json
 [Service]
 Type=exec
@@ -1306,23 +1272,6 @@ After=tako-network.target'
   echo 'OK native network agent installed; activation requires native-network.json and service-start mode.'
 }
 
-
-install_sqlite_runtime() {
-  if need_cmd apt-get; then
-    apt-get update -y
-    apt-get install -y libsqlite3-0
-  elif need_cmd dnf; then
-    dnf install -y sqlite-libs
-  elif need_cmd yum; then
-    yum install -y sqlite-libs
-  elif need_cmd pacman; then
-    pacman -Sy --noconfirm sqlite
-  elif need_cmd zypper; then
-    zypper --non-interactive install sqlite3
-  else
-    echo "warning: unsupported package manager; install libsqlite3 runtime manually if needed." >&2
-  fi
-}
 
 install_podman_runtime() {
   if need_cmd podman; then
@@ -1512,7 +1461,6 @@ if ! need_cmd which; then
   install_pkgs which
 fi
 ensure_nc
-install_sqlite_runtime
 install_podman_runtime
 
 download_url="${TAKO_SERVER_URL:-}"

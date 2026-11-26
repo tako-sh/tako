@@ -76,23 +76,40 @@ pub(crate) fn read_server_config(data_dir: &Path) -> ServerConfigFile {
     ServerConfigFile::default()
 }
 
+fn systemd_status(message: &str) {
+    #[cfg(target_os = "linux")]
+    if let Some(path) = std::env::var_os("NOTIFY_SOCKET") {
+        use std::os::{
+            linux::net::SocketAddrExt,
+            unix::{
+                ffi::OsStrExt,
+                net::{SocketAddr, UnixDatagram},
+            },
+        };
+        let address = match path.as_bytes().strip_prefix(b"@") {
+            Some(name) => SocketAddr::from_abstract_name(name),
+            None => SocketAddr::from_pathname(path),
+        };
+        if let (Ok(socket), Ok(address)) = (UnixDatagram::unbound(), address) {
+            let _ = socket.send_to_addr(message.as_bytes(), &address);
+        }
+    }
+}
+
+pub(crate) fn starting(step: &str) {
+    tracing::info!("Starting · {step}");
+    systemd_status(&format!(
+        "STATUS=Starting · {step}\nEXTEND_TIMEOUT_USEC=120000000"
+    ));
+}
+
 pub(crate) fn sd_notify_ready() {
     #[cfg(unix)]
     {
-        if let Ok(socket_path) = std::env::var("NOTIFY_SOCKET") {
-            use std::os::unix::net::UnixDatagram;
-            if let Ok(sock) = UnixDatagram::unbound() {
-                let pid = std::process::id();
-                let msg = format!("READY=1\nMAINPID={pid}\n");
-                let path = if let Some(stripped) = socket_path.strip_prefix('@') {
-                    format!("\0{}", stripped)
-                } else {
-                    socket_path
-                };
-                let _ = sock.send_to(msg.as_bytes(), path);
-            }
-        }
-
+        systemd_status(&format!(
+            "STATUS=Ready\nREADY=1\nMAINPID={}",
+            std::process::id()
+        ));
         if !should_signal_parent_on_ready() {
             return;
         }

@@ -152,12 +152,16 @@ pub(super) fn rpc_action(
         | Command::FinalizeRelease { app, .. }
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
+        | Command::CoordinateStorage {
+            request: tako_core::StorageOperation::DeploymentLeader { app, .. },
+        }
         | Command::SnapshotDatabase { app: Some(app), .. }
         | Command::MigrateDatabase { app: Some(app), .. }
         | Command::Scale { app, .. }
         | Command::Stop { app, .. }
         | Command::Start { app, .. }
         | Command::Delete { app }
+        | Command::ListResources { app: Some(app) }
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
@@ -177,6 +181,7 @@ pub(super) fn rpc_action(
         }
         Command::Hello { .. }
         | Command::ServerInfo
+        | Command::ListResources { app: None }
         | Command::List
         | Command::Routes
         | Command::DrainServer { .. }
@@ -184,8 +189,7 @@ pub(super) fn rpc_action(
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
+        | Command::CoordinateStorage { .. }
         | Command::DatabaseStatus { .. }
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }

@@ -1,26 +1,28 @@
-//! Preparing an environment's databases before its release command and
-//! rollout: backup destinations and grants on the databases' servers (for
-//! administrators), a restore point before the release command, and the
-//! project's migrations. KV stores are backed up and granted like
-//! databases; they have no migrations.
+//! Prepare Raft replicas and grants before rollout, then configure backups,
+//! take pre-release snapshots, and apply SQL migrations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use tako_core::{Command, SnapshotReason};
 
-use crate::commands::db::target::{Home, PlannedBinding, resolve_home};
+use crate::commands::db::target::{Home, PlannedBinding};
 use crate::config::{SecretsStore, ServerInventory, TakoToml};
 use crate::network::databases::DatabaseRecord;
 use crate::output;
 
 mod plan;
+mod replication;
 pub(super) use plan::{Plan, Service, plan};
 
 /// Verify each physical database before changing any of them. A stale
 /// directory entry must not grant access to a replacement with the same name.
 pub(super) async fn provision(
-    plan: &Plan,
+    plan: &mut Plan,
+    inventory: &ServerInventory,
+    env: &str,
+    target_names: &[String],
+    tree: Option<&super::DeployTaskTreeController>,
     network: &crate::config::LocalNetwork,
     app: &str,
     records: &mut Vec<DatabaseRecord>,
@@ -28,11 +30,9 @@ pub(super) async fn provision(
     if plan.sql.is_empty() && plan.kv.is_empty() && plan.service_bindings().next().is_none() {
         return Ok(());
     }
-    // A move can leave the same generation on the old home. Verify the live
-    // directory as well as the database files before preparing a built release.
+    // Recheck the generation in the live directory after the build.
     let current = tokio::task::block_in_place(|| crate::network::databases::list(network))?;
     let mut checked = BTreeSet::new();
-    let mut hosted = HashMap::new();
     for entry in plan
         .sql
         .values()
@@ -42,107 +42,101 @@ pub(super) async fn provision(
         if !checked.insert(&entry.database_name) {
             continue;
         }
-        if !hosted.contains_key(&entry.home.device_id) {
-            #[derive(serde::Deserialize)]
-            struct Status {
-                databases: Vec<tako_core::DatabaseInfo>,
+        let name = &entry.database_name;
+        let planned = records.iter().find(|r| &r.name == name);
+        let latest = current.iter().find(|r| &r.name == name);
+        if plan.create.contains_key(name) {
+            if let Some(record) = latest {
+                let expected_owner = |service: &plan::ServicePlan| {
+                    service.implicit
+                        && service
+                            .binding
+                            .as_ref()
+                            .is_some_and(|p| &p.database_name == name)
+                };
+                if record.engine != entry.engine
+                    || record.channel_owner.as_deref()
+                        != expected_owner(&plan.replay).then_some(app)
+                    || record.workflows_owner.as_deref()
+                        != expected_owner(&plan.workflows).then_some(app)
+                {
+                    return Err(format!("Resource '{name}' was concurrently created for a different purpose. Retry the deploy.").into());
+                }
             }
-            let status: Status =
-                crate::commands::db::send(&entry.home, Command::DatabaseStatus { name: None })
-                    .await?;
-            hosted.insert(entry.home.device_id.clone(), status.databases);
+            continue;
         }
-        let name = entry.database_name.as_str();
-        let planned = records.iter().find(|r| r.name == name);
-        if current.iter().find(|r| r.name == name) != planned {
+        if planned != latest {
             return Err(format!(
                 "Placement of database '{name}' changed while building. Retry the deploy."
             )
             .into());
         }
-        let expected = planned.map(|r| r.generation.as_str());
-        let actual = hosted[&entry.home.device_id]
-            .iter()
-            .find(|db| db.name == name)
-            .map(|db| db.generation.as_str());
-        if expected != actual {
-            return Err(format!("The network record for database '{name}' does not match what {} hosts. Repair its placement before deploying.", entry.home.name).into());
-        }
     }
     *records = current;
-    for (name, home) in &plan.create {
-        // Membership may have changed while building the release.
-        tokio::task::block_in_place(|| -> crate::network::Result<()> {
-            let profile = crate::network::client::refresh(network)?;
-            let members = crate::network::server_members(&profile)?;
-            if members.len() != 1 || !members.contains_key(&home.device_id.parse()?) {
-                return Err("Network placement changed while building. Retry the deploy to plan database creation.".into());
-            }
-            Ok(())
-        })?;
-        // A generated database records the app it was created for.
-        let generated = |service: &plan::ServicePlan| {
-            service.implicit
-                && service
-                    .binding
-                    .as_ref()
-                    .is_some_and(|planned| planned.database_name == *name)
+    replication::prepare_replicas(
+        plan,
+        network,
+        inventory,
+        env,
+        app,
+        target_names,
+        records,
+        tree,
+    )
+    .await
+}
+
+/// Resolve leadership with the caller's existing application permission.
+pub(super) async fn scoped_homes(
+    plan: &mut Plan,
+    inventory: &ServerInventory,
+    network: &str,
+    env: &str,
+    app: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let entries = plan
+        .sql
+        .values_mut()
+        .chain(plan.kv.values_mut())
+        .chain(plan.replay.binding.iter_mut())
+        .chain(plan.workflows.binding.iter_mut());
+    let mut homes = Vec::new();
+    let mut leaders = HashMap::new();
+    for binding in entries {
+        let Some(group) = binding.generation.as_ref() else {
+            continue;
         };
-        use crate::network::databases::ServiceOwner;
-        let owner = if generated(&plan.replay) {
-            Some((ServiceOwner::Channels, app))
-        } else if generated(&plan.workflows) {
-            Some((ServiceOwner::Workflows, app))
-        } else {
-            None
-        };
-        records.push(
-            crate::commands::db::create_database(
-                network,
-                home,
-                name,
-                owner,
-                tako_core::DatabaseEngine::Sqlite,
-            )
-            .await?,
-        );
-        output::success(&format!("Created database {name} on {}", home.name));
+        if homes.is_empty() {
+            homes =
+                crate::commands::helpers::resolve_network_servers(inventory, network, &[], env)?
+                    .iter()
+                    .map(|key| crate::commands::db::target::inventory_home(inventory, key))
+                    .collect::<Result<Vec<_>, _>>()?;
+        }
+        if !leaders.contains_key(group) {
+            let elected =
+                crate::commands::db::replication::discover(&homes, group, Some(app)).await?;
+            leaders.insert(group.clone(), elected);
+        }
+        binding.home = leaders[group].clone();
     }
     Ok(())
 }
 
 pub(super) struct Preparation<'a> {
     pub plan: &'a Plan,
-    /// The network's database records.
-    pub records: &'a [DatabaseRecord],
     pub config: &'a TakoToml,
-    pub servers: &'a ServerInventory,
     pub secrets: &'a SecretsStore,
     pub project_dir: &'a Path,
     pub env: &'a str,
     /// The deployment's `app/env` identity.
     pub app: &'a str,
-    /// Inventory keys of the servers this deploy targets.
-    pub targets: &'a [String],
     pub administrator: bool,
     pub release: bool,
 }
 
-/// What preparing the databases leaves for the deploy.
-pub(super) struct Granted {
-    /// Peer keys the databases' servers issued with grants, by server
-    /// device ID.
-    pub peer_keys: HashMap<String, String>,
-    pub replay_peer_keys: HashMap<String, String>,
-    pub workflows_peer_keys: HashMap<String, String>,
-    /// The exact grant each database server should end with. Grants are only
-    /// widened before the rollout, since the previous release keeps serving
-    /// until it succeeds; [`narrow_grants`] applies these afterwards.
-    narrow: Vec<(String, Home, Vec<String>)>,
-}
-
 /// Prepares the environment's databases.
-pub(super) async fn prepare(prep: Preparation<'_>) -> Result<Granted, Box<dyn std::error::Error>> {
+pub(super) async fn prepare(prep: Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let _t = output::timed("Prepare databases");
     let prepared = output::with_spinner_async("Preparing databases", "Prepared databases", async {
         run(&prep).await.map_err(|error| error.to_string())
@@ -154,56 +148,14 @@ pub(super) async fn prepare(prep: Preparation<'_>) -> Result<Granted, Box<dyn st
     for line in prepared.migrated {
         output::info(&line);
     }
-    Ok(Granted {
-        peer_keys: prepared.keys,
-        replay_peer_keys: prepared.replay_keys,
-        workflows_peer_keys: prepared.workflows_keys,
-        narrow: prepared.narrow,
-    })
-}
-
-/// After a successful rollout, revokes the grants the new release no longer
-/// uses. A server that cannot be reached keeps a stale grant, with a warning.
-pub(super) async fn narrow_grants(granted: Granted) {
-    for (app, home, databases) in granted.narrow {
-        let result: Result<serde_json::Value, _> = crate::commands::db::send(
-            &home,
-            Command::GrantDatabases {
-                app: app.to_owned(),
-                databases,
-                keep_existing: false,
-            },
-        )
-        .await;
-        if let Err(error) = result {
-            output::warning(&format!(
-                "Could not clear {app}'s unused database grants on {}: {error}",
-                home.name
-            ));
-        }
-    }
-}
-
-/// Sets each binding's peer key from the grant of its database's server.
-pub(super) fn apply_peer_keys(
-    plan: &mut HashMap<String, PlannedBinding>,
-    keys: &HashMap<String, String>,
-) {
-    for planned in plan.values_mut() {
-        planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
-    }
+    Ok(())
 }
 
 #[derive(Default)]
 struct Prepared {
-    /// Peer keys of the grants, by server device ID.
-    keys: HashMap<String, String>,
-    replay_keys: HashMap<String, String>,
-    workflows_keys: HashMap<String, String>,
     warnings: Vec<String>,
     /// One line per binding that applied migrations.
     migrated: Vec<String>,
-    narrow: Vec<(String, Home, Vec<String>)>,
 }
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
@@ -242,27 +194,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             .map_err(|e| format!("Configure backups of {}: {e}", planned.database_name))?;
         }
     }
-    let mut prepared = if prep.administrator {
-        let mut prepared = Prepared::default();
-        prepared.keys = grant(prep, prep.app, bound.values().copied(), &mut prepared).await?;
-        prepared.replay_keys = grant(
-            prep,
-            &tako_core::channel_replay_grant_scope(prep.app),
-            prep.plan.replay.binding.iter(),
-            &mut prepared,
-        )
-        .await?;
-        prepared.workflows_keys = grant(
-            prep,
-            &tako_core::workflows_grant_scope(prep.app),
-            prep.plan.workflows.binding.iter(),
-            &mut prepared,
-        )
-        .await?;
-        prepared
-    } else {
-        Prepared::default()
-    };
+    let mut prepared = Prepared::default();
 
     if prep.release {
         for planned in bound.values() {
@@ -326,79 +258,6 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         }
     }
     Ok(prepared)
-}
-
-/// Grants the environment its databases on their servers when it deploys
-/// elsewhere, keeping the grants its running release uses, and records the
-/// exact grant each server of the network's databases should end with once
-/// the rollout succeeds. Returns the peer keys of the grants, and warnings
-/// for servers that could not be reached for a grant this deploy does not
-/// depend on.
-async fn grant<'a>(
-    prep: &Preparation<'_>,
-    scope: &str,
-    bound: impl Iterator<Item = &'a PlannedBinding>,
-    prepared: &mut Prepared,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    let network = crate::commands::db::target::env_network(prep.env)?;
-    let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
-    for record in prep.records {
-        let Ok(home) = resolve_home(prep.servers, &network, &record.server, prep.env) else {
-            continue;
-        };
-        homes
-            .entry(home.device_id.clone())
-            .or_insert_with(|| (home, BTreeSet::new()));
-    }
-    for planned in bound {
-        let remote = prep
-            .targets
-            .iter()
-            .any(|target| *target != planned.home.key);
-        if remote && let Some((_, names)) = homes.get_mut(&planned.home.device_id) {
-            names.insert(planned.database_name.clone());
-        }
-    }
-    let mut keys = HashMap::new();
-    for (home, names) in homes.into_values() {
-        let needed = !names.is_empty();
-        let names: Vec<String> = names.into_iter().collect();
-        // Old instances keep running until the rollout succeeds, so grants
-        // they use stay until then.
-        let result: Result<serde_json::Value, _> = crate::commands::db::send(
-            &home,
-            Command::GrantDatabases {
-                app: scope.to_owned(),
-                databases: names.clone(),
-                keep_existing: true,
-            },
-        )
-        .await;
-        prepared
-            .narrow
-            .push((scope.to_owned(), home.clone(), names));
-        match result {
-            Ok(response) => {
-                if let Some(key) = response["peer_key"].as_str() {
-                    keys.insert(home.device_id.clone(), key.to_owned());
-                } else if needed {
-                    return Err(
-                        format!("Grant on {} returned no peer key for {scope}", home.name).into(),
-                    );
-                }
-            }
-            Err(error) if needed => {
-                return Err(format!("Grant databases on {}: {error}", home.name).into());
-            }
-            // This deploy uses nothing there; clearing its grant is retried
-            // after the rollout.
-            Err(error) => prepared.warnings.push(format!(
-                "Could not reach {} to update {}'s database grant: {error}",
-                home.name, prep.app
-            )),
-        }
-    }
-    Ok(keys)
 }
 
 async fn send(home: &Home, command: Command) -> Result<(), Box<dyn std::error::Error>> {

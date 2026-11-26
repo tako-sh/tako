@@ -19,7 +19,7 @@ use crate::release::{
 };
 use crate::routing::RouteTable;
 use crate::socket::{AppState, Response};
-use crate::state_store::{SqliteStateStore, StateStoreError, load_or_create_device_key};
+use crate::state_store::{StateStore, StateStoreError, load_or_create_device_key};
 use crate::tls::{AcmeClient, CertManager, ChallengeTokens};
 use parking_lot::RwLock as SyncRwLock;
 use std::collections::HashMap;
@@ -126,7 +126,7 @@ pub struct ServerState {
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
-    pub(crate) state_store: Arc<SqliteStateStore>,
+    pub(crate) state_store: Arc<StateStore>,
     pub(crate) server_mode: AsyncRwLock<UpgradeMode>,
     pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,

@@ -100,24 +100,25 @@ server.serve_forever()
 
     // Abort at a binding write, after SQLite has updated the app, its routes
     // and its secrets inside the same transaction.
-    let db = rusqlite::Connection::open(temp.path().join("state.sqlite")).unwrap();
-    db.execute_batch(
-        "CREATE TRIGGER reject_first BEFORE INSERT ON app_databases
-        BEGIN SELECT RAISE(ABORT, 'first commit failed'); END;",
-    )
-    .unwrap();
+    state
+        .state_store
+        .reject_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let first = state.handle_command(deploy("v1")).await;
     assert!(
         first
             .error_message()
             .unwrap()
-            .contains("first commit failed")
+            .contains("injected commit failure")
     );
     assert!(state.app_manager.get_app(app_id).is_none());
     assert!(state.routes.read().routes_for_app(app_id).is_empty());
     assert!(state.state_store.load_apps().unwrap().is_empty());
     assert!(state.state_store.get_secrets(app_id).unwrap().is_empty());
-    db.execute_batch("DROP TRIGGER reject_first").unwrap();
+    state
+        .state_store
+        .reject_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
     let baseline = state.handle_command(deploy("v1")).await;
     assert!(baseline.is_ok(), "initial deployment should succeed");
@@ -143,11 +144,10 @@ server.serve_forever()
     assert_eq!(app.version(), "v1");
     std::fs::write(manifest, original).unwrap();
 
-    db.execute_batch(
-        "CREATE TRIGGER reject_replacement BEFORE UPDATE ON app_databases
-        BEGIN SELECT RAISE(ABORT, 'replacement commit failed'); END;",
-    )
-    .unwrap();
+    state
+        .state_store
+        .reject_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let check_previous = async {
         tokio::time::timeout(Duration::from_secs(10), async {
             while !app.get_instances().iter().any(|instance| {
@@ -176,7 +176,7 @@ server.serve_forever()
         failed
             .error_message()
             .unwrap()
-            .contains("replacement commit failed")
+            .contains("injected commit failure")
     );
     assert_eq!(app.get_instances().len(), 1);
     assert_eq!(predecessor.state(), InstanceState::Healthy);
@@ -217,7 +217,6 @@ server.serve_forever()
 
     // Once scaled to zero, a request can cold-start v1 while v2 is preparing.
     // The late v1 process must be included in the final cutover and drain.
-    db.execute_batch("DROP TRIGGER reject_replacement").unwrap();
     restarted.app_manager.stop_app(app_id).await.unwrap();
     restored.config.write().min_instances = 0;
     restored.set_state(AppState::Idle);

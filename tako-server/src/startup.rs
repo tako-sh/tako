@@ -238,27 +238,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
-    // Apps restored below reach their databases as soon as they start.
-    if !standby {
-        let server_id = native_config
-            .as_ref()
-            .map(|config| config.server_id.to_string());
-        if let Err(error) = rt.block_on(state.open_databases(server_id)) {
-            tracing::error!(%error, "Failed to open hosted databases");
-        }
-    }
-    if let Err(e) = rt.block_on(async {
-        let _guard = state.management_lock.lock().await;
-        crate::drain_observer::spawn(&rt, state.clone());
-        state.ensure_internal_socket_started()?;
-        // One app that cannot start must not keep the server, and so every
-        // other app and the management API, down: it stays in the error
-        // state with its last error until a deploy or start fixes it.
-        state.restore_from_state_store().await
-    }) {
-        tracing::error!("Failed to restore server state from SQLite: {}", e);
-        return Err(e.into());
-    }
     let native_services = native_config
         .as_ref()
         .map(|config| {
@@ -266,6 +245,61 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         })
         .transpose()?;
 
+    let database_network = native_config
+        .as_ref()
+        .zip(native_services.as_ref())
+        .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
+    if standby {
+        spawn_standby_monitor(
+            &rt,
+            StandbyPromotionConfig {
+                database_network: database_network.clone(),
+                socket_path: socket.clone(),
+                state: state.clone(),
+                cert_manager: cert_manager.clone(),
+                acme_staging: args.acme_staging,
+                acme_email: server_config.acme_email.clone(),
+                no_acme: args.no_acme,
+                renewal_interval_hours: args.renewal_interval_hours,
+                data_dir: data_dir.clone(),
+                challenge_tokens: challenge_tokens_for_promote.clone(),
+            },
+        );
+    }
+
+    crate::boot::starting("Loading network state");
+    if !standby {
+        signals::request_storage_handoff()?;
+        rt.block_on(state.start_databases_after_handoff(database_network.clone()));
+    }
+    if let Some((id, proxy)) = &database_network {
+        rt.block_on(async {
+            loop {
+                if proxy.server_address(id) == Some(proxy.address.into()) {
+                    match state.recover_assigned_storage(proxy, id, standby).await {
+                        Ok(()) => break,
+                        Err(error) => crate::boot::starting(&error),
+                    }
+                } else {
+                    crate::boot::starting("Loading network state");
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+    if !standby {
+        let _enter = rt.enter();
+        state.serve_databases();
+    }
+    rt.block_on(async {
+        let _guard = state.management_lock.lock().await;
+        state.ensure_internal_socket_started()?;
+        state.restore_from_state_store().await
+    })?;
+    crate::drain_observer::spawn(&rt, state.clone());
+    if let Some(proxy) = &native_services {
+        proxy.enable_local_services();
+    }
     let cloudflare_ips = proxy::CloudflareIpRanges::default();
     tracing::info!(
         cidrs = cloudflare_ips.count(),
@@ -297,13 +331,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
     if !standby {
-        let database_network = native_config
-            .as_ref()
-            .zip(native_services.as_ref())
-            .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
-        if let Err(error) = rt.block_on(state.start_databases(database_network)) {
-            tracing::error!(%error, "Failed to start hosted databases");
-        }
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
         #[cfg(target_os = "linux")]
         if let Some(handoff) = native_handoff {
@@ -318,23 +345,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
         }
-    }
-
-    if standby {
-        spawn_standby_monitor(
-            &rt,
-            StandbyPromotionConfig {
-                socket_path: socket.clone(),
-                state: state.clone(),
-                cert_manager: cert_manager.clone(),
-                acme_staging: args.acme_staging,
-                acme_email: server_config.acme_email.clone(),
-                no_acme: args.no_acme,
-                renewal_interval_hours: args.renewal_interval_hours,
-                data_dir: data_dir.clone(),
-                challenge_tokens: challenge_tokens_for_promote.clone(),
-            },
-        );
     }
 
     let proxy_config = ProxyConfig {
@@ -358,7 +368,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("HTTPS enabled on port {}", args.https_port);
     }
 
-    spawn_reload_signal_handlers(&rt, exe);
+    spawn_reload_signal_handlers(&rt, exe, state.clone(), database_network);
 
     metrics::init(state.runtime_config().server_name.as_deref());
     if args.metrics_port != 0 {

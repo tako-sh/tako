@@ -75,8 +75,8 @@ fn ensure_app_runtime_data_dirs_repairs_existing_app_data_files() {
     let paths = app_runtime_data_paths(temp.path(), "my-app/production");
     std::fs::create_dir_all(&paths.app).unwrap();
     std::fs::create_dir_all(&paths.tako).unwrap();
-    let db_path = paths.app.join("mission.sqlite");
-    let wal_path = paths.app.join("mission.sqlite-wal");
+    let db_path = paths.app.join("mission.db");
+    let wal_path = paths.app.join("mission.db-wal");
     std::fs::write(&db_path, "db").unwrap();
     std::fs::write(&wal_path, "wal").unwrap();
     std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();

@@ -51,6 +51,15 @@ use task_tree::{
 pub(crate) use config::{project_needs_channel_replay, project_needs_workflows};
 pub(crate) use manifest::resolve_deploy_main;
 
+fn creation_json(creation: &crate::commands::db::target::PlannedBinding) -> serde_json::Value {
+    let mut value =
+        serde_json::json!({"name": creation.database_name, "server": creation.home.name});
+    if !creation.engine.is_sql() {
+        value["engine"] = serde_json::json!(creation.engine);
+    }
+    value
+}
+
 /// A deploy-only client cannot create a service's generated database.
 fn unprovisioned_service(service: databases::Service) -> String {
     format!(
@@ -411,10 +420,11 @@ async fn run_async(
         }
     }
     if output::is_dry_run() {
-        for (name, home) in &database_plan.create {
+        for (name, creation) in &database_plan.create {
             output::dry_run_skip(&format!(
-                "Create database {name} on {} (cached network plan)",
-                home.name
+                "Create {} {name} on {} (cached network plan)",
+                creation.engine.noun(),
+                creation.home.name
             ));
         }
         for service in [databases::Service::Channels, databases::Service::Workflows] {
@@ -449,7 +459,7 @@ async fn run_async(
             return output::json_result(serde_json::json!({
                 "ok": true, "command": "deploy", "dry_run": true, "app": deployment_app_name,
                 "servers": server_names, "source": "cached_network",
-                "create_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name,"server":home.name})).collect::<Vec<_>>(),
+                "create_databases": database_plan.create.values().map(creation_json).collect::<Vec<_>>(),
                 "channel_database": database_plan.replay.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.replay.implicit})),
                 "channel_replay_unprovisioned": database_plan.replay.unprovisioned,
                 "workflows_database": database_plan.workflows.binding.as_ref().map(|b| serde_json::json!({"name":b.database_name,"server":b.home.name,"implicit":database_plan.workflows.implicit})),
@@ -670,47 +680,41 @@ async fn run_async(
     let release_command = resolve_release_command(&tako_config, &env);
     if configure_bindings {
         databases::provision(
-            &database_plan,
+            &mut database_plan,
+            &servers,
+            &env,
+            &server_names,
+            deploy_task_tree.as_ref(),
             &network,
             &deployment_app_name,
             &mut database_records,
         )
         .await?;
+    } else {
+        databases::scoped_homes(
+            &mut database_plan,
+            &servers,
+            &network.id,
+            &env,
+            &deployment_app_name,
+        )
+        .await?;
     }
-    // An administrator's deploy also revokes the grants of an environment
-    // that no longer binds the network's databases.
-    let revokes_grants = configure_bindings && !database_records.is_empty();
-    let mut granted = None;
-    if !database_plan.sql.is_empty() || !database_plan.kv.is_empty() || revokes_grants {
-        let prepared = databases::prepare(databases::Preparation {
+    if !database_plan.sql.is_empty()
+        || !database_plan.kv.is_empty()
+        || database_plan.service_bindings().next().is_some()
+    {
+        databases::prepare(databases::Preparation {
             plan: &database_plan,
-            records: &database_records,
             config: &tako_config,
-            servers: &servers,
             secrets: &secrets,
             project_dir: &project_dir,
             env: &env,
             app: &deployment_app_name,
-            targets: &server_names,
             administrator: configure_bindings,
             release: release_command.is_some(),
         })
         .await?;
-        databases::apply_peer_keys(&mut database_plan.sql, &prepared.peer_keys);
-        databases::apply_peer_keys(&mut database_plan.kv, &prepared.peer_keys);
-        if let Some(replay) = &mut database_plan.replay.binding {
-            replay.binding.peer_key = prepared
-                .replay_peer_keys
-                .get(&replay.home.device_id)
-                .cloned();
-        }
-        if let Some(workflows) = &mut database_plan.workflows.binding {
-            workflows.binding.peer_key = prepared
-                .workflows_peer_keys
-                .get(&workflows.home.device_id)
-                .cloned();
-        }
-        granted = Some(prepared);
     }
     // Pin the environment's secret snapshot on the leader once it holds what
     // this deploy published. Every server then applies exactly that snapshot.
@@ -737,17 +741,22 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         // Binding names are unique across databases and KV stores.
-        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)
+        databases: crate::commands::db::target::wire_bindings(&database_plan.sql)?
             .into_iter()
             .chain(crate::commands::db::target::wire_bindings(
                 &database_plan.kv,
-            ))
+            )?)
             .collect(),
-        channel_database: database_plan.replay.binding.map(|replay| replay.binding),
+        channel_database: database_plan
+            .replay
+            .binding
+            .map(|replay| replay.wire())
+            .transpose()?,
         workflows_database: database_plan
             .workflows
             .binding
-            .map(|workflows| workflows.binding),
+            .map(|workflows| workflows.wire())
+            .transpose()?,
         force,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,
@@ -861,10 +870,12 @@ async fn run_async(
         results
     };
 
+    let mut successful_targets = Vec::new();
     for result in deploy_results {
         match result {
             Ok((server_name, server, result)) => match result {
                 Ok(()) => {
+                    successful_targets.push(server_name.clone());
                     tracing::debug!("{server_name} deploy succeeded");
                     if deploy_task_tree.is_none() {
                         output::bullet(&format_server_deploy_success(&server_name, &server));
@@ -890,13 +901,22 @@ async fn run_async(
         }
     }
 
+    if !successful_targets.is_empty()
+        && configure_bindings
+        && !database_records.is_empty()
+        && let Err(e) = crate::commands::db::cleanup::collect(
+            &network,
+            &servers,
+            &deployment_app_name,
+            &successful_targets,
+            &database_plan.reservations,
+        )
+        .await
+    {
+        output::warning(&format!("Storage cleanup is pending: {e}"));
+    }
     // ===== Summary =====
     if errors.is_empty() {
-        // Every server runs the new release; grants only the old one used
-        // can go.
-        if let Some(granted) = granted {
-            databases::narrow_grants(granted).await;
-        }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
             task_tree.set_success_summary(&version, &routes, https_port);
@@ -912,7 +932,7 @@ async fn run_async(
         if output::is_json() {
             return output::json_result(serde_json::json!({
                 "ok": true, "command": "deploy",
-                "created_databases": database_plan.create.iter().map(|(name, home)| serde_json::json!({"name":name, "server":home.name})).collect::<Vec<_>>()
+                "created_databases": database_plan.create.values().map(creation_json).collect::<Vec<_>>()
             }));
         }
         Ok(())

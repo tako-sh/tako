@@ -21,6 +21,7 @@ pub(crate) struct NativeProxy {
     /// owning the export would freeze what the network sees from this host.
     export_owner: Option<String>,
     export_replaced: AtomicBool,
+    ready: AtomicBool,
     invocations: parking_lot::Mutex<crate::native_invocation::ReplayGuard>,
     /// Server addresses that database routes were last resolved against.
     database_peers: parking_lot::Mutex<Option<Vec<(String, IpAddr)>>>,
@@ -53,6 +54,7 @@ impl NativeProxy {
             path: config.network_dir(&state.runtime_config().data_dir),
             export_owner: (!state.runtime_config().standby).then(|| nanoid::nanoid!(32)),
             export_replaced: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             invocations: Default::default(),
             database_peers: Default::default(),
             address: config.network.id.address(&member.request.wg_public_key),
@@ -161,11 +163,19 @@ impl NativeProxy {
         Ok(service)
     }
 
+    pub(crate) fn enable_local_services(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
     fn refresh(&self, state: &ServerState, draining: bool) -> Result<(), String> {
         let now = now();
         let directory = Directory::open(&self.path, true).map_err(|error| error.to_string())?;
         if let Some(owner) = &self.export_owner {
-            let export = local_services(state.app_manager().as_ref(), draining, now);
+            let export = local_services(
+                state.app_manager().as_ref(),
+                draining || !self.ready.load(Ordering::Acquire),
+                now,
+            );
             export.validate(now).map_err(str::to_string)?;
             let bytes = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
             let published =
@@ -233,6 +243,10 @@ impl NativeProxy {
     /// The private address of another server, for database forwarding.
     pub(crate) fn server_address(&self, server: &str) -> Option<IpAddr> {
         self.directory.read().server_address_by_id(server, now())
+    }
+
+    pub(crate) fn server_name_at(&self, address: std::net::Ipv6Addr) -> Option<String> {
+        self.directory.read().server_name_at(address, now())
     }
 
     /// Whether a peer address belongs to an effective server.
@@ -336,10 +350,17 @@ fn now() -> u64 {
 }
 
 #[cfg(test)]
+impl NativeProxy {
+    pub(crate) fn loopback_storage(path: &std::path::Path, _founder: String) -> Arc<Self> {
+        Arc::new(tests::proxy(path, None))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn proxy(path: &std::path::Path, export_owner: Option<&str>) -> NativeProxy {
+    pub(super) fn proxy(path: &std::path::Path, export_owner: Option<&str>) -> NativeProxy {
         let keys = tako_network::LocalDeviceKeys::generate().unwrap();
         let network = tako_network::NetworkId::random().unwrap();
         let server = keys
@@ -350,6 +371,7 @@ mod tests {
             path: path.to_path_buf(),
             export_owner: export_owner.map(str::to_string),
             export_replaced: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             invocations: Default::default(),
             database_peers: Default::default(),
             address: Ipv6Addr::LOCALHOST,

@@ -9,7 +9,7 @@ use super::StateStoreError;
 pub fn load_or_create_device_key(path: &Path) -> Result<[u8; 32], StateStoreError> {
     if path.exists() {
         let key_bytes = std::fs::read(path)
-            .map_err(|e| StateStoreError::Sqlite(format!("read device key: {e}")))?;
+            .map_err(|e| StateStoreError::Storage(format!("read device key: {e}")))?;
         if key_bytes.len() != 32 {
             return Err(StateStoreError::InvalidData(format!(
                 "device key must be 32 bytes, got {}",
@@ -22,11 +22,11 @@ pub fn load_or_create_device_key(path: &Path) -> Result<[u8; 32], StateStoreErro
     } else {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| StateStoreError::Sqlite(format!("create key dir: {e}")))?;
+                .map_err(|e| StateStoreError::Storage(format!("create key dir: {e}")))?;
         }
         let mut key = [0u8; 32];
         getrandom::fill(&mut key)
-            .map_err(|e| StateStoreError::Sqlite(format!("generate device key: {e}")))?;
+            .map_err(|e| StateStoreError::Storage(format!("generate device key: {e}")))?;
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -36,14 +36,14 @@ pub fn load_or_create_device_key(path: &Path) -> Result<[u8; 32], StateStoreErro
                 .create_new(true)
                 .mode(0o600)
                 .open(path)
-                .map_err(|e| StateStoreError::Sqlite(format!("write device key: {e}")))?;
+                .map_err(|e| StateStoreError::Storage(format!("write device key: {e}")))?;
             f.write_all(&key)
-                .map_err(|e| StateStoreError::Sqlite(format!("write device key: {e}")))?;
+                .map_err(|e| StateStoreError::Storage(format!("write device key: {e}")))?;
         }
         #[cfg(not(unix))]
         {
             std::fs::write(path, &key)
-                .map_err(|e| StateStoreError::Sqlite(format!("write device key: {e}")))?;
+                .map_err(|e| StateStoreError::Storage(format!("write device key: {e}")))?;
         }
         Ok(key)
     }

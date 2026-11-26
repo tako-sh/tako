@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use parking_lot::Mutex;
 
 use crate::http::{Access, serve};
-use crate::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
+use crate::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token};
 
 pub struct TestServer {
     /// The endpoint, `http://127.0.0.1:<port>`.
@@ -27,6 +27,53 @@ pub struct TestDatabase {
     pub id: DatabaseId,
     pub path: PathBuf,
     pub token: String,
+}
+
+/// An operator session on a local test database, sharing the host's native owner.
+pub struct TestSql {
+    connection: std::sync::Arc<turso_core::Connection>,
+    _owner: std::sync::Arc<crate::mvcc::Owner>,
+}
+
+impl TestSql {
+    pub fn open(path: &std::path::Path) -> Self {
+        let owner = crate::mvcc::Owner::local(path, std::time::Duration::from_secs(5)).unwrap();
+        let connection = owner.connect().unwrap();
+        connection.set_busy_timeout(std::time::Duration::from_secs(5));
+        Self {
+            connection,
+            _owner: owner,
+        }
+    }
+    /// Bulk-load a fixture whose counters have already been calculated.
+    pub fn load_fixture(&self, sql: &str) -> turso_core::Result<()> {
+        self.connection.set_triggers_enabled(false);
+        let result = self.connection.execute(sql);
+        self.connection.set_triggers_enabled(true);
+        result
+    }
+    pub fn execute_batch(&self, sql: &str) -> turso_core::Result<()> {
+        self.connection.execute(sql)
+    }
+    pub fn integers<const N: usize>(
+        &self,
+        sql: &str,
+        args: &[&str],
+    ) -> turso_core::Result<[i64; N]> {
+        let mut stmt = self.connection.prepare(sql)?;
+        for (index, arg) in args.iter().enumerate() {
+            stmt.bind_at(
+                std::num::NonZeroUsize::new(index + 1).unwrap(),
+                turso_core::Value::from_text((*arg).to_owned()),
+            )?;
+        }
+        let rows = stmt.run_collect_rows()?;
+        let [row] = rows.as_slice() else {
+            panic!("expected one operator query row")
+        };
+        assert_eq!(row.len(), N);
+        Ok(std::array::from_fn(|i| row[i].as_int().unwrap()))
+    }
 }
 
 impl TestServer {
@@ -69,11 +116,41 @@ impl TestServer {
     /// Creates a database and binds a new token to it in `scope`.
     pub fn database(&self, scope: &str) -> TestDatabase {
         let id = DatabaseId::generate();
-        let path = self.dir.path().join(format!("{id}.sqlite"));
+        let path = self.dir.path().join(format!("{id}.db"));
         DatabaseHost::create_file(&path).expect("create test database");
         self.host
             .register(id.clone(), path.clone())
             .expect("register test database");
+        let token = self.bind(scope, &id);
+        TestDatabase { id, path, token }
+    }
+
+    /// Open the same single-voter Turso host used by a deployed app.
+    /// Call this from a blocking test thread.
+    pub fn replicated_database(&self, scope: &str) -> TestDatabase {
+        use std::{collections::BTreeMap, time::Duration};
+        let id = DatabaseId::generate();
+        let path = self.dir.path().join(format!("{id}.db"));
+        DatabaseHost::create_file(&path).unwrap();
+        let runtime = self.runtime.as_ref().unwrap();
+        let group = self.dir.path().join(id.as_str());
+        let resource = runtime.block_on(async {
+            let (node, replica) = tako_raft::Peer::default()
+                .open(id.as_str(), [1; 32], 1, &group, Default::default())
+                .await
+                .unwrap();
+            node.initialize(BTreeMap::from([(1, "127.0.0.1:1".parse().unwrap())]))
+                .await
+                .unwrap();
+            node.wait(Some(Duration::from_secs(5)))
+                .current_leader(1, "test group")
+                .await
+                .unwrap();
+            tako_raft::Resource::new(node, replica, &group)
+        });
+        self.host
+            .register_replicated(id.clone(), path.clone(), resource)
+            .unwrap();
         let token = self.bind(scope, &id);
         TestDatabase { id, path, token }
     }
@@ -84,7 +161,7 @@ impl TestServer {
         let mut bindings = self.bindings.lock();
         let scoped = bindings.entry(scope.to_string()).or_default();
         scoped.push(Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: database.clone(),
             home: Home::Local,
         });

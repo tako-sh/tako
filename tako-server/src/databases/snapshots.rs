@@ -1,4 +1,4 @@
-//! Snapshot backups of KV stores. SQLite databases are backed up
+//! Snapshot backups of KV stores. SQL databases are backed up
 //! continuously instead (see [`super::backups`]), which also owns the
 //! scheduler, disk-space reservations and work directories these use.
 //!
@@ -107,7 +107,7 @@ fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
 /// The file extension of a database's copies: SQLite files, or KV exports.
 pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
     match stored.engine {
-        DatabaseEngine::Sqlite => "sqlite",
+        DatabaseEngine::Turso => "db",
         DatabaseEngine::Kv => "redb",
     }
 }
@@ -115,7 +115,7 @@ pub(crate) fn extension(stored: &StoredDatabase) -> &'static str {
 /// Whether the database may differ from its last snapshot.
 pub(crate) fn has_changes(state: &ServerState, stored: &StoredDatabase) -> bool {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             DatabaseId::parse(&stored.name).is_ok_and(|id| state.databases.host.has_changes(&id))
         }
         DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
@@ -126,7 +126,7 @@ pub(crate) fn has_changes(state: &ServerState, stored: &StoredDatabase) -> bool 
 /// Records that the database differs from its last snapshot.
 pub(crate) fn mark_changed(state: &ServerState, stored: &StoredDatabase) {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             if let Ok(id) = DatabaseId::parse(&stored.name) {
                 state.databases.host.mark_changed(&id);
             }
@@ -142,7 +142,7 @@ pub(crate) fn mark_changed(state: &ServerState, stored: &StoredDatabase) {
 /// The size of the database's file on disk.
 pub(crate) fn size_bytes(state: &ServerState, stored: &StoredDatabase) -> u64 {
     match stored.engine {
-        DatabaseEngine::Sqlite => DatabaseId::parse(&stored.name)
+        DatabaseEngine::Turso => DatabaseId::parse(&stored.name)
             .ok()
             .and_then(|id| state.databases.host.size_bytes(&id)),
         DatabaseEngine::Kv => tako_kv::StoreId::parse(&stored.name)
@@ -161,7 +161,7 @@ pub(crate) async fn copy_contents(
     backup: bool,
 ) -> Result<(), String> {
     match stored.engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             let id = DatabaseId::parse(&stored.name)?;
             let copied = state.databases.host.snapshot(&id, dest).await;
             if !backup {
@@ -193,114 +193,12 @@ pub(crate) async fn copy_contents(
 /// Checks that `path` holds a usable copy for the database's engine. Blocks.
 pub(crate) fn verify_copy(engine: DatabaseEngine, path: &Path) -> Result<(), String> {
     match engine {
-        DatabaseEngine::Sqlite => tako_db::verify_database(path),
+        DatabaseEngine::Turso => tako_db::verify_database(path),
         DatabaseEngine::Kv => tako_kv::export::Reader::open(path)
             .and_then(|reader| reader.check())
             .map(drop)
             .map_err(|e| e.to_string()),
     }
-}
-
-/// Names the server that last restored the database. A copy a move left
-/// behind sees another server there and stops publishing snapshots, even
-/// when it was unreachable during the move.
-fn holder_key(stored: &StoredDatabase) -> String {
-    format!("{}/holder", prefix(stored))
-}
-
-#[derive(Serialize, Deserialize)]
-struct Holder {
-    server: String,
-    since_unix_secs: u64,
-}
-
-/// The holder a deleted database's snapshot prefix keeps: no server is
-/// named so, so a copy that a delete could not reach publishes nothing into
-/// the deleted history when it comes back.
-const DELETED_HOLDER: &str = "(deleted)";
-
-async fn read_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-) -> Result<Option<String>, String> {
-    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    let bytes = with_deadline(METADATA_TIMEOUT, async {
-        match remote.get(&key).await {
-            Ok(object) => object
-                .bytes()
-                .await
-                .map(Some)
-                .map_err(|e| format!("read the database's holder: {e}")),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(error) => Err(format!("read the database's holder: {error}")),
-        }
-    })
-    .await?;
-    Ok(bytes
-        .and_then(|bytes| serde_json::from_slice::<Holder>(&bytes).ok())
-        .map(|holder| holder.server))
-}
-
-/// Fails when another server holds the database.
-async fn check_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-    own: Option<&str>,
-) -> Result<(), String> {
-    let Some(own) = own else {
-        return Ok(());
-    };
-    match read_holder(remote, stored).await? {
-        Some(holder) if holder == DELETED_HOLDER => Err(format!(
-            "database {} was deleted; this copy no longer publishes snapshots. Remove it with `tako db delete {} --server <this server>`",
-            stored.name, stored.name
-        )),
-        Some(holder) if holder != own => Err(format!(
-            "database {} was moved to another server ({holder}); this copy no longer publishes snapshots. Remove it with `tako db delete {} --server <this server>`",
-            stored.name, stored.name
-        )),
-        _ => Ok(()),
-    }
-}
-
-/// Gives up this server's claim on the database's snapshots, when it holds
-/// it: removing a copy that an unfinished move left here lets the copy the
-/// network names take snapshots again.
-pub(crate) async fn release_holder(
-    state: &ServerState,
-    stored: &StoredDatabase,
-) -> Result<(), String> {
-    let (Some(backup), Some(own)) = (&stored.secrets.backup, state.databases.server_id()) else {
-        return Ok(());
-    };
-    let remote = store(backup)?;
-    if read_holder(remote.as_ref(), stored).await?.as_deref() != Some(own.as_str()) {
-        return Ok(());
-    }
-    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    with_deadline(METADATA_TIMEOUT, async {
-        match remote.delete(&key).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(error) => Err(format!("release the snapshots of {}: {error}", stored.name)),
-        }
-    })
-    .await
-}
-
-async fn claim_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-    own: &str,
-) -> Result<(), String> {
-    put_json_object(
-        remote,
-        &holder_key(stored),
-        &Holder {
-            server: own.to_owned(),
-            since_unix_secs: now_unix_secs(),
-        },
-    )
-    .await
 }
 
 fn key_binding(stored: &StoredDatabase, override_key: Option<&str>) -> BackupKeyBinding {
@@ -552,6 +450,17 @@ pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) 
         }
     };
     for stored in databases {
+        if state
+            .databases
+            .raft
+            .resource(&stored.generation)
+            .is_some_and(|r| !r.leads())
+        {
+            continue;
+        }
+        let Ok(stored) = state.databases.committed_settings(stored) else {
+            continue;
+        };
         if stored.engine == DatabaseEngine::Kv
             && stored.secrets.backup.is_some()
             && has_changes(state, &stored)
@@ -704,15 +613,8 @@ pub(crate) async fn take(
         return Ok(None);
     }
     let started = now_unix_secs();
-    let own = state.databases.server_id();
-    let result = match store(&backup) {
-        Ok(remote) => match check_holder(remote.as_ref(), stored, own.as_deref()).await {
-            Ok(()) => match copy_database(state, stored).await {
-                Ok(copy) => upload_copy(stored, &backup, &copy, reason, own.as_deref()).await,
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        },
+    let result = match copy_database(state, stored).await {
+        Ok(copy) => upload_copy(stored, &backup, &copy, reason).await,
         Err(error) => Err(error),
     };
     if result.is_err() {
@@ -798,14 +700,12 @@ async fn copy_database(
     })
 }
 
-/// Compresses, encrypts and uploads a copy, then its manifest. With `own`,
-/// the manifest is published only while no other server holds the database.
+/// Compresses, encrypts and uploads a committed copy before publishing its manifest.
 async fn upload_copy(
     stored: &StoredDatabase,
     backup: &StorageBinding,
     copy: &SnapshotCopy,
     reason: SnapshotReason,
-    own: Option<&str>,
 ) -> Result<Snapshot, String> {
     let created = now_unix_secs();
     // Milliseconds lead the ID, so IDs order snapshots taken in the same
@@ -846,42 +746,18 @@ async fn upload_copy(
     let remote = store(backup)?;
     let data = data_key(stored, &snapshot_id);
     upload_file(remote.clone(), &data, &encrypted).await?;
-    // Checked again now: the database may have moved during the upload.
-    let published = match check_holder(remote.as_ref(), stored, own).await {
-        Ok(()) => {
-            put_json_object(
-                remote.as_ref(),
-                &manifest_key(stored, &snapshot_id),
-                &Manifest {
-                    format: MANIFEST_FORMAT,
-                    database: stored.name.clone(),
-                    generation: stored.generation.clone(),
-                    snapshot: snapshot.clone(),
-                    encryption,
-                },
-            )
-            .await
-        }
-        Err(error) => Err(error),
-    };
-    // The check and the write are separate requests, so a move can land
-    // between them: checking once more after writing takes the manifest
-    // back. Only a server stopping in that moment leaves one behind.
-    let published = match published {
-        Ok(()) if own.is_some() => match check_holder(remote.as_ref(), stored, own).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if let Ok(path) = ObjectPath::parse(manifest_key(stored, &snapshot_id)) {
-                    let _ = with_deadline(METADATA_TIMEOUT, async {
-                        remote.delete(&path).await.map_err(|e| e.to_string())
-                    })
-                    .await;
-                }
-                Err(error)
-            }
+    let published = put_json_object(
+        remote.as_ref(),
+        &manifest_key(stored, &snapshot_id),
+        &Manifest {
+            format: MANIFEST_FORMAT,
+            database: stored.name.clone(),
+            generation: stored.generation.clone(),
+            snapshot: snapshot.clone(),
+            encryption,
         },
-        other => other,
-    };
+    )
+    .await;
     if let Err(error) = published {
         // The manifest may have been written although the call failed (a
         // response lost to a timeout), so it goes first, then the data:
@@ -1028,41 +904,6 @@ fn retained(snapshots: &[Snapshot], now: u64) -> BTreeSet<String> {
     keep
 }
 
-/// Deletes every snapshot object of a database from its backup storage and
-/// returns how many objects were removed. A holder naming no server stays
-/// behind as the deletion's fence.
-pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
-    let Some(backup) = &stored.secrets.backup else {
-        return Ok(0);
-    };
-    let remote = store(backup)?;
-    // First, and kept: a copy on a server the delete could not reach stops
-    // publishing, also when it comes back after the delete.
-    claim_holder(remote.as_ref(), stored, DELETED_HOLDER)
-        .await
-        .map_err(|e| format!("mark the snapshots deleted: {e}"))?;
-    let holder = holder_key(stored);
-    let keys = list_objects(remote.as_ref(), stored)
-        .await?
-        .into_iter()
-        .map(|(key, _)| key)
-        .filter(|key| key.as_ref() != holder);
-    // Manifests first, so a partial deletion lists no snapshot without data.
-    let (manifests, data): (Vec<_>, Vec<_>) = keys.partition(|key| key.as_ref().ends_with(".json"));
-    let mut deleted = 0;
-    for key in manifests.into_iter().chain(data) {
-        with_deadline(METADATA_TIMEOUT, async {
-            match remote.delete(&key).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                Err(error) => Err(format!("delete {key}: {error}")),
-            }
-        })
-        .await?;
-        deleted += 1;
-    }
-    Ok(deleted)
-}
-
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
     let remote = store(backup)?;
     let objects = list_objects(remote.as_ref(), stored).await?;
@@ -1113,7 +954,7 @@ fn orphaned_data(objects: &[(ObjectPath, i64)], now: i64) -> Vec<ObjectPath> {
             key.filename()
                 .and_then(|name| {
                     // Either engine's data: SQLite copies or KV exports.
-                    name.strip_suffix(".sqlite.zst.enc")
+                    name.strip_suffix(".db.zst.enc")
                         .or_else(|| name.strip_suffix(".redb.zst.enc"))
                 })
                 .is_some_and(|id| !manifests.contains(id))
@@ -1150,86 +991,41 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
-    // This server holds the database from now on, so a copy that a move
-    // leaves behind stops publishing snapshots, also one in flight, which
-    // checks again before and after its manifest. Claiming before listing
-    // means any snapshot that copy still publishes is listed here. A failed
-    // restore gives the claim back.
-    let own = state.databases.server_id();
-    let previous = match &own {
-        Some(own) => {
-            let previous = read_holder(remote.as_ref(), &stored).await?;
-            if previous.as_deref() != Some(own.as_str()) {
-                claim_holder(remote.as_ref(), &stored, own)
-                    .await
-                    .map_err(|e| {
-                        format!("record this server as the holder of {}: {e}", stored.name)
-                    })?;
-            }
-            Some(previous)
-        }
-        None => None,
-    };
-    let restored = async {
-        let manifests = list_manifests(remote.as_ref(), &stored).await?;
-        let manifest = match snapshot {
-            Some(wanted) => manifests
-                .into_iter()
-                .find(|m| m.snapshot.id == wanted)
-                .ok_or_else(|| {
-                    format!(
-                        "Snapshot {wanted} of database {} was not found.",
+    let manifests = list_manifests(remote.as_ref(), &stored).await?;
+    let manifest = match snapshot {
+        Some(wanted) => manifests
+            .into_iter()
+            .find(|m| m.snapshot.id == wanted)
+            .ok_or_else(|| {
+                format!(
+                    "Snapshot {wanted} of database {} was not found.",
+                    stored.name
+                )
+            })?,
+        // The newest snapshot of the database's own history: the safety
+        // copies that restores and imports take of what they replace are
+        // left out, so repeating a restore does not undo it.
+        None => {
+            let fallback = manifests.first().map(|m| m.snapshot.id.clone());
+            let mut manifests = manifests.into_iter();
+            match manifests
+                .by_ref()
+                .find(|m| m.snapshot.reason != SnapshotReason::Restore)
+            {
+                Some(manifest) => manifest,
+                None => {
+                    let id = fallback
+                        .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
+                    return Err(format!(
+                        "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
                         stored.name
-                    )
-                })?,
-            // The newest snapshot of the database's own history: the safety
-            // copies that restores and imports take of what they replace are
-            // left out, so repeating a restore does not undo it.
-            None => {
-                let fallback = manifests.first().map(|m| m.snapshot.id.clone());
-                let mut manifests = manifests.into_iter();
-                match manifests
-                    .by_ref()
-                    .find(|m| m.snapshot.reason != SnapshotReason::Restore)
-                {
-                    Some(manifest) => manifest,
-                    None => {
-                        let id = fallback
-                            .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
-                        return Err(format!(
-                            "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
-                            stored.name
-                        ));
-                    }
+                    ));
                 }
             }
-        };
-
-        restore_from(state, &stored, remote.as_ref(), manifest, key_override).await
-    }
-    .await;
-    if let (Err(error), Some(previous)) = (&restored, previous)
-        && previous != own
-    {
-        let given_back = match &previous {
-            Some(holder) => claim_holder(remote.as_ref(), &stored, holder).await,
-            None => match ObjectPath::parse(holder_key(&stored)) {
-                Ok(key) => {
-                    with_deadline(METADATA_TIMEOUT, async {
-                        remote.delete(&key).await.map_err(|e| e.to_string())
-                    })
-                    .await
-                }
-                Err(e) => Err(e.to_string()),
-            },
-        };
-        if let Err(revert) = given_back {
-            return Err(format!(
-                "{error} (and the database's previous holder could not be recorded again: {revert})"
-            ));
         }
-    }
-    restored
+    };
+
+    restore_from(state, &stored, remote.as_ref(), manifest, key_override).await
 }
 
 /// Downloads, verifies, and swaps in a snapshot.
@@ -1363,7 +1159,7 @@ pub(crate) async fn replace_locked(
         Ok(copy) => {
             let started = now_unix_secs();
             // Not fenced, like the SQLite copy of replaced contents.
-            let result = upload_copy(stored, &backup, &copy, SnapshotReason::Restore, None).await;
+            let result = upload_copy(stored, &backup, &copy, SnapshotReason::Restore).await;
             if let Err(error) =
                 record(state, stored, &backup, started, SnapshotReason::Restore, result).await
             {
@@ -1470,11 +1266,11 @@ mod tests {
         let objects = vec![
             // A complete snapshot, however old.
             (key("1-a.json"), 0),
-            (key("1-a.sqlite.zst.enc"), 0),
+            (key("1-a.db.zst.enc"), 0),
             // Data whose manifest pruning deleted.
-            (key("2-b.sqlite.zst.enc"), now - 2 * day),
+            (key("2-b.db.zst.enc"), now - 2 * day),
             // An upload that may still be publishing its manifest.
-            (key("3-c.sqlite.zst.enc"), now - 60),
+            (key("3-c.db.zst.enc"), now - 60),
             // A manifest alone is not data.
             (key("4-d.json"), 0),
             // Something else written under the prefix.
@@ -1486,7 +1282,7 @@ mod tests {
         ];
         assert_eq!(
             orphaned_data(&objects, now),
-            vec![key("2-b.sqlite.zst.enc"), key("5-e.redb.zst.enc")]
+            vec![key("2-b.db.zst.enc"), key("5-e.redb.zst.enc")]
         );
     }
 

@@ -1,20 +1,14 @@
 //! Own only children returned by our Command::spawn. Never discover/kill PIDs.
 use super::{AgentError, MAX_HELPER_BYTES, Result};
-use sha2::{Digest, Sha256};
+
 use std::{
-    fs::OpenOptions,
     io::Read,
-    os::{
-        fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    },
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 use tako_network::NodeConfig;
 
-const CORROSION: &str = "/usr/local/libexec/tako/corrosion";
 const HELPER: &str = "/usr/local/libexec/tako/tako-network-helper";
 const POLL: Duration = Duration::from_millis(25);
 pub(super) struct OwnedChild {
@@ -22,77 +16,6 @@ pub(super) struct OwnedChild {
 }
 
 impl OwnedChild {
-    pub(super) fn corrosion(config: &NodeConfig, data_dir: &std::path::Path) -> Result<Self> {
-        // Installer controls the executable and all its ancestors. Never execute
-        // a user-writable substitute, even if its bytes have the expected digest.
-        for directory in [
-            "/usr",
-            "/usr/local",
-            "/usr/local/libexec",
-            "/usr/local/libexec/tako",
-        ] {
-            let meta = std::fs::symlink_metadata(directory)?;
-            if !meta.is_dir() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
-                return Err(AgentError::Invalid("unsafe Corrosion installation"));
-            }
-        }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(CORROSION)?;
-        let meta = file.metadata()?;
-        if !meta.is_file()
-            || meta.nlink() != 1
-            || meta.uid() != 0
-            || meta.mode() & 0o022 != 0
-            || meta.len() > tako_network::node_config::MAX_CORROSION_BINARY_BYTES
-        {
-            return Err(AgentError::Invalid("unsafe Corrosion executable"));
-        }
-        let mut digest = Sha256::new();
-        let mut chunk = [0u8; 65536];
-        loop {
-            let n = file.read(&mut chunk)?;
-            if n == 0 {
-                break;
-            }
-            digest.update(&chunk[..n]);
-        }
-        if hex::encode(digest.finalize()) != config.corrosion_binary_sha256 {
-            return Err(AgentError::Invalid(
-                "Corrosion executable checksum mismatch",
-            ));
-        }
-        // Execute the exact verified inode even during an installer rename.
-        let executable = format!("/proc/self/fd/{}", file.as_raw_fd());
-        let mut command = Command::new(executable);
-        kill_with_agent(&mut command);
-        let child = command
-            .arg("--config")
-            .arg(config.network_dir(data_dir).join("corrosion.toml"))
-            .arg("agent")
-            // Corrosion permits environment config overrides. Clear them all.
-            .env_clear()
-            .env("RUST_LOG", "warn")
-            .current_dir(config.network_dir(data_dir))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(Self { child: Some(child) })
-    }
-    pub(super) fn running(&mut self) -> Result<bool> {
-        let Some(child) = &mut self.child else {
-            return Ok(false);
-        };
-        if child.try_wait()?.is_some() {
-            self.child = None;
-            return Ok(false);
-        }
-        Ok(true)
-    }
-    /// Forced kill is an error even after successful reaping. Callers may retry
-    /// only after inspecting `running`; they must retain/report the timeout.
     pub(super) fn stop(&mut self) -> Result<()> {
         self.stop_with_deadlines(Duration::from_secs(15), Duration::from_secs(5))
     }

@@ -6,28 +6,28 @@
       "type": "framework",
       "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, hosted databases, KV stores, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "26c03a741712d1ff3ba04f831dcbe9be5e922a9daf708063d07ac23b970433c8"
+      "sha256": "036ca272700e22cce9b3c3be81d433d5464887b4c23ad47b3d1297b5829efcff"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "2c3c9381f3854a7c28f93fb0e7d3887a101fbb0c5fc47963d4ec099e939ebafd"
+      "sha256": "29849f0b4f5d30e1385debf825a252919294ba4218b241c93b689f4d9363074a"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "f6010fac496e1cbb50b377b5eb51d7eef7fefc090931eb94a2da87589ef42ba6"
+      "sha256": "922bc8fb19e9b4610676d6a7e66797ea46178a2380092430a06cb81bbec0b7d6"
     },
     {
       "name": "tako-sdk-rust",
       "type": "framework",
       "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling, authenticated presence, and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "e6650ab06d13db49d3db52711a16bf588d823197af68d99419deec08a3ca4f6e"
+      "sha256": "fe52dc4e87ffe520516741bf766f1a48fe22fc47b465d1b3087456adec6cb9f9"
     }
   ]
 }

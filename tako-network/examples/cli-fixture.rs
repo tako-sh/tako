@@ -91,7 +91,6 @@ fn main() {
             https_port: 443,
             https_certificate_pem: None,
             https_spki_sha256: None,
-            corrosion_ca_certificate_pem: None,
         };
         pins.insert(request.device_id_for(&network).unwrap(), info.clone());
         admit(

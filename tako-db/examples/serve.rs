@@ -6,12 +6,12 @@
 use std::io::Read;
 use std::time::Duration;
 
-use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token};
+use tako_db::{Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token};
 
 #[tokio::main]
 async fn main() {
     let dir = tempfile::tempdir().expect("temporary directory");
-    let path = dir.path().join("database.sqlite");
+    let path = dir.path().join("database.db");
     DatabaseHost::create_file(&path).expect("create database");
 
     let mut config = HostConfig::default();
@@ -26,7 +26,7 @@ async fn main() {
     host.set_bindings(
         "conformance/test",
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: id,
             home: Home::Local,
         }],

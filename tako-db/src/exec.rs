@@ -342,11 +342,12 @@ pub(crate) fn run_cursor(
         }
         let mut disconnected = false;
         let result = {
+            let read_only = stream.read_only;
             let Stream {
                 conn, stored_sql, ..
             } = &mut *stream;
             resolve_statement(stored_sql, &step.stmt).and_then(|(sql, args)| {
-                let conn = connection(conn, database)?;
+                let conn = connection(conn, database, read_only)?;
                 conn.execute_streaming(sql, &args, |event| {
                     let (entry, reserved) = match event {
                         // Column names can be long too: their share of the
@@ -552,7 +553,7 @@ fn execute(
         ..
     } = stream;
     let (sql, args) = resolve_statement(stored_sql, stmt)?;
-    let conn = connection(conn, database)?;
+    let conn = connection(conn, database, stream.read_only)?;
     let result = conn.execute(sql, &args, stmt.want_rows.unwrap_or(true), budget);
     // A statement can write before it fails, e.g. `INSERT ... RETURNING`
     // whose rows exceed the response budget.
@@ -576,7 +577,7 @@ fn sequence(
         ..
     } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
-    let conn = connection(conn, database)?;
+    let conn = connection(conn, database, stream.read_only)?;
     let result = conn.sequence(sql);
     // A failing statement may follow ones that already wrote.
     if conn.take_wrote() {
@@ -597,7 +598,7 @@ fn describe(
         conn, stored_sql, ..
     } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
-    connection(conn, database)?.describe(sql, budget)
+    connection(conn, database, stream.read_only)?.describe(sql, budget)
 }
 
 fn store_sql(stream: &mut Stream, sql_id: i32, sql: String, limits: &Limits) -> Result<(), Error> {
@@ -677,9 +678,10 @@ fn resolve_sql<'a>(
 fn connection<'a>(
     conn: &'a mut Option<engine::Connection>,
     database: &Database,
+    read_only: bool,
 ) -> Result<&'a mut engine::Connection, Error> {
     if conn.is_none() {
-        *conn = Some(database.acquire()?);
+        *conn = Some(database.acquire(read_only)?);
     }
     Ok(conn.as_mut().expect("connection was just set"))
 }

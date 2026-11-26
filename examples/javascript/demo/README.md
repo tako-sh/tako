@@ -14,29 +14,23 @@ bun install
 bun run dev
 ```
 
-The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, base artwork is served through `/_tako/image`, and the `mission` database binding is served from `.tako/data/databases/mission.sqlite`.
+The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, base artwork is served through `/_tako/image`, and the `mission` database binding is served from `.tako/data/databases/mission.db`.
 
 ## Database
 
 Supply requests live in the `mission` database, which the app reaches as
-`tako.db.mission` through `@libsql/client`. `tako dev` serves it from a
-local file, after applying `migrations/`. To deploy, create the database on one
-of the network's servers:
-
-```bash
-tako db create mission --server <server>
-```
-
-and bind it to production in `tako.toml`:
+`tako.db.mission` through `@tursodatabase/serverless/compat`. `tako dev` serves it from a
+local Turso file after applying `migrations/`. Bind the database to production
+in `tako.toml`.
 
 ```toml
 [envs.production]
 db = { mission = "mission" }
 ```
 
-Instances on every server of the network can use it. Deploys apply
-`migrations/` to it, and it gets hourly snapshots once production has a
-`backup.storage`.
+A full-access deploy creates the database and prepares a replica on each selected
+server. Deploys apply `migrations/`. Setting `backup.storage` enables continuous
+SQL backups.
 
 Secret values are not stored in Git. Set development values using
 `tako secret set NAME --env development`. To access published production values,
@@ -55,6 +49,8 @@ bun run build
 cd examples/javascript/demo
 bun test
 ```
+
+The database tests start a temporary hosted Turso database with `tako run`. Install the CLI or set `TAKO_BIN` to the path of a local build.
 
 ## Nightly production check
 

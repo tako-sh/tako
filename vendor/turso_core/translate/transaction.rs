@@ -1,0 +1,111 @@
+use crate::schema::Schema;
+use crate::translate::emitter::{emit_cdc_explicit_commit_insns, Resolver, TransactionMode};
+use crate::translate::{ProgramBuilder, ProgramBuilderOpts};
+use crate::vdbe::insn::Insn;
+use crate::Result;
+use turso_parser::ast::{AccessMode, Name, TransactionType};
+
+pub fn translate_tx_begin(
+    tx_type: Option<TransactionType>,
+    _tx_name: Option<Name>,
+    access_mode: Option<AccessMode>,
+    resolver: &Resolver,
+    program: &mut ProgramBuilder,
+) -> Result<()> {
+    program.extend(&ProgramBuilderOpts {
+        num_cursors: 0,
+        approx_num_insns: 0,
+        approx_num_labels: 0,
+    });
+    let schema = resolver.schema();
+    let tx_type = tx_type.unwrap_or(TransactionType::Deferred);
+    let read_only = matches!(access_mode, Some(AccessMode::ReadOnly));
+    match tx_type {
+        TransactionType::Deferred => {
+            // SQLite emits only AutoCommit for deferred — no
+            // Transaction opcodes at all (for any database).
+            program.emit_insn(Insn::AutoCommit {
+                auto_commit: false,
+                rollback: false,
+                concurrent: false,
+                read_only,
+            });
+        }
+        TransactionType::Immediate | TransactionType::Exclusive => {
+            // SQLite emits Transaction for every open database (main, temp, each attached)
+            // on BEGIN IMMEDIATE / EXCLUSIVE. We match that exactly. As in SQLite, the temp
+            // Transaction is a no-op in op_transaction while the temp database has not been
+            // created yet, so BEGIN IMMEDIATE alone never materializes it.
+            program.emit_insn(Insn::Transaction {
+                db: crate::MAIN_DB_ID,
+                tx_mode: TransactionMode::Write,
+                schema_cookie: schema.schema_version,
+            });
+            let temp_schema_cookie = temp_schema_cookie(resolver);
+            program.emit_insn(Insn::Transaction {
+                db: crate::TEMP_DB_ID,
+                tx_mode: TransactionMode::Write,
+                schema_cookie: temp_schema_cookie,
+            });
+            for db_id in resolver.attached_database_ids_in_search_order()? {
+                let cookie = resolver.with_schema(db_id, |s| s.schema_version);
+                program.emit_insn(Insn::Transaction {
+                    db: db_id,
+                    tx_mode: TransactionMode::Write,
+                    schema_cookie: cookie,
+                });
+            }
+            program.emit_insn(Insn::AutoCommit {
+                auto_commit: false,
+                rollback: false,
+                concurrent: false,
+                read_only,
+            });
+        }
+        TransactionType::Concurrent => {
+            // Like SQLite's begin-concurrent, BEGIN CONCURRENT is a deferred
+            // transaction: nothing is opened here, and the first statement
+            // materializes the MVCC transaction in concurrent mode.
+            program.emit_insn(Insn::AutoCommit {
+                auto_commit: false,
+                rollback: false,
+                concurrent: true,
+                read_only,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Schema cookie for the temp Transaction emitted by BEGIN. Without a temp
+/// database the cookie is 0, the version of an empty schema; avoid
+/// `with_schema`, which would build a throwaway empty temp schema.
+fn temp_schema_cookie(resolver: &Resolver) -> u32 {
+    if resolver.has_temp_database() {
+        resolver.with_schema(crate::TEMP_DB_ID, |s| s.schema_version)
+    } else {
+        0
+    }
+}
+
+pub fn translate_tx_commit(
+    _tx_name: Option<Name>,
+    schema: &Schema,
+    resolver: &Resolver,
+    program: &mut ProgramBuilder,
+) -> Result<()> {
+    program.extend(&ProgramBuilderOpts::new(0, 0, 0));
+
+    let cdc_info = program.capture_data_changes_info().as_ref();
+    if cdc_info.is_some_and(|info| info.cdc_version().has_commit_record()) {
+        emit_cdc_explicit_commit_insns(program, schema, resolver)?;
+    }
+
+    program.emit_insn(Insn::AutoCommit {
+        auto_commit: true,
+        rollback: false,
+        concurrent: false,
+        read_only: false,
+    });
+    Ok(())
+}

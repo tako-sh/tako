@@ -262,11 +262,11 @@ Secrets are not raw process env vars.
 
 ## Databases In Dev
 
-`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].db`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
+`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.db` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].db`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
 
 With `tako dev --env <env>`, a custom environment binds only
 `[envs.<env>].db` and stores files at
-`.tako/data/envs/<env>/databases/<database-name>.sqlite`.
+`.tako/data/envs/<env>/databases/<database-name>.db`.
 
 ## KV Stores In Dev
 

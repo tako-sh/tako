@@ -185,8 +185,7 @@ fn a_start_waits_while_another_start_recovers_the_data_directory() {
 fn a_normal_start_only_sweeps_while_no_other_server_serves_the_data() {
     use crate::operations::RecoveryMode;
     let tmp = tempfile::tempdir().unwrap();
-    let store =
-        crate::state_store::SqliteStateStore::new(tmp.path().join("state.sqlite"), [7u8; 32]);
+    let store = crate::state_store::StateStore::new(tmp.path().join("state.redb"), [7u8; 32]);
     store.init().unwrap();
 
     let standby = store.try_drain_activity(false).unwrap();

@@ -59,7 +59,7 @@ tako: Tako {
   direction: down
 
   server: tako-server
-  runs: workflows.sqlite
+  runs: workflows.db
   sub: Worker subprocess
 
   server -> runs: persist

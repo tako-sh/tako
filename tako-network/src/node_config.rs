@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const MAX_CORROSION_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 pub const NODE_CONFIG_FILE: &str = "native-network.json";
 pub const MAX_NODE_CONFIG_BYTES: usize = 16 * 1024 * 1024;
 
@@ -20,8 +19,6 @@ pub struct NodeConfig {
     pub server_id: DeviceId,
     pub bootstrap: RegistrySnapshot,
     pub files: NodeFiles,
-    /// SHA-256 of the installed executable, not the compressed release archive.
-    pub corrosion_binary_sha256: String,
     pub wireguard_listen_port: u16,
 }
 
@@ -31,23 +28,11 @@ pub struct NodeFiles {
     pub keys: String,
     pub https_certificate: String,
     pub https_private_key: String,
-    pub gossip_ca_certificate: String,
-    pub gossip_certificate: String,
-    pub gossip_private_key: String,
-    pub api_token: String,
 }
 
 impl NodeFiles {
-    pub fn names(&self) -> [&str; 7] {
-        [
-            &self.keys,
-            &self.https_certificate,
-            &self.https_private_key,
-            &self.gossip_ca_certificate,
-            &self.gossip_certificate,
-            &self.gossip_private_key,
-            &self.api_token,
-        ]
+    pub fn names(&self) -> [&str; 3] {
+        [&self.keys, &self.https_certificate, &self.https_private_key]
     }
 }
 
@@ -60,7 +45,7 @@ impl NodeConfig {
         if self.bootstrap.members.len()
             + self.bootstrap.revocations.len()
             + self.bootstrap.acks.len()
-            >= crate::corrosion::MAX_REGISTRY_ROWS
+            >= crate::catalog::MAX_REGISTRY_ROWS
             || serde_json::to_vec(self)?.len() > MAX_NODE_CONFIG_BYTES
         {
             return Err(invalid("node config", "snapshot exceeds bounds"));
@@ -74,21 +59,8 @@ impl NodeConfig {
             return Err(invalid("node config", "missing admitted server"));
         }
         // UDP 443 is an explicit WireGuard option, independent of HTTPS/TCP.
-        if (self.wireguard_listen_port < 1024 && self.wireguard_listen_port != 443)
-            || self.wireguard_listen_port == 8787
-        {
+        if self.wireguard_listen_port < 1024 && self.wireguard_listen_port != 443 {
             return Err(invalid("node config", "invalid WireGuard port"));
-        }
-        if self.corrosion_binary_sha256.len() != 64
-            || !self
-                .corrosion_binary_sha256
-                .bytes()
-                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        {
-            return Err(invalid(
-                "node config",
-                "expected lowercase executable SHA-256",
-            ));
         }
         let mut names = BTreeSet::new();
         for name in self.files.names() {
@@ -96,7 +68,6 @@ impl NodeConfig {
             if !names.insert(name)
                 || RESERVED.contains(&name)
                 || name.starts_with("agent-")
-                || name.starts_with("corrosion.")
                 || name.starts_with("runtime.")
             {
                 return Err(invalid(
@@ -146,23 +117,12 @@ const RESERVED: &[&str] = &[
     "management.sock",
     "desired.json",
     "known-registry.json",
+    "catalog",
+    "catalog-initialized",
     "bootstrap-complete",
-    "corrosion.toml",
-    "corrosion.db",
-    "corrosion.db-wal",
-    "corrosion.db-shm",
-    "corrosion.schema.sql",
-    "corrosion-ca.pem",
-    "corrosion-admin.sock",
     "subscriptions",
     "runtime.redb",
-    "runtime.redb-import",
     "runtime.runtime-lock",
-    // The SQLite journal the runtime imports once, and the copy it keeps.
-    "runtime.db",
-    "runtime.db-wal",
-    "runtime.db-shm",
-    "runtime.db.migrated",
 ];
 
 pub fn validate_filename(name: &str) -> Result<()> {
@@ -349,7 +309,7 @@ mod tests {
         ] {
             assert!(validate_filename(name).is_err(), "{name:?}");
         }
-        validate_filename("gossip-leaf.pem").unwrap();
+        validate_filename("https-leaf.pem").unwrap();
     }
     #[cfg(unix)]
     #[test]

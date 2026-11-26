@@ -65,7 +65,7 @@ fn local_id(path: &Path) -> DatabaseId {
         .expect("a hex digest makes a valid name")
 }
 
-/// Serves `bindings` (binding name → SQLite file) for the app registered at
+/// Serves `bindings` (binding name → Turso database file) for the app registered at
 /// `config_path`, replacing its previous bindings, and returns the
 /// connections its processes receive.
 pub(crate) async fn connect(
@@ -103,15 +103,10 @@ pub(crate) async fn connect(
                 let register_path = path.clone();
                 let register_id = id.clone();
                 // Creating and locking the file blocks.
-                tokio::task::spawn_blocking(move || {
-                    if !register_path.exists() {
-                        DatabaseHost::create_file(&register_path)?;
-                    }
-                    host.register(register_id, register_path)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| format!("open {}: {e}", path.display()))?;
+                tokio::task::spawn_blocking(move || host.register(register_id, register_path))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("open {}: {e}", path.display()))?;
                 registrations.files.insert(path.clone(), id.clone());
                 id
             }
@@ -121,7 +116,7 @@ pub(crate) async fn connect(
             _ => tako_db::generate_token(),
         };
         host_bindings.push(Binding {
-            token_hash: tako_db::hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: id,
             home: Home::Local,
         });
@@ -135,6 +130,7 @@ pub(crate) async fn connect(
                 binding.clone(),
                 DatabaseConnection {
                     url: server.url.clone(),
+                    replica_auth_token: Some(tako_core::replica_token(token)),
                     auth_token: token.clone(),
                 },
             )
@@ -205,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn registrations_share_files_and_keep_tokens() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("shop.sqlite").display().to_string();
+        let file = dir.path().join("shop.db").display().to_string();
         let bindings = HashMap::from([("db".to_string(), file.clone())]);
 
         let first = connect("/a/tako.toml", &bindings).await.unwrap();
@@ -237,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn relative_paths_are_rejected() {
-        let bindings = HashMap::from([("db".to_string(), "shop.sqlite".to_string())]);
+        let bindings = HashMap::from([("db".to_string(), "shop.db".to_string())]);
         assert!(connect("/c/tako.toml", &bindings).await.is_err());
     }
 }

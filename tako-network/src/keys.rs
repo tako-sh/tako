@@ -52,6 +52,31 @@ impl LocalDeviceKeys {
         EncryptionPublicKey::from_bytes(PublicKey::from(&self.encryption).to_bytes())
     }
 
+    /// Scope a catalog transport credential to two enrolled server identities
+    /// and one network. The overlay alone cannot distinguish local processes.
+    pub fn catalog_peer_key(
+        &self,
+        network: &NetworkId,
+        peer: &EncryptionPublicKey,
+    ) -> Result<[u8; 32]> {
+        let local = PublicKey::from(&self.encryption).to_bytes();
+        let remote = *peer.as_bytes();
+        let secret = self.encryption.diffie_hellman(&PublicKey::from(remote));
+        if !secret.was_contributory() {
+            return Err(invalid("catalog peer", "invalid public key"));
+        }
+        let mut participants = [local, remote];
+        participants.sort_unstable();
+        let mut key = [0; 32];
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(b"tako-network-catalog-peer-v1"), secret.as_bytes())
+            .expand_multi_info(
+                &[network.as_bytes(), &participants[0], &participants[1]],
+                &mut key,
+            )
+            .map_err(|_| invalid("catalog peer", "credential derivation failed"))?;
+        Ok(key)
+    }
+
     pub fn device_id(&self, network: &NetworkId, kind: DeviceKind) -> Result<DeviceId> {
         DeviceId::from_keys(
             network,
@@ -198,6 +223,32 @@ pub(crate) fn new_x25519_secret() -> Result<StaticSecret> {
 mod tests {
     use super::*;
     use openssl::pkey::PKey;
+
+    #[test]
+    fn catalog_credentials_are_pairwise_and_network_scoped() {
+        let network = NetworkId::random().unwrap();
+        let a = LocalDeviceKeys::generate().unwrap();
+        let b = LocalDeviceKeys::generate().unwrap();
+        let remote = b.encryption_public_key().unwrap();
+        let credential = a.catalog_peer_key(&network, &remote).unwrap();
+        assert_eq!(
+            credential,
+            b.catalog_peer_key(&network, &a.encryption_public_key().unwrap())
+                .unwrap()
+        );
+        assert_ne!(
+            credential,
+            a.catalog_peer_key(&NetworkId::random().unwrap(), &remote)
+                .unwrap()
+        );
+        assert_ne!(
+            credential,
+            LocalDeviceKeys::generate()
+                .unwrap()
+                .catalog_peer_key(&network, &remote)
+                .unwrap()
+        );
+    }
 
     #[test]
     fn openssl_key_files_keep_their_identity_and_private_bytes() {

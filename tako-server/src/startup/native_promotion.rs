@@ -35,23 +35,9 @@ pub(super) async fn run(state: Arc<ServerState>) {
 // Call under PrimaryHandoff, before ServerState construction, and skip marker consumption.
 pub(super) fn check_promotion_startup(data_dir: &Path) -> Result<(), String> {
     reject_reload_marker(data_dir)?;
-    let connection = rusqlite::Connection::open_with_flags(
-        data_dir.join("state.sqlite"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| format!("Cannot inspect promotion upgrade state: {error}"))?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(|error| error.to_string())?;
-    let (mode, owned): (Option<String>, bool) = connection
-        .query_row(
-            "SELECT (SELECT server_mode FROM server_state WHERE id = 1),
-                    EXISTS(SELECT 1 FROM upgrade_lock WHERE id = 1)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|error| format!("Cannot inspect promotion upgrade state: {error}"))?;
-    if mode.as_deref() != Some("normal") || owned {
+    if !crate::state_store::promotion_ready(&data_dir.join("state.redb"))
+        .map_err(|e| format!("Cannot inspect promotion upgrade state: {e}"))?
+    {
         return Err("Native promotion deferred while an upgrade is active".into());
     }
     reject_reload_marker(data_dir)
@@ -100,6 +86,7 @@ async fn promote(state: Arc<ServerState>, startup_exe: Option<PathBuf>) -> Resul
         .args(arguments)
         .env(SIGNAL_PARENT_ON_READY_ENV, "1")
         .env(PROMOTION_CHILD_ENV, "1")
+        .env_remove("TAKO_STORAGE_HANDOFF")
         .spawn();
     match child {
         Ok(mut child) => {
@@ -301,16 +288,10 @@ mod tests {
         );
     }
 
-    fn upgrade_state(path: &Path) -> rusqlite::Connection {
-        let connection = rusqlite::Connection::open(path.join("state.sqlite")).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE server_state(id INTEGER PRIMARY KEY, server_mode TEXT);
-                 INSERT INTO server_state VALUES(1, 'normal');
-                 CREATE TABLE upgrade_lock(id INTEGER PRIMARY KEY, owner TEXT);",
-            )
-            .unwrap();
-        connection
+    fn upgrade_state(path: &Path) -> crate::state_store::StateStore {
+        let store = crate::state_store::StateStore::new(path.join("state.redb"), [0; 32]);
+        store.init().unwrap();
+        store
     }
 
     #[test]
@@ -318,19 +299,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let connection = upgrade_state(temp.path());
         assert!(check_promotion_startup(temp.path()).is_ok());
-        connection
-            .execute("INSERT INTO upgrade_lock VALUES(1, 'upgrade-owner')", [])
-            .unwrap();
+        assert!(
+            connection
+                .try_acquire_upgrade_lock("upgrade-owner")
+                .unwrap()
+        );
         assert!(check_promotion_startup(temp.path()).is_err());
-        let owner: String = connection
-            .query_row("SELECT owner FROM upgrade_lock", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(owner, "upgrade-owner");
-        connection
-            .execute_batch(
-                "DELETE FROM upgrade_lock; UPDATE server_state SET server_mode='upgrading'",
-            )
-            .unwrap();
+        assert_eq!(
+            connection.upgrade_lock_owner().unwrap().as_deref(),
+            Some("upgrade-owner")
+        );
+        connection.release_upgrade_lock("upgrade-owner").unwrap();
+        connection.set_server_mode(UpgradeMode::Upgrading).unwrap();
         assert!(check_promotion_startup(temp.path()).is_err());
     }
 
@@ -351,6 +331,6 @@ mod tests {
     fn native_promotion_missing_database_does_not_create_one() {
         let temp = tempfile::tempdir().unwrap();
         assert!(check_promotion_startup(temp.path()).is_err());
-        assert!(!temp.path().join("state.sqlite").exists());
+        assert!(!temp.path().join("state.redb").exists());
     }
 }

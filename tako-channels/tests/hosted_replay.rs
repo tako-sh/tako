@@ -5,7 +5,7 @@ use tako_channels::{
     ChannelError, ChannelPublishPayload, ChannelStore, ChannelStoreConfig, ReplayCursor,
 };
 use tako_db::{
-    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
+    Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token,
     http::{self, Access},
 };
 
@@ -27,7 +27,7 @@ fn bind(
     host.set_bindings(
         &format!("{app}#channels"),
         vec![Binding {
-            token_hash: hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             database: db.clone(),
             home,
         }],
@@ -39,7 +39,7 @@ fn bind(
 async fn two_writers_and_a_remote_reader_share_one_ordered_history_but_other_apps_do_not() {
     let dir = tempfile::tempdir().unwrap();
     let db = DatabaseId::generate();
-    let path = dir.path().join("database.sqlite");
+    let path = dir.path().join("database.db");
     DatabaseHost::create_file(&path).unwrap();
     let home = DatabaseHost::new(HostConfig::default());
     home.register(db.clone(), path).unwrap();

@@ -5,7 +5,7 @@
  * HTTP protocol, so it can be passed straight to an existing driver:
  *
  * ```ts
- * import { createClient } from "@libsql/client";
+ * import { createClient } from "@tursodatabase/serverless/compat";
  * import { tako } from "tako.sh";
  *
  * const db = createClient(tako.db.main);
@@ -22,11 +22,16 @@ export interface TakoDbConnection {
   readonly authToken: string;
 }
 
+/** A primary connection and its local, read-only view. */
+export interface TakoDbBinding extends TakoDbConnection {
+  readonly readReplica: TakoDbConnection;
+}
+
 /** Typed database bag exposed as `tako.db`. */
 export type TakoDbBag<T = Record<never, never>> = Readonly<{
-  [K in keyof T]: TakoDbConnection;
+  [K in keyof T]: TakoDbBinding;
 }> &
-  Readonly<Record<string, TakoDbConnection | undefined>>;
+  Readonly<Record<string, TakoDbBinding | undefined>>;
 
 const REDACTED = "[REDACTED]";
 
@@ -44,8 +49,8 @@ export function loadDb<T = Record<never, never>>(): TakoDbBag<T> {
 export function createDbBag<T = Record<never, never>>(
   bindings: () => Record<string, unknown>,
 ): TakoDbBag<T> {
-  const cache = new WeakMap<object, TakoDbConnection>();
-  const lookup = (name: string): TakoDbConnection | undefined => {
+  const cache = new WeakMap<object, TakoDbBinding>();
+  const lookup = (name: string): TakoDbBinding | undefined => {
     const all = bindings();
     if (!Object.prototype.hasOwnProperty.call(all, name)) return undefined;
     const raw = all[name];
@@ -59,7 +64,7 @@ export function createDbBag<T = Record<never, never>>(
     return database;
   };
 
-  return new Proxy(Object.create(null) as Record<string, TakoDbConnection>, {
+  return new Proxy(Object.create(null) as Record<string, TakoDbBinding>, {
     get(_target, prop: string | symbol): unknown {
       if (typeof prop !== "string") return undefined;
       return lookup(prop);
@@ -80,17 +85,30 @@ export function createDbBag<T = Record<never, never>>(
   }) as TakoDbBag<T>;
 }
 
-function createDatabase(name: string, raw: Record<string, unknown>): TakoDbConnection {
-  const { url, authToken } = raw;
+function createDatabase(name: string, raw: Record<string, unknown>): TakoDbBinding {
+  const { url, authToken, replicaAuthToken } = raw;
   if (typeof url !== "string" || typeof authToken !== "string") {
     throw new Error(`Tako: database binding "${name}" must have a url and an authToken`);
   }
+  const primary = connection(url, authToken);
+  const replica = typeof replicaAuthToken === "string" && replicaAuthToken
+    ? Object.freeze(connection(url, replicaAuthToken))
+    : undefined;
+  Object.defineProperty(primary, "readReplica", {
+    get() {
+      if (!replica) throw new Error(`Tako: runtime did not provide a read replica for "${name}"`);
+      return replica;
+    },
+  });
+  return Object.freeze(primary) as TakoDbBinding;
+}
+
+function connection(url: string, authToken: string): TakoDbConnection {
   const database = { url, authToken };
   const redacted = () => ({ url, authToken: REDACTED });
-  // Logging or serializing a connection must not print its token.
   Object.defineProperties(database, {
     toJSON: { value: redacted, enumerable: false },
     [Symbol.for("nodejs.util.inspect.custom")]: { value: redacted, enumerable: false },
   });
-  return Object.freeze(database);
+  return database;
 }

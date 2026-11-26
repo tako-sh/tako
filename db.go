@@ -24,7 +24,17 @@ type DB struct {
 	// URL is the database endpoint.
 	URL string
 	// AuthToken authorizes this app's binding. Treat it as a secret.
-	AuthToken string
+	AuthToken        string
+	replicaAuthToken string
+}
+
+// ReadReplica returns a read-only connection served on this app server.
+// A runtime predating replica bindings returns false.
+func (d DB) ReadReplica() (DB, bool) {
+	if d.replicaAuthToken == "" {
+		return DB{}, false
+	}
+	return DB{URL: d.URL, AuthToken: d.replicaAuthToken}, true
 }
 
 // DSN returns the URL with the token as the `authToken` query parameter,
@@ -68,7 +78,7 @@ func GetDB(name string) (DB, bool) {
 	if !ok {
 		return DB{}, false
 	}
-	return DB{URL: connection.URL, AuthToken: connection.AuthToken}, true
+	return DB{URL: connection.URL, AuthToken: connection.AuthToken, replicaAuthToken: connection.ReplicaAuthToken}, true
 }
 
 // DBNames returns the names of this app's database bindings, sorted.

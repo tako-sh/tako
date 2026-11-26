@@ -4,6 +4,8 @@
 
 #[path = "native_agent/authority.rs"]
 mod authority;
+#[path = "native_agent/catalog.rs"]
+mod catalog;
 #[path = "native_agent/controller.rs"]
 mod controller;
 #[path = "native_agent/ipc.rs"]
@@ -19,7 +21,9 @@ mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 
-pub use ipc::{recheck_authority, recover_client, recovery_config, relay, run, scope_secrets};
+pub use ipc::{
+    catalog_storage, recheck_authority, recover_client, recovery_config, relay, run, scope_secrets,
+};
 use serde::{Deserialize, Serialize};
 use tako_network::{
     BootId,
@@ -27,7 +31,7 @@ use tako_network::{
 };
 
 pub const MAX_REQUEST_BYTES: usize = tako_network::api::MAX_RPC_BYTES + 1024;
-pub const MAX_RESPONSE_BYTES: usize = tako_network::corrosion::MAX_REGISTRY_BYTES + 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = tako_network::catalog::MAX_REGISTRY_BYTES + 1024 * 1024;
 const MAX_HELPER_BYTES: usize = 1024 * 1024;
 const QUEUE_SIZE: usize = 16;
 const CONNECTIONS: usize = 32;
@@ -46,7 +50,7 @@ pub enum AgentError {
     Invalid(&'static str),
     #[error("native agent operation timed out; outcome is not acknowledged")]
     Timeout,
-    #[error("Corrosion exceeded graceful shutdown deadline; forced termination was required")]
+    #[error("Owned helper exceeded graceful shutdown deadline; forced termination was required")]
     ForcedShutdown,
     #[error("owned child could not be reaped; replacement is forbidden")]
     UnreapedChild,
@@ -70,6 +74,9 @@ pub(super) enum AgentCommand {
     Rpc(AgentRequest),
     Recovery(RecoveryRequest),
     Secrets(SecretsRequest),
+    Catalog {
+        catalog: tako_core::StorageOperation,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +96,8 @@ pub(super) struct RecoveryRequest {
 pub struct AgentResponse {
     pub status: u16,
     pub response: Option<RpcResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<serde_json::Value>,
     /// Opened values for [`AgentCommand::Secrets`]. The HTTP relay forwards
     /// only `response`, so these never leave the host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,6 +112,7 @@ impl AgentResponse {
         Self {
             status: 503,
             response: None,
+            catalog: None,
             secrets: None,
             error: Some("native network is not ready".into()),
             boot: boot.clone(),

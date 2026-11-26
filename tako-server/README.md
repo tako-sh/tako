@@ -18,12 +18,12 @@ Rust crate for the remote Tako runtime and proxy.
 - Report per-build runtime status (multiple concurrently running builds during rollout).
 - Validate on-demand deploy startup when the desired instance count is `0` before finalizing idle state.
 - Validate app ids, release ids, and deploy paths at the management socket boundary.
-- Persist app runtime registration (config/routes + release metadata) to SQLite and restore it on restart.
-- Read non-secret env vars from release `app.json` and secrets from encrypted SQLite state, then pass the shared bootstrap envelope to native processes on fd 3 or containers through `TAKO_BOOTSTRAP_DATA`.
+- Persist app runtime registration (config/routes + release metadata) to redb and restore it on restart.
+- Read non-secret env vars from release `app.json` and secrets from encrypted redb state, then pass the shared bootstrap envelope to native processes on fd 3 or containers through `TAKO_BOOTSTRAP_DATA`.
 - Back up hosted databases continuously and KV stores with snapshots, encrypted, to private S3-compatible storage, and restore them.
 - Serve durable channel pub-sub over shared WebSockets at `/_tako/channels/ws`, dedicated WebSockets at `/_tako/channels/ws/<name>`, and SSE at `/_tako/channels/sse/<name>`, with bounded app/env replay history in a hosted database.
 - Serve public optimized WebP image URLs under `/_tako/image`, with optional AVIF when configured, request guardrails, short-lived source caching, queued isolated child-process transforms, same-key in-flight dedupe, and a pruned origin disk cache for successful variants.
-- Persist server upgrade mode in SQLite and reject mutating commands while upgrading.
+- Persist server upgrade mode in redb and reject mutating commands while upgrading.
 - Use a single-owner durable upgrade lock so only one upgrade controller can enter upgrading mode at a time.
 - Expose `server_info`, `enter_upgrading`, and `exit_upgrading` management commands for upgrade orchestration.
 - Serve signed remote management through native pinned HTTPS and the private native-network listener.
@@ -46,7 +46,7 @@ scope, pool bounds and tests. This does not enable TLS handshake offloading.
 - Public HTTP/HTTPS: `--http-port` and `--https-port` (defaults: `80` and `443`)
 - Remote management: pinned HTTPS on the configured HTTPS port; private HTTP `9844` on the native network address
 - Data root: `/opt/tako`
-- State DB: `/opt/tako/state.sqlite`
+- State DB: `/opt/tako/state.redb`
 - Server identity: `/opt/tako/identity.key`, `/opt/tako/identity.pub`
 - Remote management keys: `/opt/tako/management-authorized-keys`
 - App releases: `/opt/tako/apps/<app>/<env>/releases/<version>/`

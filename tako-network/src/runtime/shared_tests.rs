@@ -1,7 +1,7 @@
 use crate::shared::RecordReceipt;
 
 #[test]
-fn observed_secrets_retain_large_folded_recipient_maps_after_restart() {
+fn catalog_secrets_retain_large_folded_recipient_maps_after_restart() {
     use crate::shared::{RecordContent, RecordKind};
     let fixture = Fixture::new();
     let mut runtime = fixture.open();
@@ -58,71 +58,6 @@ fn observed_secrets_retain_large_folded_recipient_maps_after_restart() {
         assert_eq!(&*content.value, "retained");
         drop(runtime);
         runtime = fixture.open();
-    }
-}
-
-#[test]
-fn populated_observed_secrets_compact_and_repair_in_one_snapshot() {
-    use crate::shared::{RecordAddress, RecordKind, SharedRecord, SharedSnapshot};
-    let fixture = Fixture::new();
-    let mut runtime = fixture.open();
-    let records: Vec<_> = (0..2000)
-        .map(|i| SharedRecord {
-            id: RequestId::random().unwrap(),
-            address: RecordAddress {
-                scope: "shop/production".parse().unwrap(),
-                kind: RecordKind::App,
-                name: format!("TOKEN_{i:04}"),
-            },
-            revision: 2,
-            issuer: fixture.config.server_id.clone(),
-            author: fixture.config.network.initial_admin.clone(),
-            value: None,
-            keys: BTreeMap::new(),
-            plaintext: None,
-        })
-        .collect();
-    let expected = SharedSnapshot {
-        network: fixture.config.network.id.clone(),
-        records,
-    };
-    let mut stale = expected.records[0].clone();
-    stale.id = RequestId::random().unwrap();
-    stale.revision = 1;
-    {
-        let txn = runtime.db.begin_write().unwrap();
-        {
-            let mut table = txn.open_table(SHARED_OBSERVED).unwrap();
-            // Old caches can contain multiple revisions of the same address.
-            for record in expected.records.iter().chain(std::iter::once(&stale)) {
-                table
-                    .insert(
-                        ("secret", record.id.to_string().as_str()),
-                        serde_json::to_string(record).unwrap().as_str(),
-                    )
-                    .unwrap();
-            }
-        }
-        txn.commit().unwrap();
-        let mut store = fixture.store.0.borrow_mut();
-        store.shared = expected.clone();
-        store.shared.records[0] = stale;
-    }
-    for now in [10, 11] {
-        let RpcResponse::Records(snapshot) = fixture
-            .call(
-                &mut runtime,
-                &fixture.admin,
-                RpcRequest::PullRecords { scope: None },
-                now,
-            )
-            .unwrap()
-        else {
-            panic!("records expected");
-        };
-        assert_eq!(snapshot, expected);
-        assert_eq!(fixture.store.0.borrow().shared, expected);
-        assert_eq!(rows(&runtime, SHARED_OBSERVED), 2000);
     }
 }
 
@@ -309,29 +244,7 @@ fn secret_publication_survives_lost_response_and_retry_cannot_win_again() {
             );
             assert!(!payload.contains("ciphertext"));
         }
-        let observed: Vec<String> = runtime
-            .db
-            .begin_read()
-            .unwrap()
-            .open_table(SHARED_OBSERVED)
-            .unwrap()
-            .iter()
-            .unwrap()
-            .map(|row| {
-                let (key, payload) = row.unwrap();
-                assert_eq!(key.value().0, "secret");
-                payload.value().to_owned()
-            })
-            .collect();
-        let [observed] = &observed[..] else {
-            panic!("one observed record expected");
-        };
-        assert_eq!(
-            serde_json::from_str::<crate::shared::SharedRecord>(observed)
-                .unwrap()
-                .id,
-            newer.id
-        );
+
     }
 }
 
@@ -500,14 +413,11 @@ fn deployers_pull_database_records_but_not_snapshot_keys() {
         (RecordKind::DatabaseKey, "a2V5"),
     ] {
         let mutation = secret_mutation(&fixture, DATABASE_SCOPE, kind, "shop", Some(value));
-        fixture
-            .call(
-                &mut runtime,
-                &fixture.admin,
-                RpcRequest::PublishRecord(Box::new(mutation)),
-                10,
-            )
-            .unwrap();
+        assert!(matches!(fixture.call(&mut runtime, &fixture.admin, RpcRequest::PublishRecord(Box::new(mutation.clone())), 10),Err(RuntimeError::Denied)));
+        let content = serde_json::to_vec(&RecordContent {value: value.to_owned().into(),expires_on:None}).unwrap();
+        let mut store = fixture.store.0.borrow_mut();
+        let record = crate::shared::SharedRecord::create(&mutation,Some(&content),1,fixture.config.server_id.clone(),fixture.config.server_id.clone(),&store.snapshot,10).unwrap();
+        crate::shared::SharedStore::append_record(&mut store.shared,&record).unwrap();
     }
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
@@ -541,7 +451,7 @@ fn deployers_pull_database_records_but_not_snapshot_keys() {
         .unwrap();
     let content: RecordContent = serde_json::from_slice(&plaintext).unwrap();
     assert_eq!(&*content.value, r#"{"name":"shop"}"#);
-    // Only administrators publish database records.
+    // Deploy credentials cannot forge a catalog entry.
     let forged = secret_mutation(
         &fixture,
         DATABASE_SCOPE,
@@ -752,36 +662,6 @@ fn expired_receipts_are_collected_and_deadlines_and_observations_are_authenticat
             .is_err()
     );
     assert_eq!(fixture.store.0.borrow().shared.records.len(), 1);
-}
-
-#[test]
-fn backup_key_selection_is_published_as_plaintext() {
-    use crate::shared::RecordKind;
-    let fixture = Fixture::new();
-    let mut runtime = fixture.open();
-    let mutation = secret_mutation(
-        &fixture,
-        "shop/production",
-        RecordKind::BackupActive,
-        "active",
-        Some("backup-key-0123456789abcdef"),
-    );
-    fixture
-        .call(
-            &mut runtime,
-            &fixture.admin,
-            RpcRequest::PublishRecord(Box::new(mutation)),
-            10,
-        )
-        .unwrap();
-    let store = fixture.store.0.borrow();
-    let record = &store.shared.records[0];
-    assert!(record.value.is_none());
-    assert!(record.keys.is_empty());
-    assert_eq!(
-        record.plaintext.as_ref().unwrap().value,
-        "backup-key-0123456789abcdef"
-    );
 }
 
 #[test]

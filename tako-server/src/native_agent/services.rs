@@ -1,12 +1,12 @@
 //! Agent-owned, credential-free discovery projection and durable lease publication.
-//! Signing and Corrosion calls remain on the existing serialized controller.
+//! Signing and peer announcements remain on the existing serialized controller.
 use super::{AgentError, Result};
 use crate::native_services::{ComposeGateway, LocalServices, ServiceDirectory, ServiceSnapshot};
 use parking_lot::{Mutex, RwLock};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use tako_network::{
     AppEnv, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot,
-    corrosion::{CorrosionStore, MAX_REGISTRY_BYTES},
+    catalog::MAX_REGISTRY_BYTES,
     node_config::protected::Directory,
     services::{MAX_LEASE_BYTES, RENEW_SECONDS, ServiceLease},
 };
@@ -109,7 +109,7 @@ impl Publisher {
             _ => BTreeSet::new(),
         }
     }
-    /// Persist the exact signed envelope before SQL. A transport failure or
+    /// Persist the exact signed envelope before publication. A transport failure or
     /// process restart can retry it without issuing a same-second fork.
     fn publish_with(
         &mut self,
@@ -169,7 +169,7 @@ impl Publisher {
         &mut self,
         config: &NodeConfig,
         keys: &LocalDeviceKeys,
-        store: &CorrosionStore,
+        store: &mut super::catalog::Catalog,
         registry: &RegistrySnapshot,
         now: u64,
     ) -> Result<Vec<ServiceLease>> {
@@ -187,7 +187,7 @@ impl Publisher {
             store.publish_services(lease).map_err(Into::into)
         })?;
         let mut leases = store.service_leases(registry, now)?;
-        // Until a changed empty/new local lease reaches SQL, do not route locally
+        // Until a changed empty/new local lease reaches peers, do not route locally
         // through our old deployment export. Remote leases retain their own TTLs.
         leases.retain(|lease| {
             lease.server_id != config.server_id

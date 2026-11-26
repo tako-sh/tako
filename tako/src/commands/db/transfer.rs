@@ -49,7 +49,7 @@ pub(crate) async fn import(
     engine: DatabaseEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match engine {
-        DatabaseEngine::Sqlite => {
+        DatabaseEngine::Turso => {
             let mut header = [0u8; 16];
             std::fs::File::open(file)
                 .and_then(|mut f| f.read_exact(&mut header))

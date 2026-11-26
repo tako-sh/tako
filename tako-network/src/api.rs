@@ -13,7 +13,7 @@ pub const MAX_RPC_BYTES: usize = 128 * 1024;
 pub const MAX_SIGNATURE_BYTES: usize = 2048;
 /// Largest body a native management listener relays to a client. Snapshot
 /// readers must accept at least this much; the registry projection inside is
-/// bounded by `corrosion::MAX_REGISTRY_BYTES`.
+/// bounded by `catalog::MAX_REGISTRY_BYTES`.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
@@ -37,12 +37,10 @@ pub enum RuntimeError {
     PendingUnavailable,
     #[error("WireGuard challenge unavailable or expired")]
     ChallengeUnavailable,
-    #[error("Corrosion HTTP request failed")]
+    #[error("Network catalog unavailable")]
     Transport,
-    #[error("invalid Corrosion response: {0}")]
-    Corrosion(&'static str),
-    #[error("local runtime database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    #[error("invalid network catalog: {0}")]
+    Catalog(&'static str),
     #[error("local runtime journal error: {0}")]
     Journal(#[from] redb::Error),
     #[error("runtime I/O error: {0}")]

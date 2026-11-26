@@ -8,6 +8,8 @@ imageAlt: "A coral octopus connects a laptop to a locked server while a newcomer
 
 Cloning an app should give you its code and deployment configuration. Getting permission to deploy it should give you access to the servers and secrets it needs. We have moved Tako's shared operational state into the network, so those two steps fit together: clone the repository, redeem an invitation, and sync. `tako.toml` stays in Git; server inventory and published encrypted secrets live on the network's servers.
 
+> Update: Tako now replicates the network catalog through Raft in its network agent. This post describes the earlier Corrosion implementation. [Current network documentation](/docs/networks/)
+
 ## Give each kind of state a home
 
 Previously, Tako kept server inventory in `servers.toml` and encrypted app secrets in a tracked `.tako/secrets.json`. Setting up another machine involved reconstructing the inventory and transferring environment keys. Encryption protected the values, but Git was still carrying operational state alongside code.

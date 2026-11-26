@@ -20,7 +20,9 @@ use tako_db::client::{Client, Statement};
 const NOW: &str = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 // Appends delete their own stream's expired rows; maintenance only catches up
 // on streams that went quiet, so it can take larger steps.
-const MAINTENANCE_ROWS: i64 = 4096;
+const MAINTENANCE_ROWS: usize = 4096;
+// Keep transactions small when each deleted message updates its stream and app.
+const MAINTENANCE_BATCH: usize = 64;
 // Keep a page of legal 1 MiB events, including JSON-in-JSON escaping, under
 // the transport response limit. A short logical page must mean end-of-history.
 const WIRE_PAGE: u32 = 8;
@@ -223,12 +225,12 @@ impl HostedChannelStore {
         Statement::new(format!(
             "INSERT INTO tako_replay_streams(app, channel, head, floor, activity_ms,
                     window_ms, inactivity_ms, lifetime_ms)
-             SELECT a.app, ?2, a.seq, a.seq, {NOW}, ?3, ?4, ?5
-             FROM tako_replay_apps a LEFT JOIN tako_replay_streams s ON s.app = a.app AND s.channel = ?2
+             SELECT a.app, ?2, a.seq, COALESCE(s.floor, a.seq), {NOW}, ?3, ?4, ?5
+             FROM tako_replay_apps a LEFT JOIN tako_replay_bounds s ON s.app = a.app AND s.channel = ?2
              WHERE a.app = ?1 AND (?7 = 0 OR s.marker IS NULL)
                  AND (?8 = 0 OR a.stream_count < {MAX_STREAMS} OR s.app IS NOT NULL)
              ON CONFLICT(app, channel) DO UPDATE SET
-                 floor = (SELECT floor FROM tako_replay_bounds WHERE app = ?1 AND channel = ?2),
+                 floor = excluded.floor,
                  activity_ms = excluded.activity_ms,
                  window_ms = CASE WHEN ?6 THEN excluded.window_ms ELSE window_ms END,
                  inactivity_ms = CASE WHEN ?6 THEN excluded.inactivity_ms ELSE inactivity_ms END,
@@ -460,25 +462,38 @@ impl HostedChannelStore {
     /// counts, so servers with skewed clocks agree on what has expired.
     pub(super) fn prune(&self) -> Result<(), ChannelError> {
         self.writable()?;
-        self.recovering(|| self.prune_once())
+        self.recovering(|| {
+            for _ in 0..(MAINTENANCE_ROWS / MAINTENANCE_BATCH) {
+                if !self.prune_once()? {
+                    break;
+                }
+            }
+            Ok(())
+        })
     }
 
-    fn prune_once(&self) -> Result<(), ChannelError> {
+    fn prune_once(&self) -> Result<bool, ChannelError> {
         let mut range = self.prune_range.lock();
         let (after, through) = *range;
         let idle = format!(
             "SELECT channel FROM tako_replay_streams WHERE app = ?1 AND message_count = 0
             AND activity_ms + lifetime_ms < {NOW} - {IDLE_STREAM_GRACE_MS}
-            ORDER BY activity_ms + lifetime_ms LIMIT {MAINTENANCE_ROWS}"
+            ORDER BY activity_ms + lifetime_ms LIMIT {MAINTENANCE_BATCH}"
         );
-        let expired =
-            "m.id <= (SELECT floor FROM tako_replay_bounds WHERE app = ?1 AND channel = m.channel)";
+        // Creation times are nondecreasing within a stream. Testing each message's
+        // age directly avoids seeking the stream's last expired message for every row.
+        let expired = format!(
+            "EXISTS (
+            SELECT 1 FROM tako_replay_streams s WHERE s.app = ?1 AND s.channel = m.channel
+            AND (m.id <= s.floor OR (s.window_ms > 0 AND m.created_ms < {NOW} - s.window_ms)
+                 OR (s.inactivity_ms > 0 AND s.activity_ms < {NOW} - s.inactivity_ms)))"
+        );
         let args = vec![self.app.as_str().into(), after.into(), through.into()];
         let (hex, seq, end, has_expired, has_idle): (String, i64, Option<i64>, i64, i64) =
             one(self.query(Statement::new(format!(
                 "WITH chunk AS MATERIALIZED (
-                    SELECT id, channel FROM tako_replay_messages WHERE app = ?1 AND id > ?2 AND id <= ?3
-                    ORDER BY id LIMIT {MAINTENANCE_ROWS})
+                    SELECT id, channel, created_ms FROM tako_replay_messages WHERE app = ?1 AND id > ?2 AND id <= ?3
+                    ORDER BY id LIMIT {MAINTENANCE_BATCH})
                  SELECT epoch, seq, (SELECT MAX(id) FROM chunk),
                      EXISTS(SELECT 1 FROM chunk m WHERE {expired}), EXISTS({idle})
                  FROM tako_replay_apps WHERE app = ?1"
@@ -501,11 +516,13 @@ impl HostedChannelStore {
                     ],
                 ));
             }
+            // Deleting the last retained message can make a stream eligible
+            // for release even when the initial read found no idle streams.
             writes.push(Statement::new(format!(
                 "DELETE FROM tako_replay_streams WHERE app = ?1
                  AND (SELECT epoch FROM tako_replay_apps WHERE app = ?1) = ?2 AND channel IN ({idle})"
             ), vec![self.app.as_str().into(), hex.into()]));
-            self.client.batch(&writes)?;
+            self.client.maintenance_batch(&writes)?;
         }
         // Freeze a pass's high-water mark so new arrivals cannot indefinitely
         // postpone revisiting older positions that have since expired.
@@ -513,6 +530,6 @@ impl HostedChannelStore {
         *range = end
             .filter(|end| *end < through)
             .map_or((0, i64::MAX), |end| (end, through));
-        Ok(())
+        Ok(range.0 != 0 || has_idle != 0)
     }
 }

@@ -222,12 +222,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open the state store (persistent registrations only; runtime state is in-memory).
     let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // Earlier releases kept registrations in SQLite; their orphans still count.
-    for (project_dir, config_path) in
-        state::take_legacy_registrations(&data_dir.join("dev-server.sqlite"))
-    {
-        state::kill_orphaned_process(&project_dir, &config_path);
-    }
     match state::DevStateStore::open(data_dir.join("dev-server.redb")) {
         Ok(db) => {
             // Kill any orphaned app processes from a previous (crashed) server run.

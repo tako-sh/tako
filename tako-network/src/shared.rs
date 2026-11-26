@@ -27,11 +27,6 @@ pub const MAX_SHARED_BYTES: usize = 8 * 1024 * 1024;
 // ciphertext sizes remain independently bounded by Ciphertext::validate.
 pub const MAX_SHARED_RECORD_BYTES: usize = MAX_SHARED_BYTES;
 
-pub const SHARED_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_shared_records (\n\
-    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',\n\
-    PRIMARY KEY (kind, record_id, digest)\n\
-);";
-
 /// A record's content. The content of a secret exists in the clear only inside
 /// authorized clients and server agents. It has no Debug implementation and is
 /// never a public RPC field.
@@ -149,14 +144,6 @@ pub enum RecordKind {
     App,
     Credential,
     Storage,
-    /// Legacy: a key that encrypted an environment's app data archives,
-    /// which Tako no longer makes. Nothing reads or writes these records
-    /// any more; the variant stays so records already stored still decode.
-    BackupKey,
-    /// Legacy: the ID of the environment's active [`RecordKind::BackupKey`].
-    /// Not secret. Nothing reads or writes these records any more; the
-    /// variant stays so records already stored still decode.
-    BackupActive,
     /// A Tako-hosted database of the network, named by its name under
     /// [`DATABASE_SCOPE`]: its home server and generation. Not secret; every
     /// member that may deploy can read it, so deploys resolve databases by
@@ -172,7 +159,7 @@ impl RecordKind {
     /// Secret records are sealed to each reader. Other records are stored as
     /// plaintext, so they need no per-reader keys and every server can read them.
     pub fn is_secret(self) -> bool {
-        !matches!(self, Self::BackupActive | Self::Database)
+        self != Self::Database
     }
 }
 
@@ -306,17 +293,6 @@ impl From<&SharedRecord> for RecordReceipt {
     }
 }
 
-/// Only used to migrate persisted state written before recipient keys were
-/// included in current records. It is not an RPC or new-write format.
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LegacyKeyGrant {
-    pub record: RequestId,
-    pub recipient: DeviceId,
-    pub issuer: DeviceId,
-    pub key: SealedValue,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharedSnapshot {
@@ -379,42 +355,6 @@ impl SharedSnapshot {
         merged.validate()?;
         *self = merged;
         Ok(())
-    }
-
-    /// Upgrade a local cache without supporting the old wire protocol.
-    pub fn from_persisted(bytes: &[u8]) -> RuntimeResult<Self> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Persisted {
-            network: NetworkId,
-            #[serde(alias = "secrets")]
-            records: Vec<SharedRecord>,
-            #[serde(default)]
-            grants: Vec<LegacyKeyGrant>,
-        }
-        let old: Persisted = serde_json::from_slice(bytes)?;
-        let mut state = Self::empty(old.network.clone());
-        state.merge(&Self {
-            network: old.network,
-            records: old.records,
-        })?;
-        for grant in old.grants {
-            state.import_grant(&grant)?;
-        }
-        state.validate()?;
-        Ok(state)
-    }
-
-    pub(crate) fn import_grant(&mut self, grant: &LegacyKeyGrant) -> RuntimeResult<bool> {
-        if let Some(record) = self
-            .records
-            .iter_mut()
-            .find(|record| record.id == grant.record)
-        {
-            record.merge_key(&grant.recipient, &grant.key)?;
-            return Ok(true);
-        }
-        Ok(false)
     }
 
     pub fn latest(&self) -> RuntimeResult<BTreeMap<RecordAddress, &SharedRecord>> {
@@ -502,9 +442,10 @@ impl SharedRecord {
             (Some(_), Some(_)) => {
                 return Err(RuntimeError::Invalid("sealed and plaintext record value"));
             }
-            // Records of a kind that is not secret were sealed before plaintext
-            // records existed, so a sealed value stays valid for every kind.
             (Some(value), None) => {
+                if !self.address.kind.is_secret() {
+                    return Err(RuntimeError::Invalid("sealed database directory entry"));
+                }
                 value.validate()?;
                 if !self.keys.contains_key(&self.issuer) {
                     return Err(RuntimeError::Invalid("missing issuer record key"));

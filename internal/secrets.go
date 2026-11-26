@@ -29,14 +29,16 @@ type Bootstrap struct {
 // DatabaseConnection is one database binding: where the app reaches the
 // Tako-hosted database and the token that authorizes the binding.
 type DatabaseConnection struct {
-	URL       string `json:"url"`
-	AuthToken string `json:"authToken"`
+	URL              string `json:"url"`
+	AuthToken        string `json:"authToken"`
+	ReplicaAuthToken string `json:"replicaAuthToken,omitempty"`
 }
 
 // KVConnection is one KV store binding: the token that authorizes it, which
 // the SDK sends with each request through the internal socket.
 type KVConnection struct {
-	Token string `json:"token"`
+	ReplicaToken string `json:"replicaToken,omitempty"`
+	Token        string `json:"token"`
 }
 
 // BootstrapFromRuntime reads the bootstrap envelope from the current process.

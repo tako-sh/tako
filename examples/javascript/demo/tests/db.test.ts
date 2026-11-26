@@ -1,6 +1,8 @@
-import { createClient, type Client } from "@libsql/client";
+import { createClient, type Client } from "@tursodatabase/serverless/compat";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -13,20 +15,41 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 let dir = "";
 let sql: Client;
 let db: DbModule;
+let stopHost: (() => Promise<void>) | undefined;
 
 beforeAll(async () => {
   dir = await mkdtemp(path.join(tmpdir(), "tako-demo-db-"));
-  sql = createClient({ url: `file:${path.join(dir, "mission.sqlite")}` });
-  // Tako applies these before the app starts; tests apply them themselves.
-  await sql.executeMultiple(
-    await Bun.file(path.join(import.meta.dirname, "..", "migrations", "0001_initial.sql")).text(),
+  await writeFile(
+    path.join(dir, "tako.toml"),
+    'name = "demo-test"\n[envs.development]\ndb = { mission = "mission" }\n',
   );
+  await cp(path.join(import.meta.dirname, "..", "migrations"), path.join(dir, "migrations"), {
+    recursive: true,
+  });
+  const host = Bun.spawn(
+    [
+      process.env["TAKO_BIN"] ?? "tako",
+      "run", "--", process.execPath, "-e",
+      "console.log(JSON.stringify(JSON.parse(process.env.TAKO_BOOTSTRAP_DATA).databases.mission)); await Bun.stdin.text()",
+    ],
+    { cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "inherit" },
+  );
+  stopHost = async () => {
+    host.stdin.end();
+    await host.exited;
+  };
+  const lines = createInterface({ input: Readable.fromWeb(host.stdout), crlfDelay: Infinity });
+  const binding = await lines[Symbol.asyncIterator]().next();
+  lines.close();
+  if (binding.done) throw new Error("Tako exited before opening the test database");
+  sql = createClient(JSON.parse(binding.value));
   db = await import("../src/server/db");
   await db.useClient(sql);
 });
 
 afterAll(async () => {
-  sql.close();
+  sql?.close();
+  await stopHost?.();
   await rm(dir, { recursive: true, force: true });
 });
 

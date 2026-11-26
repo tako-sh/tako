@@ -123,7 +123,7 @@ export const storages = loadStorages<TakoStorages>();
 
 /**
  * Tako-hosted databases, typed by project-specific `tako.d.ts` declarations.
- * Each is `{ url, authToken }` for `createClient` from `@libsql/client` or
+ * Each is `{ url, authToken }` for `createClient` from `@tursodatabase/serverless/compat` or
  * `connect` from `@tursodatabase/serverless`.
  */
 export const db = loadDb<TakoDb>();
@@ -200,8 +200,8 @@ export type {
   TakoStorageBag,
   TakoStorageBinding,
 } from "./storage";
-export type { TakoDbConnection, TakoDbBag } from "./db";
-export type { KvPutOptions, TakoKvBag, TakoKvStore } from "./kv";
+export type { TakoDbConnection, TakoDbBinding, TakoDbBag } from "./db";
+export type { KvPutOptions, TakoKvBag, TakoKvReader, TakoKvStore } from "./kv";
 
 /**
  * Extract the payload type from a workflow definition.

@@ -20,10 +20,10 @@ func TestBootstrapFixtureParses(t *testing.T) {
 		Token:   "tok-abc",
 		Secrets: map[string]string{"DATABASE_URL": "postgres://db/app", "API_KEY": "key-123"},
 		Databases: map[string]DatabaseConnection{
-			"main": {URL: "http://127.0.0.1:9845", AuthToken: "token-example"},
+			"main": {URL: "http://127.0.0.1:9845", AuthToken: "token-example", ReplicaAuthToken: "a9bf1b584162d047990e5146e26c50e74285ef9fcc16dcb0c261a7e1996ab6cf"},
 		},
 		KV: map[string]KVConnection{
-			"sessions": {Token: "kv-token-example"},
+			"sessions": {Token: "kv-token-example", ReplicaToken: "82d82a1b045a2668f2470afaa6c8f8b5d0cc7a29cf37176f5a5cf0e89d050b55"},
 		},
 	}
 	if !reflect.DeepEqual(bootstrap, want) {

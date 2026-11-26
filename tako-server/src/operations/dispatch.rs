@@ -12,7 +12,8 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
         Command::Hello { .. }
             | Command::ServerInfo
             | Command::Status { .. }
-            | Command::List
+            | Command::ListResources { .. }
+        | Command::List
             | Command::ListReleases { .. }
             | Command::Routes
             | Command::GetSecretsHash { .. }
@@ -309,8 +310,8 @@ impl crate::ServerState {
                 }
                 self.stop_app(&app, service.as_deref()).await
             }
-            command @ (Command::CreateDatabase { .. }
-            | Command::DeleteDatabase { .. }
+            command @ (Command::CoordinateStorage { .. }
+
             | Command::DatabaseStatus { .. }
             | Command::ConfigureDatabaseBackup { .. }
             | Command::GrantDatabases { .. }
@@ -359,6 +360,17 @@ impl crate::ServerState {
                     return Response::error(msg);
                 }
                 self.get_status(&app).await
+            }
+            Command::ListResources { app } => {
+                if let Some(scope) = app.as_deref()
+                    && let Err(error) = validate_app_name(scope)
+                {
+                    return Response::error(error);
+                }
+                match self.user_resources(app.as_deref()) {
+                    Ok(report) => Response::ok(report),
+                    Err(error) => Response::error(error),
+                }
             }
             Command::List => self.list_apps().await,
             Command::ListReleases { app } => {

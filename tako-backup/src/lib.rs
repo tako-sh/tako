@@ -1,6 +1,6 @@
-//! Continuous backups of SQLite databases.
+//! Point-in-time backups of committed Turso databases.
 //!
-//! [`Capture`] turns committed WAL pages into LTX files in a local spool.
+//! [`CommittedSpool`] encodes quorum-committed snapshots and deltas as LTX segments.
 //! [`Replica`] uploads them, encrypted, to object storage, restores a
 //! database at any captured transaction, and applies retention.
 //!
@@ -30,8 +30,10 @@ use object_store::{
     GetOptions, ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path as ObjectPath,
 };
 use tempfile::NamedTempFile;
-use terse_litestream::{Database, Durability, FileStore, Options, SegmentWriter};
+use terse_litestream::{Durability, FileStore, SegmentWriter};
 
+mod committed;
+pub use committed::CommittedSpool;
 pub mod encryption;
 pub use anyhow;
 pub use terse_litestream::{FileStore as Spool, ReplicaStore, Segment};
@@ -47,11 +49,6 @@ pub const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// A changing database gets a new full image this often, so a restore
 /// replays at most about a day of captures.
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// How far above the existing history a capture with an empty spool starts.
-/// A previous owner that has not yet noticed it lost the database can keep
-/// uploading for a while; its transactions stay below this owner's, so no
-/// restore chain mixes the two.
-pub const OWNER_JUMP: u64 = 1 << 32;
 /// Segments downloaded at once by a restore.
 const DOWNLOADS: usize = 8;
 /// Segments larger than this are uploaded in parts: single requests are
@@ -60,14 +57,6 @@ pub const MULTIPART_THRESHOLD: u64 = 1 << 30;
 /// The size of each part of a multipart upload; 10,000 parts of it reach
 /// 640 GiB.
 pub const PART_BYTES: usize = 64 << 20;
-
-/// One capture owner for an existing SQLite database in WAL mode. Run its
-/// methods on a blocking worker.
-pub struct Capture {
-    database: Database,
-    spool: FileStore,
-    _lock: CaptureLock,
-}
 
 /// Held while capturing, or while uploading from a spool.
 pub struct CaptureLock(File);
@@ -90,95 +79,6 @@ fn lock_file(path: &Path, owner: &str) -> Result<CaptureLock> {
     lock.try_lock()
         .with_context(|| format!("spool already has {owner}"))?;
     Ok(CaptureLock(lock))
-}
-
-impl Capture {
-    /// Opens capture with its spool in `directory`, at a position of at
-    /// least `floor` (see [`Replica::floor`]). Keep one spool and one remote
-    /// prefix per database. The first capture after opening is a full image.
-    pub fn open(database: &Path, directory: &Path, floor: u64) -> Result<Self> {
-        let source = fs::canonicalize(database)?;
-        fs::create_dir_all(directory)?;
-        let lock = lock_file(&directory.join("capture.lock"), "a capture owner")?;
-        let identity = directory.join("source");
-        let source = source.to_str().context("source path must be UTF-8")?;
-        if identity.exists() {
-            ensure!(
-                fs::read_to_string(&identity)? == source,
-                "spool belongs to another database"
-            );
-        } else {
-            persist(directory, &identity, source.as_bytes())?;
-        }
-        let spool = FileStore::new(directory);
-        let options = Options {
-            busy_timeout: Duration::from_secs(5),
-            ..Options::default()
-        };
-        let database =
-            Database::with_store_from(database, options, Arc::new(spool.clone()), floor)?;
-        Ok(Self {
-            database,
-            spool,
-            _lock: lock,
-        })
-    }
-
-    /// Captures committed changes durably on this machine and returns the
-    /// latest local transaction.
-    pub fn sync(&mut self) -> Result<u64> {
-        self.database.sync()?;
-        Ok(self.database.position())
-    }
-
-    /// Captures a full image of the database at a new transaction, which
-    /// restores without any earlier segment.
-    pub fn snapshot(&mut self) -> Result<u64> {
-        self.database.snapshot()?;
-        Ok(self.database.position())
-    }
-
-    /// When a segment still in the spool was captured, from its header.
-    pub fn captured_at(&self, txid: u64) -> Result<i64> {
-        for level in [9, 0] {
-            if let Some(segment) = self
-                .spool
-                .list(level)?
-                .into_iter()
-                .find(|segment| segment.max_txid == txid)
-            {
-                let decoder = terse_ltx::Decoder::new(self.spool.open(&segment)?)?;
-                return Ok(decoder.header().timestamp);
-            }
-        }
-        bail!("transaction {txid} is not in the spool")
-    }
-
-    pub fn position(&self) -> u64 {
-        self.database.position()
-    }
-
-    /// Captures what is left and releases the database and the spool.
-    pub fn close(self) -> Result<u64> {
-        let position = self.database.close()?;
-        Ok(position)
-    }
-
-    /// The spool, for uploads; cloning does not borrow the capture.
-    pub fn spool(&self) -> FileStore {
-        self.spool.clone()
-    }
-}
-
-/// Whether a spool holds any segment, so capture resumes its position.
-pub fn spool_has_segments(directory: &Path) -> Result<bool> {
-    let spool = FileStore::new(directory);
-    for level in 0..=9 {
-        if !spool.list(level)?.is_empty() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// A segment in the remote store.
@@ -285,6 +185,28 @@ pub enum Target {
     Time(i64),
 }
 
+impl Target {
+    /// A restore point ID is the decimal transaction shown by the backup listing.
+    pub fn from_restore_point(
+        snapshot: Option<&str>,
+        at_unix_ms: Option<i64>,
+    ) -> std::result::Result<Self, String> {
+        match (snapshot, at_unix_ms) {
+            (Some(_), Some(_)) => Err("Restore either a restore point or a time, not both.".into()),
+            (Some(snapshot), None) => snapshot
+                .parse::<u64>()
+                .ok()
+                .filter(|txid| *txid > 0)
+                .map(Self::Txid)
+                .ok_or_else(|| {
+                    format!("Restore point {snapshot} is not one `tako db backups` lists.")
+                }),
+            (None, Some(at)) => Ok(Self::Time(at)),
+            (None, None) => Ok(Self::Latest),
+        }
+    }
+}
+
 /// What retention removed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
@@ -304,6 +226,17 @@ pub struct Replica {
 }
 
 impl Replica {
+    /// Opens the authenticated storage prefix of one SQL generation.
+    pub fn database(
+        raw: Arc<dyn ObjectStore>,
+        name: &str,
+        generation: &str,
+        key: [u8; 32],
+    ) -> Result<Self> {
+        let key = encryption::Key::new(format!("database-{generation}"), key)?;
+        Self::new(raw, &format!("_tako/databases/{name}/{generation}"), key)
+    }
+
     /// `prefix` is the database's own prefix; it is also authenticated with
     /// every segment, so a segment cannot be substituted from elsewhere.
     pub fn new(raw: Arc<dyn ObjectStore>, prefix: &str, key: encryption::Key) -> Result<Self> {
@@ -356,22 +289,6 @@ impl Replica {
             "{:013}-{:016x}-{}",
             point.created_at_ms, point.txid, point.reason
         ))
-    }
-
-    /// The position a capture with the spool in `directory` must start
-    /// above: none when the spool already has a position, otherwise far past
-    /// the remote history ([`OWNER_JUMP`]).
-    pub async fn floor(&self, directory: &Path) -> Result<u64> {
-        if spool_has_segments(directory)? {
-            return Ok(0);
-        }
-        Ok(self
-            .segments()
-            .await?
-            .iter()
-            .map(Stored::txid)
-            .max()
-            .map_or(0, |max| max.saturating_add(OWNER_JUMP)))
     }
 
     /// Uploads pending segments in transaction order, recording each only
@@ -484,9 +401,8 @@ impl Replica {
         let key = self.segment_key(segment, captured_at_ms);
         let stored = if bytes.len() as u64 > self.multipart_threshold {
             // A multipart write cannot be create-only, so an existing object
-            // is looked for first. Two owners never write one key (see
-            // `OWNER_JUMP` and the callers' holder checks); this catches a
-            // retry after a lost acknowledgement.
+            // is looked for first. A retry, including a new leader resuming
+            // capture, can upload the same committed segment.
             match self.raw.head(&key).await {
                 Ok(_) => Err(object_store::Error::AlreadyExists {
                     path: key.to_string(),

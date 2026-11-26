@@ -54,17 +54,23 @@ compression backend and passes Tako's memory and performance checks. Do not
 update the copied crate independently of its provenance, fixtures, focused tests
 and locked dependency graph.
 
-# SQLite capture dependency
+# LTX backup segments
 
-`terse-litestream/` copies the Rust sources, tests, scripts, README, LICENSE and
-NOTICE from `TerseAI/terse-litestream` revision
-`3a78cd6c8d70f1b607dbc10c4368b25eb6122731` (0.2.0, Apache-2.0).
-Two changes from upstream: its Cargo dependency moves from rusqlite `0.40.2` to
-`0.43`, matching Tako, and `Database::with_store_from` opens capture at a
-minimum position, so a new capture owner starts above a previous owner's
-history. It is used by the `tako-backup` workspace crate and embedded by `tako-server`. The separate terse-ltx dependency remains pinned upstream.
+`terse-litestream/` vendors the Rust segment store and LTX recovery modules from
+`TerseAI/terse-litestream` revision `3a78cd6c8d70f1b607dbc10c4368b25eb6122731`
+(0.2.0, Apache-2.0), with its LICENSE and NOTICE. The resource leader
+supplies committed Turso changes to `tako-backup`. Run `just test terse` for
+the segment tests and the backup and restore suite.
 
-Run `cargo test --locked --manifest-path vendor/terse-litestream/Cargo.toml`
-and `just test terse` after changing this patch. Keep vendor sources out of
-workspace-wide formatting. Remove the local copy when a pinned upstream revision
-supports Tako's rusqlite version and passes the same recovery tests.
+# Turso hosted value limits
+
+`turso_core/` contains the MIT-licensed crates.io release `0.9.0-pre.6`
+(SHA-256 `30b02af98f9a6b265acffe2d170e999ff48f62a0349033ad74f2754734d1ef39`).
+The license comes from upstream revision `8f00aace1146d6f215183511b86f10a11ba20d7e`.
+A scoped limit in `vdbe/value.rs` lets the host lower the native blob, string
+and encoded-record limit for synchronous statement execution. The string
+functions, printf accumulator and record encoder use the same limit.
+The statement also exposes the rowid inserted by its own program so the
+wire protocol can distinguish an insert from the update branch of an upsert.
+The sorter opens spill files through a separate IO hook, so Tako can allow Turso's private temporary directory while restricting database paths.
+The shared-WAL test fixtures initialize their files with Turso. Recheck the hosted size-limit and recovery tests before updating the engine.

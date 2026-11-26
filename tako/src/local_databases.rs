@@ -1,7 +1,7 @@
 //! Local databases and KV stores for `tako dev` and `tako run`.
 //!
-//! Each database a project binds gets a SQLite file under
-//! `.tako/data/databases/<name>.sqlite`, and each KV store a redb file under
+//! Each database a project binds gets a Turso database under
+//! `.tako/data/databases/<name>.db`, and each KV store a redb file under
 //! `.tako/data/kv/<name>.redb`, served over the same protocols as on servers
 //! (KV through the internal socket, like the cache), so app code is identical
 //! in development and production.
@@ -19,7 +19,7 @@ use crate::config::TakoToml;
 /// `[envs.development].db` when set, and otherwise every binding of
 /// every environment, so a project works locally without extra config.
 pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String> {
-    development_bindings_of(config, DatabaseEngine::Sqlite)
+    development_bindings_of(config, DatabaseEngine::Turso)
 }
 
 /// Binding name → KV store name for `tako dev` and `tako run`, chosen like
@@ -56,7 +56,7 @@ pub(crate) fn environment_bindings(
     config: &TakoToml,
     environment: &str,
 ) -> BTreeMap<String, String> {
-    environment_bindings_of(config, environment, DatabaseEngine::Sqlite)
+    environment_bindings_of(config, environment, DatabaseEngine::Turso)
 }
 
 fn environment_bindings_of(
@@ -242,7 +242,7 @@ pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
 fn environment_database_path(project_dir: &Path, database: &str, environment: &str) -> PathBuf {
     data_root(project_dir, environment)
         .join("databases")
-        .join(format!("{database}.sqlite"))
+        .join(format!("{database}.db"))
 }
 
 /// A stable local ID for a database file.
@@ -384,9 +384,6 @@ impl LocalDatabases {
             let id = match registered.get(&path) {
                 Some(id) => DatabaseId::clone(id),
                 None => {
-                    if !path.exists() {
-                        DatabaseHost::create_file(&path)?;
-                    }
                     let id = local_id(&path);
                     host.register(id.clone(), path.clone())?;
                     registered.insert(path.clone(), id.clone());
@@ -395,7 +392,7 @@ impl LocalDatabases {
             };
             let token = tako_db::generate_token();
             host_bindings.push(Binding {
-                token_hash: tako_db::hash_token(&token),
+                tokens: tako_core::BindingTokenHashes::new(&token),
                 database: id,
                 home: Home::Local,
             });
@@ -403,6 +400,7 @@ impl LocalDatabases {
                 binding.clone(),
                 DatabaseConnection {
                     url: url.clone(),
+                    replica_auth_token: Some(tako_core::replica_token(&token)),
                     auth_token: token,
                 },
             );
@@ -466,7 +464,7 @@ fn open_kv(
         };
         let token = tako_kv::generate_token();
         bindings.push(tako_kv::Binding {
-            token_hash: tako_kv::hash_token(&token),
+            tokens: tako_core::BindingTokenHashes::new(&token),
             store: id,
             home: tako_kv::Home::Local,
         });
@@ -525,8 +523,8 @@ db = { main = "shop-staging", events = "events" }
         );
     }
 
-    #[test]
-    fn custom_environment_migrates_isolated_files_without_fallback_bindings() {
+    #[tokio::test]
+    async fn custom_environment_migrates_isolated_files_without_fallback_bindings() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().canonicalize().unwrap();
         let cfg = config(
@@ -548,24 +546,33 @@ route = "empty.test"
         )
         .unwrap();
         migrate_environment(&project, &cfg, "development").unwrap();
-        let dev_file = &dev_files(&project, &cfg, "development")["main"];
-        let dev = rusqlite::Connection::open(dev_file).unwrap();
-        dev.execute("INSERT INTO items VALUES ('keep')", [])
+        let dev_file = PathBuf::from(&dev_files(&project, &cfg, "development")["main"]);
+        let host = DatabaseHost::new(HostConfig::default());
+        let dev = local_id(&dev_file);
+        host.register(dev.clone(), dev_file.clone()).unwrap();
+        host.admin_query(&dev, "INSERT INTO items VALUES ('keep')".into(), 1)
+            .await
             .unwrap();
         migrate_environment(&project, &cfg, "test-e2e").unwrap();
         let test_files = dev_files(&project, &cfg, "test-e2e");
         assert_eq!(test_files.len(), 1);
-        assert_ne!(&test_files["main"], dev_file);
-        let test = rusqlite::Connection::open(&test_files["main"]).unwrap();
+        let test_file = PathBuf::from(&test_files["main"]);
+        assert_ne!(test_file, dev_file);
+        let test = local_id(&test_file);
+        host.register(test.clone(), test_file).unwrap();
         assert_eq!(
-            test.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, i64>(0))
-                .unwrap(),
-            0
+            host.admin_query(&test, "SELECT count(*) FROM items".into(), 1)
+                .await
+                .unwrap()
+                .rows,
+            [[tako_db::Value::Integer(0)]]
         );
         assert_eq!(
-            dev.query_row("SELECT value FROM items", [], |row| row.get::<_, String>(0))
-                .unwrap(),
-            "keep"
+            host.admin_query(&dev, "SELECT value FROM items".into(), 1)
+                .await
+                .unwrap()
+                .rows,
+            [[tako_db::Value::Text("keep".into())]]
         );
         assert!(dev_files(&project, &cfg, "empty").is_empty());
     }

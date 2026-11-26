@@ -745,7 +745,9 @@ fn take_or_open(
     let Some(baton) = baton else {
         let mut key = [0u8; 16];
         getrandom::fill(&mut key).expect("operating system random source");
-        return Ok((key, Stream::new(host.inner.stored_sql.clone()), false));
+        let mut stream = Stream::new(host.inner.stored_sql.clone());
+        stream.read_only = matches!(principal, Principal::Replica(_));
+        return Ok((key, stream, false));
     };
     let Some((key, sequence)) = parse_baton(&baton) else {
         return Err(error(StatusCode::BAD_REQUEST, "malformed baton"));

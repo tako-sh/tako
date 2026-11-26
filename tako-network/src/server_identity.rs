@@ -71,7 +71,6 @@ pub struct ServerIdentity {
     keys_path: PathBuf,
     prepared: Prepared,
     tls: ServerTlsPaths,
-    gossip: ServerTlsPaths,
 }
 
 impl fmt::Debug for ServerIdentity {
@@ -103,7 +102,6 @@ impl Config {
             https_port: self.https_port,
             https_certificate_pem: None,
             https_spki_sha256: None,
-            corrosion_ca_certificate_pem: None,
         }
     }
 }
@@ -177,10 +175,7 @@ impl ServerIdentity {
                 identity.validate_at(&dir, now, LeafValidation::Renewal, Some(&renewal))?;
             dir.check_path(&directory)?;
             dir.discard_stage()?;
-            renewal.https.apply(&dir, &identity.tls, &materials[0].ca)?;
-            renewal
-                .gossip
-                .apply(&dir, &identity.gossip, &materials[1].ca)?;
+            renewal.https.apply(&dir, &identity.tls, &materials.ca)?;
             dir.remove_journal()?;
         }
         let materials = identity.validate_at(&dir, now, LeafValidation::Renewal, None)?;
@@ -190,17 +185,11 @@ impl ServerIdentity {
         let renewal = Renewal {
             version: 1,
             prepared_digest: digest,
-            https: LeafUpdate::plan(&materials[0], &names, false, now)?,
-            gossip: LeafUpdate::plan(&materials[1], &names, true, now)?,
+            https: LeafUpdate::plan(&materials, &names, now)?,
         };
-        if renewal.https.previous_pem != renewal.https.replacement_pem
-            || renewal.gossip.previous_pem != renewal.gossip.replacement_pem
-        {
+        if renewal.https.previous_pem != renewal.https.replacement_pem {
             dir.publish_journal(&serde_json::to_vec(&renewal)?)?;
-            renewal.https.apply(&dir, &identity.tls, &materials[0].ca)?;
-            renewal
-                .gossip
-                .apply(&dir, &identity.gossip, &materials[1].ca)?;
+            renewal.https.apply(&dir, &identity.tls, &materials.ca)?;
             dir.remove_journal()?;
         }
         identity.validate_at(&dir, clock()?, LeafValidation::Current, None)?;
@@ -232,7 +221,6 @@ impl ServerIdentity {
             keys_path,
             prepared,
             tls: ServerTlsPaths::new(directory, "https"),
-            gossip: ServerTlsPaths::new(directory, "gossip"),
         })
     }
 
@@ -301,12 +289,9 @@ impl ServerIdentity {
         )?;
         let names = certificate_names(&config, &request)?;
         let tls = ServerTlsPaths::new(&directory, "https");
-        let gossip = ServerTlsPaths::new(&directory, "gossip");
-        let https_ca = generate_tls(&dir, &tls, &names, false)?;
-        let gossip_ca = generate_tls(&dir, &gossip, &names, true)?;
+        let https_ca = generate_tls(&dir, &tls, &names)?;
         let mut server_info = config.server_info();
         server_info.https_certificate_pem = Some(https_ca);
-        server_info.corrosion_ca_certificate_pem = Some(gossip_ca);
         server_info.https_spki_sha256 = server_info.https_spki_fingerprint()?;
         let identity = Self {
             keys,
@@ -318,7 +303,6 @@ impl ServerIdentity {
                 server_info,
             },
             tls,
-            gossip,
         };
         identity.validate(&dir)?;
         let metadata = serde_json::to_vec(&identity.prepared)?;
@@ -341,16 +325,12 @@ impl ServerIdentity {
         &self.prepared.request
     }
 
-    /// HTTPS certificate/SPKI and Corrosion certificate pin the independent
-    /// per-server CA issuers. These fields never contain private keys or leaves.
+    /// The pinned HTTPS issuer and public key fingerprint.
     pub fn server_info(&self) -> &ServerInfo {
         &self.prepared.server_info
     }
     pub fn tls_paths(&self) -> &ServerTlsPaths {
         &self.tls
-    }
-    pub fn gossip_paths(&self) -> &ServerTlsPaths {
-        &self.gossip
     }
 
     /// The caller must authenticate the bootstrap channel before answering.
@@ -369,7 +349,7 @@ impl ServerIdentity {
         now: i64,
         policy: LeafValidation,
         renewal: Option<&Renewal>,
-    ) -> Result<[TlsMaterial; 2]> {
+    ) -> Result<TlsMaterial> {
         let config = &self.prepared.config;
         let request = self.request();
         request.verify()?;
@@ -391,22 +371,11 @@ impl ServerIdentity {
             dir,
             &self.tls,
             &names,
-            false,
             now,
             policy,
             renewal.map(|r| &r.https),
         )?;
-        let gossip = validate_tls(
-            dir,
-            &self.gossip,
-            &names,
-            true,
-            now,
-            policy,
-            renewal.map(|r| &r.gossip),
-        )?;
         expected.https_certificate_pem = Some(pem_string(https.ca.to_pem()?)?);
-        expected.corrosion_ca_certificate_pem = Some(pem_string(gossip.ca.to_pem()?)?);
         expected.https_spki_sha256 = expected.https_spki_fingerprint()?;
         expected.validate()?;
         if expected != self.prepared.server_info {
@@ -415,19 +384,12 @@ impl ServerIdentity {
                 "public pins or endpoint mismatch",
             ));
         }
-        if expected.https_certificate_pem == expected.corrosion_ca_certificate_pem {
-            return Err(invalid(
-                "server identity",
-                "HTTPS and gossip issuers must be independent",
-            ));
-        }
-        Ok([https, gossip])
+        Ok(https)
     }
 }
 
 struct CertificateNames {
     hostname: String,
-    gossip: String,
     ips: [std::net::IpAddr; 2],
 }
 
@@ -435,7 +397,6 @@ fn certificate_names(config: &Config, request: &EnrollmentRequest) -> Result<Cer
     let id = request.device_id_for(&config.network_id)?.to_string();
     Ok(CertificateNames {
         hostname: format!("node-{}.{}.tako.internal", &id[..32], config.network_id),
-        gossip: format!("{}.corrosion.tako.internal", config.network_id),
         ips: [
             config.wireguard_endpoint.ip().to_canonical(),
             config.network_id.address(&request.wg_public_key).into(),
@@ -472,19 +433,10 @@ fn generate_tls(
     dir: &secure::Directory,
     paths: &ServerTlsPaths,
     names: &CertificateNames,
-    gossip: bool,
 ) -> Result<String> {
     let ca_key = new_key()?;
     let leaf_key = new_key()?;
-    let mut ca = certificate(
-        &ca_key,
-        if gossip {
-            "Tako gossip CA"
-        } else {
-            "Tako HTTPS CA"
-        },
-        3650,
-    )?;
+    let mut ca = certificate(&ca_key, "Tako HTTPS CA", 3650)?;
     ca.append_extension(BasicConstraints::new().critical().ca().pathlen(0).build()?)?;
     ca.append_extension(
         KeyUsage::new()
@@ -503,7 +455,6 @@ fn generate_tls(
         &ca_key,
         &leaf_key,
         names,
-        gossip,
         now,
         (now + LEAF_LIFETIME).min(timestamp(ca.not_after())?),
     )?;
@@ -524,15 +475,10 @@ fn issue_leaf(
     ca_key: &PKey<Private>,
     leaf_key: &PKey<Private>,
     names: &CertificateNames,
-    gossip: bool,
     now: i64,
     expires_at: i64,
 ) -> Result<X509> {
-    let mut leaf = certificate(
-        leaf_key,
-        if gossip { "Tako gossip" } else { "Tako HTTPS" },
-        365,
-    )?;
+    let mut leaf = certificate(leaf_key, "Tako HTTPS", 365)?;
     let start = Asn1Time::from_unix(now)?;
     let end = Asn1Time::from_unix(expires_at)?;
     leaf.set_not_before(&start)?;
@@ -542,15 +488,9 @@ fn issue_leaf(
     leaf.append_extension(KeyUsage::new().critical().digital_signature().build()?)?;
     let mut eku = ExtendedKeyUsage::new();
     eku.server_auth();
-    if gossip {
-        eku.client_auth();
-    }
     leaf.append_extension(eku.build()?)?;
     let mut san = SubjectAlternativeName::new();
     san.dns(&names.hostname);
-    if gossip {
-        san.dns(&names.gossip);
-    }
     for ip in names.ips {
         san.ip(&ip.to_string());
     }
@@ -603,7 +543,6 @@ fn validate_tls(
     dir: &secure::Directory,
     paths: &ServerTlsPaths,
     names: &CertificateNames,
-    gossip: bool,
     now: i64,
     policy: LeafValidation,
     update: Option<&LeafUpdate>,
@@ -630,7 +569,7 @@ fn validate_tls(
     {
         return Err(invalid("server TLS", "certificate/key or issuer mismatch"));
     }
-    let validate = |pem: &[u8]| validate_leaf(&ca, &leaf_key, pem, names, gossip, now, policy);
+    let validate = |pem: &[u8]| validate_leaf(&ca, &leaf_key, pem, names, now, policy);
     let leaf = if let Some(update) = update {
         validate(update.previous_pem.as_bytes())?;
         let replacement = validate(update.replacement_pem.as_bytes())?;
@@ -677,7 +616,6 @@ fn validate_leaf(
     key: &PKey<Private>,
     bytes: &[u8],
     names: &CertificateNames,
-    gossip: bool,
     now: i64,
     policy: LeafValidation,
 ) -> Result<X509> {
@@ -688,7 +626,7 @@ fn validate_leaf(
             "leaf encoding or private key mismatch",
         ));
     }
-    validate_leaf_roles(&leaf, gossip)?;
+    validate_leaf_roles(&leaf)?;
     let start = timestamp(leaf.not_before())?;
     let end = timestamp(leaf.not_after())?;
     if start > now || end <= start || (policy == LeafValidation::Current && end <= now) {
@@ -698,11 +636,7 @@ fn validate_leaf(
         .subject_alt_names()
         .ok_or_else(|| invalid("server TLS", "missing SANs"))?;
     let dns: Vec<_> = sans.iter().filter_map(|san| san.dnsname()).collect();
-    let expected_dns = if gossip {
-        vec![names.hostname.as_str(), names.gossip.as_str()]
-    } else {
-        vec![names.hostname.as_str()]
-    };
+    let expected_dns = [names.hostname.as_str()];
     let ips: Vec<_> = sans.iter().filter_map(|san| san.ipaddress()).collect();
     let expected_ips: Vec<Vec<u8>> = names
         .ips
@@ -733,8 +667,7 @@ fn validate_leaf(
         X509PurposeId::SSL_CLIENT,
         &names.hostname,
         verify_at,
-    )? != gossip
-    {
+    )? {
         return Err(invalid(
             "server TLS",
             "chain, validity, name or purpose mismatch",
@@ -743,15 +676,12 @@ fn validate_leaf(
     Ok(leaf)
 }
 
-fn validate_leaf_roles(leaf: &X509, gossip: bool) -> Result<()> {
+fn validate_leaf_roles(leaf: &X509) -> Result<()> {
     // OpenSSL purpose checks allow absent EKU (unrestricted use). Require the
     // explicit managed-leaf extensions as well. Inspect only OpenSSL's own DER
     // output, then leave signature/chain validation to OpenSSL below.
     let mut eku = ExtendedKeyUsage::new();
     eku.server_auth();
-    if gossip {
-        eku.client_auth();
-    }
     let expected_eku = eku.build()?.to_der()?;
     let expected_constraints = BasicConstraints::new().critical().build()?.to_der()?;
     let der = leaf.to_der()?;
@@ -854,7 +784,6 @@ struct Renewal {
     version: u32,
     prepared_digest: KeyFingerprint,
     https: LeafUpdate,
-    gossip: LeafUpdate,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -865,12 +794,7 @@ struct LeafUpdate {
 }
 
 impl LeafUpdate {
-    fn plan(
-        material: &TlsMaterial,
-        names: &CertificateNames,
-        gossip: bool,
-        now: i64,
-    ) -> Result<Self> {
+    fn plan(material: &TlsMaterial, names: &CertificateNames, now: i64) -> Result<Self> {
         let previous_pem = pem_string(material.leaf.to_pem()?)?;
         let expires = timestamp(material.leaf.not_after())?;
         let new_expiry = (now + LEAF_LIFETIME).min(timestamp(material.ca.not_after())?);
@@ -880,7 +804,6 @@ impl LeafUpdate {
                 &material.ca_key,
                 &material.leaf_key,
                 names,
-                gossip,
                 now,
                 new_expiry,
             )?;
@@ -890,7 +813,6 @@ impl LeafUpdate {
                 &material.leaf_key,
                 &pem,
                 names,
-                gossip,
                 now,
                 LeafValidation::Current,
             )?;

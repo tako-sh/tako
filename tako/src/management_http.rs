@@ -396,8 +396,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         // A server waits for a pinned secret snapshot to replicate to it.
         | Command::SecretsDigest { .. }
         // Snapshots, restores, transfers, and queries can outlast a probe.
-        | Command::CreateDatabase { .. }
-        | Command::DeleteDatabase { .. }
+        | Command::CoordinateStorage { .. }
+
         | Command::ConfigureDatabaseBackup { .. }
         | Command::GrantDatabases { .. }
         | Command::SnapshotDatabase { .. }
@@ -415,6 +415,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::FinishDatabaseExport { .. } => MANAGEMENT_DEPLOY_RPC_TIMEOUT,
         Command::Hello { .. }
         | Command::ServerInfo
+        | Command::ListResources { .. }
         | Command::List
         | Command::Routes
         | Command::EnterUpgrading { .. }

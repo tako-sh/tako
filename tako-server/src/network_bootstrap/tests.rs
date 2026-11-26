@@ -9,8 +9,6 @@ struct Fixture {
     _temp: tempfile::TempDir,
     data: PathBuf,
     host_key: PathBuf,
-    binary: PathBuf,
-    receipt: PathBuf,
     network: NetworkId,
 }
 
@@ -26,24 +24,10 @@ impl Fixture {
             .ssh_public_key()
             .unwrap();
         fs::write(&host_key, format!("{} operator@server\n", key.as_str())).unwrap();
-        let binary = temp.path().join("corrosion");
-        fs::write(&binary, b"test executable bytes").unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-        let receipt = temp.path().join("corrosion.sha256");
-        fs::write(
-            &receipt,
-            format!(
-                "{}\n",
-                hex::encode(openssl::sha::sha256(b"test executable bytes"))
-            ),
-        )
-        .unwrap();
         Self {
             _temp: temp,
             data,
             host_key,
-            binary,
-            receipt,
             network: NetworkId::random().unwrap(),
         }
     }
@@ -51,8 +35,6 @@ impl Fixture {
     fn host(&self) -> Host<'_> {
         Host {
             host_key: &self.host_key,
-            binary: &self.binary,
-            receipt: &self.receipt,
             owner: unsafe { libc::geteuid() },
         }
     }
@@ -156,7 +138,6 @@ fn prepare_answer_sign_install_and_retry_preserve_identity() {
     })
     .unwrap();
     let config_bytes = fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap();
-    let token = fs::read(f.network_dir().join(TOKEN_FILE)).unwrap();
     let inode = fs::metadata(f.data.join(NODE_CONFIG_FILE)).unwrap().ino();
     f.call(BootstrapRequest::Install { snapshot }).unwrap();
     assert_eq!(
@@ -167,14 +148,10 @@ fn prepare_answer_sign_install_and_retry_preserve_identity() {
         fs::metadata(f.data.join(NODE_CONFIG_FILE)).unwrap().ino(),
         inode
     );
-    assert_eq!(fs::read(f.network_dir().join(TOKEN_FILE)).unwrap(), token);
     let config = NodeConfig::load(&f.data).unwrap();
     assert_eq!(config.files.keys, "device-keys.json");
     assert_eq!(config.wireguard_listen_port, 51820);
-    for path in [
-        f.data.join(NODE_CONFIG_FILE),
-        f.network_dir().join(TOKEN_FILE),
-    ] {
+    for path in [f.data.join(NODE_CONFIG_FILE), f.network_dir().join("device-keys.json")] {
         let metadata = fs::metadata(path).unwrap();
         assert_eq!(metadata.mode() & 0o7777, 0o600);
         assert_eq!(metadata.nlink(), 1);
@@ -207,7 +184,7 @@ fn mandatory_proxy_protocol_is_rejected_before_identity_creation() {
 }
 
 #[test]
-fn install_rejects_invalid_members_without_creating_config_or_token() {
+fn install_rejects_invalid_members_without_creating_config() {
     let f = Fixture::new();
     let valid = f.snapshot();
     for case in 0..12 {
@@ -273,7 +250,6 @@ fn install_rejects_invalid_members_without_creating_config_or_token() {
             "case {case}"
         );
         assert!(!f.data.join(NODE_CONFIG_FILE).exists());
-        assert!(!f.network_dir().join(TOKEN_FILE).exists());
     }
     let mut revoked = valid.clone();
     revoked.revocations.push(
@@ -308,9 +284,7 @@ fn installed_config_cannot_be_changed_or_repaired_implicitly() {
             .is_err()
     );
     assert_eq!(fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap(), previous);
-    fs::remove_file(f.network_dir().join(TOKEN_FILE)).unwrap();
-    assert!(f.call(BootstrapRequest::Install { snapshot }).is_err());
-    assert!(!f.network_dir().join(TOKEN_FILE).exists());
+
     let mut request = f.prepare_request();
     if let BootstrapRequest::Prepare { network, .. } = &mut request {
         *network = NetworkId::random().unwrap();
@@ -350,28 +324,6 @@ fn installation_retry_accepts_new_members_without_replacing_bootstrap() {
     });
     f.call(BootstrapRequest::Install { snapshot }).unwrap();
     assert_eq!(fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap(), previous);
-}
-
-#[test]
-fn receipt_checks_digest_owner_mode_and_links() {
-    let f = Fixture::new();
-    verify_binary(&f.host()).unwrap();
-    let mut wrong_owner = f.host();
-    wrong_owner.owner = u32::MAX;
-    assert!(verify_binary(&wrong_owner).is_err());
-    fs::write(&f.binary, b"substituted executable").unwrap();
-    assert!(verify_binary(&f.host()).is_err());
-    fs::write(&f.binary, b"test executable bytes").unwrap();
-    fs::set_permissions(&f.receipt, fs::Permissions::from_mode(0o666)).unwrap();
-    assert!(verify_binary(&f.host()).is_err());
-    fs::set_permissions(&f.receipt, fs::Permissions::from_mode(0o644)).unwrap();
-    let saved = f.receipt.with_extension("saved");
-    fs::rename(&f.receipt, &saved).unwrap();
-    symlink(&saved, &f.receipt).unwrap();
-    assert!(verify_binary(&f.host()).is_err());
-    fs::remove_file(&f.receipt).unwrap();
-    fs::hard_link(&saved, &f.receipt).unwrap();
-    assert!(verify_binary(&f.host()).is_err());
 }
 
 #[test]
@@ -422,12 +374,14 @@ fn host_key_comments_are_stripped_and_rotation_blocks_install() {
 }
 
 #[test]
-fn protected_token_and_config_reject_links_and_permissions() {
-    for token_case in [true, false] {
+fn protected_identity_and_config_reject_links_and_permissions() {
+    for identity_case in [true, false] {
         let f = Fixture::new();
         let snapshot = f.snapshot();
-        let target = if token_case {
-            f.network_dir().join(TOKEN_FILE)
+        let target = if identity_case {
+            let key = f.network_dir().join("device-keys.json");
+            fs::remove_file(&key).unwrap();
+            key
         } else {
             f.data.join(NODE_CONFIG_FILE)
         };

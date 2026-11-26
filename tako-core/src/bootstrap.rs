@@ -110,6 +110,7 @@ mod tests {
             "main".to_string(),
             DatabaseConnection {
                 url: "http://127.0.0.1:9845".to_string(),
+                replica_auth_token: None,
                 auth_token: "secret".to_string(),
             },
         )]);

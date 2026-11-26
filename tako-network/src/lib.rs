@@ -6,8 +6,8 @@
 
 pub mod api;
 mod bootstrap;
+pub mod catalog;
 mod challenge;
-pub mod corrosion;
 mod enrollment;
 mod error;
 pub mod invitation;

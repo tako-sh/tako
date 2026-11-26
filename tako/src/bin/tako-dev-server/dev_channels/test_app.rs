@@ -137,6 +137,7 @@ pub(super) fn connection(
 ) -> tako_core::DatabaseConnection {
     tako_core::DatabaseConnection {
         url: server.url.clone(),
+        replica_auth_token: None,
         auth_token: token,
     }
 }

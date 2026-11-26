@@ -13,7 +13,7 @@ use std::{
 use tako_network::{
     Ack, Member, RegistrySnapshot, Revocation,
     api::{RuntimeError, RuntimeResult},
-    corrosion::{MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore},
+    catalog::{MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore},
     node_config::protected::Directory,
 };
 
@@ -53,7 +53,7 @@ fn records(snapshot: &RegistrySnapshot) -> RuntimeResult<BTreeSet<[u8; 32]>> {
     for revocation in &snapshot.revocations {
         result.insert(Sha256::digest(&serde_json::to_vec(&("revocation", revocation))?).into());
     }
-    // ACKs are replaceable progress evidence. Corrosion may compact or omit
+    // ACKs are replaceable progress evidence. The catalog may compact or omit
     // them; only immutable membership and denial facts are monotonic.
     Ok(result)
 }
@@ -72,7 +72,7 @@ pub(super) fn preserves(
         return Err(RuntimeError::Capacity("monotonic registry"));
     }
     if !records(known)?.is_subset(&records(candidate)?) {
-        return Err(RuntimeError::Corrosion(
+        return Err(RuntimeError::Catalog(
             "known records missing; operator restore required",
         ));
     }

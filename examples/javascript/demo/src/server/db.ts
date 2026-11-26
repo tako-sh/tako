@@ -1,4 +1,4 @@
-import { createClient, type Client, type Row } from "@libsql/client";
+import { createClient, type Client, type Row } from "@tursodatabase/serverless/compat";
 import { tako } from "tako.sh";
 
 import type {

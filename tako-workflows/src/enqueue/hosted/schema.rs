@@ -14,7 +14,7 @@ const TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS tako_workflow_meta (
         name TEXT PRIMARY KEY,
         value INTEGER NOT NULL
-    ) STRICT, WITHOUT ROWID",
+    ) STRICT",
     "CREATE TABLE IF NOT EXISTS tako_workflow_runs (
         app TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -68,7 +68,7 @@ const TABLES: &[&str] = &[
         app TEXT PRIMARY KEY,
         build TEXT NOT NULL,
         revision INTEGER NOT NULL
-    ) STRICT, WITHOUT ROWID",
+    ) STRICT",
     "CREATE TABLE IF NOT EXISTS tako_workflow_event_waiters (
         app TEXT NOT NULL,
         run_id TEXT NOT NULL,

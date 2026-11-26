@@ -1,11 +1,11 @@
-use super::{SqliteStateStore, StateStoreError};
+use super::{StateStore, StateStoreError};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::time::{Duration, Instant};
 
 /// Every server process that serves app data holds a shared lease on this
-/// file, beside `state.sqlite`, until it drains or retires.
+/// file, beside `state.redb`, until it drains or retires.
 const DRAIN_ACTIVITY_LOCK_FILE: &str = "drain-activity.lock";
 /// Every standby server process holds a shared lease on this file, in the
 /// data directory, for as long as it may run app instances. Release cleanup
@@ -116,44 +116,24 @@ impl Drop for DrainLease {
     }
 }
 
-impl SqliteStateStore {
+impl StateStore {
     pub fn drain_requested(&self) -> Result<bool, StateStoreError> {
-        let conn = self.lock_conn()?;
-        Ok(conn.query_row(
-            "SELECT requested FROM server_drain WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?)
+        self.read(|r| {
+            Ok(super::get::<(bool, u64)>(r, ("drain", "", ""))?
+                .unwrap_or_default()
+                .0)
+        })
     }
-
     pub(crate) fn drain_deadline_unix_ms(&self) -> Result<u64, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let deadline: i64 = conn.query_row(
-            "SELECT deadline_unix_ms FROM server_drain WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        u64::try_from(deadline)
-            .map_err(|_| StateStoreError::InvalidData("negative drain deadline".into()))
+        self.read(|r| {
+            Ok(super::get::<(bool, u64)>(r, ("drain", "", ""))?
+                .unwrap_or_default()
+                .1)
+        })
     }
-
     pub(crate) fn request_drain_until(&self, deadline_unix_ms: u64) -> Result<(), StateStoreError> {
-        let deadline = i64::try_from(deadline_unix_ms).map_err(|_| {
-            StateStoreError::InvalidData("drain deadline exceeds SQLite integer range".into())
-        })?;
-        let conn = self.lock_conn()?;
-        let changed = conn.execute(
-            "UPDATE server_drain SET requested = 1, deadline_unix_ms = ?1 WHERE id = 1",
-            [deadline],
-        )?;
-        if changed != 1 {
-            return Err(StateStoreError::InvalidData(
-                "missing server drain state".into(),
-            ));
-        }
-        Ok(())
+        self.write(|r| super::put(r, ("drain", "", ""), &(true, deadline_unix_ms)))
     }
-
     pub(crate) fn try_drain_activity(
         &self,
         exclusive: bool,
@@ -169,16 +149,6 @@ impl SqliteStateStore {
     }
 
     pub fn set_drain_requested(&self, requested: bool) -> Result<(), StateStoreError> {
-        let conn = self.lock_conn()?;
-        let changed = conn.execute(
-            "UPDATE server_drain SET requested = ?1, deadline_unix_ms = 0 WHERE id = 1",
-            [requested],
-        )?;
-        if changed != 1 {
-            return Err(StateStoreError::InvalidData(
-                "missing server drain state".into(),
-            ));
-        }
-        Ok(())
+        self.write(|r| super::put(r, ("drain", "", ""), &(requested, 0_u64)))
     }
 }

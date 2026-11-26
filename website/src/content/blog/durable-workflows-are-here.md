@@ -108,7 +108,7 @@ direction: right
 
 enq: Enqueue {style.fill: "#9BC4B6"; style.font-size: 16}
 server: tako-server {style.fill: "#E88783"; style.font-size: 16}
-db: workflows.sqlite {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
+db: workflows.db {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 worker: Worker process {style.fill: "#E88783"; style.font-size: 16}
 
 enq -> server: "unix socket"

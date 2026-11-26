@@ -1,8 +1,8 @@
 //! Tako-hosted databases: the wire types shared by the CLI, the server, and
 //! app SDKs.
 //!
-//! A database is a file owned by the server that hosts it (its home server):
-//! a SQLite database, or a key-value store of JSON values with optional
+//! Each binding names a replicated resource with an elected leader:
+//! a Turso SQL database, or a key-value store of JSON values with optional
 //! expiry. Its name identifies it: names are unique within a network, across
 //! both engines. Apps reach it through a binding: the server gives each bound
 //! app process a URL and token for the SQL over HTTP protocol, or a token the
@@ -51,6 +51,8 @@ pub const DATABASE_PEER_PORT: u16 = 9847;
 /// Default private-network port where a KV store's server accepts
 /// requests forwarded for apps on other servers.
 pub const KV_PEER_PORT: u16 = 9848;
+/// Private Raft traffic among enrolled servers.
+pub const STORAGE_PEER_PORT: u16 = 9849;
 /// Bytes of a database file moved per import or export request.
 pub const DATABASE_TRANSFER_CHUNK_BYTES: u64 = 512 * 1024;
 /// Rows returned by `QueryDatabase` before the result is truncated.
@@ -95,22 +97,22 @@ pub fn validate_database_name(name: &str) -> Result<(), String> {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum DatabaseEngine {
-    /// SQLite, served over the libSQL HTTP protocol.
+    /// Turso SQL, served over the libSQL-compatible HTTP protocol.
     #[default]
-    Sqlite,
+    Turso,
     /// A key-value store, served through the internal socket.
     Kv,
 }
 
 impl DatabaseEngine {
-    pub fn is_sqlite(&self) -> bool {
-        *self == Self::Sqlite
+    pub fn is_sql(&self) -> bool {
+        *self == Self::Turso
     }
 
     /// How people call a database of this engine in messages.
     pub fn noun(self) -> &'static str {
         match self {
-            Self::Sqlite => "database",
+            Self::Turso => "database",
             Self::Kv => "KV store",
         }
     }
@@ -124,13 +126,13 @@ impl DatabaseEngine {
 pub struct DatabaseBinding {
     /// The database's name, unique within the network.
     pub name: String,
-    /// Device ID of the database's server.
-    pub server: String,
-    /// Key the database's server issued with its grant to this app
+    /// Immutable generation claimed by the network catalog for this resource.
+    pub generation: String,
+    /// Key the resource group issued with its grant to this app
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_key: Option<String>,
-    #[serde(default, skip_serializing_if = "DatabaseEngine::is_sqlite")]
+    #[serde(default, skip_serializing_if = "DatabaseEngine::is_sql")]
     pub engine: DatabaseEngine,
 }
 
@@ -138,7 +140,9 @@ impl DatabaseBinding {
     /// Whether two bindings name the same database the same way, ignoring
     /// the peer key a server fills in.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.name == other.name && self.server == other.server && self.engine == other.engine
+        self.name == other.name
+            && self.engine == other.engine
+            && self.generation == other.generation
     }
 }
 
@@ -146,10 +150,38 @@ impl std::fmt::Debug for DatabaseBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseBinding")
             .field("name", &self.name)
-            .field("server", &self.server)
+            .field("generation", &self.generation)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
             .field("engine", &self.engine)
             .finish()
+    }
+}
+
+/// Bearer credentials for the writable route and the local read-only route.
+/// Binding registration stores only their hashes. Knowing the replica token
+/// does not give access to the writable route.
+pub fn replica_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(b"tako.read-replica.v1\0")
+        .chain_update(token)
+        .finalize();
+    hex::encode(digest)
+}
+
+#[derive(Clone, Debug)]
+pub struct BindingTokenHashes {
+    pub primary: [u8; 32],
+    pub replica: [u8; 32],
+}
+
+impl BindingTokenHashes {
+    pub fn new(token: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        Self {
+            primary: Sha256::digest(token.as_bytes()).into(),
+            replica: Sha256::digest(replica_token(token).as_bytes()).into(),
+        }
     }
 }
 
@@ -159,12 +191,19 @@ impl std::fmt::Debug for DatabaseBinding {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KvConnection {
     pub token: String,
+    #[serde(
+        rename = "replicaToken",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_token: Option<String>,
 }
 
 impl KvConnection {
     pub fn new(token: &str) -> Self {
         Self {
             token: token.to_owned(),
+            replica_token: Some(replica_token(token)),
         }
     }
 }
@@ -186,6 +225,12 @@ pub struct DatabaseConnection {
     pub url: String,
     #[serde(rename = "authToken")]
     pub auth_token: String,
+    #[serde(
+        rename = "replicaAuthToken",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_auth_token: Option<String>,
 }
 
 /// The token authorizes SQL as the app, so it is never printed.
@@ -273,6 +318,39 @@ pub struct DatabaseBackupStatus {
     pub last_error: Option<String>,
 }
 
+/// Read-only inventory of the resource replicas and object storage bound on a server.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServerUserResources {
+    pub databases: Vec<DatabaseReplicaStatus>,
+    pub storages: Vec<StorageBindingStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseReplicaStatus {
+    pub name: String,
+    pub generation: String,
+    pub engine: DatabaseEngine,
+    pub leader: Option<String>,
+    pub is_leader: Option<bool>,
+    pub bindings: Vec<ResourceBindingStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ResourceBindingStatus {
+    pub app: String,
+    pub binding: String,
+    /// Only a retained rollback release still uses this binding.
+    pub retained: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBindingStatus {
+    pub app: String,
+    pub binding: String,
+    pub resource: String,
+    pub provider: crate::StorageProvider,
+}
+
 /// A database hosted on a server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseInfo {
@@ -357,15 +435,21 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_bindings_serialize_without_an_engine() {
+    fn sql_bindings_require_a_generation_and_serialize_without_an_engine() {
         let binding = DatabaseBinding {
             name: "main".into(),
-            server: "s".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
             peer_key: None,
-            engine: DatabaseEngine::Sqlite,
+            engine: DatabaseEngine::Turso,
         };
         let json = serde_json::to_value(&binding).unwrap();
-        assert_eq!(json, serde_json::json!({"name": "main", "server": "s"}));
+        assert_eq!(
+            json,
+            serde_json::json!({"name": "main", "generation": binding.generation})
+        );
+        assert!(
+            serde_json::from_value::<DatabaseBinding>(serde_json::json!({"name": "main"})).is_err()
+        );
         let kv = DatabaseBinding {
             engine: DatabaseEngine::Kv,
             ..binding.clone()
@@ -410,6 +494,7 @@ mod tests {
     fn connections_never_print_their_token() {
         let connection = DatabaseConnection {
             url: "http://127.0.0.1:9845".into(),
+            replica_auth_token: None,
             auth_token: "secret-token".into(),
         };
         let printed = format!("{connection:?}");
@@ -421,6 +506,7 @@ mod tests {
     fn connections_use_libsql_field_names() {
         let value = serde_json::to_value(DatabaseConnection {
             url: "http://127.0.0.1:9845".into(),
+            replica_auth_token: None,
             auth_token: "t".into(),
         })
         .unwrap();
@@ -428,5 +514,163 @@ mod tests {
             value,
             serde_json::json!({"url": "http://127.0.0.1:9845", "authToken": "t"})
         );
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageClaim {
+    pub name: String,
+    pub engine: DatabaseEngine,
+    pub generation: String,
+    pub created_at_unix_secs: u64,
+    pub channel_owner: Option<String>,
+    pub workflows_owner: Option<String>,
+    /// Immutable device IDs in the initial voting membership. A deployment
+    /// joining later goes through membership change on this resource.
+    pub founders: std::collections::BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageUse {
+    pub ticket: String,
+    pub pending: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePlacement {
+    pub revision: u64,
+    pub retired: bool,
+    pub known: std::collections::BTreeSet<String>,
+    pub removing: std::collections::BTreeSet<String>,
+    pub uses: std::collections::BTreeMap<String, std::collections::BTreeMap<String, StorageUse>>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PlacementChange {
+    Reserve {
+        app: String,
+        servers: Vec<String>,
+        founders: std::collections::BTreeSet<String>,
+        ticket: String,
+    },
+    Confirm {
+        app: String,
+        server: String,
+        ticket: String,
+    },
+    Release {
+        app: String,
+        server: String,
+        ticket: String,
+    },
+    Removed {
+        server: String,
+    },
+    RetireUnused {
+        revision: u64,
+        founders: std::collections::BTreeSet<String>,
+    },
+}
+
+/// Full-client storage coordination on the network management channel.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum StorageOperation {
+    /// Read-only leader discovery for an already provisioned app environment.
+    DeploymentLeader {
+        app: String,
+        group: String,
+    },
+    /// The first enrolled server can mint the catalog credential. Other
+    /// participants receive the same credential through their management channel.
+    Placement {
+        group: String,
+        change: Option<PlacementChange>,
+    },
+    RemoveMember {
+        group: String,
+        server: String,
+    },
+    PurgeReplica {
+        name: String,
+        generation: String,
+    },
+    Retirement {
+        generation: String,
+        targets: Option<std::collections::BTreeSet<String>>,
+    },
+    RetireName {
+        name: String,
+        generation: String,
+    },
+    SetGrant {
+        generation: String,
+        scope: String,
+        enabled: bool,
+    },
+    CatalogStatus,
+    Claim {
+        candidate: StorageClaim,
+    },
+    OpenReplica {
+        claim: StorageClaim,
+        backup_key: String,
+    },
+    SeedReplica {
+        name: String,
+        generation: String,
+    },
+    Readiness {
+        group: String,
+        target: String,
+        barrier: Option<u64>,
+    },
+    AddMembers {
+        group: String,
+        targets: Vec<String>,
+    },
+    Progress {
+        group: String,
+    },
+}
+
+// The operation can contain a catalog credential.
+impl std::fmt::Debug for StorageOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Placement { group, .. } => f.debug_tuple("Placement").field(group).finish(),
+            Self::RemoveMember { group, server } => f
+                .debug_tuple("RemoveMember")
+                .field(group)
+                .field(server)
+                .finish(),
+            Self::PurgeReplica { name, .. } => f.debug_tuple("PurgeReplica").field(name).finish(),
+            Self::Retirement { generation, .. } => {
+                f.debug_tuple("Retirement").field(generation).finish()
+            }
+            Self::RetireName { name, .. } => f.debug_tuple("RetireName").field(name).finish(),
+            Self::SetGrant { scope, .. } => f.debug_tuple("SetGrant").field(scope).finish(),
+            Self::CatalogStatus => f.write_str("CatalogStatus"),
+            Self::Claim { candidate } => f.debug_tuple("Claim").field(&candidate.name).finish(),
+            Self::SeedReplica { name, .. } => f.debug_tuple("SeedReplica").field(name).finish(),
+            Self::Readiness { group, target, .. } => f
+                .debug_tuple("Readiness")
+                .field(group)
+                .field(target)
+                .finish(),
+            Self::OpenReplica { claim, .. } => {
+                f.debug_tuple("OpenReplica").field(&claim.name).finish()
+            }
+            Self::AddMembers { group, targets } => f
+                .debug_tuple("AddMembers")
+                .field(group)
+                .field(targets)
+                .finish(),
+            Self::DeploymentLeader { app, group } => f
+                .debug_tuple("DeploymentLeader")
+                .field(app)
+                .field(group)
+                .finish(),
+            Self::Progress { group } => f.debug_tuple("Progress").field(group).finish(),
+        }
     }
 }

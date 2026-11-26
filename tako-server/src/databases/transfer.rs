@@ -244,7 +244,7 @@ pub(crate) async fn finish_import(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| match engine {
-            tako_core::DatabaseEngine::Sqlite => {
+            tako_core::DatabaseEngine::Turso => {
                 format!("The uploaded file is not a usable SQLite database: {e}")
             }
             tako_core::DatabaseEngine::Kv => {

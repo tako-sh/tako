@@ -59,7 +59,7 @@ tako: Tako {
 
   app: Your app
   server: tako-server
-  db: workflows.sqlite
+  db: workflows.db
   worker: Worker subprocess
 
   app -> server: unix socket

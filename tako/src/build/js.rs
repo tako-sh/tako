@@ -290,7 +290,7 @@ fn build_databases_block(names: &[String]) -> String {
     }
 
     let mut out = String::from(
-        "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * Each binding is `{ url, authToken }`, ready for `createClient` from\n   * `@libsql/client` or `connect` from `@tursodatabase/serverless`.\n   */\n  export interface TakoDb {\n",
+        "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * Each binding is `{ url, authToken }`, ready for `createClient` from\n   * `@tursodatabase/serverless/compat` or `connect` from `@tursodatabase/serverless`.\n   */\n  export interface TakoDb {\n",
     );
     for name in names {
         out.push_str(&format!(

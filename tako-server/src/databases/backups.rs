@@ -14,15 +14,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
+use super::backup_capture::Source as Capture;
+use object_store::ObjectStore;
+#[cfg(test)]
+use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tako_backup::{Capture, Point, Replica, Stored, Target};
+use tako_backup::{Point, Replica, Stored, Target};
 use tako_core::{DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageBinding};
 use tako_db::DatabaseId;
 
 use super::now_unix_secs;
-use super::objects::{METADATA_TIMEOUT, backup_store, put_json_object, with_deadline};
+use super::objects::{METADATA_TIMEOUT, backup_store, with_deadline};
 use crate::ServerState;
 use crate::state_store::StoredDatabase;
 
@@ -40,9 +43,6 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long stopping waits for the databases' final uploads.
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
-/// Objects deleted per request when a database's backups are deleted, the
-/// most an S3 `DeleteObjects` request takes.
-const DELETE_BATCH: usize = 1000;
 /// A work directory this old belongs to an operation that a restart or crash
 /// interrupted: restores and exports finish well within it, and import and
 /// export sessions expire after an hour.
@@ -110,208 +110,10 @@ fn slot(state: &ServerState, name: &str) -> Arc<tokio::sync::Mutex<Slot>> {
 /// A database's prefix in its backup storage. The generation keeps a
 /// database created again under an earlier one's name from seeing its
 /// backups.
-fn prefix(stored: &StoredDatabase) -> String {
-    format!("_tako/databases/{}/{}", stored.name, stored.generation)
-}
-
-/// Names the server that holds the database. A copy a move left behind sees
-/// another server there and stops uploading, even when it was unreachable
-/// during the move.
-fn holder_key(stored: &StoredDatabase) -> String {
-    format!("{}/holder", prefix(stored))
-}
-
 fn spool_dir(state: &ServerState, name: &str) -> PathBuf {
     state.databases.database_dir(name).join("replica")
 }
 
-#[derive(Serialize, Deserialize)]
-struct Holder {
-    server: String,
-    since_unix_secs: u64,
-}
-
-/// The holder a deleted database's prefix keeps: no server is named so, so a
-/// copy that a delete could not reach uploads nothing into the deleted
-/// history when it comes back.
-const DELETED_HOLDER: &str = "(deleted)";
-
-/// The holder a given-up claim leaves. It names no server and bars none,
-/// like a prefix without a holder. A claim is given up by replacing it
-/// conditionally: a delete could remove a newer claim made after the read.
-const UNCLAIMED_HOLDER: &str = "(none)";
-
-/// A holder object as read: the server it names, if any, and the object's
-/// version, for a write that must not replace a newer claim.
-struct Claim {
-    server: Option<String>,
-    version: object_store::UpdateVersion,
-}
-
-async fn read_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-) -> Result<Option<String>, String> {
-    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    Ok(read_claim(remote, &key)
-        .await?
-        .and_then(|claim| claim.server))
-}
-
-async fn read_claim(remote: &dyn ObjectStore, key: &ObjectPath) -> Result<Option<Claim>, String> {
-    with_deadline(METADATA_TIMEOUT, async {
-        let object = match remote.get(key).await {
-            Ok(object) => object,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(error) => return Err(format!("read the database's holder: {error}")),
-        };
-        let version = object_store::UpdateVersion {
-            e_tag: object.meta.e_tag.clone(),
-            version: object.meta.version.clone(),
-        };
-        let bytes = object
-            .bytes()
-            .await
-            .map_err(|e| format!("read the database's holder: {e}"))?;
-        let server = serde_json::from_slice::<Holder>(&bytes)
-            .ok()
-            .map(|holder| holder.server)
-            .filter(|server| server != UNCLAIMED_HOLDER);
-        Ok(Some(Claim { server, version }))
-    })
-    .await
-}
-
-/// Records a holder naming `server`, or none, in place of `read`: the claim
-/// read before, or no holder at all. Unless the holder is still what was
-/// read, it writes nothing and returns false.
-async fn write_claim(
-    remote: &dyn ObjectStore,
-    key: &ObjectPath,
-    read: Option<Claim>,
-    server: Option<&str>,
-) -> Result<bool, String> {
-    let holder = Holder {
-        server: server.unwrap_or(UNCLAIMED_HOLDER).to_owned(),
-        since_unix_secs: now_unix_secs(),
-    };
-    let body = serde_json::to_vec(&holder).map_err(|e| e.to_string())?;
-    let options = object_store::PutOptions {
-        mode: read.map_or(object_store::PutMode::Create, |claim| {
-            object_store::PutMode::Update(claim.version)
-        }),
-        ..Default::default()
-    };
-    with_deadline(METADATA_TIMEOUT, async {
-        match remote.put_opts(key, body.into(), options).await {
-            Ok(_) => Ok(true),
-            Err(
-                object_store::Error::Precondition { .. }
-                | object_store::Error::AlreadyExists { .. },
-            ) => Ok(false),
-            Err(error) => Err(format!("record the database's holder: {error}")),
-        }
-    })
-    .await
-}
-
-/// Why this server may not upload a database's backups.
-enum Refused {
-    /// Another server holds the database: this copy stops backing up until
-    /// the holder changes.
-    Moved(String),
-    /// The database was deleted: this copy stops too.
-    Deleted(String),
-    /// The holder could not be read.
-    Unavailable(String),
-}
-
-impl Refused {
-    fn fenced(&self) -> bool {
-        !matches!(self, Self::Unavailable(_))
-    }
-}
-
-impl From<Refused> for String {
-    fn from(refused: Refused) -> Self {
-        match refused {
-            Refused::Moved(message) | Refused::Deleted(message) | Refused::Unavailable(message) => {
-                message
-            }
-        }
-    }
-}
-
-/// Fails when another server holds the database.
-async fn check_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-    own: Option<&str>,
-) -> Result<(), Refused> {
-    let Some(own) = own else {
-        return Ok(());
-    };
-    match read_holder(remote, stored)
-        .await
-        .map_err(Refused::Unavailable)?
-    {
-        Some(holder) if holder == DELETED_HOLDER => Err(Refused::Deleted(format!(
-            "database {} was deleted; this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
-            stored.name, stored.name
-        ))),
-        Some(holder) if holder != own => Err(Refused::Moved(format!(
-            "database {} was moved to another server ({holder}); this copy no longer uploads backups. Remove it with `tako db delete {} --server <this server>`",
-            stored.name, stored.name
-        ))),
-        _ => Ok(()),
-    }
-}
-
-/// Marks a copy created by `CreateDatabase` until it is restored: a copy
-/// created for a move must not back up its empty file into the history it
-/// is about to restore from. A new database clears it on its first backup,
-/// when its prefix has no history yet.
-fn unrestored_marker(state: &ServerState, name: &str) -> PathBuf {
-    state.databases.database_dir(name).join("unrestored")
-}
-
-/// The marker records the empty file's inode: a restore, import or reset
-/// renames another file into place, so a marker that a crash left after
-/// such a swap no longer matches and is cleared (see [`is_unrestored`]).
-pub(crate) fn mark_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
-    let marked = file_id(&state.databases.database_path(name))
-        .and_then(|id| write_durably(&unrestored_marker(state, name), id.to_string().as_bytes()));
-    marked.map_err(|e| format!("mark the new copy of {name}: {e}"))
-}
-
-fn file_id(path: &Path) -> std::io::Result<u64> {
-    use std::os::unix::fs::MetadataExt as _;
-    Ok(std::fs::metadata(path)?.ino())
-}
-
-/// Whether this copy still holds the empty file `CreateDatabase` made.
-pub(crate) fn is_unrestored(state: &ServerState, name: &str) -> Result<bool, String> {
-    let marker = unrestored_marker(state, name);
-    let recorded = match std::fs::read_to_string(&marker) {
-        Ok(recorded) => recorded,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("read the restore marker of {name}: {error}")),
-    };
-    let current = file_id(&state.databases.database_path(name)).ok();
-    match (recorded.trim().parse::<u64>().ok(), current) {
-        (Some(recorded), Some(current)) if recorded != current => {
-            // Another file was swapped in; the server stopped before it
-            // removed the marker.
-            clear_unrestored(state, name)?;
-            Ok(false)
-        }
-        _ => Ok(true),
-    }
-}
-
-/// Writes `bytes` to `path` through a synced temporary file renamed over
-/// it, then syncs the directory, so a crash leaves the old contents or the
-/// new ones, never a truncated file.
 fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let dir = path
@@ -322,74 +124,6 @@ fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
     std::fs::File::open(dir)?.sync_all()
-}
-
-/// Marks a copy that found another server holding its database, or the
-/// database deleted. It captures nothing until a check of the holder passes,
-/// also after a restart.
-fn fenced_marker(state: &ServerState, name: &str) -> PathBuf {
-    state.databases.database_dir(name).join("fenced")
-}
-
-fn remove_marker(path: &Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("clear {}: {error}", path.display())),
-    }
-}
-
-fn clear_unrestored(state: &ServerState, name: &str) -> Result<(), String> {
-    let marker = unrestored_marker(state, name);
-    let removed = match std::fs::remove_file(&marker) {
-        Ok(()) => marker
-            .parent()
-            .map_or(Ok(()), |dir| std::fs::File::open(dir)?.sync_all()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    };
-    removed.map_err(|error| format!("clear the restore marker of {name}: {error}"))
-}
-
-/// Gives up this server's claim on the database's backups, when it holds
-/// it: removing a copy that an unfinished move left here lets the copy the
-/// network names back up again.
-pub(crate) async fn release_holder(
-    state: &ServerState,
-    stored: &StoredDatabase,
-) -> Result<(), String> {
-    let (Some(backup), Some(own)) = (&stored.secrets.backup, state.databases.server_id()) else {
-        return Ok(());
-    };
-    let remote = store(backup)?;
-    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
-    let Some(claim) = read_claim(remote.as_ref(), &key).await? else {
-        return Ok(());
-    };
-    if claim.server.as_deref() != Some(own.as_str()) {
-        return Ok(());
-    }
-    // A newer claim from another server stands.
-    write_claim(remote.as_ref(), &key, Some(claim), None)
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("release the backups of {}: {e}", stored.name))
-}
-
-async fn claim_holder(
-    remote: &dyn ObjectStore,
-    stored: &StoredDatabase,
-    own: &str,
-) -> Result<(), String> {
-    put_json_object(
-        remote,
-        &holder_key(stored),
-        &Holder {
-            server: own.to_owned(),
-            since_unix_secs: now_unix_secs(),
-        },
-    )
-    .await
 }
 
 #[cfg(not(test))]
@@ -519,13 +253,10 @@ fn replica(
     stored: &StoredDatabase,
     backup: &StorageBinding,
     key_override: Option<&str>,
-) -> Result<(Replica, Arc<dyn ObjectStore>), String> {
+) -> Result<Replica, String> {
     let remote = store(backup)?;
     let key = super::decode_backup_key(key_override.unwrap_or(&stored.secrets.backup_key_base64))?;
-    let key = tako_backup::encryption::Key::new(format!("database-{}", stored.generation), key)
-        .map_err(|e| e.to_string())?;
-    let replica = Replica::new(remote.clone(), &prefix(stored), key).map_err(|e| e.to_string())?;
-    Ok((replica, remote))
+    Replica::database(remote, &stored.name, &stored.generation, key).map_err(|e| e.to_string())
 }
 
 fn now_unix_ms() -> i64 {
@@ -605,49 +336,27 @@ async fn ensure_open(
         slot.waiting.clear();
         wipe_spool(state, &stored.name)?;
     }
-    let unrestored = is_unrestored(state, &stored.name)?;
-    let fenced = fenced_marker(state, &stored.name);
-    let positioned = tako_backup::spool_has_segments(&spool).map_err(|e| e.to_string())?;
-    let floor = if positioned && !unrestored && !fenced.exists() {
-        0
-    } else {
-        let (replica, remote) = replica(stored, backup, None)?;
-        check_holder(
-            remote.as_ref(),
-            stored,
-            state.databases.server_id().as_deref(),
-        )
-        .await?;
-        remove_marker(&fenced)?;
-        let newest = with_deadline(METADATA_TIMEOUT, async {
-            replica
-                .segments()
-                .await
-                .map_err(|e| format!("read the backup history: {e:#}"))
-        })
-        .await?
-        .iter()
-        .map(Stored::txid)
-        .max();
-        if unrestored {
-            if newest.is_some() {
-                return Err(format!(
-                    "this copy of {} was created on top of existing backups and is not backed up until it is restored from them (`tako db restore {} --latest`)",
-                    stored.name, stored.name
-                ));
-            }
-            clear_unrestored(state, &stored.name)?;
-        }
-        // Above every history there: a new spool's, and a fenced copy's
-        // whose holder let it go again (an abandoned move may have left the
-        // other copy's history above it).
-        newest.map_or(0, |newest| newest.saturating_add(tako_backup::OWNER_JUMP))
-    };
+    let resource = state
+        .databases
+        .raft
+        .resource(&stored.generation)
+        .ok_or("storage replica is unavailable")?;
+    let replica = replica(stored, backup, None)?;
+    let committed_remote = with_deadline(METADATA_TIMEOUT, async {
+        replica
+            .segments()
+            .await
+            .map_err(|e| format!("read the backup history: {e:#}"))
+    })
+    .await?
+    .iter()
+    .map(Stored::txid)
+    .max()
+    .unwrap_or(0);
     remember_spool(&spool, stored, backup)?;
-    let path = state.databases.database_path(&stored.name);
     let (capture, base, captured_at_ms) = tokio::task::spawn_blocking(
         move || -> tako_backup::anyhow::Result<(Capture, u64, i64)> {
-            let mut capture = Capture::open(&path, &spool, floor)?;
+            let mut capture = Capture::open(&spool, resource, committed_remote)?;
             let (base, captured_at) = full_image(&mut capture)?;
             Ok((capture, base, captured_at))
         },
@@ -792,42 +501,15 @@ async fn upload(
     if pending.is_empty() && open.points.is_empty() {
         return Ok(());
     }
-    let (replica, remote) = replica(stored, &open.backup, None)?;
-    let own = state.databases.server_id();
-    let checked = check_holder(remote.as_ref(), stored, own.as_deref()).await;
-    if let Err(refused) = checked {
-        return Err(refuse(state, stored, slot, refused));
-    }
-    let uploading = with_deadline(upload_timeout(&spool, &pending), async {
+    let replica = replica(stored, &open.backup, None)?;
+    with_deadline(upload_timeout(&spool, &pending), async {
         replica
             .upload(&spool)
             .await
             .map(|_| ())
             .map_err(|e| format!("upload backups: {e:#}"))
     })
-    .await;
-    // A move or a delete can land while the upload runs, also one that
-    // fails part way. What reached a deleted history is taken back. After a
-    // move the captures stay: they are this copy's history before the move,
-    // which the new holder may be restoring from.
-    let sent = tako_backup::Replica::receipted(&spool, &pending);
-    // A segment whose acknowledgement was lost to the deadline has no
-    // receipt but may be stored all the same.
-    if !sent.is_empty() || uploading.is_err() {
-        let rechecked = check_holder(remote.as_ref(), stored, own.as_deref()).await;
-        match rechecked {
-            Err(refused @ Refused::Deleted(_)) => {
-                let removed = replica.remove(&pending).await;
-                if let Err(cleanup) = removed {
-                    tracing::warn!(database = %stored.name, error = %format!("{cleanup:#}"), "Could not remove backups uploaded after the database was deleted");
-                }
-                return Err(refuse(state, stored, slot, refused));
-            }
-            Err(refused @ Refused::Moved(_)) => return Err(refuse(state, stored, slot, refused)),
-            Err(Refused::Unavailable(_)) | Ok(()) => {}
-        }
-    }
-    uploading?;
+    .await?;
     // The points name segments uploaded now or before.
     let points = std::mem::take(&mut slot.open.as_mut().expect("still open").points);
     for (index, point) in points.iter().enumerate() {
@@ -885,25 +567,6 @@ fn upload_timeout(spool: &Path, pending: &[tako_backup::Segment]) -> Duration {
     UPLOAD_TIMEOUT + Duration::from_secs(bytes / (4 << 20))
 }
 
-/// Stops capture of a fenced copy, which would otherwise keep filling its
-/// spool with captures it can never upload. It stops without a final
-/// capture, and stays stopped across restarts until the holder lets it go.
-fn refuse(
-    state: &ServerState,
-    stored: &StoredDatabase,
-    slot: &mut Slot,
-    refused: Refused,
-) -> String {
-    if refused.fenced() {
-        if let Err(error) = write_durably(&fenced_marker(state, &stored.name), b"") {
-            tracing::warn!(database = %stored.name, %error, "Could not record that this copy no longer backs up");
-        }
-        // Dropping capture captures nothing more.
-        slot.open = None;
-    }
-    refused.into()
-}
-
 /// Starts the periodic backup of every database, and housekeeping.
 pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -955,7 +618,7 @@ pub(crate) async fn housekeeping(state: &Arc<ServerState>) {
     }
 }
 
-/// Starts a backup job for every SQLite database, without waiting for them.
+/// Starts a backup job for every hosted SQL database, without waiting for them.
 pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
     jobs.reap();
     if state.is_draining() {
@@ -970,7 +633,7 @@ pub(crate) fn schedule(state: &Arc<ServerState>, jobs: &mut BackupJobs) {
     };
     // KV stores keep snapshot backups (see `super::snapshots`).
     for stored in databases {
-        if stored.engine == tako_core::DatabaseEngine::Sqlite {
+        if stored.engine == tako_core::DatabaseEngine::Turso {
             jobs.start(state, stored.name);
         }
     }
@@ -1059,6 +722,14 @@ pub(crate) async fn back_up(state: &ServerState, name: &str) {
     let Ok(stored) = state.hosted_database(name) else {
         return;
     };
+    if let Some(resource) = state.databases.raft.resource(&stored.generation)
+        && !resource.leads()
+    {
+        if slot.open.is_some() {
+            close(&mut slot).await;
+        }
+        return;
+    }
     let Some(backup) = stored.secrets.backup.clone() else {
         if slot.open.is_some() {
             close(&mut slot).await;
@@ -1280,7 +951,7 @@ pub(crate) async fn full_snapshot(
             reason: reason_name(reason).into(),
         });
         upload(state, stored, &mut slot).await?;
-        let (replica, _) = replica(stored, &backup, None)?;
+        let replica = replica(stored, &backup, None)?;
         let stored_bytes = with_deadline(METADATA_TIMEOUT, async {
             replica.segments().await.map_err(|e| format!("{e:#}"))
         })
@@ -1372,7 +1043,7 @@ pub(crate) async fn list_command(
 ) -> Result<serde_json::Value, String> {
     let stored = state.hosted_database(id)?;
     let backup = require_backup(&stored)?;
-    let (replica, _) = replica(&stored, &backup, None)?;
+    let replica = replica(&stored, &backup, None)?;
     let (segments, points) = with_deadline(METADATA_TIMEOUT, async {
         let segments = replica
             .segments()
@@ -1483,7 +1154,7 @@ fn snapshots(segments: &[Stored], points: &[Point]) -> Vec<DatabaseSnapshot> {
 /// Applies retention to a database's backups: seven days of history, plus
 /// the full images [`retained`] keeps.
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
-    let (replica, _) = replica(stored, backup, None)?;
+    let replica = replica(stored, backup, None)?;
     let pruned = with_deadline(UPLOAD_TIMEOUT, async {
         let segments = replica.segments().await.map_err(|e| format!("{e:#}"))?;
         let points = replica.points().await.map_err(|e| format!("{e:#}"))?;
@@ -1548,62 +1219,6 @@ pub(crate) fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<Str
     keep
 }
 
-/// Deletes every backup object of a database and returns how many were
-/// removed. A holder naming no server stays behind as the deletion's fence.
-pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
-    let Some(backup) = &stored.secrets.backup else {
-        return Ok(0);
-    };
-    let remote = store(backup)?;
-    // First, and kept: a copy on a server the delete could not reach stops
-    // uploading, also when it comes back after the delete.
-    claim_holder(remote.as_ref(), stored, DELETED_HOLDER)
-        .await
-        .map_err(|e| format!("mark the backups deleted: {e}"))?;
-    let holder = holder_key(stored);
-    let root = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
-    let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
-        use futures_util::TryStreamExt;
-        remote
-            .list(Some(&root))
-            .map_ok(|meta| meta.location)
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| format!("list database backups: {e}"))
-    })
-    .await?
-    .into_iter()
-    .filter(|key| key.as_ref() != holder)
-    .collect();
-    // Markers first, so a partial deletion lists no point without data.
-    let (points, data): (Vec<_>, Vec<_>) = keys
-        .into_iter()
-        .partition(|key| key.as_ref().contains("/points/"));
-    let mut deleted = 0;
-    // In batches, which S3 deletes in one request each.
-    let keys = [points, data];
-    for batch in keys.iter().flat_map(|keys| keys.chunks(DELETE_BATCH)) {
-        with_deadline(METADATA_TIMEOUT, async {
-            use futures_util::StreamExt;
-            // The store takes a stream that owns its paths.
-            let paths: Vec<ObjectPath> = batch.to_vec();
-            let mut deletions =
-                remote.delete_stream(futures_util::stream::iter(paths.into_iter().map(Ok)).boxed());
-            for _ in batch {
-                match deletions.next().await {
-                    Some(Ok(_) | Err(object_store::Error::NotFound { .. })) => {}
-                    Some(Err(error)) => return Err(format!("delete database backups: {error}")),
-                    None => return Err("the store did not acknowledge every deletion".into()),
-                }
-            }
-            Ok(())
-        })
-        .await?;
-        deleted += batch.len();
-    }
-    Ok(deleted)
-}
-
 /// Replaces a database with its state at `target`, after naming the current
 /// state with a restore point.
 pub(crate) async fn restore(
@@ -1622,65 +1237,8 @@ pub(crate) async fn restore(
     // have finished while this waited for it.
     let stored = state.hosted_database(id)?;
     let backup = require_backup(&stored)?;
-    let (replica, remote) = replica(&stored, &backup, key_override.as_deref())?;
-    // This server holds the database from now on, so a copy that a move
-    // leaves behind stops uploading. Claiming before listing means anything
-    // that copy still uploads is below this server's history (see
-    // `tako_backup::OWNER_JUMP`). A failed restore gives the claim back.
-    let own = state.databases.server_id();
-    let previous = match &own {
-        Some(own) => {
-            let key = ObjectPath::parse(holder_key(&stored)).map_err(|e| e.to_string())?;
-            let claim = read_claim(remote.as_ref(), &key).await?;
-            let previous = claim.as_ref().and_then(|claim| claim.server.clone());
-            if previous.as_deref() != Some(own.as_str()) {
-                // Conditional on the holder just read: of two restores that
-                // start together on different servers, one claims and the
-                // other stops here.
-                let claimed = write_claim(remote.as_ref(), &key, claim, Some(own))
-                    .await
-                    .map_err(|e| {
-                        format!("record this server as the holder of {}: {e}", stored.name)
-                    })?;
-                if !claimed {
-                    return Err(format!(
-                        "Another server claimed {} as this restore started; nothing was changed. Run the restore again once the other one has finished.",
-                        stored.name
-                    ));
-                }
-            }
-            Some(previous)
-        }
-        None => None,
-    };
-    let moved = matches!((&previous, &own), (Some(previous), Some(own)) if previous.as_deref() != Some(own.as_str()));
-    let holder = own.as_deref().map(|own| (remote.as_ref(), own));
-    let restored = restore_from(state, &stored, &replica, target, moved, holder).await;
-    if let (Err(error), Some(previous)) = (&restored, previous)
-        && previous != own
-    {
-        // Another server may have restored the database meanwhile; its
-        // claim stands. Only a claim this server reads as its own is given
-        // back, and only while it is unchanged since that read.
-        let key = ObjectPath::parse(holder_key(&stored)).map_err(|e| e.to_string())?;
-        let claim = match read_claim(remote.as_ref(), &key).await {
-            Ok(Some(claim)) if claim.server.as_deref() == own.as_deref() => claim,
-            Ok(_) => return restored,
-            Err(read) => {
-                return Err(format!(
-                    "{error} (and this server may still be recorded as the holder of {}: {read}; run the restore again or `tako db delete {} --server <this server>`)",
-                    stored.name, stored.name
-                ));
-            }
-        };
-        let given_back = write_claim(remote.as_ref(), &key, Some(claim), previous.as_deref()).await;
-        if let Err(revert) = given_back {
-            return Err(format!(
-                "{error} (and the database's previous holder could not be recorded again: {revert})"
-            ));
-        }
-    }
-    restored
+    let replica = replica(&stored, &backup, key_override.as_deref())?;
+    restore_from(state, &stored, &replica, target).await
 }
 
 /// Downloads, verifies, and swaps in the database's state at `target`.
@@ -1689,8 +1247,6 @@ async fn restore_from(
     stored: &StoredDatabase,
     replica: &Replica,
     target: Target,
-    moved: bool,
-    holder: Option<(&dyn ObjectStore, &str)>,
 ) -> Result<serde_json::Value, String> {
     let segments = with_deadline(METADATA_TIMEOUT, async {
         replica
@@ -1720,7 +1276,7 @@ async fn restore_from(
     let work = fresh_work_dir(state, &stored.name, "restore")?;
     let downloads = reserve_restore(state, stored, &work, downloaded.saturating_mul(2))?;
     let segments_dir = work.path.join("segments");
-    let restored = work.path.join("restored.sqlite");
+    let restored = work.path.join("restored.db");
     // A large restore can outlast the age at which interrupted work is
     // cleaned up.
     let _restored_space = keeping_fresh(&work, async {
@@ -1729,30 +1285,28 @@ async fn restore_from(
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         drop(downloads);
-        let space = reserve_restore(state, stored, &work, restored_bytes)?;
+        // Replaying a Turso image opens a private base and log, checkpoints
+        // them into a WAL, and writes a portable SQLite destination.
+        let needed = if state.databases.raft.resource(&stored.generation).is_some() {
+            restored_bytes.saturating_mul(4)
+        } else {
+            restored_bytes
+        };
+        let space = reserve_restore(state, stored, &work, needed)?;
         Replica::apply(&segments_dir, txid, &restored)
             .await
             .map_err(|e| format!("Cannot restore {}: {e:#}.", stored.name))?;
         let verify = restored.clone();
-        tokio::task::spawn_blocking(move || tako_db::verify_database(&verify))
-            .await
-            .map_err(|e| e.to_string())??;
+        tokio::task::spawn_blocking(move || {
+            tako_db::materialize_recovery_image(&verify)?;
+            tako_db::verify_database(&verify)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok::<_, String>(space)
     })
     .await?;
-    // A restore on another server that claimed the database after this one
-    // started keeps it: this one replaces nothing.
-    if let Some((remote, own)) = holder
-        && read_holder(remote, stored).await?.as_deref() != Some(own)
-    {
-        return Err(format!(
-            "Another server claimed {} during this restore; nothing was replaced.",
-            stored.name
-        ));
-    }
-    let warnings =
-        replace_inner(state, stored, restored, "database is being restored", moved).await?;
-    tracing::info!(database = %stored.name, transaction = txid, "Restored database");
+    let warnings = replace_inner(state, stored, restored, "database is being restored").await?;
     Ok(serde_json::json!({
         "database": stored.name,
         "name": stored.name,
@@ -1796,7 +1350,7 @@ fn reserve_restore(
 /// requests are paused. When backups are configured, the contents being
 /// replaced are captured and uploaded first and named with a restore point.
 /// Returns warnings about that backup; the replaced file is also kept as
-/// `previous.sqlite`.
+/// `previous.db`.
 pub(crate) async fn replace(
     state: &ServerState,
     stored: &StoredDatabase,
@@ -1818,7 +1372,7 @@ pub(crate) async fn replace_locked(
     if stored.engine == tako_core::DatabaseEngine::Kv {
         return super::snapshots::replace_locked(state, stored, replacement).await;
     }
-    replace_inner(state, stored, replacement, pause_reason, false).await
+    replace_inner(state, stored, replacement, pause_reason).await
 }
 
 /// With `moved`, this server just took the database over: its own earlier
@@ -1828,7 +1382,6 @@ async fn replace_inner(
     stored: &StoredDatabase,
     replacement: PathBuf,
     pause_reason: &str,
-    moved: bool,
 ) -> Result<Vec<String>, String> {
     let id = DatabaseId::parse(&stored.name)?;
     // The caller read `stored` before it took the lock; a delete and create
@@ -1850,9 +1403,7 @@ async fn replace_inner(
     let backup = current.secrets.backup.clone();
     let slot = slot(state, &stored.name);
     let mut slot = slot.lock().await;
-    if let Some(backup) = &backup
-        && !moved
-    {
+    if let Some(backup) = &backup {
         // Requests are paused, so this captures exactly what is replaced.
         let backed_up = async {
             ensure_open(state, &current, backup, &mut slot).await?;
@@ -1871,7 +1422,7 @@ async fn replace_inner(
         .await;
         if let Err(error) = backed_up {
             warnings.push(format!(
-                "could not back up the replaced contents (kept as previous.sqlite on the server): {error}"
+                "could not back up the replaced contents (kept as previous.db on the server): {error}"
             ));
         }
     }
@@ -1883,32 +1434,31 @@ async fn replace_inner(
     }
     // Capture holds the file open; the swap checkpoints it alone.
     close(&mut slot).await;
-    let path = guard.path().to_path_buf();
     let previous = state
         .databases
         .database_dir(&stored.name)
-        .join("previous.sqlite");
+        .join("previous.db");
+    let resource = state
+        .databases
+        .raft
+        .resource(&current.generation)
+        .ok_or("storage replica is unavailable")?;
     let swapped = tokio::task::spawn_blocking(move || {
+        let mut writer = resource.writer().map_err(|e| e.to_string())?;
+        let path = writer.path().to_owned();
+        tako_db::materialize_recovery_image(&path)?;
         prepare_runtime_state(&path, &replacement)
             .map_err(|e| format!("prepare restored channel replay and workflow runs: {e}"))?;
-        tako_db::replace_database(&path, &replacement, &previous)
+        tako_db::verify_hosted_import(&replacement)?;
+        tako_db::replace_database(&path, &replacement, &previous)?;
+        writer.replace_file(&path).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| e.to_string())?;
     guard.mark_changed();
     drop(guard);
     swapped?;
-    // The copy now holds restored (or deliberately replaced) contents.
-    if let Err(error) = clear_unrestored(state, &stored.name) {
-        warnings.push(error);
-    }
-    if moved {
-        slot.open = None;
-        slot.waiting.clear();
-        if let Err(error) = wipe_spool(state, &stored.name) {
-            warnings.push(error);
-        }
-    }
     // Capture starts again with a full image of the new contents.
     if let Some(backup) = &backup {
         let resumed = async {
@@ -1937,49 +1487,32 @@ async fn replace_inner(
 /// and the runs are claimed again from their last step saved in the new
 /// contents.
 fn prepare_runtime_state(current: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use rusqlite::{Connection, OpenFlags, config::DbConfig};
-
-    // Workflow runtimes keep their store open across the swap and create its
-    // tables only when they open it, so a copy without them must get them.
-    // They register schedules only when they start, so the copy keeps the
-    // live database's schedules and revision counter.
-    let live = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let workflow_store = live.query_row(
-        "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-           WHERE type = 'table' AND name = 'tako_workflow_meta')",
-        [],
-        |row| row.get::<_, bool>(0),
-    )?;
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
-    db.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
+    use tako_db::{PortableDatabase, PortableValue};
+    let live = PortableDatabase::open(current)?;
+    let db = PortableDatabase::open(path)?;
+    let workflow_store = !live.query(
+        "SELECT 1 FROM main.sqlite_schema WHERE type='table' AND rootpage > 0 AND name='tako_workflow_meta'", &[])?.is_empty();
     if workflow_store {
         db.execute_batch(&tako_workflows::enqueue::schema_sql())?;
         tako_workflows::enqueue::keep_live_schedules(&live, &db)?;
     }
     drop(live);
-    let has_columns = |table: &str, columns: &[&str]| -> rusqlite::Result<bool> {
-        let placeholders = vec!["?"; columns.len()].join(", ");
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&table, &table];
-        params.extend(columns.iter().map(|column| column as &dyn rusqlite::ToSql));
-        db.query_row(
-            &format!(
-                "SELECT EXISTS (SELECT 1 FROM main.sqlite_schema
-                   WHERE type = 'table' AND name = ?1 COLLATE NOCASE AND rootpage > 0)
-                 AND (SELECT count(*) FROM pragma_table_info(?2)
-                      WHERE name COLLATE NOCASE IN ({placeholders})) = {}",
-                columns.len()
-            ),
-            params.as_slice(),
-            |row| row.get(0),
-        )
+    let has_columns = |table: &str, columns: &[&str]| -> std::io::Result<bool> {
+        if db.query("SELECT 1 FROM main.sqlite_schema WHERE type='table' AND rootpage > 0 AND name=?1 COLLATE NOCASE",
+            &[PortableValue::from_text(table.to_owned())])?.is_empty() { return Ok(false); }
+        // Only fixed internal table names reach this pragma.
+        let rows = db.query(&format!("PRAGMA main.table_info({table})"), &[])?;
+        Ok(columns.iter().all(|column| {
+            rows.iter().any(|row| {
+                row.get(1)
+                    .and_then(|v| v.to_text())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(column))
+            })
+        }))
     };
     let replay = has_columns("tako_replay_apps", &["app", "epoch"])?;
     if replay {
-        db.execute(
-            "UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))",
-            [],
-        )?;
+        db.execute_batch("UPDATE main.tako_replay_apps SET epoch = lower(hex(randomblob(16)))")?;
     }
     let workflows = has_columns(
         "tako_workflow_runs",
@@ -1996,21 +1529,17 @@ fn prepare_runtime_state(current: &Path, path: &Path) -> Result<(), Box<dyn std:
         // attempts left waits for a new claim; one without keeps an expired
         // lease and no owner, so the next reclaim ends it as dead and wakes
         // its waiters, as it does for a lost worker.
-        db.execute(
+        db.execute_batch(
             "UPDATE main.tako_workflow_runs
              SET status = CASE WHEN attempts >= max_attempts THEN 'running' ELSE 'pending' END,
                  lease_until = CASE WHEN attempts >= max_attempts THEN 0 ELSE NULL END,
                  worker_id = NULL
              WHERE status = 'running'",
-            [],
         )?;
     }
     if replay || workflows || workflow_store {
         // The swap moves only the main file; make the changes durable in it.
-        let busy: i32 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
-        if busy != 0 {
-            return Err("could not checkpoint the replacement database".into());
-        }
+        db.checkpoint()?;
     }
     Ok(())
 }
@@ -2161,10 +1690,6 @@ pub(crate) fn sha256_file(path: &Path) -> Result<(String, u64), String> {
 mod tests {
     use super::*;
 
-    async fn holder_named(remote: &dyn ObjectStore, key: &ObjectPath) -> Option<String> {
-        read_claim(remote, key).await.unwrap().unwrap().server
-    }
-
     #[test]
     fn full_images_of_one_second_are_ordered_by_transaction() {
         let base = |txid: u64, at_ms: i64| Stored {
@@ -2208,44 +1733,5 @@ mod tests {
             0
         );
         assert!(dir.path.exists());
-    }
-
-    #[tokio::test]
-    async fn a_claim_is_given_back_only_while_it_is_unchanged() {
-        let remote = object_store::memory::InMemory::new();
-        let key = ObjectPath::from("_tako/databases/main/1/holder");
-        let claim = |server: &str| {
-            serde_json::to_vec(&Holder {
-                server: server.into(),
-                since_unix_secs: 0,
-            })
-            .unwrap()
-        };
-        remote.put(&key, claim("server-a").into()).await.unwrap();
-
-        // Another server claims after this one read its own claim.
-        let read = read_claim(&remote, &key).await.unwrap().unwrap();
-        remote.put(&key, claim("server-b").into()).await.unwrap();
-        assert!(!write_claim(&remote, &key, Some(read), None).await.unwrap());
-        assert_eq!(
-            holder_named(&remote, &key).await.as_deref(),
-            Some("server-b")
-        );
-
-        // A claim made where no holder was read loses to one made meanwhile.
-        assert!(
-            !write_claim(&remote, &key, None, Some("server-c"))
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            holder_named(&remote, &key).await.as_deref(),
-            Some("server-b")
-        );
-
-        // Unchanged, the claim is given up, and the holder names no server.
-        let read = read_claim(&remote, &key).await.unwrap().unwrap();
-        assert!(write_claim(&remote, &key, Some(read), None).await.unwrap());
-        assert_eq!(holder_named(&remote, &key).await, None);
     }
 }

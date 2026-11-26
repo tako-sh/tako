@@ -59,7 +59,6 @@ pub(crate) fn fixture() -> Fixture {
         https_port: 8443,
         https_certificate_pem: Some(cert),
         https_spki_sha256: None,
-        corrosion_ca_certificate_pem: None,
     };
     add_member(
         &mut snapshot,
@@ -433,7 +432,7 @@ fn oversized_json_write_preserves_existing_output() {
 #[test]
 fn client_json_limits_cover_a_full_server_response_pretty_printed() {
     assert!(MAX_JSON_BYTES >= 2 * tako_network::api::MAX_RESPONSE_BYTES);
-    assert!(tako_network::api::MAX_RESPONSE_BYTES >= tako_network::corrosion::MAX_REGISTRY_BYTES);
+    assert!(tako_network::api::MAX_RESPONSE_BYTES >= tako_network::catalog::MAX_REGISTRY_BYTES);
 }
 
 #[test]

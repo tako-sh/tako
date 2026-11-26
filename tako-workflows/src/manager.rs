@@ -487,13 +487,8 @@ impl WorkflowManager {
     ) -> Result<PreparedWorkflow, WorkflowManagerError> {
         // Opening the store blocks on the database.
         let build = spec.env.get("TAKO_BUILD").cloned();
-        let legacy = crate::enqueue::legacy::path(&self.data_dir, &store_config.app_id);
         let (db, in_flight) = crate::blocking::run(move || {
             let mut db = RunsDb::open(store_config)?;
-            // Earlier releases kept the app's runs in a file on this server.
-            if legacy.is_file() {
-                db.import_legacy_store(&legacy);
-            }
             db.prepare_schedule_registration(build, activation)?;
             let in_flight = db.in_flight_by_worker();
             Ok::<_, RunsDbError>((db, in_flight))
@@ -1069,36 +1064,6 @@ mod tests {
             lanes: Vec::new(),
             external: false,
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn preparing_a_runtime_imports_this_servers_earlier_store() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (m, store) = manager(tmp.path());
-        let legacy = crate::enqueue::legacy::path(tmp.path(), "shop/production");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        rusqlite::Connection::open(&legacy)
-            .unwrap()
-            .execute_batch(
-                "CREATE TABLE runs (id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
-                    status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
-                    run_at INTEGER NOT NULL, lease_until INTEGER, worker_id TEXT, last_error TEXT,
-                    created_at INTEGER NOT NULL, finished_at INTEGER, result TEXT);
-                 INSERT INTO runs VALUES
-                    ('kept', 'work', '{}', 'pending', 0, 3, 10, NULL, NULL, NULL, 10, NULL, NULL);",
-            )
-            .unwrap();
-        let prepared = m
-            .prepare(
-                store.config("shop/production"),
-                None,
-                dummy_spec(tmp.path().to_path_buf()),
-                ScheduleActivation::Deploy,
-            )
-            .await
-            .unwrap();
-        assert!(!legacy.exists());
-        assert!(blocking(|| prepared.db.get_run("kept").unwrap()).is_some());
     }
 
     fn invalid_start_spec(cwd: PathBuf) -> WorkerSpec {
