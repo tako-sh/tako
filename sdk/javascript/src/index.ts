@@ -123,7 +123,7 @@ export const storages = loadStorages<TakoStorages>();
 
 /**
  * Tako-hosted databases, typed by project-specific `tako.d.ts` declarations.
- * Each is `{ url, authToken }` for `createClient` from `@libsql/client` or
+ * Each is `{ url, authToken }` for `createClient` from `@tursodatabase/serverless/compat` or
  * `connect` from `@tursodatabase/serverless`.
  */
 export const db = loadDb<TakoDb>();

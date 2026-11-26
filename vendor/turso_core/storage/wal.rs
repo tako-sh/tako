@@ -6216,10 +6216,19 @@ pub mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("test.db");
         {
-            let connection = rusqlite::Connection::open(&path).unwrap();
-            connection
-                .pragma_update(None, "journal_mode", "wal")
+            let db = crate::Database::open_file(
+                shared_wal_test_io(),
+                path.to_str().unwrap(),
+                Arc::new(SqliteDialect),
+            )
+            .unwrap();
+            let connection = db
+                .connect(ConnectOpts::new(SessionRole::Superuser))
                 .unwrap();
+            connection
+                .execute("PRAGMA journal_mode=WAL; PRAGMA user_version=0")
+                .unwrap();
+            connection.close().unwrap();
         }
         let io = shared_wal_test_io();
         let db = Database::open_file_with_flags(

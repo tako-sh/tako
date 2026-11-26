@@ -7310,10 +7310,19 @@ mod checkpoint_phase_tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         {
-            let connection = rusqlite::Connection::open(&db_path).unwrap();
-            connection
-                .pragma_update(None, "journal_mode", "wal")
+            let db = crate::Database::open_file(
+                shared_wal_test_io(),
+                db_path.to_str().unwrap(),
+                Arc::new(SqliteDialect),
+            )
+            .unwrap();
+            let connection = db
+                .connect(ConnectOpts::new(SessionRole::Superuser))
                 .unwrap();
+            connection
+                .execute("PRAGMA journal_mode=WAL; PRAGMA user_version=0")
+                .unwrap();
+            connection.close().unwrap();
         }
         let io = shared_wal_test_io();
         let db = Database::open_file_with_flags(

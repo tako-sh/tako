@@ -1,99 +1,84 @@
-//! Stock SQLite fixture for checking LTX interoperability with an independent WAL producer.
-use anyhow::{Context, Result, bail, ensure};
-use std::{fs, fs::File, io::Write, path::Path, sync::Arc, time::Duration};
-use terse_litestream::{Database, FileStore, Options, ReplicaStore};
+//! Feed checkpointed Turso transactions to the production LTX encoder. The writer
+//! acknowledges each commit after checkpointing, before the test requests capture.
+use anyhow::{Result, ensure};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
+use tako_backup::CommittedSpool;
 
-/// One capture owner for an existing SQLite database in WAL mode. Run its
-/// methods on a blocking worker.
 pub struct Capture {
-    database: Database,
-    spool: FileStore,
-    _lock: File,
+    database: PathBuf,
+    spool: CommittedSpool,
+    position: u64,
+    previous: Vec<u8>,
 }
 
 impl Capture {
-    /// Opens capture with its spool in `directory`, at a position of at
-    /// least `floor`. Keep one spool and one remote
-    /// prefix per database. The first capture after opening is a full image.
     pub fn open(database: &Path, directory: &Path, floor: u64) -> Result<Self> {
-        let source = fs::canonicalize(database)?;
-        fs::create_dir_all(directory)?;
-        let lock = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join("capture.lock"))?;
-        lock.try_lock()
-            .context("spool already has a capture owner")?;
-        let identity = directory.join("source");
-        let source = source.to_str().context("source path must be UTF-8")?;
-        if identity.exists() {
-            ensure!(
-                fs::read_to_string(&identity)? == source,
-                "spool belongs to another database"
-            );
-        } else {
-            let mut marker = tempfile::NamedTempFile::new_in(directory)?;
-            marker.write_all(source.as_bytes())?;
-            marker.persist(&identity)?;
-        }
-        let spool = FileStore::new(directory);
-        let options = Options {
-            busy_timeout: Duration::from_secs(5),
-            ..Options::default()
-        };
-        let database =
-            Database::with_store_from(database, options, Arc::new(spool.clone()), floor)?;
+        let spool = CommittedSpool::open(directory)?;
         Ok(Self {
-            database,
+            database: database.into(),
+            position: floor.max(spool.last()?),
             spool,
-            _lock: lock,
+            previous: Vec::new(),
         })
     }
 
-    /// Captures committed changes durably on this machine and returns the
-    /// latest local transaction.
     pub fn sync(&mut self) -> Result<u64> {
-        self.database.sync()?;
-        Ok(self.database.position())
-    }
-
-    /// Captures a full image of the database at a new transaction, which
-    /// restores without any earlier segment.
-    pub fn snapshot(&mut self) -> Result<u64> {
-        self.database.snapshot()?;
-        Ok(self.database.position())
-    }
-
-    /// When a segment still in the spool was captured, from its header.
-    pub fn captured_at(&self, txid: u64) -> Result<i64> {
-        for level in [9, 0] {
-            if let Some(segment) = self
-                .spool
-                .list(level)?
-                .into_iter()
-                .find(|segment| segment.max_txid == txid)
-            {
-                let decoder = terse_ltx::Decoder::new(self.spool.open(&segment)?)?;
-                return Ok(decoder.header().timestamp);
-            }
+        if self.position == 0 {
+            return self.snapshot();
         }
-        bail!("transaction {txid} is not in the spool")
+        let image = fs::read(&self.database)?;
+        if image != self.previous {
+            let size = page_size(&image)?;
+            let pages: BTreeMap<_, _> = image
+                .chunks_exact(size)
+                .enumerate()
+                .filter(|(n, page)| self.previous.get(n * size..(n + 1) * size) != Some(*page))
+                .map(|(n, page)| (n as u64, page.to_vec()))
+                .collect();
+            let next = self.position + 1;
+            self.spool.delta(
+                next,
+                super::super::chrono_millis(),
+                image.len() as u64,
+                size as u32,
+                &pages,
+            )?;
+            self.previous = image;
+            self.position = next;
+        }
+        Ok(self.position)
     }
 
-    pub fn position(&self) -> u64 {
-        self.database.position()
+    pub fn captured_at(&self, txid: u64) -> Result<i64> {
+        self.spool.captured_at(txid)
     }
 
-    /// Captures what is left and releases the database and the spool.
-    pub fn close(self) -> Result<u64> {
-        let position = self.database.close()?;
-        Ok(position)
+    pub fn snapshot(&mut self) -> Result<u64> {
+        let image = fs::read(&self.database)?;
+        let next = self.position + 1;
+        self.spool.snapshot(
+            fs::File::open(&self.database)?,
+            next,
+            super::super::chrono_millis(),
+            page_size(&image)? as u32,
+        )?;
+        self.previous = image;
+        self.position = next;
+        Ok(next)
     }
+}
 
-    /// The spool, for uploads; cloning does not borrow the capture.
-    pub fn spool(&self) -> FileStore {
-        self.spool.clone()
-    }
+fn page_size(image: &[u8]) -> Result<usize> {
+    ensure!(image.len() >= 100, "missing database header");
+    let size = u16::from_be_bytes([image[16], image[17]]);
+    let size = if size == 1 { 65536 } else { size as usize };
+    ensure!(
+        (512..=65536).contains(&size) && size.is_power_of_two() && image.len().is_multiple_of(size),
+        "invalid database page size"
+    );
+    Ok(size)
 }

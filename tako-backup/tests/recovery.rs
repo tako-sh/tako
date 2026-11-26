@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc, sync::atomic::Orderi
 
 use anyhow::Result;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjectPath};
-use rusqlite::Connection;
 use tako_backup::{Point, RETENTION, Replica, Target, encryption::Key, windows};
+use tako_db::PortableDatabase;
 use terse_litestream::{FileStore, ReplicaStore};
 
 use support::{Process, Remote, capture::Capture};
@@ -30,17 +30,18 @@ fn inserts(first: i64, last: i64) -> String {
 }
 
 fn verify(path: &Path, expected: i64) -> Result<()> {
-    let connection = Connection::open(path)?;
-    let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    assert_eq!(integrity, "ok");
-    let mut query = connection.prepare("SELECT id, value FROM items ORDER BY id")?;
-    let rows: Vec<(i64, String)> = query
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let expected: Vec<_> = (1..=expected)
-        .map(|id| (id, format!("value-{id}")))
-        .collect();
-    assert_eq!(rows, expected);
+    let db = PortableDatabase::open(path)?;
+    assert_eq!(
+        db.query("PRAGMA integrity_check", &[])?[0][0].to_text(),
+        Some("ok")
+    );
+    let rows = db.query("SELECT id, value FROM items ORDER BY id", &[])?;
+    assert_eq!(rows.len() as i64, expected);
+    for (i, row) in rows.iter().enumerate() {
+        let id = (i + 1) as i64;
+        assert_eq!(row[0].as_int(), Some(id));
+        assert_eq!(row[1].to_text(), Some(format!("value-{id}").as_str()));
+    }
     Ok(())
 }
 
@@ -70,7 +71,7 @@ async fn separate_writers_and_external_checkpoints_restore_latest_and_history() 
     let spool = dir.path().join("spool");
     let remote = Arc::new(Remote::new(&dir.path().join("remote"))?);
     let replica = replica(remote.clone())?;
-    // The writer checkpoints after every page, as an app connection may.
+    // The writer checkpoints each committed batch before acknowledging it.
     let mut writer = Process::start("writer", &database, &spool)?;
     let mut capture = Capture::open(&database, &spool, 0)?;
     let base = capture.snapshot()?;
@@ -112,7 +113,7 @@ async fn restoring_on_the_same_spool_continues_above_the_existing_history() -> R
     writer.request(&inserts(6, 10))?;
     let newer = capture.sync()?;
     replica.upload(&spool).await?;
-    capture.close()?;
+    drop(capture);
     drop(writer);
 
     // Replace the database with its older state, as a restore does while
@@ -464,7 +465,7 @@ async fn a_writer_crash_publishes_no_uncommitted_rows() -> Result<()> {
     let replica = replica(remote)?;
     let mut writer = Process::start("writer", &database, &spool)?;
     writer.request(&inserts(1, 3))?;
-    writer.send("BEGIN IMMEDIATE; INSERT INTO items VALUES(99, 'uncommitted');")?;
+    writer.send("uncommitted BEGIN IMMEDIATE; INSERT INTO items VALUES(99, 'uncommitted');")?;
     writer.receive()?;
     writer.crash()?;
     let mut capture = Capture::open(&database, &spool, 0)?;
@@ -479,18 +480,12 @@ async fn a_writer_crash_publishes_no_uncommitted_rows() -> Result<()> {
 }
 
 #[test]
-fn a_spool_rejects_another_owner_or_database() -> Result<()> {
+fn a_committed_spool_excludes_a_second_capture_owner() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let first = dir.path().join("first.db");
-    let second = dir.path().join("second.db");
-    for path in [&first, &second] {
-        Connection::open(path)?.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x)")?;
-    }
-    let spool = dir.path().join("spool");
-    let capture = Capture::open(&first, &spool, 0)?;
-    assert!(Capture::open(&first, &spool, 0).is_err());
+    let capture = tako_backup::CommittedSpool::open(dir.path())?;
+    assert!(tako_backup::CommittedSpool::open(dir.path()).is_err());
     drop(capture);
-    assert!(Capture::open(&second, &spool, 0).is_err());
+    assert_eq!(tako_backup::CommittedSpool::open(dir.path())?.last()?, 0);
     Ok(())
 }
 

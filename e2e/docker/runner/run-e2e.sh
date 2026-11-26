@@ -729,18 +729,15 @@ run_database_checks() {
     cat "$log" >&2 || true
     exit 1
   fi
-  local exported
-  exported=$(bun -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.argv[1], { readonly: true }); console.log(db.query("SELECT count(*) AS n FROM messages").get().n)' "$export_file")
-  if [[ "$exported" != "$rows" ]]; then
-    echo "Exported database has $exported rows, expected $rows" >&2
-    exit 1
-  fi
-
-  # Replacing the database with its own export pauses and resumes app access.
+  # Change the live database so a no-op import cannot pass the round-trip check.
+  "${tako[@]}" db shell messages "CREATE TABLE after_export_probe (id INTEGER)" >"$log" 2>&1
   if ! "${tako[@]}" db import messages "$export_file" --yes >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
+  "${tako[@]}" --json db shell messages \
+    "SELECT (SELECT count(*) FROM messages), (SELECT count(*) FROM sqlite_schema WHERE name='after_export_probe')" >"$query_json"
+  jq -e --argjson rows "$rows" '.rows == [[$rows, 0]]' "$query_json" >/dev/null
   run_store_checks "$server_host" "$route_host"
 }
 

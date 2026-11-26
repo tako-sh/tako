@@ -2112,12 +2112,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
-name = "fallible-streaming-iterator"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
-
-[[package]]
 name = "fancy-regex"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2636,15 +2630,6 @@ dependencies = [
  "allocator-api2 0.2.21",
  "equivalent",
  "foldhash",
-]
-
-[[package]]
-name = "hashlink"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32069d97bb81e38fa67eab65e3393bf804bb85969f2bc06bf13f64aef5aba248"
-dependencies = [
- "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -3618,17 +3603,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7955dfc218a8afb29dfeffd540e3a6e96baeb94fe7138228dd7cc6937fbbf96"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "libsqlite3-sys"
-version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b06e69070b7e12262b0cd90832f0a7396f142a2b330181255562decf9f0c6215"
-dependencies = [
- "cc",
- "pkg-config",
- "vcpkg",
 ]
 
 [[package]]
@@ -6031,30 +6005,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rsqlite-vfs"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
-dependencies = [
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "rusqlite"
-version = "0.43.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f172c4812a19b26d1c23cdb0070e69db335503dfa378b910eb857386e5b8beba"
-dependencies = [
- "bitflags 2.13.1",
- "fallible-iterator",
- "fallible-streaming-iterator",
- "hashlink",
- "libsqlite3-sys",
- "smallvec",
- "sqlite-wasm-rs",
-]
-
-[[package]]
 name = "russh"
 version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6865,16 +6815,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
-name = "sqlite-wasm-rs"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6cd504cecbfe7eef649988840f9a6cb768d11085efec138f8e99f160632d867"
-dependencies = [
- "cc",
- "rsqlite-vfs",
-]
-
-[[package]]
 name = "ssh-cipher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7171,7 +7111,7 @@ dependencies = [
  "memmap2",
  "object_store",
  "openssl",
- "rusqlite",
+ "tako-db",
  "tako-storage",
  "tempfile",
  "terse-litestream",
@@ -7348,7 +7288,6 @@ dependencies = [
  "hyper-util",
  "parking_lot 0.13.0",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7652,7 +7591,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "crc",
- "rusqlite",
  "tempfile",
  "terse-ltx",
 ]

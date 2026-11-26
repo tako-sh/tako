@@ -75,7 +75,7 @@ async function runClients(command: string[] = ["bun", CLIENTS]): Promise<Record<
 }
 
 describe("tako run with a database binding", () => {
-  test("serves a local file to @libsql/client and @tursodatabase/serverless", async () => {
+  test("serves a local file to @tursodatabase/serverless/compat and @tursodatabase/serverless", async () => {
     const report = await runClients();
 
     expect(report["url"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -155,7 +155,7 @@ describe("tako run with a database binding", () => {
     expect(existsSync(join(project, ".tako", "data", "databases", "prod-db.db"))).toBe(false);
   });
 
-  test("Drizzle migrations and queries run over @libsql/client", async () => {
+  test("Drizzle migrations and queries run over a Hrana v2 HTTP stream", async () => {
     const report = await runClients(["bun", join(HELPERS, "drizzle", "run.ts")]);
     expect(report).toEqual({
       published: ["Engines"],
@@ -206,10 +206,10 @@ describe("migrations", () => {
     return { code, out, err };
   };
   const query = async (sql: string) => {
-    const script = `import { createClient } from ${JSON.stringify(import.meta.resolve("@libsql/client"))};
-      const db = createClient(JSON.parse(process.env.TAKO_BOOTSTRAP_DATA).databases.main);
-      try { console.log(JSON.stringify((await db.execute(process.argv[1])).rows)); }
-      finally { db.close(); }`;
+    const script = `import { connect } from ${JSON.stringify(import.meta.resolve("@tursodatabase/serverless"))};
+      const db = connect(JSON.parse(process.env.TAKO_BOOTSTRAP_DATA).databases.main);
+      try { console.log(JSON.stringify(await db.all(process.argv[1]))); }
+      finally { await db.close(); }`;
     const result = await tako("run", "--", "bun", "-e", script, sql);
     if (result.code !== 0) throw new Error(result.err);
     return JSON.parse(result.out.trim());

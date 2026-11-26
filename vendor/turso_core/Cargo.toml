@@ -294,13 +294,6 @@ version = "0.9.0"
 [dev-dependencies.rstest]
 version = "0.18.2"
 
-[dev-dependencies.rusqlite]
-version = "0.37.0"
-features = [
-    "bundled",
-    "series",
-]
-
 [dev-dependencies.serde_json]
 version = "1.0"
 

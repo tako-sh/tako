@@ -349,32 +349,24 @@ mod tests {
         conn.close().unwrap();
         drop(conn);
         export_copy(owner, &output).unwrap();
-        let oracle = rusqlite::Connection::open_with_flags(
-            &output,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
+        let exported = PortableDatabase::open(&output).unwrap();
         assert_eq!(
-            oracle
-                .query_row("SELECT sku FROM codes", [], |r| r.get::<_, String>(0))
-                .unwrap(),
-            "abc"
+            exported.query("SELECT sku FROM codes", &[]).unwrap()[0][0].to_text(),
+            Some("abc")
         );
         assert_eq!(
-            oracle
-                .query_row(
+            exported
+                .query(
                     "SELECT count(*) FROM sqlite_schema WHERE name='by_sku'",
-                    [],
-                    |r| r.get::<_, i64>(0)
+                    &[]
                 )
-                .unwrap(),
-            1
+                .unwrap()[0][0]
+                .as_int(),
+            Some(1)
         );
         assert_eq!(
-            oracle
-                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            12
+            exported.query("PRAGMA user_version", &[]).unwrap()[0][0].as_int(),
+            Some(12)
         );
         assert_eq!(
             export_copy(Owner::scratch(&db).unwrap(), &output)
@@ -387,21 +379,32 @@ mod tests {
     fn hosted_import_checks_the_native_schema_before_replacement() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("upload.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        File::create_new(&path).unwrap();
+        // An external Turso producer may enable features the hosted engine disallows.
+        let io = Arc::new(directory_io::DirectoryIo::new(&path).unwrap());
+        let options = OpenOptions::new(Arc::new(SqliteDialect))
+            .db_opts(DatabaseOpts::new().with_without_rowid(true));
+        let database = Database::open(io, text(&path).unwrap(), options).unwrap();
+        let conn = PortableDatabase(
+            database
+                .connect(ConnectOpts::new(SessionRole::Superuser))
+                .unwrap(),
+        );
         conn.execute_batch("CREATE TABLE items(k TEXT PRIMARY KEY) STRICT")
             .unwrap();
+        conn.checkpoint().unwrap();
         verify_hosted_import(&path).unwrap();
         conn.execute_batch("CREATE TABLE unsupported(k TEXT PRIMARY KEY) WITHOUT ROWID")
             .unwrap();
+        conn.checkpoint().unwrap();
         assert!(
             verify_hosted_import(&path)
                 .unwrap_err()
                 .contains("unsupported")
         );
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM items", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
+            conn.query("SELECT count(*) FROM items", &[]).unwrap()[0][0].as_int(),
+            Some(0)
         );
     }
 
@@ -471,10 +474,10 @@ mod tests {
                     .block_on(tako_backup::Replica::apply(&spool_dir, txid, &dest))
                     .unwrap();
                 materialize_recovery_image(&dest).unwrap();
-                let restored = rusqlite::Connection::open(dest).unwrap();
+                let restored = PortableDatabase::open(&dest).unwrap();
                 assert_eq!(
-                    restored
-                        .query_row("SELECT count(*) FROM t", [], |row| row.get::<_, i64>(0))
+                    restored.query("SELECT count(*) FROM t", &[]).unwrap()[0][0]
+                        .as_int()
                         .unwrap(),
                     index as i64 + 1
                 );
@@ -492,9 +495,10 @@ mod tests {
                 assert_eq!(rows[i][0].as_int(), Some((i + 1) as i64));
                 let portable = dir.path().join(format!("point-{i}.db"));
                 assert!(export(file.path(), &portable).unwrap());
-                let sql = rusqlite::Connection::open(portable).unwrap();
+                let sql = PortableDatabase::open(&portable).unwrap();
                 assert_eq!(
-                    sql.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0))
+                    sql.query("SELECT count(*) FROM t", &[]).unwrap()[0][0]
+                        .as_int()
                         .unwrap(),
                     (i + 1) as i64
                 );

@@ -38,11 +38,11 @@ fn run_args(conn: &mut Connection, sql: &str, args: &[Value]) -> Result<StmtResu
 #[test]
 fn created_databases_use_wal_and_refuse_to_overwrite() {
     let fixture = fixture();
-    let conn = rusqlite::Connection::open(&fixture.path).unwrap();
-    let mode: String = conn
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
+    let conn = crate::PortableDatabase::open(&fixture.path).unwrap();
+    assert_eq!(
+        conn.query("PRAGMA journal_mode", &[]).unwrap()[0][0].to_text(),
+        Some("wal")
+    );
     assert!(create_database(&fixture.path).is_err());
 }
 
@@ -594,11 +594,12 @@ fn snapshots_are_consistent_verified_copies() {
     conn.rollback();
     drop(conn);
     crate::mvcc::Owner::snapshot_local(&fixture.path, &dest, Duration::from_secs(1)).unwrap();
-    let copy = rusqlite::Connection::open(&dest).unwrap();
-    let count: i64 = copy
-        .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 2, "the open transaction is not part of the snapshot");
+    let copy = crate::PortableDatabase::open(&dest).unwrap();
+    assert_eq!(
+        copy.query("SELECT count(*) FROM t", &[]).unwrap()[0][0].as_int(),
+        Some(2),
+        "only committed rows belong in a snapshot"
+    );
     assert!(
         crate::mvcc::Owner::snapshot_local(&fixture.path, &dest, Duration::from_secs(1)).is_err()
     );
@@ -629,17 +630,21 @@ fn replacing_keeps_the_previous_file_and_drops_stale_sidecars() {
     let replacement = fixture.path.with_file_name("new.db");
     create_database(&replacement).unwrap();
     {
-        let conn = rusqlite::Connection::open(&replacement).unwrap();
+        let conn = crate::PortableDatabase::open(&replacement).unwrap();
         conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('new');")
             .unwrap();
+        conn.checkpoint().unwrap();
     }
     let previous = fixture.path.with_file_name("previous.db");
     replace_database(&fixture.path, &replacement, &previous).unwrap();
     let read = |path: &std::path::Path| -> String {
-        rusqlite::Connection::open(path)
+        crate::PortableDatabase::open(path)
             .unwrap()
-            .query_row("SELECT x FROM t", [], |row| row.get(0))
+            .query("SELECT x FROM t", &[])
+            .unwrap()[0][0]
+            .to_text()
             .unwrap()
+            .to_owned()
     };
     assert_eq!(read(&fixture.path), "new");
     assert_eq!(read(&previous), "old");

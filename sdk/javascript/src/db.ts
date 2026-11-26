@@ -5,7 +5,7 @@
  * HTTP protocol, so it can be passed straight to an existing driver:
  *
  * ```ts
- * import { createClient } from "@libsql/client";
+ * import { createClient } from "@tursodatabase/serverless/compat";
  * import { tako } from "tako.sh";
  *
  * const db = createClient(tako.db.main);

@@ -19,7 +19,7 @@ The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the re
 ## Database
 
 Supply requests live in the `mission` database, which the app reaches as
-`tako.db.mission` through `@libsql/client`. `tako dev` serves it from a
+`tako.db.mission` through `@tursodatabase/serverless/compat`. `tako dev` serves it from a
 local Turso file after applying `migrations/`. Bind the database to production
 in `tako.toml`.
 
@@ -49,6 +49,8 @@ bun run build
 cd examples/javascript/demo
 bun test
 ```
+
+The database tests start a temporary hosted Turso database with `tako run`. Install the CLI or set `TAKO_BIN` to the path of a local build.
 
 ## Nightly production check
 

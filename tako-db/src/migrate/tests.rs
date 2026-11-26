@@ -293,9 +293,11 @@ fn reset_builds_one_portable_file_with_every_migration_write() {
     let (dir, path) = database();
     assert_eq!(prepare_reset(&path, None, &[]).unwrap(), None);
     let portable = |path: &Path, sql: &str| -> i64 {
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        crate::PortableDatabase::open(path)
             .unwrap()
-            .query_row(sql, [], |row| row.get(0))
+            .query(sql, &[])
+            .unwrap()[0][0]
+            .as_int()
             .unwrap()
     };
     assert_eq!(portable(&path, "SELECT count(*) FROM sqlite_schema"), 0);

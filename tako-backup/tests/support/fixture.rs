@@ -1,14 +1,13 @@
-//! Subprocess fixture: stock SQLite writer or embedded capture owner, driven over stdin.
+//! Subprocess fixture: Turso writer or committed-page capture owner, driven over stdin.
 
 use std::{
     io::{self, BufRead, Write},
     path::Path,
-    time::Duration,
 };
 
 use super::capture::Capture;
 use anyhow::{Context, Result, bail};
-use rusqlite::Connection;
+use tako_db::PortableDatabase;
 
 #[test]
 fn subprocess() -> Result<()> {
@@ -20,12 +19,25 @@ fn subprocess() -> Result<()> {
     let stdin = io::stdin();
     match mode.as_str() {
         "writer" => {
-            let connection = Connection::open(database)?;
-            connection.busy_timeout(Duration::from_secs(5))?;
-            connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1; CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")?;
+            std::fs::File::options()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(database)?;
+            let connection = PortableDatabase::open(database)?;
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+            )?;
+            connection.checkpoint()?;
             reply("ready")?;
             for line in stdin.lock().lines() {
-                connection.execute_batch(&line?)?;
+                let line = line?;
+                if let Some(sql) = line.strip_prefix("uncommitted ") {
+                    connection.execute_batch(sql)?;
+                } else {
+                    connection.execute_batch(&line)?;
+                    connection.checkpoint()?;
+                }
                 reply("ok")?;
             }
         }

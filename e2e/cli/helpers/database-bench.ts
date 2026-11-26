@@ -1,11 +1,11 @@
 /**
- * Loopback latency of the hosted database protocol against in-process SQLite.
+ * Loopback latency of the hosted database protocol against in-process Turso.
  *
  *   cargo build --release -p tako-db --example serve
  *   bun e2e/cli/helpers/database-bench.ts target/release/examples/serve
  */
-import { Database } from "bun:sqlite";
-import { createClient } from "@libsql/client";
+import { Database } from "@tursodatabase/database/compat";
+import { createClient } from "@tursodatabase/serverless/compat";
 import { connect } from "@tursodatabase/serverless";
 
 const serve = process.argv[2];
@@ -49,17 +49,17 @@ const libsql = createClient({ url: config.url, authToken: config.authToken });
 await libsql.executeMultiple(`${schema}; ${seed};`);
 const turso = connect({ url: config.url, authToken: config.authToken });
 
-const local = new Database(`${config.path}.local.sqlite`);
-local.run("PRAGMA journal_mode = WAL");
-local.run("PRAGMA synchronous = FULL");
-local.run(schema);
-local.run(seed);
+const local = new Database(`${config.path}.local.db`);
+local.exec("PRAGMA journal_mode = WAL");
+local.exec("PRAGMA synchronous = FULL");
+local.exec(schema);
+local.exec(seed);
 const point = local.prepare("SELECT id, name, price FROM items WHERE id = ?");
 const hundred = local.prepare("SELECT id, name, price FROM items WHERE id > ? LIMIT 100");
 const insert = local.prepare("INSERT INTO items (name, price) VALUES (?, ?)");
 
 await measure("in process: point select", (i) => point.get((i % 1000) + 1));
-await measure("@libsql/client: point select", (i) =>
+await measure("@tursodatabase/serverless/compat: point select", (i) =>
   libsql.execute({
     sql: "SELECT id, name, price FROM items WHERE id = ?",
     args: [(i % 1000) + 1],
@@ -69,14 +69,14 @@ await measure("@tursodatabase/serverless: point", (i) =>
   turso.get("SELECT id, name, price FROM items WHERE id = ?", (i % 1000) + 1),
 );
 await measure("in process: 100 rows", (i) => hundred.all(i % 900));
-await measure("@libsql/client: 100 rows", (i) =>
+await measure("@tursodatabase/serverless/compat: 100 rows", (i) =>
   libsql.execute({
     sql: "SELECT id, name, price FROM items WHERE id > ? LIMIT 100",
     args: [i % 900],
   }),
 );
 await measure("in process: insert", (i) => insert.run(`n${i}`, i));
-await measure("@libsql/client: insert", (i) =>
+await measure("@tursodatabase/serverless/compat: insert", (i) =>
   libsql.execute({ sql: "INSERT INTO items (name, price) VALUES (?, ?)", args: [`n${i}`, i] }),
 );
 

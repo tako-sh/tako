@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@libsql/client": "^0.18.0",
+    "@tursodatabase/serverless": "^1.4.1",
     "tako.sh": "*"
   }
 }

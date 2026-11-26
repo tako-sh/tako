@@ -213,7 +213,7 @@ object URLs.
 
 ## Databases
 
-Tako-hosted Turso databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Declare the name under the environment and deploy with full access. Use the binding with `@libsql/client` or `@tursodatabase/serverless`.
+Tako-hosted Turso databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Declare the name under the environment and deploy with full access. Use the binding with `@tursodatabase/serverless/compat` or `@tursodatabase/serverless`.
 
 ```toml
 [envs.production]
@@ -221,7 +221,7 @@ db = { main = "main" } # binding = database name
 ```
 
 ```typescript
-import { createClient } from "@libsql/client";
+import { createClient } from "@tursodatabase/serverless/compat";
 import { tako } from "tako.sh";
 
 const main = tako.db.main;
@@ -232,7 +232,7 @@ const { rows } = await db.execute({ sql: "SELECT * FROM users WHERE id = ?", arg
 await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] }], "write");
 ```
 
-- `tako.db.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].db = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako db list` shows them. Apps on every server of the network can bind it. Its backups go to the environment's `backup.storage`, or to `[db.<database>].backup`.
+- `tako.db.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].db = { <binding> = "<database>" }` in `tako.toml`. A database’s name identifies it across the network. `tako status` shows its replicas and current leader. Apps on every server of the network can bind it. Its backups go to the environment's `backup.storage`, or to `[db.<database>].backup`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
 - `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.db`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
 - Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako db migration new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.

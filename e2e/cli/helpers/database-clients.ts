@@ -1,9 +1,8 @@
 /**
- * Runs under `tako run` and drives a bound database through the two JS
- * drivers Tako supports: `@libsql/client` (Hrana v2) and
- * `@tursodatabase/serverless` (Hrana v3, cursors). Prints one JSON report.
+ * Runs under `tako run` and drives a bound database through the native and libSQL-compatible APIs of
+ * the Turso HTTP driver. Prints one JSON report.
  */
-import { createClient, LibsqlError } from "@libsql/client";
+import { createClient, LibsqlError } from "@tursodatabase/serverless/compat";
 import { connect } from "@tursodatabase/serverless";
 
 import { createDbBag } from "../../../sdk/javascript/src/db";
@@ -38,7 +37,7 @@ async function code(run: () => Promise<unknown>): Promise<string> {
   }
 }
 
-// @libsql/client
+// @tursodatabase/serverless/compat
 const libsql = createClient(main);
 await libsql.executeMultiple("BEGIN CONCURRENT; SELECT 1; COMMIT;");
 report["previousRows"] =
@@ -70,10 +69,11 @@ const blob = named.rows[0]?.["data"] as ArrayBuffer;
 report["blob"] = Array.from(new Uint8Array(blob));
 report["score"] = named.rows[0]?.["score"];
 report["kind"] = named.rows[0]?.["kind"];
-report["bigint"] = String(
-  (await createClient({ ...main, intMode: "bigint" }).execute("SELECT 9007199254740993 AS n"))
-    .rows[0]?.["n"],
-);
+const integers = connect(main);
+const statement = await integers.prepare("SELECT 9007199254740993 AS n");
+const row = await statement.safeIntegers().get() as { n: bigint };
+report["bigint"] = String(row.n);
+await integers.close();
 report["batchRollback"] = await code(() =>
   libsql.batch(
     ["INSERT INTO users (name) VALUES ('batch-1')", "INSERT INTO users (name) VALUES ('batch-1')"],

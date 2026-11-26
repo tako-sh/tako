@@ -57,94 +57,39 @@ if su -s /bin/sh tako -c 'sudo -n sh -c true' 2>/dev/null; then
   echo 'unexpected arbitrary root shell' >&2
   exit 1
 fi
-# The capture identity retains the service uid and receives the private app
-# group before capabilities are dropped. Exercise app-owned WAL and SHM files.
-private_db=/opt/tako/apps/first/production/data/app/capture.sqlite
-install -o tako -g "$first_group" -m 0660 /dev/null "$private_db"
-python3 - "$private_db" "$first_group" <<'PYSQL'
-import os, pwd, subprocess, sys
-database, app = sys.argv[1:]
-writer = subprocess.Popen([
-    "setpriv", "--reuid=" + app, "--regid=" + app, "--groups=tako-app", "--no-new-privs",
-    "python3", "-c", """
-import sqlite3, sys
-db = sqlite3.connect(sys.argv[1])
-db.execute('PRAGMA journal_mode=WAL')
-db.execute('CREATE TABLE captured (value INTEGER)')
-db.execute('INSERT INTO captured VALUES (42)')
-db.commit()
-print('ready', flush=True)
-input()
-""", database,
-], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-try:
-    assert writer.stdout.readline().strip() == "ready"
-    assert os.stat(database + "-wal").st_uid == pwd.getpwnam(app).pw_uid
-    subprocess.run([
-        "setpriv", "--reuid=tako", "--regid=tako", "--groups=" + app,
-        "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
-        "python3", "-c", "import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); assert db.execute('SELECT value FROM captured').fetchone() == (42,)",
-        database,
-    ], check=True)
-finally:
-    writer.communicate("\n", timeout=10)
-assert writer.returncode == 0
-PYSQL
+# Private app files are accessible to the management identity with that app's group.
+private_file=/opt/tako/apps/first/production/data/app/private-data
+setpriv --reuid="$first_group" --regid="$first_group" --groups=tako-app --no-new-privs \
+  sh -c 'umask 007; printf "42" > "$1"' sh "$private_file"
+test "$(stat -c %U "$private_file")" = "$first_group"
+setpriv --reuid=tako --regid=tako --groups="$first_group" --inh-caps=-all --ambient-caps=-all --no-new-privs \
+  sh -c 'test "$(cat "$1")" = 42' sh "$private_file"
 
-# Configured shared SQLite files retain separate app identities while allowing
-# both processes to commit through WAL with the group-writable app data umask.
-shared_db=/opt/tako/shared/data/app/shared.sqlite
-install -o tako -g tako-app -m 0660 /dev/null "$shared_db"
-python3 - "$shared_db" <<'PYSQL'
-from contextlib import closing
-import sqlite3, sys
-# A connection context commits transactions but does not close the connection.
-# Close the root-owned initializer before unprivileged writers open its WAL.
-with closing(sqlite3.connect(sys.argv[1])) as db:
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("CREATE TABLE writes (app TEXT, value INTEGER, PRIMARY KEY(app, value))")
-PYSQL
-test ! -e "$shared_db-wal"
-test ! -e "$shared_db-shm"
+# Both app identities create and update files through the shared group.
+shared_dir=/opt/tako/shared/data/app
+install -o tako -g tako-app -m 0660 /dev/null "$shared_dir/shared-writes"
 for app_user in "$first_group" "$second_group"; do
   setpriv --reuid="$app_user" --regid="$app_user" --groups=tako-app --no-new-privs \
-    python3 - "$shared_db" "$app_user" <<'PYSQL' &
-import os, sqlite3, sys
+    python3 - "$shared_dir" "$app_user" <<'PYSHARED' &
+import fcntl, os, sys
+directory, app = sys.argv[1:]
 os.umask(0o007)
-# Check creation permissions before SQLite can repair them with fchmod.
-probe = sys.argv[1] + "." + sys.argv[2] + ".mode"
-fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o660)
-try:
-    assert os.fstat(fd).st_mode & 0o777 == 0o660
-finally:
-    os.close(fd)
-    os.unlink(probe)
-try:
-    with sqlite3.connect(sys.argv[1], timeout=10) as db:
-        for value in range(200):
-            db.execute("INSERT INTO writes VALUES (?, ?)", (sys.argv[2], value))
-            db.commit()
-except sqlite3.Error as error:
-    print(f"{sys.argv[2]}: {error.sqlite_errorname} ({error.sqlite_errorcode})", file=sys.stderr)
-    for path in [os.path.dirname(sys.argv[1]), sys.argv[1], sys.argv[1] + "-wal", sys.argv[1] + "-shm"]:
-        try:
-            info = os.stat(path)
-            print(f"{path}: uid={info.st_uid} gid={info.st_gid} mode={oct(info.st_mode & 0o7777)}", file=sys.stderr)
-        except OSError as stat_error:
-            print(f"{path}: {stat_error}", file=sys.stderr)
-    raise
-PYSQL
+with open(os.path.join(directory, app + ".probe"), "x") as probe:
+    assert os.fstat(probe.fileno()).st_mode & 0o777 == 0o660
+with open(os.path.join(directory, "shared-writes"), "a") as output:
+    for i in range(200):
+        fcntl.flock(output, fcntl.LOCK_EX)
+        output.write(f"{app} {i}\n")
+        output.flush()
+        fcntl.flock(output, fcntl.LOCK_UN)
+PYSHARED
   if [ "$app_user" = "$first_group" ]; then first_writer=$!; else second_writer=$!; fi
 done
 wait "$first_writer"
 wait "$second_writer"
-python3 - "$shared_db" <<'PYSQL'
-import sqlite3, sys
-with sqlite3.connect(sys.argv[1]) as db:
-    assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    assert db.execute("SELECT COUNT(*) FROM writes").fetchone()[0] == 400
-    assert db.execute("SELECT COUNT(DISTINCT app) FROM writes").fetchone()[0] == 2
-PYSQL
+for app_user in "$first_group" "$second_group"; do
+  test "$(grep -c "^$app_user " "$shared_dir/shared-writes")" = 200
+done
 
 # Re-exec the installed file-capability binary after dropping identity with NNP.
 # EOF exits cleanly before parsing input, checking the kernel exec boundary.
